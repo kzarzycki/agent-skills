@@ -2,92 +2,74 @@
 
 Persistent workflow orchestration for Claude Code. Survives context resets, delegates to subagents, tracks independent work items.
 
-## Install
+## Quick Install
 
-### Option A: Global (personal use across all projects)
+Run this single command to install Flow globally (works in any project):
 
 ```bash
 npx skills add kzarzycki/agentic-workflow@flow -g -y
 ```
 
-### Option B: Project-level (team use, travels with repo)
+Then in any project, run `/flow:init` inside Claude Code to set up the workspace.
 
-Copy `Makefile.example` into your project (or merge into existing Makefile). Add skills to the registry:
+## Project-Level Install
 
-```makefile
-CLAUDE_SKILLS := \
-	kzarzycki/agentic-workflow@flow
-#	other-org/other-repo@skill-name
-```
-
-Then:
+To install Flow into a specific project (so teammates get it on clone):
 
 ```bash
-make install-claude-deps
+mkdir -p .claude/skills/flow && \
+  git clone --depth 1 https://github.com/kzarzycki/agentic-workflow.git /tmp/agentic-workflow-dl && \
+  cp -r /tmp/agentic-workflow-dl/flow/* .claude/skills/flow/ && \
+  rm -rf /tmp/agentic-workflow-dl
 ```
 
-Teammates run `make install-claude-deps` after cloning. Skills land in `.claude/skills/` and Claude Code discovers them automatically. Idempotent — only downloads what's missing. `make update-claude-deps` re-downloads all to latest.
+This puts the skill in `.claude/skills/flow/`. Claude Code discovers it automatically.
 
-## Setup in a project
+For projects with multiple Claude skills, see `Makefile.example` — it provides `make install-claude-deps` with a skill registry.
 
-After installing the skill (any option above), run in Claude Code:
+After installing, run `/flow:init` inside Claude Code to complete setup (creates `.work/`, hooks, CLAUDE.md).
 
-```
-/flow:init
-```
+## What /flow:init Does
 
-This creates:
-- `.work/` — project state (brief, items, log, ideas)
-- `CLAUDE.md` — instructions so CC always uses Flow
-- `.claude/hooks/flow-bootstrap.sh` — injects project state on every session start
-- `.claude/settings.json` — registers the hook
+Running `/flow:init` inside Claude Code sets up:
 
-After init, every new CC session automatically recovers your project context.
+| What | Where | Purpose |
+|------|-------|---------|
+| Project state | `.work/` | brief, items, log, ideas — survives context resets |
+| Behavioral rules | `CLAUDE.md` | Instructions so CC always follows Flow methodology |
+| Session hook | `.claude/hooks/flow-bootstrap.sh` | Injects .work/ state on every session start |
+| Hook registration | `.claude/settings.json` | Registers the SessionStart hook |
 
-## Usage
+After init, every new CC session automatically recovers project context.
 
-### Commands
+## Commands
 
 | Command | Purpose |
 |---------|---------|
-| `/flow:init` | Initialize Flow in a project |
-| `/flow:research [topic]` | Research a topic (delegates to agent) |
-| `/flow:status` | Show all items, progress, suggestions |
-| `/flow:quick [task]` | Quick task without full ceremony |
+| `/flow:init` | Initialize Flow workspace in a project |
+| `/flow:research [topic]` | Research a topic (delegates to subagent) |
+| `/flow:status` | Show all items, progress, suggested next action |
+| `/flow:quick [task]` | Quick task without full item ceremony |
 
-### Natural conversation
+## Natural Conversation
 
 Flow also activates from natural language — no commands needed:
 
 - "Let's work on authentication" -> creates or switches to item
 - "Research auth options" -> spawns research agent
-- "Plan this" -> creates execution plan
+- "Plan this" / "break this down" -> creates execution plan
 - "Go ahead and build it" -> spawns executor agent
 - "Verify it works" -> runs verification
 - "Where are we?" -> shows status
 - "Remind me to add logging later" -> captures in ideas
+- "That's done" -> marks item complete
 
-### Work items
+## Concepts
 
-Items are independent scopes of work. Each follows: **Research -> Plan -> Execute -> Verify -> Done** (any step skippable).
+**Work items** — independent scopes of work in `.work/items/<name>/`. Each follows: Research -> Plan -> Execute -> Verify -> Done (any step skippable). Items contain `ITEM.md` (manifest), `research.md` (findings), `plan.md` (execution plan).
 
-Items live in `.work/items/<name>/` with:
-- `ITEM.md` — goal, status, progress, context references
-- `research.md` — findings from research agent
-- `plan.md` — execution plan from planning agent
+**Tempo** — structured (default: larger chunks, acceptance criteria) or creative (small iterations, frequent feedback, saved versions).
 
-### Tempo
+**Delegation** — main CC handles discussion, status, item management. Subagents handle research, planning, execution, verification — each gets a fresh 200k context with methodology + project brief + item context.
 
-- **Structured** (default) — larger chunks, verify via acceptance criteria
-- **Creative** — small iterations, frequent feedback, saved versions
-
-## How it works
-
-Flow enhances Claude Code rather than replacing it. Main CC acts as orchestrator:
-
-- **Handles directly:** discussion, status, item management, quick tasks
-- **Delegates to agents:** research, planning, execution, verification
-
-Each agent gets a fresh 200k context with: methodology guide + project brief + item context + standards. Agents return structured results that Flow routes to the right files.
-
-`.work/` persists everything across sessions. The SessionStart hook injects state on every session start, so CC always knows where you left off.
+**Context recovery** — `.work/` persists everything. The SessionStart hook injects state before CC processes any message, so it always knows where you left off.
