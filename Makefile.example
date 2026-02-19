@@ -1,0 +1,32 @@
+# Flow skill dependency management
+# Copy this to your project's Makefile (or include it in an existing one).
+#
+# Usage:
+#   make install-flow    # Download and install Flow skill into project
+#   make update-flow     # Update to latest version
+#   make flow-init       # Install + run /flow:init via Claude Code
+
+FLOW_REPO := kzarzycki/agentic-workflow
+FLOW_BRANCH := main
+FLOW_SKILL_DIR := .claude/skills/flow
+FLOW_TMP := /tmp/flow-skill-$(shell date +%s)
+
+.PHONY: install-flow update-flow flow-init clean-flow
+
+install-flow: $(FLOW_SKILL_DIR)/SKILL.md
+
+$(FLOW_SKILL_DIR)/SKILL.md:
+	@echo "Installing Flow skill..."
+	@mkdir -p $(FLOW_SKILL_DIR)
+	@git clone --depth 1 --branch $(FLOW_BRANCH) https://github.com/$(FLOW_REPO).git $(FLOW_TMP)
+	@cp -r $(FLOW_TMP)/flow/* $(FLOW_SKILL_DIR)/
+	@rm -rf $(FLOW_TMP)
+	@echo "Flow installed to $(FLOW_SKILL_DIR)"
+
+update-flow: clean-flow install-flow
+
+clean-flow:
+	@rm -rf $(FLOW_SKILL_DIR)
+
+flow-init: install-flow
+	@echo "Run /flow:init in Claude Code to complete setup."

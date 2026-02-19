@@ -4,15 +4,50 @@ Persistent workflow orchestration for Claude Code. Survives context resets, dele
 
 ## Install
 
+### Option A: Global (personal use across all projects)
+
 ```bash
-npx skills add kzarzycki/cc-workflow@flow -g -y
+npx skills add kzarzycki/agentic-workflow@flow -g -y
 ```
 
-This installs the skill globally. Flow is now available in all your Claude Code sessions.
+### Option B: Project-level (team use, travels with repo)
+
+Add to your Makefile (see `Makefile.example`):
+
+```makefile
+FLOW_REPO := kzarzycki/agentic-workflow
+FLOW_SKILL_DIR := .claude/skills/flow
+FLOW_TMP := /tmp/flow-skill-$(shell date +%s)
+
+install-flow: $(FLOW_SKILL_DIR)/SKILL.md
+
+$(FLOW_SKILL_DIR)/SKILL.md:
+	@mkdir -p $(FLOW_SKILL_DIR)
+	@git clone --depth 1 https://github.com/$(FLOW_REPO).git $(FLOW_TMP)
+	@cp -r $(FLOW_TMP)/flow/* $(FLOW_SKILL_DIR)/
+	@rm -rf $(FLOW_TMP)
+```
+
+Then:
+
+```bash
+make install-flow
+```
+
+Teammates run `make install-flow` after cloning. The skill lands in `.claude/skills/flow/` and Claude Code discovers it automatically.
+
+### Option C: One-liner (no Makefile)
+
+```bash
+git clone --depth 1 https://github.com/kzarzycki/agentic-workflow.git /tmp/flow-dl && \
+  mkdir -p .claude/skills/flow && \
+  cp -r /tmp/flow-dl/flow/* .claude/skills/flow/ && \
+  rm -rf /tmp/flow-dl
+```
 
 ## Setup in a project
 
-In any repo, run:
+After installing the skill (any option above), run in Claude Code:
 
 ```
 /flow:init
@@ -41,17 +76,17 @@ After init, every new CC session automatically recovers your project context.
 
 Flow also activates from natural language — no commands needed:
 
-- "Let's work on authentication" → creates or switches to item
-- "Research auth options" → spawns research agent
-- "Plan this" → creates execution plan
-- "Go ahead and build it" → spawns executor agent
-- "Verify it works" → runs verification
-- "Where are we?" → shows status
-- "Remind me to add logging later" → captures in ideas
+- "Let's work on authentication" -> creates or switches to item
+- "Research auth options" -> spawns research agent
+- "Plan this" -> creates execution plan
+- "Go ahead and build it" -> spawns executor agent
+- "Verify it works" -> runs verification
+- "Where are we?" -> shows status
+- "Remind me to add logging later" -> captures in ideas
 
 ### Work items
 
-Items are independent scopes of work. Each follows: **Research → Plan → Execute → Verify → Done** (any step skippable).
+Items are independent scopes of work. Each follows: **Research -> Plan -> Execute -> Verify -> Done** (any step skippable).
 
 Items live in `.work/items/<name>/` with:
 - `ITEM.md` — goal, status, progress, context references
