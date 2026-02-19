@@ -8,7 +8,7 @@
 # --- Skills registry ---
 # Add skills here as: REPO@SKILL_DIR (the dir inside the repo containing SKILL.md)
 CLAUDE_SKILLS := \
-	kzarzycki/agentic-workflow@flow
+	kzarzycki/agent-skills@flow
 
 # --- Config ---
 SKILLS_DIR := .claude/skills
