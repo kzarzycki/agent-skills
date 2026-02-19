@@ -1,32 +1,44 @@
-# Flow skill dependency management
+# Claude Code skill dependencies
 # Copy this to your project's Makefile (or include it in an existing one).
 #
 # Usage:
-#   make install-flow    # Download and install Flow skill into project
-#   make update-flow     # Update to latest version
-#   make flow-init       # Install + run /flow:init via Claude Code
+#   make install-claude-deps    # Install all Claude skills + tools
+#   make update-claude-deps     # Update all to latest
 
-FLOW_REPO := kzarzycki/agentic-workflow
-FLOW_BRANCH := main
-FLOW_SKILL_DIR := .claude/skills/flow
-FLOW_TMP := /tmp/flow-skill-$(shell date +%s)
+# --- Skills registry ---
+# Add skills here as: REPO@SKILL_DIR (the dir inside the repo containing SKILL.md)
+CLAUDE_SKILLS := \
+	kzarzycki/agentic-workflow@flow
 
-.PHONY: install-flow update-flow flow-init clean-flow
+# --- Config ---
+SKILLS_DIR := .claude/skills
+TMP_BASE := /tmp/claude-skill
 
-install-flow: $(FLOW_SKILL_DIR)/SKILL.md
+# --- Targets ---
+.PHONY: install-claude-deps update-claude-deps clean-claude-deps check-npx-skills
 
-$(FLOW_SKILL_DIR)/SKILL.md:
-	@echo "Installing Flow skill..."
-	@mkdir -p $(FLOW_SKILL_DIR)
-	@git clone --depth 1 --branch $(FLOW_BRANCH) https://github.com/$(FLOW_REPO).git $(FLOW_TMP)
-	@cp -r $(FLOW_TMP)/flow/* $(FLOW_SKILL_DIR)/
-	@rm -rf $(FLOW_TMP)
-	@echo "Flow installed to $(FLOW_SKILL_DIR)"
+install-claude-deps: check-npx-skills $(foreach s,$(CLAUDE_SKILLS),$(SKILLS_DIR)/$(lastword $(subst @, ,$(s)))/SKILL.md)
 
-update-flow: clean-flow install-flow
+check-npx-skills:
+	@command -v npx >/dev/null 2>&1 || { echo "npx not found. Install Node.js: https://nodejs.org"; exit 1; }
+	@npx skills --version >/dev/null 2>&1 || echo "Note: 'npx skills' will be available on first use (auto-downloads)."
 
-clean-flow:
-	@rm -rf $(FLOW_SKILL_DIR)
+# Pattern: install a skill from REPO@SKILL_DIR
+define install_skill
+$(SKILLS_DIR)/$(2)/SKILL.md:
+	@echo "Installing skill: $(2) from $(1)..."
+	@mkdir -p $(SKILLS_DIR)/$(2)
+	@TMP=$(TMP_BASE)-$(2)-$$$$$$$$ && \
+		git clone --depth 1 https://github.com/$(1).git $$$$TMP && \
+		cp -r $$$$TMP/$(2)/* $(SKILLS_DIR)/$(2)/ && \
+		rm -rf $$$$TMP
+	@echo "  -> $(SKILLS_DIR)/$(2)"
+endef
 
-flow-init: install-flow
-	@echo "Run /flow:init in Claude Code to complete setup."
+$(foreach s,$(CLAUDE_SKILLS),$(eval $(call install_skill,$(firstword $(subst @, ,$(s))),$(lastword $(subst @, ,$(s))))))
+
+update-claude-deps: clean-claude-deps install-claude-deps
+
+clean-claude-deps:
+	@echo "Removing installed Claude skills..."
+	@$(foreach s,$(CLAUDE_SKILLS),rm -rf $(SKILLS_DIR)/$(lastword $(subst @, ,$(s)));)

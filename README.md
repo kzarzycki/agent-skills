@@ -12,38 +12,21 @@ npx skills add kzarzycki/agentic-workflow@flow -g -y
 
 ### Option B: Project-level (team use, travels with repo)
 
-Add to your Makefile (see `Makefile.example`):
+Copy `Makefile.example` into your project (or merge into existing Makefile). Add skills to the registry:
 
 ```makefile
-FLOW_REPO := kzarzycki/agentic-workflow
-FLOW_SKILL_DIR := .claude/skills/flow
-FLOW_TMP := /tmp/flow-skill-$(shell date +%s)
-
-install-flow: $(FLOW_SKILL_DIR)/SKILL.md
-
-$(FLOW_SKILL_DIR)/SKILL.md:
-	@mkdir -p $(FLOW_SKILL_DIR)
-	@git clone --depth 1 https://github.com/$(FLOW_REPO).git $(FLOW_TMP)
-	@cp -r $(FLOW_TMP)/flow/* $(FLOW_SKILL_DIR)/
-	@rm -rf $(FLOW_TMP)
+CLAUDE_SKILLS := \
+	kzarzycki/agentic-workflow@flow
+#	other-org/other-repo@skill-name
 ```
 
 Then:
 
 ```bash
-make install-flow
+make install-claude-deps
 ```
 
-Teammates run `make install-flow` after cloning. The skill lands in `.claude/skills/flow/` and Claude Code discovers it automatically.
-
-### Option C: One-liner (no Makefile)
-
-```bash
-git clone --depth 1 https://github.com/kzarzycki/agentic-workflow.git /tmp/flow-dl && \
-  mkdir -p .claude/skills/flow && \
-  cp -r /tmp/flow-dl/flow/* .claude/skills/flow/ && \
-  rm -rf /tmp/flow-dl
-```
+Teammates run `make install-claude-deps` after cloning. Skills land in `.claude/skills/` and Claude Code discovers them automatically. Idempotent — only downloads what's missing. `make update-claude-deps` re-downloads all to latest.
 
 ## Setup in a project
 
