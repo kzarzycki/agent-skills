@@ -4,20 +4,18 @@ Install orchestrator mode into a project. Run these steps:
 
 ## 1. Copy hook
 
-Copy the PreToolUse hook from the skill directory into the project:
+Copy the PreToolUse hook from the skill directory into the project. The skill may be installed at project level (`.claude/skills/orchestrator/`) or globally (`~/.claude/skills/orchestrator/`):
 
 ```bash
-mkdir -p .claude/hooks
-cp .claude/skills/orchestrator/hooks/pre_tool_use.py .claude/hooks/pre_tool_use.py
-chmod +x .claude/hooks/pre_tool_use.py
+SKILL_DIR="$([ -d .claude/skills/orchestrator ] && echo .claude/skills/orchestrator || echo $HOME/.claude/skills/orchestrator)"
+mkdir -p .claude/hooks && cp "$SKILL_DIR/hooks/pre_tool_use.py" .claude/hooks/pre_tool_use.py && chmod +x .claude/hooks/pre_tool_use.py
 ```
 
 ## 2. Copy toggle script
 
 ```bash
-mkdir -p tools
-cp .claude/skills/orchestrator/scripts/orchestrator-toggle.sh tools/orchestrator-toggle.sh
-chmod +x tools/orchestrator-toggle.sh
+SKILL_DIR="$([ -d .claude/skills/orchestrator ] && echo .claude/skills/orchestrator || echo $HOME/.claude/skills/orchestrator)"
+mkdir -p tools && cp "$SKILL_DIR/scripts/orchestrator-toggle.sh" tools/orchestrator-toggle.sh && chmod +x tools/orchestrator-toggle.sh
 ```
 
 ## 3. Register hook in settings.json

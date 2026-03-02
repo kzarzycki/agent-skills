@@ -13,10 +13,11 @@ $ARGUMENTS — "on", "off", "status", "toggle", or "setup"
 
 If $ARGUMENTS is "setup": follow [setup instructions](references/setup.md).
 
-Otherwise: run the toggle script from the project root:
+Otherwise: run the toggle script from the project root. Detect skill location first (project-level or global):
 
 ```bash
-bash .claude/skills/orchestrator/scripts/orchestrator-toggle.sh $ARGUMENTS
+SKILL_DIR="$([ -d .claude/skills/orchestrator ] && echo .claude/skills/orchestrator || echo $HOME/.claude/skills/orchestrator)"
+bash "$SKILL_DIR/scripts/orchestrator-toggle.sh" $ARGUMENTS
 ```
 
 Report result to user. Change takes effect immediately.
