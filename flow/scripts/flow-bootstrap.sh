@@ -1,7 +1,7 @@
 #!/bin/bash
-# Flow session bootstrap hook
+# Flow session bootstrap hook (optional)
 # Reads .work/ state and injects it as additionalContext on session start.
-# Installed by /flow:init into .claude/hooks/
+# Install via: copy to .claude/hooks/flow-bootstrap.sh, register in .claude/settings.json
 
 WORK_DIR=".work"
 
@@ -11,26 +11,23 @@ fi
 
 CONTEXT=""
 
-# Read brief (first 10 lines for summary)
+# Read brief (first 20 lines for summary)
 if [ -f "$WORK_DIR/brief.md" ]; then
   BRIEF=$(head -20 "$WORK_DIR/brief.md")
   CONTEXT="## Project Brief\n$BRIEF\n\n"
 fi
 
-# Read state
-if [ -f "$WORK_DIR/state.md" ]; then
-  STATE=$(cat "$WORK_DIR/state.md")
-  CONTEXT="${CONTEXT}## Current State\n$STATE\n\n"
-fi
-
-# Read active item's ITEM.md if there is one
-if [ -f "$WORK_DIR/state.md" ]; then
-  ACTIVE=$(grep -i "^Active Item:" "$WORK_DIR/state.md" | sed 's/Active Item: *//' | tr -d '[:space:]')
-  if [ -n "$ACTIVE" ] && [ "$ACTIVE" != "none" ] && [ -f "$WORK_DIR/items/$ACTIVE/ITEM.md" ]; then
-    ITEM=$(cat "$WORK_DIR/items/$ACTIVE/ITEM.md")
-    CONTEXT="${CONTEXT}## Active Item: $ACTIVE\n$ITEM\n\n"
+# Scan work stream ITEM.md files for non-done items
+for item_file in "$WORK_DIR"/*/ITEM.md; do
+  [ -f "$item_file" ] || continue
+  stream_name=$(basename "$(dirname "$item_file")")
+  # Skip if status is "done"
+  if grep -qi "^## Status:.*done" "$item_file" 2>/dev/null; then
+    continue
   fi
-fi
+  ITEM=$(cat "$item_file")
+  CONTEXT="${CONTEXT}## Work Stream: $stream_name\n$ITEM\n\n"
+done
 
 # Read last 5 log entries
 if [ -f "$WORK_DIR/log.md" ]; then

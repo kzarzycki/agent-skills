@@ -6,6 +6,7 @@ This document is the methodology for executor agents. Read this before executing
 
 - Follow the plan step by step — it was reviewed and approved
 - Verify each step before moving to the next
+- Complete one unit fully before starting the next — don't batch by operation type
 - Fix bugs and blockers autonomously; escalate architecture changes
 - Commit atomically per logical unit
 - Update ITEM.md progress as you go
@@ -49,9 +50,11 @@ After each step, update the item's ITEM.md:
 - Add log entry with date and what was done
 - Update status if it changed (e.g., in_progress -> blocked)
 
-## Return Format
+## Output
 
-When execution is complete, return:
+Write execution report to `.work/<stream>/execution-report.md`. Return to the coordinator with just the file path and a 1-2 line summary.
+
+Report format:
 
 ```markdown
 ## EXECUTION COMPLETE

@@ -19,9 +19,9 @@ This document is the methodology for planning agents. Read this before creating 
 5. **Set acceptance criteria**: Observable outcomes for the whole item
 6. **Review against standards**: Flag any conflicts
 
-## Plan Output Format
+## Output
 
-Write to items/<name>/plan.md:
+Write plan to `.work/<stream>/plan.md`. Return to the coordinator with just the file path and a 1-2 line summary.
 
 ```markdown
 # <Item Name> Plan

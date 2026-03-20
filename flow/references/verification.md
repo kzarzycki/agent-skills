@@ -6,6 +6,7 @@ This document is the methodology for verifier agents. Read this before verifying
 
 - Goal-backward: start from acceptance criteria, verify each one
 - Check existence, reality, and wiring — not just that code was written
+- Form independent judgment — don't include the executor's self-assessment in your context
 - Run tests if they exist
 - Report gaps with specific fix suggestions
 
@@ -33,7 +34,11 @@ Criterion: "<the expected outcome>"
 - Fix (if FAIL): <specific action to fix>
 ```
 
-## Return Format
+## Output
+
+Write verification report to `.work/<stream>/verification-report.md`. Return to the coordinator with just the file path and a 1-2 line summary.
+
+Report format:
 
 ```markdown
 ## VERIFICATION COMPLETE
