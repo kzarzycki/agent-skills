@@ -9,7 +9,7 @@ Krzysztof Zarzycki's plugin marketplace for Claude Code. Four toolkits covering 
 | **workflow** | `flow` (.work/ workspace + subagent delegation), `orchestrator` (restrict main thread to read-only), `find-conversation` (search past CC sessions). Plus the experimental `/promote-learnings` command. |
 | **research** | `deep-research` (multi-source orchestration with Perplexity/Tavily/Exa/Gemini/native search), platform skills for `chatgpt-deep-research`, `claude-ai-deep-research`, `gemini-deep-research`. |
 | **engineering** | `audit-third-party-software` (safety audit before installing repos/packages), `context-extractor` (analyze any project, generate CLAUDE.md from observed conventions). |
-| **presales** | `analyze-client-materials` (digest RFI/RFP/email folders into structured brief via 5 parallel agents), `voice-dna` (extract 8-dim writing style from someone's LinkedIn). |
+| **content** | `voice-dna` (extract 8-dim writing style from someone's LinkedIn — useful for stakeholder prep, content writing, proposal personalization). |
 
 ## Install
 
@@ -21,7 +21,7 @@ Add the marketplace, then install plugins by name.
 /plugin install workflow@kzarzycki-agent-skills
 /plugin install research@kzarzycki-agent-skills
 /plugin install engineering@kzarzycki-agent-skills
-/plugin install presales@kzarzycki-agent-skills
+/plugin install content@kzarzycki-agent-skills
 ```
 
 Pick the plugins you want. Each is independent.
@@ -53,9 +53,9 @@ To pull in changes from a local edit without pushing first, see `.claude/CLAUDE.
 
 `audit-third-party-software` reads a repo/package/binary and outputs a SAFE/CAUTION/UNSAFE verdict with file:line citations covering telemetry, supply-chain risks, hardcoded credentials, and what the code actually does. `context-extractor` walks any project and writes a CLAUDE.md capturing observed conventions and patterns.
 
-### presales
+### content
 
-`analyze-client-materials` runs 5 parallel dimensional agents over an RFI/RFP/email/call-prep folder and synthesizes a structured brief — built to be the input to answer-drafting, not a substitute. `voice-dna` extracts an 8-dimension style profile from a person's LinkedIn posts to inform stakeholder communication.
+`voice-dna` extracts an 8-dimension style profile from a person's LinkedIn posts — vocabulary fingerprint, signature moves, posting modes, and a Prompt Engineering Guide for AI-assisted writing in that voice. Use it to prep before outreach, draft a tailored proposal, or calibrate an AI co-author to a specific style.
 
 ## Conventions
 

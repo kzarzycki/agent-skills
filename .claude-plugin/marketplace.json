@@ -28,11 +28,11 @@
       "tags": ["security", "audit", "claude-md", "conventions"]
     },
     {
-      "name": "presales",
-      "description": "Presales toolkit: client material analysis (RFI/RFP digestion) and writing-voice DNA extraction from LinkedIn for stakeholder prep.",
-      "source": "./presales",
-      "category": "business",
-      "tags": ["presales", "rfp", "rfi", "voice", "linkedin"]
+      "name": "content",
+      "description": "Content preparation. voice-dna extracts an 8-dimension writing-style profile from a person's LinkedIn posts, for stakeholder prep, content writing, or proposal personalization.",
+      "source": "./content",
+      "category": "content",
+      "tags": ["voice", "linkedin", "writing", "style"]
     }
   ]
 }

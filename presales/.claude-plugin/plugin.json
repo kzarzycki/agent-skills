@@ -1,8 +1,0 @@
-{
-  "name": "presales",
-  "version": "0.1.0",
-  "description": "Presales toolkit. analyze-client-materials digests RFI/RFP/email/call-prep folders into a structured brief via 5 parallel dimensional agents. voice-dna extracts an 8-dimension writing-style profile from a person's LinkedIn posts — useful for understanding stakeholder communication preferences before outreach or proposals.",
-  "author": {
-    "name": "Krzysztof Zarzycki"
-  }
-}
