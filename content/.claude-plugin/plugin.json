@@ -1,0 +1,8 @@
+{
+  "name": "content",
+  "version": "0.1.0",
+  "description": "Content preparation toolkit. Currently: voice-dna (extract an 8-dimension writing-style profile from a person's LinkedIn posts — useful for understanding stakeholder communication preferences before outreach, content writing, or proposal personalization).",
+  "author": {
+    "name": "Krzysztof Zarzycki"
+  }
+}

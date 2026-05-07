@@ -1,0 +1,38 @@
+{
+  "name": "kzarzycki-agent-skills",
+  "description": "Krzysztof Zarzycki's agent skills — workflow, research, engineering, presales toolkits for Claude Code",
+  "owner": {
+    "name": "Krzysztof Zarzycki",
+    "url": "https://github.com/kzarzycki"
+  },
+  "plugins": [
+    {
+      "name": "workflow",
+      "description": "Persistent workspace, agent orchestration, session search, and learning consolidation. Includes flow (.work/ workspaces), orchestrator (read-only main thread), find-conversation (CC session search), and /promote-learnings command.",
+      "source": "./workflow",
+      "category": "workflow",
+      "tags": ["flow", "orchestration", "memory", "sessions"]
+    },
+    {
+      "name": "research",
+      "description": "Multi-source deep research orchestration plus platform-specific knowledge (Perplexity, Tavily, Exa, Gemini, ChatGPT, Claude.ai).",
+      "source": "./research",
+      "category": "research",
+      "tags": ["research", "deep-research", "perplexity", "gemini", "chatgpt"]
+    },
+    {
+      "name": "engineering",
+      "description": "Developer toolkit: third-party software safety audit and project context extraction into CLAUDE.md.",
+      "source": "./engineering",
+      "category": "development",
+      "tags": ["security", "audit", "claude-md", "conventions"]
+    },
+    {
+      "name": "content",
+      "description": "Content preparation. voice-dna extracts an 8-dimension writing-style profile from a person's LinkedIn posts, for stakeholder prep, content writing, or proposal personalization.",
+      "source": "./content",
+      "category": "content",
+      "tags": ["voice", "linkedin", "writing", "style"]
+    }
+  ]
+}

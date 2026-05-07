@@ -1,0 +1,8 @@
+{
+  "name": "engineering",
+  "version": "0.1.0",
+  "description": "Developer toolkit. Contains audit-third-party-software (safety audit before installing repos/binaries/packages, with SAFE/CAUTION/UNSAFE verdict and file:line citations) and context-extractor (analyze any project and generate a CLAUDE.md from observed conventions).",
+  "author": {
+    "name": "Krzysztof Zarzycki"
+  }
+}

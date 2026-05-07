@@ -1,83 +1,64 @@
-# Agentic Workflow
+# agent-skills
 
-A collection of skills for AI coding agents (Claude Code, etc.).
+Krzysztof Zarzycki's plugin marketplace for Claude Code. Four toolkits covering workflow, research, engineering, and presales.
 
-## Skills
+## Plugins
 
-| Skill | Install | Description |
-|-------|---------|-------------|
-| **flow** | `npx skills add kzarzycki/agent-skills@flow -g -y` | Persistent workflow orchestration. Survives context resets, delegates to subagents, tracks work items. |
-| **orchestrator** | `npx skills add kzarzycki/agent-skills@orchestrator -g -y` | Orchestrator mode — restrict main thread to read-only, forcing delegation of all file writes to subagents via Task(). |
+| Plugin | What's inside |
+|---|---|
+| **workflow** | `flow` (.work/ workspace + subagent delegation), `orchestrator` (restrict main thread to read-only), `find-conversation` (search past CC sessions). Plus the experimental `/promote-learnings` command. |
+| **research** | `deep-research` (multi-source orchestration with Perplexity/Tavily/Exa/Gemini/native search), platform skills for `chatgpt-deep-research`, `claude-ai-deep-research`, `gemini-deep-research`. |
+| **engineering** | `audit-third-party-software` (safety audit before installing repos/packages), `context-extractor` (analyze any project, generate CLAUDE.md from observed conventions). |
+| **content** | `voice-dna` (extract 8-dim writing style from someone's LinkedIn — useful for stakeholder prep, content writing, proposal personalization). |
 
-After installing a skill globally, it's available in every project. For project-level install (so teammates get it on clone), see below.
+## Install
 
-## Installing a Skill
-
-### Global (recommended for personal use)
-
-```bash
-npx skills add kzarzycki/agent-skills@<skill> -g -y
-```
-
-### Project-Level (for team repos)
+Add the marketplace, then install plugins by name.
 
 ```bash
-SKILL=flow && \
-  mkdir -p .claude/skills/$SKILL && \
-  git clone --depth 1 https://github.com/kzarzycki/agent-skills.git /tmp/agent-skills-dl && \
-  cp -r /tmp/agent-skills-dl/$SKILL/* .claude/skills/$SKILL/ && \
-  rm -rf /tmp/agent-skills-dl
+# In Claude Code:
+/plugin marketplace add kzarzycki/agent-skills
+/plugin install workflow@kzarzycki-agent-skills
+/plugin install research@kzarzycki-agent-skills
+/plugin install engineering@kzarzycki-agent-skills
+/plugin install content@kzarzycki-agent-skills
 ```
 
-For projects with multiple Claude skills, see `Makefile.example` — it provides `make install-claude-deps` with a skill registry.
+Pick the plugins you want. Each is independent.
 
----
+## Local Development
 
-## Flow
+Clone, register the local checkout as a marketplace, and iterate without pushing:
 
-Persistent workflow orchestration. Survives context resets, delegates to subagents, tracks independent work items.
+```bash
+git clone https://github.com/kzarzycki/agent-skills ~/dev/agent-skills
 
-After installing, run `/flow:init` inside Claude Code to set up the workspace. This creates:
+# In Claude Code:
+/plugin marketplace add /Users/yourname/dev/agent-skills
+```
 
-| What | Where | Purpose |
-|------|-------|---------|
-| Project state | `.work/` | brief, items, log, ideas — survives context resets |
-| Behavioral rules | `CLAUDE.md` | Instructions so the agent always follows Flow methodology |
-| Session hook | `.claude/hooks/flow-bootstrap.sh` | Injects .work/ state on every session start |
-| Hook registration | `.claude/settings.json` | Registers the SessionStart hook |
+To pull in changes from a local edit without pushing first, see `.claude/CLAUDE.md` for the `git remote add local` + fast-forward merge pattern.
 
-### Commands
+## Highlights
 
-| Command | Purpose |
-|---------|---------|
-| `/flow:init` | Initialize Flow workspace in a project |
-| `/flow:research [topic]` | Research a topic (delegates to subagent) |
-| `/flow:status` | Show all items, progress, suggested next action |
-| `/flow:quick [task]` | Quick task without full item ceremony |
+### workflow
 
-Also works from natural conversation — "research X", "plan this", "where are we?", etc.
+`/flow:init` bootstraps a `.work/` workspace per project — a Date-prefixed dir per work stream, append-only `log.md`, idea capture, ITEM.md manifest with research/plan/execute/verify lifecycle. `/orchestrator on` restricts the main thread to read-only and forces all writes through subagents.
 
----
+### research
 
-## Orchestrator
+`deep-research` orchestrates parallel agents across web search providers and produces cited reports with confidence scores. Use `chatgpt-deep-research`, `claude-ai-deep-research`, or `gemini-deep-research` to delegate to those platforms' native research UIs.
 
-Orchestrator mode restricts the main Claude Code thread to read-only operations, forcing all file writes to be delegated to subagents via `Task()`. This enforces a clean separation between planning (main thread) and execution (subagents).
+### engineering
 
-After installing, run `/orchestrator setup` to install the PreToolUse hook and toggle script into your project.
+`audit-third-party-software` reads a repo/package/binary and outputs a SAFE/CAUTION/UNSAFE verdict with file:line citations covering telemetry, supply-chain risks, hardcoded credentials, and what the code actually does. `context-extractor` walks any project and writes a CLAUDE.md capturing observed conventions and patterns.
 
-### Commands
+### content
 
-| Command | Purpose |
-|---------|---------|
-| `/orchestrator on` | Activate orchestrator mode |
-| `/orchestrator off` | Deactivate orchestrator mode |
-| `/orchestrator status` | Check if orchestrator mode is on or off |
-| `/orchestrator toggle` | Toggle orchestrator mode |
-| `/orchestrator setup` | Install hook and toggle script into current project |
+`voice-dna` extracts an 8-dimension style profile from a person's LinkedIn posts — vocabulary fingerprint, signature moves, posting modes, and a Prompt Engineering Guide for AI-assisted writing in that voice. Use it to prep before outreach, draft a tailored proposal, or calibrate an AI co-author to a specific style.
 
-### Always-Active Protections
+## Conventions
 
-Even without orchestrator mode enabled, the hook provides:
-
-- **`.env` file blocking** — prevents access to `.env` files (allows `.env.sample`)
-- **Dangerous `rm` blocking** — prevents `rm -rf` and similar destructive commands
+- Plugin versions in `<plugin>/.claude-plugin/plugin.json` follow semver. Bump on every PR with changes.
+- PR titles use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.).
+- Each plugin can be installed independently. Cross-plugin dependencies are documented in the plugin's README.
