@@ -2,19 +2,22 @@ Show current project status.
 
 Read all .work/ state and present a concise overview:
 
-1. Read .work/brief.md for project name and context
-2. Scan .work/*/ — for each directory containing an ITEM.md, read it
-3. Read .work/log.md (last 5 entries)
-4. Read .work/ideas.md (count items)
+1. Read .work/brief.md for project name
+2. Read .work/state.md for tempo and active item
+3. Scan .work/items/ — for each item directory, read its ITEM.md
+4. Read .work/log.md (last 5 entries)
+5. Read .work/ideas.md (count items)
 
 Present in this format:
 
 ```
 ## [Project Name]
+Tempo: [structured/creative]
+Active: [item name or "none"]
 
-## Work Streams
-| Stream | Status | Progress |
-|--------|--------|----------|
+## Items
+| Item | Status | Progress |
+|------|--------|----------|
 | auth | in_progress | 3/5 steps |
 | data-model | not_started | — |
 
