@@ -33,9 +33,9 @@ Tag every finding:
 6. **Capture pitfalls**: What commonly goes wrong? What should the planner avoid?
 7. **Flag unknowns**: What couldn't be determined? What needs user input?
 
-## Output
+## Research Output Format
 
-Write all findings to the designated file (`.work/<stream>/research.md`). Return to the coordinator with just the file path and a 1-2 line summary — don't pass the full content through context.
+Write findings to the appropriate location (items/<name>/research.md or .work/research/<slug>.md):
 
 ```markdown
 # <Topic> Research
