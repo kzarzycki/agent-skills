@@ -16,6 +16,8 @@ const REPO = A.repoRoot || '.'
 const SKILL_DIR = A.skillDir || '.'
 const MAX = A.maxIters || 3
 const DRY = !!A.dryRun
+const INCREMENT = !!A.increment
+const ITER = A.iteration || 1
 if (!ITEM || !DATE) { log('autopilot-engine: missing itemDir/date'); return { error: 'missing args' } }
 
 // ---- inlined pure logic (mirror of lib/*; verified by engine-inline.test.js)
@@ -155,7 +157,8 @@ const APPLIED = { type: 'object', additionalProperties: false, required: ['appli
 // ---- phases ------------------------------------------------------------
 async function runPlan() {
   if (DRY) return { tasks: [{ id: 't1', desc: 'demo', deps: [], fileScope: ['x.js'], acceptance: ['works'] }, { id: 't2', desc: 'demo2', deps: ['t1'], fileScope: ['y.js'], acceptance: ['works'] }], verifyCmd: 'true' }
-  const prompt = await readPhase('plan')
+  let prompt = await readPhase('plan')
+  if (INCREMENT) prompt += `\n\nINCREMENT (iteration ${ITER}): ${ITEM}/spec.md has a new "## Iteration ${ITER}" section and ${ITEM}/plan.md already holds prior tasks. Append ONLY new tasks covering the iteration-${ITER} requirements; do NOT repeat or re-run completed work. Return ONLY the new iteration-${ITER} tasks in "tasks" (with the current verifyCmd).`
   return await agent(prompt, { phase: 'Plan', label: 'plan', schema: PLAN, agentType: 'planner' })
 }
 
@@ -205,7 +208,7 @@ async function runExecute(plan) {
       `Integrate the completed wave onto the current feature branch in ${REPO}. Each task edited a disjoint set of files:\n` +
       ok.map((x) => `- task ${x.id}: ${x.scope.join(' ')}`).join('\n') + `\n` +
       `Bring each task's changes into the working tree (they were made in isolated worktrees). If any two tasks modified the SAME file, STOP and report conflict=true with the file(s); do not guess a merge.\n` +
-      `Then run \`${plan.verifyCmd}\` and report pass.`,
+      `Then run \`${plan.verifyCmd}\`, and if it passes, commit this wave's changes on the feature branch with a concise message (no emojis); do not push. Report pass.`,
       { phase: 'Execute', label: `reconcile:w${w + 1}`, schema: RECONCILE, agentType: 'executor' })
     if (merged.conflict) throw new Error(`fileScope conflict in wave ${w + 1}: ${(merged.files || []).join(', ')}`)
     ok.forEach((x) => changed.push(...x.r.filesChanged))
@@ -250,28 +253,37 @@ async function runVerify(plan) {
 
 async function runFinish(plan) {
   if (DRY) return { prUrl: 'dry-run://pr' }
-  const res = await workflow('finish-branch', {
+  const iterationNote = INCREMENT
+    ? `Iteration ${ITER}: ${plan.tasks.map((t) => t.desc).join('; ')}`.slice(0, 500)
+    : ''
+  const res = await workflow({ scriptPath: `${SKILL_DIR}/finish-branch.js` }, {
+    repoRoot: REPO,
     base: BASE,
     testCmd: plan.verifyCmd,
-    action: 'pr',
     allowlist: A.allowlist || [],
+    increment: INCREMENT,
+    iterationNote,
   })
   if (res && res.finish && res.finish.ok && res.finish.prUrl) return { prUrl: res.finish.prUrl }
   return { prUrl: '', stopped: (res && res.stopped) || 'finish-failed', detail: res }
 }
 
 // ---- orchestration -----------------------------------------------------
+// In increment mode the item reopens from `done`/`blocked`, so the linear
+// `from:` guards (which prevent double-advance on a fresh run) are dropped.
+const FROM = (s) => (INCREMENT ? undefined : s)
+
 phase('Plan')
-await track({ from: 'planning', status: 'planning', note: 'plan start' })
+await track({ from: FROM('planning'), status: INCREMENT ? 'in_progress' : 'planning', note: INCREMENT ? `iteration ${ITER} start` : 'plan start' })
 const plan = await runPlan()
 
 phase('PlanReview')
 const pr = await runPlanReview(plan)
 if (pr.verdict !== 'pass') return await halt('plan-review', 'plan did not converge', JSON.stringify(pr.critiques))
-await track({ from: 'planning', status: 'planning', check: ['Plan created', 'Plan reviewed'], note: 'plan reviewed' })
+await track({ status: INCREMENT ? 'in_progress' : 'planning', check: ['Plan created', 'Plan reviewed'], note: 'plan reviewed' })
 
 phase('Execute')
-await track({ from: 'planning', status: 'in_progress', note: 'execute start' })
+await track({ from: FROM('planning'), status: 'in_progress', note: 'execute start' })
 let ex
 try { ex = await runExecute(plan) }
 catch (e) { return await halt('execute', 'wave failure', (e && e.message) || String(e)) }
@@ -279,16 +291,16 @@ catch (e) { return await halt('execute', 'wave failure', (e && e.message) || Str
 phase('CodeReview')
 const cr = await runCodeReview(ex, plan)
 if (cr.verdict !== 'pass') return await halt('code-review', 'unresolved findings', JSON.stringify(cr.findings))
-await track({ from: 'in_progress', status: 'in_progress', check: ['Executed', 'Reviewed'], note: 'reviewed' })
+await track({ from: FROM('in_progress'), status: 'in_progress', check: ['Executed', 'Reviewed'], note: 'reviewed' })
 
 phase('Verify')
 const vr = await runVerify(plan)
 if (vr.verdict !== 'pass') return await halt('verify', 'acceptance not met', JSON.stringify(vr.checks))
-await track({ from: 'in_progress', status: 'in_progress', check: ['Verified'], note: 'verified' })
+await track({ from: FROM('in_progress'), status: 'in_progress', check: ['Verified'], note: 'verified' })
 
 phase('Finish')
 const fin = await runFinish(plan)
 if (!fin.prUrl) return await halt('finish', fin.stopped || 'PR not opened', JSON.stringify(fin.detail || fin))
-await track({ from: 'in_progress', status: 'done', check: ['Finished'], note: `PR ${fin.prUrl}` })
+await track({ from: FROM('in_progress'), status: 'done', check: ['Finished'], note: INCREMENT ? `iteration ${ITER} -> PR ${fin.prUrl}` : `PR ${fin.prUrl}` })
 
 return { prUrl: fin.prUrl }

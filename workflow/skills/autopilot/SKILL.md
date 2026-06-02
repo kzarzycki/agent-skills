@@ -11,37 +11,58 @@ multi-dimension code review → independently verifies → opens a PR.
 
 ## Flow
 
-1. **Resume check.** If a feature dir `.work/<date>-<feature>/` has `run.json` with a
-   non-`done` status and a `blocker.md`, this is a resume — skip to step 6 and pass
-   `resumeFromRunId` from `run.json`.
-2. **Brainstorm.** Invoke `superpowers:brainstorming`. Save the approved spec to
+First classify the invocation into one of three modes:
+
+- **Resume** — a feature dir has `run.json` with a non-`done` status and a `blocker.md`.
+  Relaunch (step 6) with `resumeFromRunId` from `run.json`; no brainstorming.
+- **Increment** — the most recent feature item is `done`/`blocked`/`in_progress` with a
+  `prUrl` in `run.json`, AND the prompt reads as fixes/refinements to that work ("fix
+  this and that", a bug, a tweak). Propose: *"Iterate on `<item>` (PR #N)? Or start a
+  new feature?"* and confirm. An explicit new feature starts fresh.
+- **New** — no matching item, or the user starts a new feature.
+
+### New feature
+
+1. **Brainstorm.** Invoke `superpowers:brainstorming`. Save the approved spec to
    `.work/<YYYY-MM-DD>-<feature-slug>/spec.md` (NOT `docs/superpowers/specs/`).
-3. **Create the feature dir** `.work/<date>-<feature>/` with an `iterations/` subdir.
-4. **Create `ITEM.md`:**
+2. **Create the feature dir** with an `iterations/` subdir and **`ITEM.md`:**
    - `## Status: planning`
-   - `## Progress` — unchecked boxes: `Plan created`, `Plan reviewed`, `Executed`,
-     `Reviewed`, `Verified`, `Finished`
+   - `## Progress` — unchecked: `Plan created`, `Plan reviewed`, `Executed`, `Reviewed`, `Verified`, `Finished`
    - `## Log` — empty
-5. **Detect `verifyCmd`** — the repo's test/build command (package.json scripts,
-   Makefile, pyproject, etc.). If none is detectable, leave it to the plan phase.
-6. **Launch the engine:**
+3. **Detect `verifyCmd`** from repo config (package.json scripts, Makefile, pyproject…);
+   if undetectable, leave it to the plan phase.
+4. **Launch** (step 6) with `increment: false`.
 
-   ```
-   Workflow({
-     scriptPath: "<this skill dir>/engine.js",
-     args: {
-       itemDir: ".work/<date>-<feature>",
-       date: "<YYYY-MM-DD>",
-       base: "<default branch>",
-       repoRoot: "<absolute repo path>",
-       skillDir: "<absolute path to this skill dir>"
-     }
-   })
-   ```
+### Increment
 
-   For a resume, add `resumeFromRunId: <run.json.workflowRunId>`.
-7. **Report** the run ID and that the engine is running in the background. The user is
-   notified on PR (success) or halt (`blocker.md` written, status `blocked`).
+1. **Scoped brainstorm.** Invoke `superpowers:brainstorming`, telling it to read the
+   existing `spec.md` as context and grill ONLY on the new increment. Append the result
+   as a new `## Iteration N` section to the same `spec.md` (do not rewrite earlier sections).
+2. **Reopen** the item: leave `ITEM.md` history intact (the engine flips status back to
+   `in_progress`). Stay on the same feature branch.
+3. **Launch** (step 6) with `increment: true` and `iteration: N` (next iteration number).
+
+### Launch (step 6)
+
+```
+Workflow({
+  scriptPath: "<this skill dir>/engine.js",
+  args: {
+    itemDir: ".work/<date>-<feature>",
+    date: "<YYYY-MM-DD>",
+    base: "<default branch>",
+    repoRoot: "<absolute repo path>",
+    skillDir: "<absolute path to this skill dir>",
+    increment: <true|false>,
+    iteration: <N>
+  }
+})
+```
+
+For a resume, add `resumeFromRunId: <run.json.workflowRunId>`.
+
+7. **Report** the run ID; the engine runs in the background. The user is notified on PR
+   (new) / PR update comment (increment) or halt (`blocker.md`, status `blocked`).
 
 ## Defaults
 
