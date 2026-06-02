@@ -190,6 +190,10 @@ On return, always:
 3. Update state.md if the active item changed status
 4. Append to log.md
 
+### Workflow Mode
+
+To run an item's whole lifecycle as one Workflow with tracking that can't drift, follow `references/workflow.md` — it gives the script to compose (a `track()` stage runs after every phase). Use when the user asks to run an item "as a workflow".
+
 ## .work/ Structure
 
 ```
@@ -236,6 +240,22 @@ Created: YYYY-MM-DD
 - YYYY-MM-DD: Created item
 ```
 
+## Canonical State Tokens
+<!-- flow-enums -->
+
+Categorical fields in `.work/` use a fixed token set -- never freeform variants.
+A human comment may sit next to a token; the token itself is fixed.
+
+- Status (ITEM.md `## Status:` and state.md): exactly one of
+  `not_started` `researching` `planning` `in_progress` `blocked` `done`.
+  Never `in progress`, `in-progress`, `wip`, `complete`.
+- Tempo (state.md): `structured` or `creative`.
+- Lifecycle stage (when a log line names a stage): `research` `plan` `execute` `verify`.
+
+Log entries that carry a state use a bracketed token, then freeform prose, e.g.
+`- 2026-06-01 [in_progress] polish done, tsc green`. The bracket is optional for
+pure notes, but when a state is named it MUST be one of the tokens above.
+
 ## Tempo System
 
 Set in state.md, per-project. Can switch mid-session.
@@ -266,3 +286,4 @@ Explicit shortcuts for the conversation triggers above. Both natural conversatio
 - `/flow:research [topic]` — Research trigger
 - `/flow:status` — Status Check trigger
 - `/flow:quick [task]` — Quick Task trigger
+- Run item "as a workflow" — Workflow Mode (`references/workflow.md`)
