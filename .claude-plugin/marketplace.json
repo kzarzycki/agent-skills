@@ -33,6 +33,17 @@
       "source": "./content",
       "category": "content",
       "tags": ["voice", "linkedin", "writing", "style"]
+    },
+    {
+      "name": "google-workspace",
+      "description": "Google Workspace skills sourced directly from github.com/googleworkspace/cli (no local copy — tracks upstream). 109 skills across Gmail, Drive, Calendar, Sheets, Docs, Slides, Tasks, Chat, Meet, Forms, Keep, plus personas and recipes. Every skill shells out to the locally installed `gws` binary; requires `gws` installed and authenticated (`brew install googleworkspace-cli`).",
+      "source": {
+        "source": "github",
+        "repo": "googleworkspace/cli",
+        "ref": "main"
+      },
+      "category": "productivity",
+      "tags": ["google", "gmail", "drive", "calendar", "sheets", "docs", "gws"]
     }
   ]
 }
