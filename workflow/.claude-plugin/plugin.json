@@ -1,7 +1,7 @@
 {
   "name": "workflow",
   "version": "0.2.0",
-  "description": "Persistent workspace, agent orchestration, session search, and learning consolidation for Claude Code. Bundles flow (.work/ workspaces with subagent delegation), orchestrator (restrict main thread to read-only), find-conversation (search past CC sessions), and the experimental /promote-learnings command for end-of-session rule consolidation.",
+  "description": "Persistent workspace, agent orchestration, session search, and learning consolidation for Claude Code. Bundles flow (.work/ workspaces with subagent delegation), autopilot (autonomous brainstorm→PR pipeline on top of flow), orchestrator (restrict main thread to read-only), find-conversation (search past CC sessions), and the experimental /promote-learnings command for end-of-session rule consolidation.",
   "author": {
     "name": "Krzysztof Zarzycki"
   }
