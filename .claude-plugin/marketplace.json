@@ -44,6 +44,17 @@
       },
       "category": "productivity",
       "tags": ["google", "gmail", "drive", "calendar", "sheets", "docs", "gws"]
+    },
+    {
+      "name": "mattpocock-skills",
+      "description": "Matt Pocock's Skills for Real Engineers. Adds small composable engineering and productivity skills including diagnose, grill-with-docs, tdd, to-prd, to-issues, zoom-out, prototype, caveman, grill-me, handoff, and write-a-skill. Source is loaded directly from upstream; no local copy is vendored here.",
+      "source": {
+        "source": "github",
+        "repo": "mattpocock/skills",
+        "ref": "main"
+      },
+      "category": "development",
+      "tags": ["engineering", "tdd", "debugging", "planning", "grill-me", "matt-pocock"]
     }
   ]
 }
