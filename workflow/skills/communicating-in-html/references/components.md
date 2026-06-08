@@ -1,6 +1,6 @@
 # Component vocabulary
 
-Copy-paste HTML blocks that pair with `assets/design-system.css`. All classes
+Copy-paste HTML blocks that pair with `../assets/design-system.css`. All classes
 are already styled — just fill in content. Inline the CSS into the page first.
 
 ## KPI grid (dashboard top row)

@@ -1,9 +1,9 @@
 # When HTML beats Markdown — the decision doctrine
 
-This is the front door for every skill in the `presentation` plugin. Before
-producing a deliverable, decide the *channel*, not just the content.
+The deep-dive behind the brief version in `../SKILL.md`. Before producing a
+deliverable, decide the *channel*, not just the content.
 
-## The thesis (why this plugin exists)
+## The thesis (why this skill exists)
 
 Markdown became the default way agents talk to humans — but as agents produce
 richer, longer, more structural output, Markdown's flatness becomes a tax: no
@@ -12,9 +12,8 @@ file you can't actually read past ~100 lines. The argument (Thariq Shihipar,
 Claude Code lead, *"The Unreasonable Effectiveness of HTML,"* May 2026) is that
 HTML is the better channel for plans, comparisons, mockups, reviews, and
 reports — a single self-contained file the user can read, share, and interact
-with. This plugin operationalizes that for three concrete jobs: **reporting**
-(`html-report`), **interviewing** (`html-interview`), and **offering choices**
-(`html-options`).
+with. This skill operationalizes that for three concrete jobs: **reporting**,
+**interviewing**, and **offering choices**.
 
 Source: https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html ·
 examples: https://thariqs.github.io/html-effectiveness/
@@ -53,7 +52,7 @@ generate. That's the whole reason for the carve-outs above — reserve HTML for
 deliverables where layout, shareability, interaction, or navigation genuinely
 earns the cost. Don't gold-plate a throwaway.
 
-## Universal requirements (every artifact this plugin emits)
+## Universal requirements (every artifact this skill emits)
 
 1. **One self-contained file** — CSS and JS inlined, no build step, no external
    fonts. (CDN only when interactivity demands it, and say so.)
@@ -64,7 +63,7 @@ earns the cost. Don't gold-plate a throwaway.
 5. **Self-explanatory in 5 seconds** — title + one framing sentence up top.
 6. **Tasteful and restrained** — readable type, calm color, real hierarchy.
 7. **Export where it's an editor/form** — the user can get their data back out
-   (this plugin uses the copy-paste-back token; see `../assets/copy-back.js`).
+   (this skill uses the copy-paste-back token; see `../assets/copy-back.js`).
 
 ## Output + delivery
 
@@ -88,6 +87,7 @@ skills cover overlapping ground and are worth knowing:
   drop-in for *reports* specifically, install it:
   `claude plugin marketplace add careerhackeralex/visualize`.
 
-This plugin's distinct value is the **interview** and **options** channels (a
-form whose answers come back, a pickable mockup gallery) plus a single shared
-design system across all three.
+This skill's distinct value is bundling all three channels — **reporting**,
+**interviewing** (a form whose answers come back), and **offering options** (a
+pickable mockup gallery) — as one optional, zero-coupling enrichment over a
+single shared design system.

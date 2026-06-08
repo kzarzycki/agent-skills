@@ -8,10 +8,10 @@
   "plugins": [
     {
       "name": "workflow",
-      "description": "Persistent workspace, agent orchestration, session search, and learning consolidation. Includes flow (.work/ workspaces), orchestrator (read-only main thread), find-conversation (CC session search), and /promote-learnings command.",
+      "description": "Persistent workspace, agent orchestration, session search, learning consolidation, and HTML-based user communication. Includes flow (.work/ workspaces), orchestrator (read-only main thread), find-conversation (CC session search), communicating-in-html (optional enrichment that renders reports, interviews, and option/mockup choices as self-contained HTML instead of Markdown), and the /promote-learnings command.",
       "source": "./workflow",
       "category": "workflow",
-      "tags": ["flow", "orchestration", "memory", "sessions"]
+      "tags": ["flow", "orchestration", "memory", "sessions", "html", "communication"]
     },
     {
       "name": "research",
@@ -33,13 +33,6 @@
       "source": "./content",
       "category": "content",
       "tags": ["voice", "linkedin", "writing", "style"]
-    },
-    {
-      "name": "presentation",
-      "description": "Communicate with the user in HTML instead of Markdown. html-report builds self-contained HTML reports (KPI cards, tables, inline-SVG charts, callouts); html-interview gathers structured input through an HTML form with a copy-paste-back token; html-options presents options/mockups as visual cards via native AskUserQuestion HTML previews or a standalone gallery. One dependency-free design system; every artifact is a single offline-safe .html file.",
-      "source": "./presentation",
-      "category": "content",
-      "tags": ["html", "reports", "dashboard", "forms", "mockups", "ux"]
     },
     {
       "name": "google-workspace",
