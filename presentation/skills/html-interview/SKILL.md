@@ -21,6 +21,13 @@ and lossy: questions scroll away, the user can't see the whole shape, answers
 arrive piecemeal. A single HTML form fixes all three — the user sees every
 question at once, answers in any order, and hands it all back in one paste.
 
+## Channel check first
+
+Read `../../references/when-html.md` — the shared "HTML vs Markdown" doctrine.
+An HTML form is the *interaction* case: the user will fill something in. That's
+squarely where HTML beats a chat interrogation — but only past ~3 fields; below
+that, `AskUserQuestion` is lighter.
+
 ## When to fire
 
 You need **more than ~3 pieces of structured information** before you can

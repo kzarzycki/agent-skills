@@ -22,6 +22,13 @@ option. Rendering the options — even tiny previews — lets them *see and comp
 and pick faster and better. This skill covers both the lightweight in-chat path
 and the full standalone gallery.
 
+## Channel check first
+
+Read `../../references/when-html.md` — the shared "HTML vs Markdown" doctrine.
+Offering choices is the *comparison* case: rendered options the user compares
+side by side beat an imagined Markdown list. Below is how to pick the rendering
+channel within that.
+
 ## Pick the channel first
 
 | Situation | Channel |

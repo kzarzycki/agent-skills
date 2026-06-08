@@ -19,6 +19,14 @@ Produce a single self-contained `.html` file that communicates findings the way
 a designer would: a clear hierarchy, KPI cards, real tables, inline SVG charts,
 and callouts — not a long Markdown message the user has to scroll.
 
+## Channel check first
+
+Read `../../references/when-html.md` — the shared "HTML vs Markdown" doctrine
+(after Thariq Shihipar's *Unreasonable Effectiveness of HTML*). Build a page
+only when the content earns it: comparison, layout, reference material, color/
+charts, or it would be a >100-line Markdown wall. A few-sentence answer stays
+in chat.
+
 ## When to fire
 
 The user wants a **report, summary, analysis, audit, dashboard, or scorecard**

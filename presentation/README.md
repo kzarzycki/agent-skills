@@ -4,6 +4,15 @@ Make the agent communicate in **HTML instead of Markdown** when a rendered page
 beats a chat dump — for reports, for interviewing the user, and for offering
 choices. Three skills over one small, dependency-free design system.
 
+Grounded in Thariq Shihipar's (Claude Code lead) *["The Unreasonable
+Effectiveness of HTML"](https://claude.com/blog/using-claude-code-the-unreasonable-effectiveness-of-html)*
+(May 2026): as agents produce richer, longer output, Markdown's flatness becomes
+a tax, and HTML — a single self-contained file you can read, share, and interact
+with — is the better channel for plans, comparisons, mockups, reviews, and
+reports. The decision doctrine (when HTML earns it vs. when to stay in Markdown)
+lives in [`references/when-html.md`](references/when-html.md) and is the shared
+front door for all three skills.
+
 | Skill | Use it when | Output |
 |---|---|---|
 | **html-report** | The user wants a report / summary / analysis / dashboard / scorecard with structure, tables, and visuals. | One self-contained `.html`: KPI cards, tables, inline-SVG charts, callouts. Opens offline. |
@@ -31,6 +40,19 @@ no browser is available, both skills degrade to batched `AskUserQuestion` rounds
 - `assets/copy-back.js` — turns a static page into a one-paste channel back to the agent.
 
 Inline these into each generated file; don't ship multi-file output — it won't travel.
+
+## Prior art & alternatives
+
+- **[`dogum/html-artifacts`](https://github.com/dogum/html-artifacts)** (Apache-2.0)
+  — a direct operationalization of the same Thariq post, with per-category
+  reference patterns. Closest existing match for the *reporting* slice.
+- **[`careerhackeralex/visualize`](https://github.com/careerhackeralex/visualize)**
+  (MIT) — strong, well-maintained report/slide/dashboard generator (10 formats,
+  Chart.js, PNG/PDF export). A solid drop-in if you only need reports.
+
+This plugin's distinct value is the **interview** and **options** channels — a
+form whose answers come back to the agent, and a pickable mockup gallery — plus
+one shared design system across all three.
 
 ## Install
 
