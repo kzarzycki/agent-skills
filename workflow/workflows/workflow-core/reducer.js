@@ -39,6 +39,7 @@ export function transition(inputState, event) {
       if (!Array.isArray(event.bucketIds) || event.bucketIds.length === 0) {
         state.current_state = STATES.NEEDS_USER;
         addBlocker(state, 'No research buckets approved.');
+        clearGate(state);
         return withReason(state, 'research-denied');
       }
       state.current_state = STATES.RESEARCH_RUNNING;
@@ -50,6 +51,7 @@ export function transition(inputState, event) {
       assertTransition(state.current_state === STATES.RESEARCH_PROPOSAL_PENDING, event.type, state.current_state);
       state.current_state = STATES.NEEDS_USER;
       addBlocker(state, 'Research cannot proceed without approved buckets.');
+      clearGate(state);
       return withReason(state, 'research-denied');
 
     case 'research_brief_ready':

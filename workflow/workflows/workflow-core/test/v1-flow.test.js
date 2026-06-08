@@ -23,9 +23,16 @@ test('partial research approval excludes denied buckets', () => {
   assert.deepEqual(state.approvals.research_buckets, ['local-omp', 'skills']);
 });
 
-test('denied research becomes needs-user', () => {
+test('denied research becomes needs-user and clears the research gate', () => {
   const state = transition(createInitialState({ workId: 'x' }), { type: 'deny_all_research' });
   assert.equal(state.current_state, 'needs_user');
+  assert.equal(state.pending_gate, null);
+});
+
+test('empty research approval becomes needs-user and clears the research gate', () => {
+  const state = transition(createInitialState({ workId: 'x' }), { type: 'approve_research_buckets', bucketIds: [] });
+  assert.equal(state.current_state, 'needs_user');
+  assert.equal(state.pending_gate, null);
 });
 
 test('root human artifacts are stable and internals are underscored', async () => {
