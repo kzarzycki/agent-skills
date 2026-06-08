@@ -8,10 +8,10 @@
   "plugins": [
     {
       "name": "workflow",
-      "description": "Workflow infrastructure for Claude Code: persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, and end-of-session learning consolidation.",
+      "description": "Workflow infrastructure for Claude Code: persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, learning consolidation, and durable human-gated workflows.",
       "source": "./workflow",
       "category": "workflow",
-      "tags": ["flow", "orchestration", "memory", "sessions"]
+      "tags": ["flow", "orchestration", "memory", "sessions", "workflow-engine", "review-gates"]
     },
     {
       "name": "research",

@@ -6,7 +6,7 @@ Krzysztof Zarzycki's plugin marketplace for Claude Code.
 
 | Plugin | What it's for |
 |---|---|
-| **workflow** | Persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, and learning consolidation. |
+| **workflow** | Persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, learning consolidation, and durable human-gated workflows. |
 | **research** | Deep-research orchestration — parallel multi-source web search producing cited reports, plus delegation to hosted research assistants. |
 | **engineering** | Safely vetting and adopting third-party code, and capturing a project's conventions. |
 | **content** | Understanding and reproducing a person's writing voice for outreach, content, and proposals. |
@@ -43,6 +43,7 @@ git clone https://github.com/kzarzycki/agent-skills ~/dev/agent-skills
 ```
 
 To pull in changes from a local edit without pushing first, see `.claude/CLAUDE.md` for the `git remote add local` + fast-forward merge pattern.
+
 
 ## Conventions
 
