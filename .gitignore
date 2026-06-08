@@ -1,4 +1,5 @@
 .work/
+.worktrees/
 CLAUDE.md
 .claude/
 __pycache__/
