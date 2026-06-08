@@ -1,7 +1,10 @@
 .work/
 .worktrees/
+.workflow/
 CLAUDE.md
 .claude/
 __pycache__/
 *.pyc
 .memsearch/
+workflow/e2e/runs/*
+!workflow/e2e/runs/.gitkeep

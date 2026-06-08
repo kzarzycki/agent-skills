@@ -1,0 +1,10 @@
+{
+  "name": "agent-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:workflow-engine": "bun test ./workflow/workflows/workflow-core/test/*.test.js",
+    "e2e:workflow-tic-tac-toe": "node ./workflow/e2e/tic-tac-toe-workflow-e2e.js"
+  }
+}
