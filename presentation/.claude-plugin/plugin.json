@@ -1,0 +1,8 @@
+{
+  "name": "presentation",
+  "version": "0.1.0",
+  "description": "Communicate with the user in HTML instead of Markdown. Bundles html-report (self-contained HTML reports with KPI cards, tables, inline-SVG charts and callouts), html-interview (gather structured input through an HTML form with a copy-paste-back token), and html-options (present options/mockups as visual cards to pick from, via native AskUserQuestion HTML previews or a standalone gallery). All three share one dependency-free design system; every artifact is a single offline-safe .html file.",
+  "author": {
+    "name": "Krzysztof Zarzycki"
+  }
+}

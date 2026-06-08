@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project intake</title>
+<style>
+/* >>> INLINE the full contents of ../../assets/design-system.css here <<< */
+</style>
+</head>
+<body>
+<main class="wrap">
+  <p class="eyebrow">Intake</p>
+  <h1>Tell me about the project</h1>
+  <p class="lead">Fill what you can. Click <strong>Copy answers</strong> at the
+     bottom, then paste back into the chat. Anything marked <span class="req">*</span> is required.</p>
+
+  <form id="form">
+    <h2>The basics</h2>
+
+    <div class="field">
+      <label for="name">Project name <span class="req">*</span></label>
+      <div class="help">Short working title is fine.</div>
+      <input type="text" id="name" name="name" placeholder="e.g. Pricing revamp">
+    </div>
+
+    <div class="field">
+      <label>Primary goal <span class="req">*</span></label>
+      <div class="help">Pick the one that matters most — it sets priorities.</div>
+      <div class="choices">
+        <label class="choice"><input type="radio" name="goal" value="grow">
+          <span><span class="opt-title">Grow</span><br>
+          <span class="opt-desc">More users / revenue / reach.</span></span></label>
+        <label class="choice"><input type="radio" name="goal" value="retain">
+          <span><span class="opt-title">Retain</span><br>
+          <span class="opt-desc">Keep existing users happier / longer.</span></span></label>
+        <label class="choice"><input type="radio" name="goal" value="reduce-cost">
+          <span><span class="opt-title">Reduce cost</span><br>
+          <span class="opt-desc">Do the same for less.</span></span></label>
+      </div>
+    </div>
+
+    <h2>Scope</h2>
+
+    <div class="field">
+      <label>Which areas are in scope?</label>
+      <div class="help">Select all that apply.</div>
+      <div class="choices">
+        <label class="choice"><input type="checkbox" name="areas" value="frontend"> Frontend</label>
+        <label class="choice"><input type="checkbox" name="areas" value="backend"> Backend</label>
+        <label class="choice"><input type="checkbox" name="areas" value="data"> Data / analytics</label>
+        <label class="choice"><input type="checkbox" name="areas" value="infra"> Infra</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="budget">Budget comfort (1 = shoestring, 10 = open)</label>
+      <input type="range" id="budget" name="budget" min="1" max="10" value="5"
+             oninput="document.getElementById('bv').textContent=this.value">
+      <span id="bv" class="muted">5</span>
+    </div>
+
+    <div class="field">
+      <label for="timeline">Target timeline</label>
+      <select id="timeline" name="timeline">
+        <option value="">— pick one —</option>
+        <option>This week</option>
+        <option>This month</option>
+        <option>This quarter</option>
+        <option>No hard deadline</option>
+      </select>
+    </div>
+
+    <h2>Anything else</h2>
+    <div class="field">
+      <label for="notes">Constraints, context, must-haves</label>
+      <div class="help">Free text. The more I know, the less I'll guess.</div>
+      <textarea id="notes" name="notes" placeholder="e.g. must integrate with our existing auth"></textarea>
+    </div>
+  </form>
+  <!-- CopyBack injects the sticky copy panel here -->
+</main>
+
+<script>
+/* >>> INLINE the full contents of ../../assets/copy-back.js here <<< */
+
+// Reflect selected state on choice cards (visual only).
+document.addEventListener('change', function (e) {
+  if (e.target.type === 'radio') {
+    document.querySelectorAll('input[name="'+e.target.name+'"]').forEach(function (r) {
+      r.closest('.choice') && r.closest('.choice').classList.toggle('selected', r.checked);
+    });
+  }
+  if (e.target.type === 'checkbox') {
+    e.target.closest('.choice') && e.target.closest('.choice').classList.toggle('selected', e.target.checked);
+  }
+});
+
+// Tell CopyBack how to read the form, and which keys are required.
+CopyBack.init({
+  required: ['name', 'goal'],
+  collect: function () {
+    var f = document.getElementById('form');
+    var fd = new FormData(f);
+    return {
+      name:     fd.get('name') || '',
+      goal:     fd.get('goal') || '',
+      areas:    fd.getAll('areas'),
+      budget:   fd.get('budget'),
+      timeline: fd.get('timeline') || '',
+      notes:    fd.get('notes') || ''
+    };
+  }
+});
+</script>
+</body>
+</html>

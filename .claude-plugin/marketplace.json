@@ -35,6 +35,13 @@
       "tags": ["voice", "linkedin", "writing", "style"]
     },
     {
+      "name": "presentation",
+      "description": "Communicate with the user in HTML instead of Markdown. html-report builds self-contained HTML reports (KPI cards, tables, inline-SVG charts, callouts); html-interview gathers structured input through an HTML form with a copy-paste-back token; html-options presents options/mockups as visual cards via native AskUserQuestion HTML previews or a standalone gallery. One dependency-free design system; every artifact is a single offline-safe .html file.",
+      "source": "./presentation",
+      "category": "content",
+      "tags": ["html", "reports", "dashboard", "forms", "mockups", "ux"]
+    },
+    {
       "name": "google-workspace",
       "description": "Google Workspace skills sourced directly from github.com/googleworkspace/cli (no local copy — tracks upstream). 109 skills across Gmail, Drive, Calendar, Sheets, Docs, Slides, Tasks, Chat, Meet, Forms, Keep, plus personas and recipes. Every skill shells out to the locally installed `gws` binary; requires `gws` installed and authenticated (`brew install googleworkspace-cli`).",
       "source": {
