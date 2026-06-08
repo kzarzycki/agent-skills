@@ -46,6 +46,13 @@ export function getResumeAction(state) {
       targetArtifact: state.pending_gate.target_artifact,
     };
   }
+  if (state.current_state === 'needs_user') {
+    return {
+      kind: 'blocked',
+      phase: state.current_phase,
+      state: state.current_state,
+    };
+  }
   return {
     kind: 'continue',
     phase: state.current_phase,

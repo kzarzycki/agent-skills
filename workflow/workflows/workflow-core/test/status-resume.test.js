@@ -42,3 +42,16 @@ test('resume continues when no gate pending', () => {
     state: 'research_proposal_pending',
   });
 });
+
+test('resume reports gate-less needs-user as blocked', () => {
+  const state = createInitialState({ workId: 'x' });
+  state.pending_gate = null;
+  state.current_state = 'needs_user';
+  state.blockers = ['No research buckets approved.'];
+  const action = getResumeAction(state);
+  assert.deepEqual(action, {
+    kind: 'blocked',
+    phase: 'discuss',
+    state: 'needs_user',
+  });
+});
