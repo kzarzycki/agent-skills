@@ -42,18 +42,24 @@ async function human(paths, name) {
   return readFile(join(paths.root, name), 'utf8');
 }
 
+async function phaseInternal(paths, phase, filename) {
+  return readFile(join(paths.phasesDir, phase, filename), 'utf8');
+}
+
 function liveAdapter() {
   return {
-    async researchBrief({ state }) {
+    async researchBrief({ state, paths }) {
+      const current = await human(paths, state.human_artifacts.decision_spec);
       return agent(
-        `Workflow work item ${state.work_id}. Produce a concise internal research brief for Discuss. Focus on facts that sharpen user grilling. Return markdown only in the schema field.`,
+        `Workflow work item ${state.work_id}. Produce a concise internal research brief for Discuss. Focus on facts that sharpen user grilling. Return markdown only in the schema field.\n\nApproved research buckets:\n${state.approvals.research_buckets.join('\n')}\n\nCurrent artifact:\n${current}`,
         { phase: 'Research', label: 'workflow:research-brief', schema: MARKDOWN_SCHEMA, agentType: 'researcher' },
       );
     },
     async decisionSpec({ state, paths }) {
       const current = await human(paths, state.human_artifacts.decision_spec);
+      const researchBrief = await phaseInternal(paths, 'discuss', 'research-brief.md');
       return agent(
-        `Use the discuss skill and interviewer agent contract to produce ${state.human_artifacts.decision_spec}. Preserve the original question/problem and rejected alternatives.\n\nCurrent artifact:\n${current}`,
+        `Use the discuss skill and interviewer agent contract to produce ${state.human_artifacts.decision_spec}. Preserve the original question/problem and rejected alternatives.\n\nResearch brief:\n${researchBrief}\n\nCurrent artifact:\n${current}`,
         { phase: 'Discuss', label: 'workflow:decision-spec', schema: MARKDOWN_SCHEMA, agentType: 'interviewer' },
       );
     },

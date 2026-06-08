@@ -22,6 +22,18 @@ test('workflow-advance wrapper delegates one autonomous step to core driver', as
   assert.match(text, /agent\(/);
 });
 
+test('workflow-advance live adapter passes approved research scope into research', async () => {
+  const text = await readFile(fromRoot('workflows/workflow-advance.js'), 'utf8');
+  assert.match(text, /state\.approvals\.research_buckets/);
+  assert.match(text, /current artifact/i);
+});
+
+test('workflow-advance live adapter passes research brief into Decision Spec generation', async () => {
+  const text = await readFile(fromRoot('workflows/workflow-advance.js'), 'utf8');
+  assert.match(text, /research-brief\.md/);
+  assert.match(text, /Research brief:/);
+});
+
 test('workflow start creates both selected human artifact slots', async () => {
   const text = await readFile(fromRoot('workflows/workflow-start.js'), 'utf8');
   assert.match(text, /slug: 'DECISION-SPEC'/);
