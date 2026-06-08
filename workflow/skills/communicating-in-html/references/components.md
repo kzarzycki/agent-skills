@@ -40,7 +40,11 @@ are already styled — just fill in content. Inline the CSS into the page first.
 
 ## Table with inline bars and status badges
 
+Wrap every table in `<div class="table-wrap">` so a wide table scrolls
+horizontally on mobile instead of breaking the page's vertical scroll.
+
 ```html
+<div class="table-wrap">
 <table>
   <thead>
     <tr><th>Item</th><th class="num">Score</th><th>Share</th><th>Status</th></tr>
@@ -60,6 +64,7 @@ are already styled — just fill in content. Inline the CSS into the page first.
     </tr>
   </tbody>
 </table>
+</div>
 ```
 
 ## Progress meter (single value in prose)
