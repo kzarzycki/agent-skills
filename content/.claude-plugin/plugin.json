@@ -1,7 +1,7 @@
 {
   "name": "content",
-  "version": "0.1.0",
-  "description": "Content preparation toolkit. Currently: voice-dna (extract an 8-dimension writing-style profile from a person's LinkedIn posts — useful for understanding stakeholder communication preferences before outreach, content writing, or proposal personalization).",
+  "version": "0.1.1",
+  "description": "Content-preparation toolkit for Claude Code: understanding and reproducing a person's writing voice for outreach, content, and proposals.",
   "author": {
     "name": "Krzysztof Zarzycki"
   }

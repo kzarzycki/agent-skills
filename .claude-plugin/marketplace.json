@@ -1,6 +1,6 @@
 {
   "name": "kzarzycki-agent-skills",
-  "description": "Krzysztof Zarzycki's agent skills — workflow, research, engineering, presales toolkits for Claude Code",
+  "description": "Krzysztof Zarzycki's plugins for Claude Code. Descriptions here stay plugin-level on purpose — individual skills change too often to enumerate, and self-describe once a plugin is installed.",
   "owner": {
     "name": "Krzysztof Zarzycki",
     "url": "https://github.com/kzarzycki"
@@ -8,35 +8,42 @@
   "plugins": [
     {
       "name": "workflow",
-      "description": "Persistent workspace, agent orchestration, session search, learning consolidation, and HTML-based user communication. Includes flow (.work/ workspaces), orchestrator (read-only main thread), find-conversation (CC session search), communicating-in-html (optional enrichment that renders reports, interviews, and option/mockup choices as self-contained HTML instead of Markdown), and the /promote-learnings command.",
+      "description": "Workflow infrastructure for Claude Code: persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, and end-of-session learning consolidation.",
       "source": "./workflow",
       "category": "workflow",
-      "tags": ["flow", "orchestration", "memory", "sessions", "html", "communication"]
+      "tags": ["flow", "orchestration", "memory", "sessions"]
     },
     {
       "name": "research",
-      "description": "Multi-source deep research orchestration plus platform-specific knowledge (Perplexity, Tavily, Exa, Gemini, ChatGPT, Claude.ai).",
+      "description": "Deep-research orchestration for Claude Code: parallel multi-source web search that produces cited reports, plus delegation to hosted research assistants.",
       "source": "./research",
       "category": "research",
       "tags": ["research", "deep-research", "perplexity", "gemini", "chatgpt"]
     },
     {
       "name": "engineering",
-      "description": "Developer toolkit: third-party software safety audit and project context extraction into CLAUDE.md.",
+      "description": "Engineering toolkit for Claude Code: safely vetting and adopting third-party code, and capturing a project's conventions.",
       "source": "./engineering",
       "category": "development",
       "tags": ["security", "audit", "claude-md", "conventions"]
     },
     {
       "name": "content",
-      "description": "Content preparation. voice-dna extracts an 8-dimension writing-style profile from a person's LinkedIn posts, for stakeholder prep, content writing, or proposal personalization.",
+      "description": "Content-preparation toolkit for Claude Code: understanding and reproducing a person's writing voice for outreach, content, and proposals.",
       "source": "./content",
       "category": "content",
       "tags": ["voice", "linkedin", "writing", "style"]
     },
     {
+      "name": "experimental",
+      "description": "Experimental skills under active iteration. CONTRACT: anything here may change, break, or be removed at any time and is NOT held to the stability or versioning guarantees of the other plugins — opt in accordingly. Skills graduate to a stable plugin once their shape settles.",
+      "source": "./experimental",
+      "category": "experimental",
+      "tags": ["experimental", "unstable", "preview"]
+    },
+    {
       "name": "google-workspace",
-      "description": "Google Workspace skills sourced directly from github.com/googleworkspace/cli (no local copy — tracks upstream). 109 skills across Gmail, Drive, Calendar, Sheets, Docs, Slides, Tasks, Chat, Meet, Forms, Keep, plus personas and recipes. Every skill shells out to the locally installed `gws` binary; requires `gws` installed and authenticated (`brew install googleworkspace-cli`).",
+      "description": "Google Workspace skills for Claude Code, sourced upstream from github.com/googleworkspace/cli (tracks upstream, no local copy). Broad coverage across Gmail, Drive, Calendar, Sheets, Docs, Slides and more. Every skill shells out to the locally installed `gws` binary; requires `gws` installed and authenticated (`brew install googleworkspace-cli`).",
       "source": {
         "source": "github",
         "repo": "googleworkspace/cli",
@@ -47,14 +54,14 @@
     },
     {
       "name": "mattpocock-skills",
-      "description": "Matt Pocock's Skills for Real Engineers. Adds small composable engineering and productivity skills including diagnose, grill-with-docs, tdd, to-prd, to-issues, zoom-out, prototype, caveman, grill-me, handoff, and write-a-skill. Source is loaded directly from upstream; no local copy is vendored here.",
+      "description": "Matt Pocock's 'Skills for Real Engineers' — small, composable engineering and productivity skills, loaded directly from upstream (no local copy vendored).",
       "source": {
         "source": "github",
         "repo": "mattpocock/skills",
         "ref": "main"
       },
       "category": "development",
-      "tags": ["engineering", "tdd", "debugging", "planning", "grill-me", "matt-pocock"]
+      "tags": ["engineering", "tdd", "debugging", "planning", "matt-pocock"]
     }
   ]
 }
