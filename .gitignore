@@ -8,3 +8,4 @@ __pycache__/
 .memsearch/
 workflow/e2e/runs/*
 !workflow/e2e/runs/.gitkeep
+workflow/.in_use/
