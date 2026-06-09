@@ -1,7 +1,7 @@
 {
   "name": "workflow",
-  "version": "0.3.0",
-  "description": "Persistent workspace, agent orchestration, session search, learning consolidation, and HTML-based user communication for Claude Code. Bundles flow (.work/ workspaces with subagent delegation), autopilot (autonomous brainstorm→PR pipeline on top of flow), orchestrator (restrict main thread to read-only), find-conversation (search past CC sessions), communicating-in-html (optional, zero-coupling enrichment that renders reports, interviews, and option/mockup choices as self-contained HTML instead of Markdown), and the experimental /promote-learnings command for end-of-session rule consolidation.",
+  "version": "0.4.0",
+  "description": "Workflow infrastructure for Claude Code: persistent project workspaces with subagent delegation, agent orchestration, a read-only main-thread mode, session search, and end-of-session learning consolidation.",
   "author": {
     "name": "Krzysztof Zarzycki"
   }

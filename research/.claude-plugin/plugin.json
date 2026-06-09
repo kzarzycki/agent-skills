@@ -1,7 +1,7 @@
 {
   "name": "research",
-  "version": "0.1.0",
-  "description": "Multi-round deep research orchestration with parallel agents and platform knowledge for ChatGPT Deep Research, Claude.ai Research, and Gemini Deep Research. The deep-research skill coordinates Perplexity/Tavily/Exa/Gemini/native-WebSearch agents to produce cited reports; the platform skills handle delegation to each web UI.",
+  "version": "0.1.1",
+  "description": "Deep-research orchestration for Claude Code: parallel multi-source web search that produces cited reports, plus delegation to hosted research assistants (ChatGPT, Claude.ai, Gemini).",
   "author": {
     "name": "Krzysztof Zarzycki"
   }
