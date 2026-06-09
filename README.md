@@ -1,12 +1,12 @@
 # agent-skills
 
-Krzysztof Zarzycki's plugin marketplace for Claude Code. Four toolkits covering workflow, research, engineering, and presales.
+Krzysztof Zarzycki's plugin marketplace for Claude Code. Toolkits covering workflow, research, engineering, and content.
 
 ## Plugins
 
 | Plugin | What's inside |
 |---|---|
-| **workflow** | `flow` (.work/ workspace + subagent delegation), `orchestrator` (restrict main thread to read-only), `find-conversation` (search past CC sessions). Plus the experimental `/promote-learnings` command. |
+| **workflow** | `flow` (.work/ workspace + subagent delegation), `orchestrator` (restrict main thread to read-only), `find-conversation` (search past CC sessions), `communicating-in-html` (optional enrichment — render reports, interviews, and option/mockup choices as self-contained HTML instead of Markdown). Plus the experimental `/promote-learnings` command. |
 | **research** | `deep-research` (multi-source orchestration with Perplexity/Tavily/Exa/Gemini/native search), platform skills for `chatgpt-deep-research`, `claude-ai-deep-research`, `gemini-deep-research`. |
 | **engineering** | `audit-third-party-software` (safety audit before installing repos/packages), `context-extractor` (analyze any project, generate CLAUDE.md from observed conventions). |
 | **content** | `voice-dna` (extract 8-dim writing style from someone's LinkedIn — useful for stakeholder prep, content writing, proposal personalization). |
@@ -43,7 +43,7 @@ To pull in changes from a local edit without pushing first, see `.claude/CLAUDE.
 
 ### workflow
 
-`/flow:init` bootstraps a `.work/` workspace per project — a Date-prefixed dir per work stream, append-only `log.md`, idea capture, ITEM.md manifest with research/plan/execute/verify lifecycle. `/orchestrator on` restricts the main thread to read-only and forces all writes through subagents.
+`/flow:init` bootstraps a `.work/` workspace per project — a Date-prefixed dir per work stream, append-only `log.md`, idea capture, ITEM.md manifest with research/plan/execute/verify lifecycle. `/orchestrator on` restricts the main thread to read-only and forces all writes through subagents. `communicating-in-html` is an optional, zero-coupling enrichment layer (writing-skills style): load it and the agent renders reports, interviews/intake, and option/mockup choices as self-contained HTML instead of Markdown — wherever a rendered page beats a chat dump; don't load it and every other skill behaves traditionally. Grounded in Thariq Shihipar's *"The Unreasonable Effectiveness of HTML."*
 
 ### research
 

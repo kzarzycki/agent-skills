@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choose a direction</title>
+<style>
+/* >>> INLINE the full contents of design-system.css (same dir) here <<< */
+</style>
+</head>
+<body>
+<main class="wrap">
+  <p class="eyebrow">Pick one</p>
+  <h1>Which direction should I build?</h1>
+  <p class="lead">Click a card to select it, then <strong>Copy answer</strong>
+     at the bottom and paste back into the chat.</p>
+
+  <form id="form" class="grid cols-3">
+
+    <label class="card option" for="opt-a">
+      <div class="preview">
+        <!-- real mockup of option A (inline HTML/CSS or SVG) -->
+        <div style="padding:16px">
+          <div style="height:10px;width:60%;background:var(--accent);border-radius:4px;margin-bottom:8px"></div>
+          <div style="height:8px;width:90%;background:var(--surface);border-radius:4px;margin-bottom:6px"></div>
+          <div style="height:8px;width:80%;background:var(--surface);border-radius:4px"></div>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin:0 0 4px">Airy <span class="badge accent">Recommended</span></h3>
+        <p class="muted" style="margin:0">Calm, lots of whitespace. More scrolling, easier to read.</p>
+      </div>
+      <div class="pick">
+        <input type="radio" name="choice" id="opt-a" value="airy"> Choose Airy
+      </div>
+    </label>
+
+    <label class="card option" for="opt-b">
+      <div class="preview">
+        <div style="padding:10px">
+          <div style="height:8px;width:80%;background:var(--accent);border-radius:4px;margin-bottom:5px"></div>
+          <div style="height:6px;width:95%;background:var(--surface);border-radius:4px;margin-bottom:4px"></div>
+          <div style="height:6px;width:92%;background:var(--surface);border-radius:4px;margin-bottom:4px"></div>
+          <div style="height:6px;width:88%;background:var(--surface);border-radius:4px"></div>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin:0 0 4px">Dense</h3>
+        <p class="muted" style="margin:0">More on screen at once. Busier, less scrolling.</p>
+      </div>
+      <div class="pick">
+        <input type="radio" name="choice" id="opt-b" value="dense"> Choose Dense
+      </div>
+    </label>
+
+    <label class="card option" for="opt-c">
+      <div class="preview">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:12px">
+          <div style="height:30px;background:var(--surface);border-radius:6px"></div>
+          <div style="height:30px;background:var(--surface);border-radius:6px"></div>
+          <div style="height:30px;background:var(--accent-2);border-radius:6px"></div>
+          <div style="height:30px;background:var(--surface);border-radius:6px"></div>
+        </div>
+      </div>
+      <div>
+        <h3 style="margin:0 0 4px">Grid</h3>
+        <p class="muted" style="margin:0">Card grid. Best when items are equally important.</p>
+      </div>
+      <div class="pick">
+        <input type="radio" name="choice" id="opt-c" value="grid"> Choose Grid
+      </div>
+    </label>
+
+  </form>
+
+  <p class="muted" style="margin-top:16px">
+    None of these fit? Pick the closest and say what to change when you paste back.
+  </p>
+  <!-- CopyBack injects the sticky copy panel here -->
+</main>
+
+<script>
+/* >>> INLINE the full contents of copy-back.js (same dir) here <<< */
+
+// Highlight the selected card.
+document.addEventListener('change', function (e) {
+  if (e.target.name === 'choice') {
+    document.querySelectorAll('.option').forEach(function (o) {
+      var input = o.querySelector('input');
+      o.classList.toggle('selected', input && input.checked);
+    });
+  }
+});
+
+CopyBack.init({
+  required: ['choice'],
+  collect: function () {
+    var fd = new FormData(document.getElementById('form'));
+    return { choice: fd.get('choice') || '' };
+  }
+});
+</script>
+</body>
+</html>
