@@ -68,9 +68,10 @@ All three share `assets/` (design system, copy-back bridge, starter templates).
 - **Viewing.** Surfaced files arrive as a *download* on both Claude Code web and
   desktop — neither renders HTML inline. Tell the user how to view it: open the
   download (it's self-contained, renders offline via `file://`), or for zero
-  friction run the session locally / `--teleport` it and `open <file>.html`. For
-  *choices*, prefer Channel A (AskUserQuestion HTML previews) which render in
-  chat with no file at all.
+  friction run the session locally / `--teleport` it and `open <file>.html`.
+  (AskUserQuestion HTML previews only render in SDK hosts that set
+  `previewFormat: "html"` — Claude Code's clients show option text only, so use a
+  gallery file for visual choices. See `references/offering-options.md`.)
 - A static file can't POST back. For forms/option pages, inline `assets/copy-back.js`:
   the page serializes input into a fenced `ANSWERS<<< … >>>ANSWERS` token the user
   pastes into chat; you parse it and continue.

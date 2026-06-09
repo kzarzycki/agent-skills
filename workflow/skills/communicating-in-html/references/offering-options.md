@@ -12,13 +12,23 @@ pick faster and better.
 | Rich mockups: full layouts, page designs, multi-element comparisons, >4 options | **B — standalone HTML gallery** |
 | Pure text choices, no visual benefit | Plain `AskUserQuestion` — don't overbuild |
 
-## Channel A — AskUserQuestion with HTML previews
+> **Reality check on Channel A.** HTML option previews only render when the
+> *host application* opts in via `toolConfig.askUserQuestion.previewFormat:
+> "html"` (a custom Agent SDK UI). **Claude Code's own web and desktop clients
+> currently drop the `preview` field and show only label + description.** So
+> treat the preview as *progressive enhancement*: safe to include, but never
+> rely on it carrying the meaning. On Claude Code surfaces, use **Channel B**
+> (a gallery file) for genuinely visual choices, or make the label + description
+> fully self-sufficient.
 
-The harness can render a small HTML preview per option natively, so the choice
-stays *in chat* — no file, no paste-back. Each option's `preview` is a **styled
-`<div>` fragment**; the SDK strips `<script>`, `<style>`, and `<!DOCTYPE>`, so
-use **inline `style=""` only**. Provide per option: a `label`, a one-line
-`description` (the tradeoff), and the `preview`. Example (compact KPI card):
+## Channel A — AskUserQuestion with HTML previews (SDK hosts that enable it)
+
+Where the host sets `previewFormat: "html"`, each option's `preview` renders as
+a small card next to the label — the choice stays *in chat*, no file. The
+`preview` is a **styled `<div>` fragment**; the SDK strips `<script>`,
+`<style>`, and `<!DOCTYPE>`, so use **inline `style=""` only**. Provide per
+option: a `label`, a one-line `description` (the tradeoff), and the `preview`.
+Example (compact KPI card):
 
 ```html
 <div style="padding:12px;border:1px solid #2a3346;border-radius:10px;background:#131722;font-family:sans-serif">
@@ -28,7 +38,9 @@ use **inline `style=""` only**. Provide per option: a `label`, a one-line
 </div>
 ```
 
-Give 2-4 genuinely distinct options. Near-identical options aren't a real choice.
+Give 2-4 genuinely distinct options. **Because the preview may not render
+(see the reality check above), the label + description must stand on their own.**
+Near-identical options aren't a real choice.
 
 ## Channel B — standalone HTML gallery
 

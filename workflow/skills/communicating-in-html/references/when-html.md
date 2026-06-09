@@ -77,8 +77,9 @@ earns the cost. Don't gold-plate a throwaway.
   HTML on-origin is an XSS risk). Because the file is self-contained it renders
   offline once opened via `file://`. Friction-free path: a local or `--teleport`ed
   session, where the file is on disk and `open <file>.html` renders immediately.
-  For *choices*, Channel A (AskUserQuestion HTML previews) renders in chat with
-  no file — prefer it when a small preview suffices.
+  (AskUserQuestion HTML previews render only in SDK hosts that enable
+  `previewFormat: "html"`; Claude Code's web/desktop clients drop the preview and
+  show option text only — use a gallery file for visual choices.)
 - Always leave a 3-5 bullet TL;DR in chat too — the file is the artifact, the
   chat keeps the headline.
 
