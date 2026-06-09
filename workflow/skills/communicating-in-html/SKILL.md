@@ -59,6 +59,9 @@ the carve-outs: `references/when-html.md`.
 
 Read the relevant playbook only when that activity fires (progressive disclosure).
 All three share `assets/` (design system, copy-back bridge, starter templates).
+Platform gotchas (files download not render, previews don't show on Claude Code,
+mobile scroll traps): `references/gotchas.md` — read before promising the user
+any in-client rendering.
 
 ## Delivery + getting answers back
 
