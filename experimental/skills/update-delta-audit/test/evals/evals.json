@@ -1,0 +1,25 @@
+{
+  "skill_name": "update-delta-audit",
+  "evals": [
+    {
+      "id": "omp-update-15-10-4",
+      "prompt": "I'm running OMP and it says: New version 15.10.4 is available. Run: omp update. Before I install it, quickly check whether this update looks safe. I do not want a full audit of the whole product; I mainly need the diff from my current version and whether the binaries/install artifacts that omp update would install are consistent with the code/provenance.",
+      "expected_output": "A delta-scoped SAFE/CAUTION/BLOCK report that inspects updater mechanism, current-vs-15.10.4 release/package delta, install scripts, artifact hashes, npm provenance, and GitHub binary practical CI provenance by comparing release asset bytes to the matching CI artifact contents when binary fallback is used."
+    },
+    {
+      "id": "orca-stablyai-macos-update",
+      "prompt": "Orca StablyAI on macOS popped an update prompt for version Xyz. I trust the app generally and want a quick pre-install check, not a giant audit. Check current app vs candidate, updater feed/procedure, artifact signing/notarization/team ID, and changed permissions/network endpoints before I click update.",
+      "expected_output": "A delta-scoped SAFE/CAUTION/BLOCK report/check plan that validates update feed mapping, app artifact source, code signing, Team ID, notarization, entitlements, and network endpoint deltas without installing or launching the candidate."
+    },
+    {
+      "id": "package-manager-lockfile-delta",
+      "prompt": "A package manager says package foo can update from 2.3.1 to 2.3.2. It is already installed and trusted. I need a cheap safety gate: inspect changed lockfile/dependency/install-script surfaces and tell me SAFE/CAUTION/BLOCK before I run the upgrade. Don't audit the whole package if the updater path didn't change.",
+      "expected_output": "A concise delta-only package-manager report that checks lockfile, registry/source, lifecycle scripts, dependency graph and provenance changes, then stops unless escalation criteria fire."
+    },
+    {
+      "id": "github-release-ci-artifact-provenance",
+      "prompt": "A CLI update will install a GitHub release binary. I trust GitHub release assets only if you can prove the exact asset was built from the reviewed source. Check the tag commit, release workflow run, CI artifact digest, artifact contents, and release asset hash before giving SAFE/CAUTION/BLOCK. If the CI artifact contains the same raw binary bytes as the release asset, say that practical CI provenance is established; if not, block.",
+      "expected_output": "A report that maps release tag to commit, finds the successful workflow run for that commit, downloads and hashes the matching CI artifact zip, hashes the contained raw binary, hashes the release asset, compares them byte-for-byte, and classifies exact match as practical CI provenance or mismatch as BLOCK."
+    }
+  ]
+}

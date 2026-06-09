@@ -1,0 +1,5 @@
+{
+  "id": "github-release-ci-artifact-provenance",
+  "prompt": "A CLI update will install a GitHub release binary. I trust GitHub release assets only if you can prove the exact asset was built from the reviewed source. Check the tag commit, release workflow run, CI artifact digest, artifact contents, and release asset hash before giving SAFE/CAUTION/BLOCK. If the CI artifact contains the same raw binary bytes as the release asset, say that practical CI provenance is established; if not, block.",
+  "expected_failure_old_skill": "Old skill may stop at absence of SLSA/cosign attestation or GitHub release digest, without requiring download of the matching CI artifact zip and comparing contained binary bytes to the release asset."
+}

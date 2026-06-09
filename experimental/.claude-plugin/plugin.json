@@ -1,6 +1,6 @@
 {
   "name": "experimental",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Experimental skills for Claude Code, under active iteration. Contract: anything in this plugin may change, break, or be removed at any time and is not held to the stability or versioning guarantees of the other plugins. Opt in accordingly.",
   "author": {
     "name": "Krzysztof Zarzycki"
