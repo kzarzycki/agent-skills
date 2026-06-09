@@ -69,8 +69,16 @@ earns the cost. Don't gold-plate a throwaway.
 
 - Save as `kebab-case.html` next to the work (or in `.work/` if the workflow
   plugin's workspace exists).
-- Surface it to the user (e.g. `SendUserFile` on Claude Code web/mobile) or
-  print the absolute path and offer to open it.
+- Surface it to the user (e.g. `SendUserFile` on Claude Code web/mobile) and
+  print the absolute path.
+- **Viewing — set expectations.** Surfaced files come down as a *download* on
+  both Claude Code web and desktop; neither client renders HTML inline (it's a
+  coding surface, not the claude.ai Artifacts renderer, and serving untrusted
+  HTML on-origin is an XSS risk). Because the file is self-contained it renders
+  offline once opened via `file://`. Friction-free path: a local or `--teleport`ed
+  session, where the file is on disk and `open <file>.html` renders immediately.
+  For *choices*, Channel A (AskUserQuestion HTML previews) renders in chat with
+  no file — prefer it when a small preview suffices.
 - Always leave a 3-5 bullet TL;DR in chat too — the file is the artifact, the
   chat keeps the headline.
 

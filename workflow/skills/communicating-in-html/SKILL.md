@@ -63,7 +63,14 @@ All three share `assets/` (design system, copy-back bridge, starter templates).
 ## Delivery + getting answers back
 
 - Write `kebab-case.html` next to the work (or in `.work/` if it exists), then
-  **surface it** (e.g. `SendUserFile` on Claude Code web/mobile) or print the path.
+  **surface it** (e.g. `SendUserFile` on Claude Code web/mobile) **and print the
+  absolute path**.
+- **Viewing.** Surfaced files arrive as a *download* on both Claude Code web and
+  desktop — neither renders HTML inline. Tell the user how to view it: open the
+  download (it's self-contained, renders offline via `file://`), or for zero
+  friction run the session locally / `--teleport` it and `open <file>.html`. For
+  *choices*, prefer Channel A (AskUserQuestion HTML previews) which render in
+  chat with no file at all.
 - A static file can't POST back. For forms/option pages, inline `assets/copy-back.js`:
   the page serializes input into a fenced `ANSWERS<<< … >>>ANSWERS` token the user
   pastes into chat; you parse it and continue.
