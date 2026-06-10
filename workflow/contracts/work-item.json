@@ -1,0 +1,12 @@
+{
+  "baseDir": ".workflow",
+  "workIdConvention": "<yyyy-mm-dd>-<slug>",
+  "humanArtifactPattern": "NN-NAME.md",
+  "underscoreDirs": ["_state", "_phases", "_reviews", "_evidence"],
+  "gateVerdicts": ["pass", "needs-rework", "needs-user"],
+  "reviewersByPhase": {
+    "discuss": ["intent", "testability"],
+    "tech_options": ["reuse-coverage", "fit-risk"]
+  },
+  "reworkCap": 2
+}

@@ -2,6 +2,8 @@
 name: fit-risk-reviewer
 description: Use when reviewing Tech Options for fit, risk, reversibility, and user-overwhelm.
 tools: Skill, Read, Grep, Glob, WebSearch, Write, SendMessage
+skills:
+  - tech-options
 color: red
 ---
 

@@ -7,6 +7,8 @@ description: Use when approved needs require comparing implementation approaches
 
 Compare ways to satisfy the approved Decision Spec. Start from approved needs, not a favored tool.
 
+This file is the phase contract. Whoever executes the phase -- the analyst agent, the workflow engine in-situ, or the OMP driver -- follows it; executors add their own run/return mechanics, not rules.
+
 ## Contract
 
 - Input: approved `01-DECISION-SPEC.md`.
@@ -16,15 +18,16 @@ Compare ways to satisfy the approved Decision Spec. Start from approved needs, n
 - Include artifact UX assessment: root numbered human artifacts, underscore internals, no routine history.
 - If findings change the product need, trigger a focused Discuss addendum instead of silently changing the spec.
 
-## Tech Options sections
+## Artifact shape and language
 
-- Needs
-- Options considered
-- Scorecard
-- Recommended option
-- Rejected alternatives
-- Risks
-- Approval record
+- Sections are defined in `../../contracts/tech-options.json` (relative to this skill's base dir); names and order are normative there.
+- Structure over prose: the Scorecard is always a table; enumerable facts in tables (option | tradeoff; need | coverage), parallel items in lists with bold lead-ins, prose only where narrative genuinely explains.
+- A few sentences for simple sections, ~300 words for nuanced ones; short sentences.
+- Current truth only: history and superseded recommendations live in the Approval record.
+
+## Format gate
+
+Before the review gate: `mdsmith check -c ../../contracts/mdsmith.yml 02-TECH-OPTIONS.md` (config relative to this skill's base dir; install hints and rule semantics in the config header). MDS020 = contract violation, fix first. MDS023/MDS036/MDS056 = language budget, rework input. Without mdsmith installed, verify sections manually against the contract JSON.
 
 ## Scorecard
 
@@ -41,11 +44,11 @@ Score each option against approved needs:
 
 ## Review gate
 
-Run fixed reviewers:
+Run fixed reviewers. Their checklists are normative in this plugin's `agents/<reviewer>.md`; this table is only a map.
 
-| Reviewer | Checks |
+| Reviewer | Focus |
 |---|---|
-| Reuse/Coverage Reviewer | Candidate breadth, source coverage, needs mapping, artifact UX |
-| Fit/Risk Reviewer | Capability fit, lock-in, safety/audit risk, reversibility, user-overwhelm risk |
+| Reuse/Coverage Reviewer (`agents/reuse-coverage-reviewer.md`) | Candidate breadth, source coverage, needs mapping |
+| Fit/Risk Reviewer (`agents/fit-risk-reviewer.md`) | Capability fit, lock-in, safety/audit risk, reversibility |
 
 Verdicts are exactly: `pass`, `needs-rework`, `needs-user`.

@@ -1,0 +1,17 @@
+{
+  "filename": "01-DECISION-SPEC.md",
+  "sections": [
+    "Goal",
+    "Question / problem",
+    "User and value",
+    "Current context",
+    "Desired behavior",
+    "Key decisions and rationale",
+    "Rejected alternatives",
+    "Non-goals",
+    "Constraints",
+    "Acceptance criteria",
+    "Risks / open questions",
+    "Approval record"
+  ]
+}

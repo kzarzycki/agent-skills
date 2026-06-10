@@ -1,0 +1,73 @@
+# Format gate for workflow artifacts. Two layers:
+#   1. Structure (MDS020): sections, order, filename — mirrors decision-spec.json
+#      and tech-options.json. Single truth is the JSON contracts;
+#      workflow-core/test/contracts.test.js keeps this file in sync.
+#      Any MDS020 diagnostic is a contract violation: fix before review.
+#   2. Language budget (MDS023/MDS036/MDS056): brainstorming-style scaling —
+#      sections capped near 300 words, readable sentences, no LLM-tell phrases.
+#      These diagnostics are rework input, not hard failures.
+#
+# Install: uv tool install mdsmith | pip install mdsmith |
+#          go install github.com/jeduden/mdsmith@latest
+#          (the npm package named "mdsmith" is an unrelated project)
+# Usage:   mdsmith check -c <plugin>/contracts/mdsmith.yml \
+#            <work-item>/01-DECISION-SPEC.md <work-item>/02-TECH-OPTIONS.md
+
+rules:
+  # Structure schemas (the kinds below) only run when MDS020 is enabled.
+  required-structure: true
+  # Agent-written markdown keeps one line per paragraph; hard wrapping is noise.
+  line-length: false
+  paragraph-readability:
+    max-index: 16.0
+  max-section-length:
+    max-words: 300
+  forbidden-text:
+    contains:
+      - "It's worth noting"
+      - "it is worth noting"
+      - "It should be noted"
+      - "Importantly,"
+      - "Moreover,"
+      - "Furthermore,"
+      - "delve"
+      - "seamless"
+      - "world-class"
+      - "cutting-edge"
+
+kind-assignment:
+  - glob: ["**/01-DECISION-SPEC.md"]
+    kinds: [decision-spec]
+  - glob: ["**/02-TECH-OPTIONS.md"]
+    kinds: [tech-options]
+
+kinds:
+  decision-spec:
+    schema:
+      filename: "01-DECISION-SPEC.md"
+      closed: true
+      sections:
+        - heading: "Goal"
+        - heading: "Question / problem"
+        - heading: "User and value"
+        - heading: "Current context"
+        - heading: "Desired behavior"
+        - heading: "Key decisions and rationale"
+        - heading: "Rejected alternatives"
+        - heading: "Non-goals"
+        - heading: "Constraints"
+        - heading: "Acceptance criteria"
+        - heading: "Risks / open questions"
+        - heading: "Approval record"
+  tech-options:
+    schema:
+      filename: "02-TECH-OPTIONS.md"
+      closed: true
+      sections:
+        - heading: "Needs"
+        - heading: "Options considered"
+        - heading: "Scorecard"
+        - heading: "Recommended option"
+        - heading: "Rejected alternatives"
+        - heading: "Risks"
+        - heading: "Approval record"

@@ -2,6 +2,8 @@
 name: reuse-coverage-reviewer
 description: Use when reviewing Tech Options for candidate breadth and needs coverage.
 tools: Skill, Read, Grep, Glob, WebSearch, Write, SendMessage
+skills:
+  - tech-options
 color: cyan
 ---
 
