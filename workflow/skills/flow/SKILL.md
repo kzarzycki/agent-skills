@@ -1,9 +1,15 @@
 ---
 name: flow
-description: Persistent workflow orchestration that survives context resets. Activates when users discuss work items, ask to research/plan/execute/verify, mention project setup, check status, capture ideas, or when .work/ exists and context needs recovery. Also triggers on explicit /flow commands.
+description: DEPRECATED — do not activate. Superseded by the workflow engine skill (workflow:workflow) and the OMP workflow core. Kept for historical reference only; the .work/ directory convention it describes is obsolete.
 ---
 
 # Flow — Persistent Workflow Orchestration
+
+> **DEPRECATED (2026-06-10).** Do not use. Superseded by `workflow:workflow`
+> (Claude-as-engine skill path) and `workflows/workflow-core` (programmatic OMP).
+> The `.work/` convention below is obsolete; work items live under
+> `.workflow/<workId>/` per `workflow-core/artifacts.js`. This file remains only
+> as historical reference.
 
 Enhance Claude Code with persistent context, structured delegation, and multi-item tracking.
 
