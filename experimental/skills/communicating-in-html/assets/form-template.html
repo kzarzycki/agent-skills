@@ -37,7 +37,12 @@
         <label class="choice"><input type="radio" name="goal" value="reduce-cost">
           <span><span class="opt-title">Reduce cost</span><br>
           <span class="opt-desc">Do the same for less.</span></span></label>
+        <label class="choice"><input type="radio" name="goal" value="none-of-these">
+          <span><span class="opt-title">None of these</span><br>
+          <span class="opt-desc">Say what instead in the comment.</span></span></label>
       </div>
+      <input type="text" name="goal_comment"
+             placeholder="Optional comment — caveat the choice, or your own answer">
     </div>
 
     <h2>Scope</h2>
@@ -51,6 +56,7 @@
         <label class="choice"><input type="checkbox" name="areas" value="data"> Data / analytics</label>
         <label class="choice"><input type="checkbox" name="areas" value="infra"> Infra</label>
       </div>
+      <input type="text" name="areas_comment" placeholder="Optional comment">
     </div>
 
     <div class="field">
@@ -102,13 +108,20 @@ CopyBack.init({
   collect: function () {
     var f = document.getElementById('form');
     var fd = new FormData(f);
+    // Per-question comments by convention: every "<question>_comment" input,
+    // included only when non-empty.
+    var comments = {};
+    fd.forEach(function (v, k) {
+      if (/_comment$/.test(k) && v.trim()) comments[k.replace(/_comment$/, '')] = v.trim();
+    });
     return {
       name:     fd.get('name') || '',
       goal:     fd.get('goal') || '',
       areas:    fd.getAll('areas'),
       budget:   fd.get('budget'),
       timeline: fd.get('timeline') || '',
-      notes:    fd.get('notes') || ''
+      notes:    fd.get('notes') || '',
+      comments: comments
     };
   }
 });

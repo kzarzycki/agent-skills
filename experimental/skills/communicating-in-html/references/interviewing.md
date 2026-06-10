@@ -39,16 +39,25 @@ more setup — keep copy-paste-back as the default.
 3. **Right input per question** (see `../assets/form-template.html`):
    short fact → `input`; one-of-many → radio choice cards or `<select>` if >6;
    many-of-many → checkbox cards; open-ended → `<textarea>`; amount → `range`.
-   Always add an **"Other / not sure"** escape on constrained questions.
-4. **Inline help** (`.help`) exposing the tradeoff or what you'll do with it.
-5. **Pre-fill smart defaults** so the user edits rather than authors; label them.
-6. Mark required fields → `CopyBack.init({ required: [...] })`.
-7. Inline the CSS + copy-back.js, write the `.html`, surface it, and tell the
+   Every one-of-many question gets a **"None of these — see comment"** escape
+   option (for many-of-many, empty selection + comment plays that role).
+4. **Per-question comment field** — an optional one-line `input` named
+   `<question>_comment` under every constrained question (radio / select /
+   checkbox / range; free-text fields are their own comment channel), the form
+   equivalent of AskUserQuestion's free-text notes. It carries caveats on the chosen option,
+   or the real answer when the user escaped with "None of these". Serialize
+   non-empty ones into a `comments` map (the template's `collect()` shows how).
+5. **Inline help** (`.help`) exposing the tradeoff or what you'll do with it.
+6. **Pre-fill smart defaults** so the user edits rather than authors; label them.
+7. Mark required fields → `CopyBack.init({ required: [...] })`.
+8. Inline the CSS + copy-back.js, write the `.html`, surface it, and tell the
    user: *fill it in, click Copy, paste back here.*
 
 ## After the paste-back
 
 - Parse the JSON inside the `ANSWERS<<< … >>>ANSWERS` fence.
+- "None of these" + comment: the comment **is** the answer — first-class, not a
+  validation error. Follow up only if the comment is empty.
 - **Reflect a 3-5 bullet recap** of what you heard before acting (catches a
   mis-paste or misread).
 - If a required field is still blank, ask only for that — don't re-send the form.
