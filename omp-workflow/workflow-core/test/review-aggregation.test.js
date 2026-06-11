@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyReviewResults, createInitialState, PHASES, STATES } from '../index.js';
 
-function discussReviewingState() {
+function specReviewingState() {
   const state = createInitialState({ workId: 'x' });
   state.current_state = STATES.DECISION_SPEC_REVIEWING;
   return state;
@@ -15,17 +15,17 @@ function techReviewingState() {
   return state;
 }
 
-test('discuss approval requires intent and testability reviewers to pass together', () => {
+test('spec approval requires intent and testability reviewers to pass together', () => {
   assert.throws(
-    () => applyReviewResults(discussReviewingState(), {
-      phase: PHASES.DISCUSS,
+    () => applyReviewResults(specReviewingState(), {
+      phase: PHASES.SPEC,
       results: [{ reviewer: 'intent', verdict: 'pass', findings: [] }],
     }),
     error => error.code === 'invalid-transition' && /missing reviewer testability/.test(error.message),
   );
 
-  const state = applyReviewResults(discussReviewingState(), {
-    phase: PHASES.DISCUSS,
+  const state = applyReviewResults(specReviewingState(), {
+    phase: PHASES.SPEC,
     results: [
       { reviewer: 'intent', verdict: 'pass', findings: [] },
       { reviewer: 'testability', verdict: 'pass', findings: [] },
@@ -38,8 +38,8 @@ test('discuss approval requires intent and testability reviewers to pass togethe
 });
 
 test('review aggregation sends any needs-rework verdict through one rework transition', () => {
-  const state = applyReviewResults(discussReviewingState(), {
-    phase: PHASES.DISCUSS,
+  const state = applyReviewResults(specReviewingState(), {
+    phase: PHASES.SPEC,
     results: [
       { reviewer: 'intent', verdict: 'pass', findings: [] },
       { reviewer: 'testability', verdict: 'needs-rework', findings: ['Acceptance criteria are not observable.'] },
@@ -47,13 +47,13 @@ test('review aggregation sends any needs-rework verdict through one rework trans
   });
 
   assert.equal(state.current_state, STATES.DECISION_SPEC_REWORK);
-  assert.equal(state.rework.discuss, 1);
+  assert.equal(state.rework.spec, 1);
   assert.deepEqual(state.blockers, ['Acceptance criteria are not observable.']);
 });
 
 test('review aggregation sends any needs-user verdict to user gate', () => {
-  const state = applyReviewResults(discussReviewingState(), {
-    phase: PHASES.DISCUSS,
+  const state = applyReviewResults(specReviewingState(), {
+    phase: PHASES.SPEC,
     results: [
       { reviewer: 'intent', verdict: 'needs-user', findings: ['Choose whether Tech Options can change scope.'] },
       { reviewer: 'testability', verdict: 'pass', findings: [] },
@@ -61,7 +61,7 @@ test('review aggregation sends any needs-user verdict to user gate', () => {
   });
 
   assert.equal(state.current_state, STATES.NEEDS_USER);
-  assert.equal(state.pending_gate.kind, 'discuss_needs_user');
+  assert.equal(state.pending_gate.kind, 'spec_needs_user');
   assert.deepEqual(state.open_questions, ['Choose whether Tech Options can change scope.']);
 });
 
@@ -81,8 +81,8 @@ test('tech options approval requires reuse coverage and fit risk reviewers to pa
 
 test('review aggregation rejects unknown reviewers', () => {
   assert.throws(
-    () => applyReviewResults(discussReviewingState(), {
-      phase: PHASES.DISCUSS,
+    () => applyReviewResults(specReviewingState(), {
+      phase: PHASES.SPEC,
       results: [
         { reviewer: 'intent', verdict: 'pass', findings: [] },
         { reviewer: 'testability', verdict: 'pass', findings: [] },

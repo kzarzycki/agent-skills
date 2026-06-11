@@ -99,7 +99,7 @@ test('workflow advance performs exactly one autonomous step and refuses pending 
     await applyWorkflowEvent({ baseDir, workId, expectedRevision: 0, event: 'approve_research_buckets', payload: { bucketIds: ['skills'] } });
 
     let advanced = await advanceWorkflow({ baseDir, workId, adapter });
-    assert.equal(advanced.state, STATES.DISCUSS_GRILLING);
+    assert.equal(advanced.state, STATES.SPEC_GRILLING);
     assert.equal((await loadState(paths.stateFile)).revision, 2);
 
     advanced = await advanceWorkflow({ baseDir, workId, adapter });
@@ -113,8 +113,8 @@ test('workflow advance performs exactly one autonomous step and refuses pending 
 
     const entries = (await readdir(paths.root)).sort();
     assert.deepEqual(entries, ['01-DECISION-SPEC.md', '02-TECH-OPTIONS.md', '_evidence', '_phases', '_reviews', '_state']);
-    assert.match(await readFile(join(paths.reviewsDir, 'discuss', 'intent.md'), 'utf8'), /pass/);
-    assert.match(await readFile(join(paths.reviewsDir, 'discuss', 'testability.md'), 'utf8'), /pass/);
+    assert.match(await readFile(join(paths.reviewsDir, 'spec', 'intent.md'), 'utf8'), /pass/);
+    assert.match(await readFile(join(paths.reviewsDir, 'spec', 'testability.md'), 'utf8'), /pass/);
 
     const blockedAtGate = await advanceWorkflow({ baseDir, workId, adapter });
     assert.equal(blockedAtGate.kind, 'human_gate');
@@ -142,7 +142,7 @@ test('workflow drivers reach planning pending through tech options review', asyn
     const finalState = await loadState(paths.stateFile);
     assert.equal(finalState.current_phase, PHASES.PLANNING);
     assert.equal(finalState.current_state, STATES.PLANNING_PENDING);
-    assert.deepEqual(finalState.approved_phases, [PHASES.DISCUSS, PHASES.TECH_OPTIONS]);
+    assert.deepEqual(finalState.approved_phases, [PHASES.SPEC, PHASES.TECH_OPTIONS]);
     assert.match(await readFile(join(paths.root, '02-TECH-OPTIONS.md'), 'utf8'), /Options considered/);
     assert.match(await readFile(join(paths.reviewsDir, 'tech_options', 'reuse-coverage.md'), 'utf8'), /pass/);
     assert.match(await readFile(join(paths.reviewsDir, 'tech_options', 'fit-risk.md'), 'utf8'), /pass/);
@@ -225,7 +225,7 @@ test('review evidence writes are filtered to known reviewers before validation',
       () => advanceWorkflow({ baseDir, workId, adapter: strayAdapter }),
       error => error.code === 'invalid-transition' && /unknown reviewer rogue/.test(error.message),
     );
-    const evidence = (await readdir(join(paths.reviewsDir, 'discuss'))).sort();
+    const evidence = (await readdir(join(paths.reviewsDir, 'spec'))).sort();
     assert.deepEqual(evidence, ['intent.md', 'testability.md'], 'no stray evidence file for unknown reviewer');
   } finally {
     await rm(baseDir, { recursive: true, force: true });
@@ -254,7 +254,7 @@ test('resume_rework recovers a needs-user work item into the rework loop', async
     await advanceWorkflow({ baseDir, workId, adapter: needsUserAdapter });
     let state = await loadState(paths.stateFile);
     assert.equal(state.current_state, STATES.NEEDS_USER);
-    assert.equal(state.pending_gate.kind, 'discuss_needs_user');
+    assert.equal(state.pending_gate.kind, 'spec_needs_user');
 
     const resumed = await applyWorkflowEvent({ baseDir, workId, expectedRevision: state.revision, event: 'resume_rework', payload: { notes: ['Runtime: node 22.'] } });
     assert.equal(resumed.state, STATES.DECISION_SPEC_REWORK);

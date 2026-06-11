@@ -5,9 +5,9 @@ import { readFile } from 'node:fs/promises';
 const pluginRoot = new URL('../../../workflow/', import.meta.url);
 const fromRoot = path => new URL(path, pluginRoot);
 
-test('discuss skill uses directory shape and standalone contract', async () => {
-  const text = await readFile(fromRoot('skills/discuss/SKILL.md'), 'utf8');
-  assert.match(text, /name: discuss/);
+test('spec skill uses directory shape and standalone contract', async () => {
+  const text = await readFile(fromRoot('skills/spec/SKILL.md'), 'utf8');
+  assert.match(text, /name: spec/);
   assert.match(text, /research proposal first/i);
   assert.match(text, /one adaptive question/i);
   assert.match(text, /Intent Reviewer/);
@@ -36,8 +36,8 @@ test('workflow phase agents call reusable skills instead of embedding phase logi
 
   assert.match(interviewer, /mattpocock-skills:grill-me|grill-me/i);
   assert.match(techOptions, /Skill.*tech-options|tech-options skill/i);
-  assert.match(intentReviewer, /Skill.*discuss|discuss skill/i);
-  assert.match(testabilityReviewer, /Skill.*discuss|discuss skill/i);
+  assert.match(intentReviewer, /Skill.*spec|spec skill/i);
+  assert.match(testabilityReviewer, /Skill.*spec|spec skill/i);
   assert.match(reuseReviewer, /Skill.*tech-options|tech-options skill/i);
   assert.match(fitReviewer, /Skill.*tech-options|tech-options skill/i);
   assert.match(interviewer, /Schema return mode/);

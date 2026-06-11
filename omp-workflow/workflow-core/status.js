@@ -8,7 +8,7 @@ export function renderStatus(state, { debug = false } = {}) {
     `phase: ${state.current_phase}`,
     `state: ${state.current_state}`,
     `approved_phases: ${state.approved_phases.join(', ') || '(none)'}`,
-    `rework.discuss: ${state.rework.discuss}`,
+    `rework.spec: ${state.rework.spec}`,
     `rework.tech_options: ${state.rework.tech_options}`,
     `current_human_artifact: ${state.pending_gate?.target_artifact || '(none)'}`,
   ];

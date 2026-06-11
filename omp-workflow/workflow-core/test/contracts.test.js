@@ -12,7 +12,7 @@ test('work-item contract mirrors schema constants', async () => {
   const contract = await readJson('contracts/work-item.json');
   assert.deepEqual(contract.gateVerdicts, Object.values(GATE_VERDICTS));
   assert.deepEqual(contract.reviewersByPhase, {
-    discuss: [...REVIEWERS_BY_PHASE.discuss],
+    spec: [...REVIEWERS_BY_PHASE.spec],
     tech_options: [...REVIEWERS_BY_PHASE.tech_options],
   });
   assert.equal(contract.reworkCap, REWORK_CAP);
@@ -81,8 +81,8 @@ test('mdsmith config mirrors artifact contracts', async () => {
 });
 
 test('skills point at contracts instead of restating them', async () => {
-  const discuss = await readFile(fromRoot('skills/discuss/SKILL.md'), 'utf8');
-  assert.match(discuss, /contracts\/decision-spec\.json/);
+  const spec = await readFile(fromRoot('skills/spec/SKILL.md'), 'utf8');
+  assert.match(spec, /contracts\/decision-spec\.json/);
 
   const techOptions = await readFile(fromRoot('skills/tech-options/SKILL.md'), 'utf8');
   assert.match(techOptions, /contracts\/tech-options\.json/);

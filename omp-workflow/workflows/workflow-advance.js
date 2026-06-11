@@ -43,7 +43,7 @@ const GATE_SCHEMA = {
 };
 
 const REVIEWERS = {
-  discuss: [
+  spec: [
     { name: 'intent', agentType: 'intent-reviewer' },
     { name: 'testability', agentType: 'testability-reviewer' },
   ],
@@ -112,25 +112,25 @@ function liveAdapter() {
     async researchBrief({ state, paths }) {
       const current = await human(paths, state.human_artifacts.decision_spec);
       return agent(
-        `Workflow work item ${state.work_id} at ${workItemDir(paths)}. Produce a concise internal research brief for Discuss. Focus on facts that sharpen user grilling. Return markdown only in the schema field.\n\nApproved research buckets:\n${state.approvals.research_buckets.join('\n')}\n\nCurrent artifact:\n${current}`,
+        `Workflow work item ${state.work_id} at ${workItemDir(paths)}. Produce a concise internal research brief for Spec. Focus on facts that sharpen user grilling. Return markdown only in the schema field.\n\nApproved research buckets:\n${state.approvals.research_buckets.join('\n')}\n\nCurrent artifact:\n${current}`,
         { phase: 'Research', label: 'workflow:research-brief', schema: MARKDOWN_SCHEMA, agentType: 'explore' },
       );
     },
     async decisionSpec({ state, paths }) {
       const current = await human(paths, state.human_artifacts.decision_spec);
-      const researchBrief = await phaseInternal(paths, 'discuss', 'research-brief.md').catch(() => '(no research brief)');
+      const researchBrief = await phaseInternal(paths, 'spec', 'research-brief.md').catch(() => '(no research brief)');
       return agent(
-        `Use the discuss skill and interviewer agent contract to produce ${state.human_artifacts.decision_spec}. Preserve the original question/problem and rejected alternatives.\n\nWork item dir: ${workItemDir(paths)} — read _phases/discuss/ for internals and write your interview notes to _phases/discuss/interview-notes.md.\n\nResearch brief:\n${researchBrief}\n\nCurrent artifact:\n${current}${reworkInput(state, STATES.DECISION_SPEC_REWORK)}`,
-        { phase: 'Discuss', label: 'workflow:decision-spec', schema: MARKDOWN_SCHEMA, agentType: 'interviewer' },
+        `Use the spec skill and interviewer agent contract to produce ${state.human_artifacts.decision_spec}. Preserve the original question/problem and rejected alternatives.\n\nWork item dir: ${workItemDir(paths)} — read _phases/spec/ for internals and write your interview notes to _phases/spec/interview-notes.md.\n\nResearch brief:\n${researchBrief}\n\nCurrent artifact:\n${current}${reworkInput(state, STATES.DECISION_SPEC_REWORK)}`,
+        { phase: 'Spec', label: 'workflow:decision-spec', schema: MARKDOWN_SCHEMA, agentType: 'interviewer' },
       );
     },
     async reviewDecisionSpec({ state, paths }) {
       return runFixedReview({
         state,
         paths,
-        phaseKey: 'discuss',
+        phaseKey: 'spec',
         artifactName: state.human_artifacts.decision_spec,
-        context: 'Run your fixed Discuss review gate using the discuss skill. Judge the Decision Spec against your reviewer checklist only.',
+        context: 'Run your fixed Spec review gate using the spec skill. Judge the Decision Spec against your reviewer checklist only.',
       });
     },
     async techOptions({ state, paths }) {

@@ -177,12 +177,12 @@ await writeHumanArtifact(paths, {
 });
 await saveState(paths.stateFile, createInitialState({ workId }), { expectedRevision: null });
 console.log(`root: ${paths.root}`);
-console.log('initial: discuss/research_proposal_pending r0 human_gate');
+console.log('initial: spec/research_proposal_pending r0 human_gate');
 
 logStep('Simulate human: approve research buckets');
 await approve('approve_research_buckets', { bucketIds: ['browser-game', 'local-state-machine', 'testability'] });
 
-logStep('Autonomous Discuss phase');
+logStep('Autonomous Spec phase');
 await advance('research brief');
 await advance('decision spec');
 await advance('decision spec review');
@@ -211,7 +211,7 @@ await approve('approve_tech_options', { approvedAt: 'simulated-human' });
 const finalState = await loadState(paths.stateFile);
 assert.equal(finalState.current_phase, PHASES.PLANNING);
 assert.equal(finalState.current_state, STATES.PLANNING_PENDING);
-assert.deepEqual(finalState.approved_phases, [PHASES.DISCUSS, PHASES.TECH_OPTIONS]);
+assert.deepEqual(finalState.approved_phases, [PHASES.SPEC, PHASES.TECH_OPTIONS]);
 assert.equal(finalState.pending_gate, null);
 
 const decisionSpec = await readFile(join(paths.root, '01-DECISION-SPEC.md'), 'utf8');

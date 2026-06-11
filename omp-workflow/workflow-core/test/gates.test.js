@@ -13,7 +13,7 @@ test('research approval and denial transitions', () => {
   assert.ok(denied.blockers[0].includes('Research cannot proceed'));
 });
 
-test('discuss to tech options approval path', () => {
+test('spec to tech options approval path', () => {
   let state = createInitialState({ workId: 'x' });
   state = transition(state, { type: 'approve_research_buckets', bucketIds: ['local'] });
   state = transition(state, { type: 'research_brief_ready' });
@@ -23,29 +23,29 @@ test('discuss to tech options approval path', () => {
   state = transition(state, { type: 'approve_decision_spec' });
   assert.equal(state.current_phase, PHASES.TECH_OPTIONS);
   assert.equal(state.current_state, STATES.TECH_OPTIONS_RESEARCH_PENDING);
-  assert.ok(state.approved_phases.includes(PHASES.DISCUSS));
+  assert.ok(state.approved_phases.includes(PHASES.SPEC));
 });
 
-test('gate verdicts and discuss rework cap', () => {
+test('gate verdicts and spec rework cap', () => {
   let state = createInitialState({ workId: 'x' });
   state.current_state = STATES.DECISION_SPEC_REVIEWING;
-  state = applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'needs-rework', findings: ['a'] });
+  state = applyGateResult(state, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'needs-rework', findings: ['a'] });
   assert.equal(state.current_state, STATES.DECISION_SPEC_REWORK);
-  assert.equal(state.rework.discuss, 1);
-  state = applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'needs-rework', findings: ['b'] });
-  assert.equal(state.rework.discuss, 2);
-  state = applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'needs-rework', findings: ['c'] });
+  assert.equal(state.rework.spec, 1);
+  state = applyGateResult(state, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'needs-rework', findings: ['b'] });
+  assert.equal(state.rework.spec, 2);
+  state = applyGateResult(state, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'needs-rework', findings: ['c'] });
   assert.equal(state.current_state, STATES.NEEDS_USER);
-  assert.equal(state.pending_gate.kind, 'discuss_rework_cap_exceeded');
+  assert.equal(state.pending_gate.kind, 'spec_rework_cap_exceeded');
 });
 
 test('needs-user verdict creates open question gate', () => {
   let state = createInitialState({ workId: 'x' });
   state.current_state = STATES.DECISION_SPEC_REVIEWING;
-  state = applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'needs-user', findings: ['Choose runtime'] });
+  state = applyGateResult(state, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'needs-user', findings: ['Choose runtime'] });
   assert.equal(state.current_state, STATES.NEEDS_USER);
   assert.deepEqual(state.open_questions, ['Choose runtime']);
-  assert.equal(state.pending_gate.kind, 'discuss_needs_user');
+  assert.equal(state.pending_gate.kind, 'spec_needs_user');
 });
 
 test('tech options rework cap targets tech artifact', () => {
@@ -61,8 +61,8 @@ test('tech options rework cap targets tech artifact', () => {
 
 test('unknown verdict, invalid phase state, and invalid phase are rejected', () => {
   const state = createInitialState({ workId: 'x' });
-  assert.throws(() => applyGateResult({ ...state, current_state: STATES.DECISION_SPEC_REVIEWING }, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'maybe' }), error => error.code === 'invalid-gate-verdict');
-  assert.throws(() => applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'needs-rework' }), error => error.code === 'invalid-transition');
+  assert.throws(() => applyGateResult({ ...state, current_state: STATES.DECISION_SPEC_REVIEWING }, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'maybe' }), error => error.code === 'invalid-gate-verdict');
+  assert.throws(() => applyGateResult(state, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'needs-rework' }), error => error.code === 'invalid-transition');
   assert.throws(() => applyGateResult({ ...state, current_state: STATES.DECISION_SPEC_REVIEWING }, { phase: 'bogus', reviewer: 'intent', verdict: 'needs-rework' }), error => error.code === 'invalid-transition');
 });
 
@@ -71,7 +71,7 @@ test('pass clears active blockers', () => {
   state.current_state = STATES.DECISION_SPEC_REVIEWING;
   state.blockers = ['old'];
   state.open_questions = ['old question'];
-  state = applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'pass', findings: [] });
+  state = applyGateResult(state, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'pass', findings: [] });
   assert.deepEqual(state.blockers, []);
   assert.deepEqual(state.open_questions, []);
 });
@@ -79,7 +79,7 @@ test('pass clears active blockers', () => {
 test('resume_rework returns a needs-user verdict to decision spec rework with user notes', () => {
   let state = createInitialState({ workId: 'x' });
   state.current_state = STATES.DECISION_SPEC_REVIEWING;
-  state = applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'needs-user', findings: ['Choose runtime'] });
+  state = applyGateResult(state, { phase: PHASES.SPEC, reviewer: 'intent', verdict: 'needs-user', findings: ['Choose runtime'] });
   assert.equal(state.current_state, STATES.NEEDS_USER);
   state = transition(state, { type: 'resume_rework', notes: ['Runtime: node 22'] });
   assert.equal(state.current_state, STATES.DECISION_SPEC_REWORK);
@@ -111,19 +111,19 @@ test('resume_rework is invalid outside needs_user', () => {
 test('denied research sets a recoverable needs-user gate', () => {
   let state = transition(createInitialState({ workId: 'x' }), { type: 'deny_all_research' });
   assert.equal(state.current_state, STATES.NEEDS_USER);
-  assert.equal(state.pending_gate.kind, 'discuss_needs_user');
+  assert.equal(state.pending_gate.kind, 'spec_needs_user');
   state = transition(state, { type: 'resume_rework', notes: ['Skip research; user supplied the context directly.'] });
   assert.equal(state.current_state, STATES.DECISION_SPEC_REWORK);
   assert.deepEqual(state.blockers, ['Skip research; user supplied the context directly.']);
 });
 
-test('tech options can trigger and leave discuss addendum', () => {
+test('tech options can trigger and leave spec addendum', () => {
   let state = createInitialState({ workId: 'x' });
   state.current_state = STATES.TECH_OPTIONS_REVIEWING;
   state.current_phase = PHASES.TECH_OPTIONS;
   state = transition(state, { type: 'tech_options_product_change' });
-  assert.equal(state.current_state, STATES.DISCUSS_ADDENDUM_PENDING);
-  state = transition(state, { type: 'approve_discuss_addendum' });
+  assert.equal(state.current_state, STATES.SPEC_ADDENDUM_PENDING);
+  state = transition(state, { type: 'approve_spec_addendum' });
   assert.equal(state.current_state, STATES.TECH_OPTIONS_RESEARCH_PENDING);
 });
 

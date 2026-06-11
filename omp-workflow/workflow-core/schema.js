@@ -1,11 +1,11 @@
 export const SCHEMA_VERSION = 1;
 
-export const PHASES = Object.freeze({ DISCUSS: 'discuss', TECH_OPTIONS: 'tech_options', PLANNING: 'planning' });
+export const PHASES = Object.freeze({ SPEC: 'spec', TECH_OPTIONS: 'tech_options', PLANNING: 'planning' });
 
 export const STATES = Object.freeze({
   RESEARCH_PROPOSAL_PENDING: 'research_proposal_pending',
   RESEARCH_RUNNING: 'research_running',
-  DISCUSS_GRILLING: 'discuss_grilling',
+  SPEC_GRILLING: 'spec_grilling',
   DECISION_SPEC_REVIEWING: 'decision_spec_reviewing',
   DECISION_SPEC_REWORK: 'decision_spec_rework',
   DECISION_SPEC_APPROVAL_PENDING: 'decision_spec_approval_pending',
@@ -14,7 +14,7 @@ export const STATES = Object.freeze({
   TECH_OPTIONS_REVIEWING: 'tech_options_reviewing',
   TECH_OPTIONS_REWORK: 'tech_options_rework',
   TECH_OPTIONS_APPROVAL_PENDING: 'tech_options_approval_pending',
-  DISCUSS_ADDENDUM_PENDING: 'discuss_addendum_pending',
+  SPEC_ADDENDUM_PENDING: 'spec_addendum_pending',
   PLANNING_PENDING: 'planning_pending',
   NEEDS_USER: 'needs_user',
 });
@@ -22,7 +22,7 @@ export const STATES = Object.freeze({
 export const GATE_VERDICTS = Object.freeze({ PASS: 'pass', NEEDS_REWORK: 'needs-rework', NEEDS_USER: 'needs-user' });
 
 export const REVIEWERS_BY_PHASE = Object.freeze({
-  [PHASES.DISCUSS]: Object.freeze(['intent', 'testability']),
+  [PHASES.SPEC]: Object.freeze(['intent', 'testability']),
   [PHASES.TECH_OPTIONS]: Object.freeze(['reuse-coverage', 'fit-risk']),
 });
 
@@ -38,10 +38,10 @@ export const ERROR_CODES = Object.freeze({
 export const REWORK_CAP = 2;
 
 const STATES_BY_PHASE = Object.freeze({
-  [PHASES.DISCUSS]: new Set([
+  [PHASES.SPEC]: new Set([
     STATES.RESEARCH_PROPOSAL_PENDING,
     STATES.RESEARCH_RUNNING,
-    STATES.DISCUSS_GRILLING,
+    STATES.SPEC_GRILLING,
     STATES.DECISION_SPEC_REVIEWING,
     STATES.DECISION_SPEC_REWORK,
     STATES.DECISION_SPEC_APPROVAL_PENDING,
@@ -53,7 +53,7 @@ const STATES_BY_PHASE = Object.freeze({
     STATES.TECH_OPTIONS_REVIEWING,
     STATES.TECH_OPTIONS_REWORK,
     STATES.TECH_OPTIONS_APPROVAL_PENDING,
-    STATES.DISCUSS_ADDENDUM_PENDING,
+    STATES.SPEC_ADDENDUM_PENDING,
     STATES.NEEDS_USER,
   ]),
   [PHASES.PLANNING]: new Set([STATES.PLANNING_PENDING, STATES.NEEDS_USER]),
@@ -115,14 +115,14 @@ export function createInitialState({ workId }) {
     schema_version: SCHEMA_VERSION,
     work_id: workId,
     revision: 0,
-    current_phase: PHASES.DISCUSS,
+    current_phase: PHASES.SPEC,
     current_state: STATES.RESEARCH_PROPOSAL_PENDING,
     approved_phases: [],
     blockers: [],
     open_questions: [],
     last_transition_reason: 'work-item-created',
     pending_gate: { kind: 'research_approval', target_artifact: '01-DECISION-SPEC.md' },
-    rework: { discuss: 0, tech_options: 0 },
+    rework: { spec: 0, tech_options: 0 },
     human_artifacts: { decision_spec: '01-DECISION-SPEC.md', tech_options: '02-TECH-OPTIONS.md' },
     approvals: {},
   };
@@ -159,8 +159,8 @@ export function validateState(state) {
   }
 
   if (!isObject(state.rework)) throw codedError(ERROR_CODES.INVALID_STATE_SCHEMA, 'rework must be an object');
-  assertExactKeys(state.rework, ['discuss', 'tech_options'], 'rework');
-  assertNumber(state.rework.discuss, 'rework.discuss');
+  assertExactKeys(state.rework, ['spec', 'tech_options'], 'rework');
+  assertNumber(state.rework.spec, 'rework.spec');
   assertNumber(state.rework.tech_options, 'rework.tech_options');
 
   if (!isObject(state.human_artifacts)) throw codedError(ERROR_CODES.INVALID_STATE_SCHEMA, 'human_artifacts must be an object');

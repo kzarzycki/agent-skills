@@ -12,14 +12,14 @@ export function runScriptedV1Flow(flow = DEFAULT_SCRIPTED_FLOW) {
   state = transition(state, { type: 'research_brief_ready' });
   state = transition(state, { type: 'questions_complete' });
   state = applyReviewResults(state, {
-    phase: 'discuss',
+    phase: 'spec',
     results: [
-      { reviewer: 'intent', verdict: 'needs-rework', findings: ['Clarify standalone discuss value.'] },
+      { reviewer: 'intent', verdict: 'needs-rework', findings: ['Clarify standalone spec value.'] },
       { reviewer: 'testability', verdict: 'pass', findings: [] },
     ],
   });
   state = applyReviewResults(state, {
-    phase: 'discuss',
+    phase: 'spec',
     results: [
       { reviewer: 'intent', verdict: 'pass', findings: [] },
       { reviewer: 'testability', verdict: 'pass', findings: [] },

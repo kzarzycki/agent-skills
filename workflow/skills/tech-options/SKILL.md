@@ -29,7 +29,7 @@ run in-situ (no agents at all).
 - Research multiple option families: first-party implementation, capabilities of the existing runtime/platform, reusable in-repo skills/agents/components, and third-party packages as references.
 - Treat third-party workflow packages as references only until safety audit, compatibility check, wrapper design, and user approval; the same rule applies to any third-party dependency.
 - Include artifact UX assessment: how each option affects the user-facing artifact experience. The work-item layout rule stands: root numbered human artifacts, underscore internals, no routine history.
-- If findings change the product need, trigger a focused Discuss addendum instead of silently changing the spec.
+- If findings change the product need, trigger a focused Spec addendum instead of silently changing the spec.
 
 ## Artifact shape and language
 
@@ -47,7 +47,7 @@ Before the review gate: `mdsmith check -c <plugin>/contracts/mdsmith.yml <work-i
 Derive the needs from the approved Decision Spec -- its Constraints and Acceptance criteria
 sections, plus any need the spec's Goal makes explicit. One scorecard row per need, one column
 per option, each cell a short verifiable judgment. Do not reuse another work item's needs list;
-if the spec yields fewer than three needs, that is a Discuss gap -- raise it instead of padding.
+if the spec yields fewer than three needs, that is a Spec gap -- raise it instead of padding.
 
 ## Review gate
 

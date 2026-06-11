@@ -37,7 +37,7 @@ Core orchestration concepts (list to be extended):
 ## Architecture rules (binding)
 
 - **4-layer ownership, one owner per fact:** `contracts/*.json` + `contracts/mdsmith.yml` = machine truth (sections, format rules) · `skills/<phase>/SKILL.md` = the phase contract · `agents/*.md` = thin execution wrappers with `skills:` preloads · reviewer agents = normative checklists.
-- **Swap mandate:** phase skills own only the gate contract (artifact, schema, reviewers, verdicts, rework loop); the engineering craft (interviewing, research, planning, TDD) comes from a swappable underlying skill. Known gap: discuss and tech-options currently embed the craft themselves — do not copy that pattern; migration pending.
+- **Swap mandate:** phase skills own only the gate contract (artifact, schema, reviewers, verdicts, rework loop); the engineering craft (interviewing, research, planning, TDD) comes from a swappable underlying skill. Known gap: spec and tech-options currently embed the craft themselves — do not copy that pattern; migration pending.
 - **Stateless engine for v1:** chat history is the state, work-item files are the record. External state management will come in future versions.
 - **`omp-workflow/`** (top-level sibling) is a separate runtime with its own module-style scripts, meant as the programmatic implementation of this workflow — but it lags behind. This plugin is the reference; never let omp-workflow's conventions or state leak in here.
 

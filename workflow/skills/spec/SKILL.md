@@ -1,9 +1,9 @@
 ---
-name: discuss
+name: spec
 description: Use when a vague work item needs product/user clarification before planning or implementation.
 ---
 
-# Discuss
+# Spec
 
 Turn a vague work item into a Decision Spec. Reuse existing project docs and code facts; ask the user only for product choices tools cannot answer.
 
@@ -12,7 +12,7 @@ This file is the phase contract. Whoever executes the phase -- the interviewer a
 ## Contract
 
 - Research proposal first: propose buckets, ask the user to approve/narrow/reject, then run only approved buckets.
-- Interview composition: the interview runs with the content of BOTH `superpowers:brainstorming` (domain coverage -- purpose, approaches, architecture/components/data flow/error handling/testing) and `mattpocock-skills:grill-me` (adversarial depth, one adaptive question at a time) loaded in context -- via an agent's `skills` preload or explicit Skill calls. Record in `_phases/discuss/interview-notes.md` which were loaded and what each contributed; the review gate checks this record. If a skill cannot be loaded (plugin not installed), the executor records "could not load X" in `interview-notes.md`; reviewers treat that record as `needs-user` (escalate), not `needs-rework`. Architecture answers gathered during the interview are recorded as inputs for Tech Options, not decided in Discuss.
+- Interview composition: the interview runs with the content of BOTH `superpowers:brainstorming` (domain coverage -- purpose, approaches, architecture/components/data flow/error handling/testing) and `mattpocock-skills:grill-me` (adversarial depth, one adaptive question at a time) loaded in context -- via an agent's `skills` preload or explicit Skill calls. Record in `_phases/spec/interview-notes.md` which were loaded and what each contributed; the review gate checks this record. If a skill cannot be loaded (plugin not installed), the executor records "could not load X" in `interview-notes.md`; reviewers treat that record as `needs-user` (escalate), not `needs-rework`. Architecture answers gathered during the interview are recorded as inputs for Tech Options, not decided in Spec.
 - Preserve the original question/problem and rejected alternatives.
 - Root human artifact: `01-DECISION-SPEC.md` only.
 - Internal notes, research, and review evidence go under underscore dirs.

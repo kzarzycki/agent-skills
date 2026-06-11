@@ -5,10 +5,10 @@
   "underscoreDirs": ["_state", "_phases", "_reviews", "_evidence"],
   "stateFile": "_state/state.json",
   "reviewEvidencePattern": "_reviews/<phase>/<reviewer>.md",
-  "phases": ["discuss", "tech_options", "planning"],
+  "phases": ["spec", "tech_options", "planning"],
   "gateVerdicts": ["pass", "needs-rework", "needs-user"],
   "reviewersByPhase": {
-    "discuss": ["intent", "testability"],
+    "spec": ["intent", "testability"],
     "tech_options": ["reuse-coverage", "fit-risk"]
   },
   "reworkCap": 2

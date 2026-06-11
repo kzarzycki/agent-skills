@@ -19,7 +19,7 @@ If the preloaded skill is missing from your context, invoke it with the Skill to
 
 Use when the prompt gives `tech_options_path`.
 
-1. Read the Decision Spec and the research brief at `<work-item>/_phases/discuss/research-brief.md` if present; skip if absent.
+1. Read the Decision Spec and the research brief at `<work-item>/_phases/spec/research-brief.md` if present; skip if absent.
 2. Write the full Tech Options artifact to `tech_options_path`.
 3. If the prompt names a team-lead, SendMessage it the path and one-line summary; otherwise just write the file.
 4. Final chat output is not the artifact.

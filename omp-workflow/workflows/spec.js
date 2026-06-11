@@ -1,10 +1,10 @@
 import { createWorkItemScaffold } from '../workflow-core/index.js';
 
 export const meta = {
-  name: 'discuss',
-  description: 'Standalone Discuss capability. Research proposal first; optionally saves root numbered artifacts.',
+  name: 'spec',
+  description: 'Standalone Spec capability. Research proposal first; optionally saves root numbered artifacts.',
   whenToUse: 'Args: { prompt: string, save?: boolean, title?: string }. Does not call workflow-start or workflow-resume.',
-  phases: [{ title: 'Discuss' }],
+  phases: [{ title: 'Spec' }],
 };
 
 const a = typeof args === 'string' ? JSON.parse(args) : (args || {});
@@ -12,7 +12,7 @@ const prompt = a.prompt || a.task;
 const save = a.save === true;
 
 function slugify(value) {
-  return String(value || 'discuss-item').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'discuss-item';
+  return String(value || 'spec-item').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'spec-item';
 }
 
 if (!prompt) {
@@ -20,7 +20,7 @@ if (!prompt) {
   return { error: 'no prompt provided' };
 }
 
-phase('Discuss');
+phase('Spec');
 log('Research proposal comes first. Approve, narrow, or reject buckets before grilling.');
 
 if (!save) {

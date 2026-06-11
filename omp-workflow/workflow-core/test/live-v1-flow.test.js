@@ -67,20 +67,20 @@ test('live v1 smoke runs the full file-state workflow', { skip: !runLive }, asyn
     state = await persist(paths, state);
     state = transition(state, { type: 'research_brief_ready' });
     await writePhaseInternal(paths, {
-      phase: 'discuss',
+      phase: 'spec',
       filename: 'research-brief.md',
       content: 'Internal research notes for agents, not human review surface.\n',
     });
     state = transition(state, { type: 'questions_complete' });
     state = applyGateResult(state, {
-      phase: PHASES.DISCUSS,
+      phase: PHASES.SPEC,
       reviewer: 'live-reviewer',
       verdict: GATE_VERDICTS.PASS,
       findings: [],
     });
     state = transition(state, { type: 'decision_spec_review_passed' });
     await writeReviewInternal(paths, {
-      phase: 'discuss',
+      phase: 'spec',
       reviewer: 'live-reviewer',
       content: 'pass\n',
     });
@@ -132,7 +132,7 @@ test('live v1 smoke runs the full file-state workflow', { skip: !runLive }, asyn
     const finalState = await loadState(paths.stateFile);
     assert.equal(finalState.current_phase, PHASES.PLANNING);
     assert.equal(finalState.current_state, 'planning_pending');
-    assert.deepEqual(finalState.approved_phases, [PHASES.DISCUSS, PHASES.TECH_OPTIONS]);
+    assert.deepEqual(finalState.approved_phases, [PHASES.SPEC, PHASES.TECH_OPTIONS]);
     assert.equal(finalState.pending_gate, null);
 
     const rootEntries = (await readdir(paths.root)).sort();

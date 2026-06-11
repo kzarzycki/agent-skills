@@ -10,7 +10,7 @@ const HUMAN_EVENTS = new Set([
   'deny_all_research',
   'approve_decision_spec',
   'approve_tech_options_research',
-  'approve_discuss_addendum',
+  'approve_spec_addendum',
   'approve_tech_options',
   'resume_rework',
 ]);
@@ -68,12 +68,12 @@ export async function advanceWorkflow({ baseDir = '.workflow', workId, adapter }
 
   if (state.current_state === STATES.RESEARCH_RUNNING) {
     const brief = await requireAdapter(adapter, 'researchBrief', { state, paths });
-    await writePhaseInternal(paths, { phase: PHASES.DISCUSS, filename: 'research-brief.md', content: brief.markdown });
+    await writePhaseInternal(paths, { phase: PHASES.SPEC, filename: 'research-brief.md', content: brief.markdown });
     const saved = await persist(paths, transition(state, { type: 'research_brief_ready' }));
-    return resultFor(workId, saved, { wrote: '_phases/discuss/research-brief.md' });
+    return resultFor(workId, saved, { wrote: '_phases/spec/research-brief.md' });
   }
 
-  if (state.current_state === STATES.DISCUSS_GRILLING) {
+  if (state.current_state === STATES.SPEC_GRILLING) {
     const spec = await requireAdapter(adapter, 'decisionSpec', { state, paths });
     await writeHumanArtifact(paths, { ordinal: '01', slug: 'DECISION-SPEC', content: spec.markdown, overwrite: true });
     const saved = await persist(paths, transition(state, { type: 'questions_complete' }));
@@ -90,9 +90,9 @@ export async function advanceWorkflow({ baseDir = '.workflow', workId, adapter }
 
   if (state.current_state === STATES.DECISION_SPEC_REVIEWING) {
     const review = await requireAdapter(adapter, 'reviewDecisionSpec', { state, paths });
-    await writeReviewEvidence(paths, PHASES.DISCUSS, review.markdownByReviewer);
-    const saved = await persist(paths, applyReviewResults(state, { phase: PHASES.DISCUSS, results: review.results }));
-    return resultFor(workId, saved, { wrote: '_reviews/discuss/*.md' });
+    await writeReviewEvidence(paths, PHASES.SPEC, review.markdownByReviewer);
+    const saved = await persist(paths, applyReviewResults(state, { phase: PHASES.SPEC, results: review.results }));
+    return resultFor(workId, saved, { wrote: '_reviews/spec/*.md' });
   }
 
   if (state.current_state === STATES.TECH_OPTIONS_RUNNING) {

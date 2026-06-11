@@ -18,18 +18,18 @@ resolve from the project root.
 
 This engine is stateless -- chat history is the state; to resume, re-read the work-item dir.
 
-## Discuss phase
+## Spec phase
 
 1. Propose research. Create the work-item dir `.workflow/<yyyy-mm-dd>-<slug>/` with the
    layout from this plugin's `../../contracts/work-item.json`; `spec_path` =
    `<work-item dir>/01-DECISION-SPEC.md`. Runtime extras (interview form, notes) go under
-   `<work-item dir>/_phases/discuss/`. Derive research buckets from the prompt (codebase
+   `<work-item dir>/_phases/spec/`. Derive research buckets from the prompt (codebase
    precedents, existing docs, external prior art -- whatever the prompt suggests) and gate
    (AskUserQuestion): the user approves, narrows, or rejects each bucket. Run only approved
    buckets.
 2. Research. Call `Workflow({ name: 'research-brief', args: { prompt, buckets } })` with the
    approved buckets. Keep the returned `{ brief, openThreads }` and write both to
-   `<work-item dir>/_phases/discuss/research-brief.md`.
+   `<work-item dir>/_phases/spec/research-brief.md`.
 3. Interview. The interview grills the user one question at a time, so it needs a live channel to
    them. A spawned teammate only gets that channel inside tmux. Detect with `[ -n "$TMUX" ]`, tell
    the user which mode applies and its cost, and ask them to accept (AskUserQuestion) before you
@@ -39,13 +39,13 @@ This engine is stateless -- chat history is the state; to resume, re-read the wo
      Compose the prompt yourself: work item, brief, open threads, and `spec_path` inline --
      `spec_path` is what selects the interviewer's file mode; a bare prompt selects schema return
      mode, whose chat output never reaches you:
-     - `TeamCreate({ team_name: 'discuss' })`
-     - `Agent({ team_name: 'discuss', name: 'interviewer', subagent_type: 'interviewer',
+     - `TeamCreate({ team_name: 'spec' })`
+     - `Agent({ team_name: 'spec', name: 'interviewer', subagent_type: 'interviewer',
        prompt: "Work item: <prompt>\nResearch brief: <brief>\nOpen threads: <openThreads>\nspec_path: <spec_path>" })`
      It writes the spec to `spec_path` and SendMessages you the path. You receive the spec only via
      that message plus the file -- a teammate's chat output never reaches you, so do not expect a
      return value. Wait for the message, then Read `spec_path`.
-   - Not in tmux -- run the interview yourself. Load the discuss skill and follow its contract
+   - Not in tmux -- run the interview yourself. Load the spec skill and follow its contract
      (interview composition, spec shape, format gate apply in-situ too). Lead with the open
      threads, resolve what you can from the codebase, then write the spec to `spec_path`. The
      interview shares your context -- that is the cost the user accepted by choosing this mode.
@@ -56,7 +56,7 @@ This engine is stateless -- chat history is the state; to resume, re-read the wo
    installed, verify sections manually against the contract JSON.
 5. Review gate. Spawn both reviewers in parallel (one message, two Agent calls):
    `subagent_type: 'workflow:intent-reviewer'` and `subagent_type: 'workflow:testability-reviewer'`.
-   Each gets `spec_path`, writes evidence to `<work-item dir>/_reviews/discuss/<reviewer>.md`,
+   Each gets `spec_path`, writes evidence to `<work-item dir>/_reviews/spec/<reviewer>.md`,
    and returns a verdict: `pass`, `needs-rework`, or `needs-user`. On needs-rework, route the
    findings back to the author (message the interviewer if spawned, else rework in-situ) and
    re-run steps 4-5; cap 2 rework rounds, then escalate to the user. On needs-user, surface the

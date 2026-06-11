@@ -56,17 +56,17 @@ test('workflow-advance live adapter feeds blockers into rework prompts and paths
   assert.match(text, /interview-notes\.md/);
 });
 
-test('workflow start and discuss scaffold via the shared work item helper', async () => {
+test('workflow start and spec scaffold via the shared work item helper', async () => {
   const start = await readFile(fromRoot('workflows/workflow-start.js'), 'utf8');
   assert.match(start, /createWorkItemScaffold/);
   assert.match(start, /includeTechOptionsStub: true/);
   assert.match(start, /work item exists/);
   assert.doesNotMatch(start, /audience: human/, 'no YAML frontmatter stub left inline');
 
-  const discuss = await readFile(fromRoot('workflows/discuss.js'), 'utf8');
-  assert.match(discuss, /createWorkItemScaffold/);
-  assert.match(discuss, /includeTechOptionsStub: false/);
-  assert.doesNotMatch(discuss, /audience: human/, 'no YAML frontmatter stub left inline');
+  const spec = await readFile(fromRoot('workflows/spec.js'), 'utf8');
+  assert.match(spec, /createWorkItemScaffold/);
+  assert.match(spec, /includeTechOptionsStub: false/);
+  assert.doesNotMatch(spec, /audience: human/, 'no YAML frontmatter stub left inline');
 });
 
 test('research-brief fans out lowercase explore agents and honors bucket args', async () => {

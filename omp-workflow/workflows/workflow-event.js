@@ -3,7 +3,7 @@ import { applyWorkflowEvent } from '../workflow-core/index.js';
 export const meta = {
   name: 'workflow-event',
   description: 'Apply one human/controller event to a durable workflow state file.',
-  whenToUse: 'Args: { workId: string, expectedRevision?: number, event: string, payload?: object }. Events include approve_research_buckets, deny_all_research, approve_decision_spec, approve_tech_options_research, approve_discuss_addendum, approve_tech_options.',
+  whenToUse: 'Args: { workId: string, expectedRevision?: number, event: string, payload?: object }. Events include approve_research_buckets, deny_all_research, approve_decision_spec, approve_tech_options_research, approve_spec_addendum, approve_tech_options.',
   phases: [{ title: 'Event' }],
 };
 

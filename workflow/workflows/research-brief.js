@@ -1,6 +1,6 @@
 export const meta = {
   name: 'research-brief',
-  description: 'Research filter for the Discuss phase. Fans out research angles on a work item and returns a short brief plus the questions for the user.',
+  description: 'Research filter for the Spec phase. Fans out research angles on a work item and returns a short brief plus the questions for the user.',
   whenToUse: 'Args: { prompt: string, buckets?: string[] }. One research agent per bucket when given; three default angles otherwise. Returns { brief, openThreads }.',
   phases: [{ title: 'Research' }, { title: 'Synthesize' }],
 };

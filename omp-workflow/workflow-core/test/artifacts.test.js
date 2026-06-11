@@ -31,14 +31,14 @@ test('creates root human artifacts and underscore internal dirs only', async () 
     const paths = createWorkItemPaths({ baseDir, workId: '2026-06-07-example' });
     await ensureWorkItem(paths);
     await writeHumanArtifact(paths, { ordinal: '01', slug: 'DECISION-SPEC', content: 'spec' });
-    await writePhaseInternal(paths, { phase: 'discuss', filename: 'notes.md', content: 'internal' });
-    await writeReviewInternal(paths, { phase: 'discuss', reviewer: 'intent', content: 'review' });
+    await writePhaseInternal(paths, { phase: 'spec', filename: 'notes.md', content: 'internal' });
+    await writeReviewInternal(paths, { phase: 'spec', reviewer: 'intent', content: 'review' });
 
     const rootEntries = (await readdir(paths.root)).sort();
     assert.deepEqual(rootEntries, ['01-DECISION-SPEC.md', '_evidence', '_phases', '_reviews', '_state']);
     assert.equal(await readFile(join(paths.root, '01-DECISION-SPEC.md'), 'utf8'), 'spec');
-    assert.equal(await readFile(join(paths.phasesDir, 'discuss', 'notes.md'), 'utf8'), 'internal');
-    assert.equal(await readFile(join(paths.reviewsDir, 'discuss', 'intent.md'), 'utf8'), 'review');
+    assert.equal(await readFile(join(paths.phasesDir, 'spec', 'notes.md'), 'utf8'), 'internal');
+    assert.equal(await readFile(join(paths.reviewsDir, 'spec', 'intent.md'), 'utf8'), 'review');
     assert.ok(!rootEntries.includes('_history'));
   } finally {
     await rm(baseDir, { recursive: true, force: true });
@@ -87,7 +87,7 @@ test('createWorkItemScaffold writes contract-conform stubs with state', async ()
 test('createWorkItemScaffold can skip the tech options stub', async () => {
   const baseDir = await tempRoot();
   try {
-    const result = await createWorkItemScaffold({ baseDir, workId: '2026-06-11-discuss-only', prompt: 'Discuss only.', includeTechOptionsStub: false });
+    const result = await createWorkItemScaffold({ baseDir, workId: '2026-06-11-spec-only', prompt: 'Spec only.', includeTechOptionsStub: false });
     assert.equal(result.created, true);
     const rootEntries = (await readdir(result.paths.root)).sort();
     assert.deepEqual(rootEntries, ['01-DECISION-SPEC.md', '_evidence', '_phases', '_reviews', '_state']);

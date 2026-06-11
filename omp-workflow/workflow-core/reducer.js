@@ -39,7 +39,7 @@ export function transition(inputState, event) {
       if (!Array.isArray(event.bucketIds) || event.bucketIds.length === 0) {
         state.current_state = STATES.NEEDS_USER;
         addBlocker(state, 'No research buckets approved.');
-        setGate(state, 'discuss_needs_user', state.human_artifacts.decision_spec);
+        setGate(state, 'spec_needs_user', state.human_artifacts.decision_spec);
         return withReason(state, 'research-denied');
       }
       state.current_state = STATES.RESEARCH_RUNNING;
@@ -51,18 +51,18 @@ export function transition(inputState, event) {
       assertTransition(state.current_state === STATES.RESEARCH_PROPOSAL_PENDING, event.type, state.current_state);
       state.current_state = STATES.NEEDS_USER;
       addBlocker(state, 'Research cannot proceed without approved buckets.');
-      setGate(state, 'discuss_needs_user', state.human_artifacts.decision_spec);
+      setGate(state, 'spec_needs_user', state.human_artifacts.decision_spec);
       return withReason(state, 'research-denied');
 
     case 'research_brief_ready':
       assertTransition(state.current_state === STATES.RESEARCH_RUNNING, event.type, state.current_state);
-      state.current_state = STATES.DISCUSS_GRILLING;
+      state.current_state = STATES.SPEC_GRILLING;
       return withReason(state, 'research-brief-ready');
 
     case 'questions_complete':
-      assertTransition(state.current_state === STATES.DISCUSS_GRILLING, event.type, state.current_state);
+      assertTransition(state.current_state === STATES.SPEC_GRILLING, event.type, state.current_state);
       state.current_state = STATES.DECISION_SPEC_REVIEWING;
-      return withReason(state, 'discuss-questions-complete');
+      return withReason(state, 'spec-questions-complete');
 
     case 'decision_spec_rework_complete':
       assertTransition(state.current_state === STATES.DECISION_SPEC_REWORK, event.type, state.current_state);
@@ -77,7 +77,7 @@ export function transition(inputState, event) {
 
     case 'approve_decision_spec':
       assertTransition(state.current_state === STATES.DECISION_SPEC_APPROVAL_PENDING, event.type, state.current_state);
-      approvePhase(state, PHASES.DISCUSS);
+      approvePhase(state, PHASES.SPEC);
       state.approvals.decision_spec = event.approvedAt || true;
       state.current_phase = PHASES.TECH_OPTIONS;
       state.current_state = STATES.TECH_OPTIONS_RESEARCH_PENDING;
@@ -102,15 +102,15 @@ export function transition(inputState, event) {
 
     case 'tech_options_product_change':
       assertTransition(state.current_state === STATES.TECH_OPTIONS_REVIEWING, event.type, state.current_state);
-      state.current_state = STATES.DISCUSS_ADDENDUM_PENDING;
-      setGate(state, 'discuss_addendum', state.human_artifacts.decision_spec);
+      state.current_state = STATES.SPEC_ADDENDUM_PENDING;
+      setGate(state, 'spec_addendum', state.human_artifacts.decision_spec);
       return withReason(state, 'tech-options-product-change');
 
-    case 'approve_discuss_addendum':
-      assertTransition(state.current_state === STATES.DISCUSS_ADDENDUM_PENDING, event.type, state.current_state);
+    case 'approve_spec_addendum':
+      assertTransition(state.current_state === STATES.SPEC_ADDENDUM_PENDING, event.type, state.current_state);
       state.current_state = STATES.TECH_OPTIONS_RESEARCH_PENDING;
       setGate(state, 'tech_options_research_approval', state.human_artifacts.tech_options);
-      return withReason(state, 'discuss-addendum-approved');
+      return withReason(state, 'spec-addendum-approved');
 
     case 'tech_options_review_passed':
       assertTransition([STATES.TECH_OPTIONS_REVIEWING, STATES.TECH_OPTIONS_REWORK].includes(state.current_state), event.type, state.current_state);
@@ -122,7 +122,7 @@ export function transition(inputState, event) {
       assertTransition(state.current_state === STATES.NEEDS_USER, event.type, state.current_state);
       const gate = state.pending_gate;
       if (!gate) throw makeError(ERROR_CODES.INVALID_TRANSITION, 'resume_rework requires a pending needs-user gate');
-      const phase = gate.kind.startsWith('tech_options') ? PHASES.TECH_OPTIONS : PHASES.DISCUSS;
+      const phase = gate.kind.startsWith('tech_options') ? PHASES.TECH_OPTIONS : PHASES.SPEC;
       if (event.notes !== undefined) {
         if (!Array.isArray(event.notes) || event.notes.some(item => typeof item !== 'string')) {
           throw makeError(ERROR_CODES.INVALID_TRANSITION, 'notes must be an array of strings');
@@ -151,7 +151,7 @@ export function transition(inputState, event) {
 
 function expectedReviewStates(phase) {
   if (phase === PHASES.TECH_OPTIONS) return [STATES.TECH_OPTIONS_REVIEWING, STATES.TECH_OPTIONS_REWORK];
-  if (phase === PHASES.DISCUSS) return [STATES.DECISION_SPEC_REVIEWING, STATES.DECISION_SPEC_REWORK];
+  if (phase === PHASES.SPEC) return [STATES.DECISION_SPEC_REVIEWING, STATES.DECISION_SPEC_REWORK];
   throw makeError(ERROR_CODES.INVALID_TRANSITION, `invalid review phase ${phase}`);
 }
 
@@ -186,7 +186,7 @@ export function applyGateResult(inputState, { phase, reviewer, verdict, findings
     return withReason(state, `${phase}:${reviewer}:needs-user`);
   }
 
-  const key = phase === PHASES.TECH_OPTIONS ? 'tech_options' : 'discuss';
+  const key = phase === PHASES.TECH_OPTIONS ? 'tech_options' : 'spec';
   state.rework[key] += 1;
   if (state.rework[key] > REWORK_CAP) {
     state.current_state = STATES.NEEDS_USER;
@@ -247,7 +247,7 @@ export function applyReviewResults(inputState, { phase, results }) {
   const expectedStates = expectedReviewStates(phase);
   assertTransition(expectedStates.includes(state.current_state), `review:${phase}:pass`, state.current_state);
   clearActiveFindings(state);
-  if (phase === PHASES.DISCUSS) {
+  if (phase === PHASES.SPEC) {
     state.current_state = STATES.DECISION_SPEC_APPROVAL_PENDING;
     setGate(state, 'decision_spec_approval', state.human_artifacts.decision_spec);
   } else {
