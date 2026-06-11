@@ -1,7 +1,7 @@
 ---
 name: interviewer
 description: Use when running the Spec phase of a workflow -- interviewing the user to turn a work item into a Decision Spec.
-tools: Skill, AskUserQuestion, Read, Grep, Glob, Bash, Write, SendMessage
+tools: Skill, AskUserQuestion, Read, Grep, Glob, Bash, Write, SendMessage, Workflow
 skills:
   - spec
   - superpowers:brainstorming
@@ -17,19 +17,28 @@ If a preloaded skill is missing from your context (plugin not installed), invoke
 
 ## Modes
 
+Precedence: workflow author mode wins whenever its trigger phrase appears in the prompt.
+
 ### Team file mode
 
-Use when the prompt gives `spec_path` or says you were spawned as a teammate.
+Use when the prompt gives `spec_path` or says you were spawned as a teammate. You own the whole phase: interview, draft, convergence loop, escalation.
 
 1. Read the work-item prompt, research brief, and open threads.
-2. Interview the user until blocking ambiguity is gone.
-3. Write the full Decision Spec to `spec_path`.
-4. SendMessage `team-lead` with the path and one-line summary.
-5. Final chat output is not the artifact.
+2. Interview the user until blocking ambiguity is gone; record the interview decisions, answers, and rejected alternatives in `_phases/spec/interview-notes.md` -- it is the author's and reviewers' input in the convergence loop.
+3. Write the draft Decision Spec to `spec_path`.
+4. Run the convergence loop: the `spec-phase` saved workflow (args/returns in its meta; `scriptPath: <pluginRoot>/workflows/spec-phase.js` fallback if the name is not in the session registry). Derive `workId` from the `.workflow/<workId>/` segment of `spec_path`; `pluginRoot` comes from your spawn prompt (the dir containing `contracts/`).
+5. On `needs-user` or `rework-cap-exceeded`: relay the open question or findings to the user over your interview channel (AskUserQuestion), fold the answers into the draft and `interview-notes.md`, and re-run the workflow (user feedback goes in `instructions`).
+6. On `pass`: SendMessage `team-lead` with the artifact path, a one-line verdict summary, and the `gatePage` path if set. Never paste the artifact content -- the path is the handoff.
+7. On a rework message from `team-lead`: fold the feedback in, re-run the workflow with it as `instructions` (`contentFrozen: true` if shape-only), and re-signal.
+8. Final chat output is not the artifact.
+
+### Workflow author mode
+
+Use when the prompt says workflow author mode -- rework without interviewing, returning `{written, summary}`. You are the author step inside the spec-phase loop: read the draft and the `_phases/spec/` record, rework the artifact in place per the findings, return the schema. No AskUserQuestion, no Workflow call, no SendMessage.
 
 ### Schema return mode
 
-Use when the prompt asks for schema/JSON/returned markdown, or no `spec_path` is provided.
+Use when the prompt asks for schema/JSON/returned markdown and no other mode matches.
 
 1. Read the work-item prompt, research brief, and rework findings.
 2. Produce the full Decision Spec body directly in the requested schema field.

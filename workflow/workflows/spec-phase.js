@@ -1,7 +1,7 @@
 export const meta = {
-  name: 'tech-options-phase',
-  description: 'Run the Tech Options phase by delegation: analyst authors/reworks 02-TECH-OPTIONS.md, a format gate checks it, two independent reviewers judge it, rework loops until pass, needs-user, or the rework cap.',
-  whenToUse: 'Args: { workId: string, pluginRoot: string, instructions?: string, contentFrozen?: boolean }. Returns { status, rounds, verdicts, formatGate, artifact, gatePage }. status: pass | needs-user | rework-cap-exceeded | error. Stateless: agents read/write work-item files only.',
+  name: 'spec-phase',
+  description: 'Run the Spec convergence loop by delegation: author reworks the drafted 01-DECISION-SPEC.md from the interview record, a format gate checks it, two independent reviewers judge it, rework loops until pass, needs-user, or the rework cap. No interviewing happens inside.',
+  whenToUse: 'Args: { workId: string, pluginRoot: string, instructions?: string, contentFrozen?: boolean }. Returns { status, rounds, verdicts, formatGate, artifact, gatePage }. status: pass | needs-user | rework-cap-exceeded | error. Requires an existing draft plus _phases/spec/ notes. Stateless: agents read/write work-item files only.',
   phases: [{ title: 'Author' }, { title: 'Format gate' }, { title: 'Review' }],
 };
 
@@ -45,8 +45,8 @@ const PAGE_SCHEMA = {
 };
 
 const REVIEWERS = [
-  { name: 'reuse-coverage', agentType: 'workflow:reuse-coverage-reviewer' },
-  { name: 'fit-risk', agentType: 'workflow:fit-risk-reviewer' },
+  { name: 'intent', agentType: 'workflow:intent-reviewer' },
+  { name: 'testability', agentType: 'workflow:testability-reviewer' },
 ];
 
 const a = typeof args === 'string' ? JSON.parse(args) : (args || {});
@@ -54,23 +54,22 @@ if (!a.workId) return { error: 'no workId provided' };
 if (!a.pluginRoot) return { error: 'no pluginRoot provided (the workflow plugin dir containing contracts/)' };
 
 const root = `.workflow/${a.workId}`;
-const artifact = `${root}/02-TECH-OPTIONS.md`;
-const specPath = `${root}/01-DECISION-SPEC.md`;
+const artifact = `${root}/01-DECISION-SPEC.md`;
+const phaseDir = `${root}/_phases/spec`;
 const mdsmithConfig = `${a.pluginRoot}/contracts/mdsmith.yml`;
-const contractJson = `${a.pluginRoot}/contracts/tech-options.json`;
-const reviewsDir = `${root}/_reviews/tech_options`;
-const phaseDir = `${root}/_phases/tech_options`;
+const contractJson = `${a.pluginRoot}/contracts/decision-spec.json`;
+const reviewsDir = `${root}/_reviews/spec`;
 
 const frozenRule = a.contentFrozen
-  ? 'CONTENT IS FROZEN: keep every decision, option, score, and fact exactly as it is; change only shape and language (structure, tables, lists, sentence length). Record the rework in the Approval record.'
-  : 'Preserve approved content unless rework findings explicitly contradict it.';
+  ? 'CONTENT IS FROZEN: keep every decision, constraint, criterion, and fact exactly as it is; change only shape and language (structure, tables, lists, sentence length). Record the rework in the Approval record.'
+  : 'Preserve interview-sourced content unless rework findings explicitly contradict it.';
 
 function authorPrompt(notes) {
-  return `You run the Tech Options phase for work item ${a.workId}. The tech-options skill preloaded in your context is the phase contract; follow it.
-Read the approved Decision Spec at ${specPath}. If ${artifact} exists, rework it in place; otherwise write it fresh (this path is your tech_options_path).
+  return `You rework the Decision Spec for work item ${a.workId}. The spec skill preloaded in your context is the phase contract; follow it. This is workflow author mode: do NOT interview anyone, do NOT use AskUserQuestion, do NOT run any Workflow yourself.
+Your inputs are the existing draft ${artifact} plus the interview record at ${phaseDir}/interview-notes.md and ${phaseDir}/research-brief.md. Rework the draft in place to satisfy the contract.
 ${frozenRule}
 ${notes ? `Rework input — address every item:\n${notes}` : ''}
-If the Decision Spec is missing, stop and return written=false with the reason in summary. Do not SendMessage anyone; just write the file. Return {written, summary}.`;
+If the draft is missing, stop and return written=false with the reason in summary. Do not SendMessage anyone; just write the file. Return {written, summary}.`;
 }
 
 function gatePrompt() {
@@ -81,13 +80,13 @@ Count MDS020 diagnostics as structureViolations and all other MDS* diagnostics a
 }
 
 function reviewPrompt(reviewer) {
-  return `Review ${artifact} against the Decision Spec at ${specPath}, following your reviewer checklist and the tech-options skill preloaded in your context.
+  return `Review ${artifact} against the interview record (${phaseDir}/interview-notes.md, ${phaseDir}/research-brief.md), following your reviewer checklist and the spec skill preloaded in your context.
 Write your full review markdown to ${reviewsDir}/${reviewer.name}.md (create dirs as needed).
 Return {verdict, findings}: verdict is exactly pass, needs-rework, or needs-user; findings lists each actionable defect (empty when pass).`;
 }
 
 function pagePrompt(verdicts) {
-  return `Optional step — render an HTML gate page for the passed Tech Options artifact. First invoke the Skill tool with skill "experimental:communicating-in-html"; if that skill is unavailable, return rendered=false and do nothing else (no error, no substitute output).
+  return `Optional step — render an HTML gate page for the passed Decision Spec. First invoke the Skill tool with skill "experimental:communicating-in-html"; if that skill is unavailable, return rendered=false and do nothing else (no error, no substitute output).
 Following that skill, write one self-contained offline HTML page to ${phaseDir}/gate.html: the full artifact ${artifact} embedded for review, the reviewer verdicts, and approve/rework choices with a copy-back token.
 Verdicts: ${JSON.stringify(verdicts)}. Do not modify the artifact. Return {rendered, path}.`;
 }
@@ -98,7 +97,7 @@ let verdicts = {};
 
 for (let round = 0; ; round++) {
   const author = await agent(authorPrompt(notes), {
-    label: `author r${round}`, phase: 'Author', schema: AUTHOR_SCHEMA, agentType: 'workflow:tech-options-analyst',
+    label: `author r${round}`, phase: 'Author', schema: AUTHOR_SCHEMA, agentType: 'workflow:interviewer',
   });
   if (!author?.written) return { status: 'error', rounds: round, detail: author?.summary || 'author did not write the artifact' };
 

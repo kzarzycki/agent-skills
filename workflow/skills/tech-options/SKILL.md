@@ -11,13 +11,11 @@ This file is the phase contract. Whoever executes the phase -- the analyst agent
 
 ## Execution
 
-Delegated by default: the engine stays orchestrator and runs this plugin's saved workflow
-`Workflow({ name: 'tech-options-phase', args: { workId, pluginRoot, instructions?, contentFrozen? } })`
-(`pluginRoot` = the installed plugin dir containing `contracts/`; fall back to
-`scriptPath: <pluginRoot>/workflows/tech-options-phase.js` when the name is unregistered).
-The workflow runs the whole autonomous loop -- analyst authors `02-TECH-OPTIONS.md`, the format
-gate checks it, both reviewers judge it independently in parallel, rework cycles until pass /
-`needs-user` / the rework cap -- and returns `{ status, rounds, verdicts, formatGate, artifact }`.
+Delegated by default: the engine stays orchestrator and runs this plugin's `tech-options-phase`
+saved workflow (args/returns in its meta; `scriptPath` fallback when the name is not in the
+session registry). The workflow runs the whole autonomous loop -- analyst authors
+`02-TECH-OPTIONS.md`, the format gate checks it, both reviewers judge it independently in
+parallel, rework cycles -- until it returns `pass`, `needs-user`, or the rework cap.
 The engine never authors or reviews in its own context; it only presents the result at the
 user gate. Fallbacks, same contract: spawn the analyst as a teammate (no Workflow tool), or
 run in-situ (no agents at all).
@@ -40,7 +38,7 @@ run in-situ (no agents at all).
 
 ## Format gate
 
-Before the review gate: `mdsmith check -c <plugin>/contracts/mdsmith.yml <work-item>/02-TECH-OPTIONS.md`, where `<plugin>` = the installed plugin root (the dir containing `contracts/`) and `<work-item>` = `.workflow/<id>/`. Install hints and rule semantics are in the config header. MDS020 = contract violation, fix first. MDS023/MDS036/MDS056 = language budget, rework input. Beyond section names, mdsmith enforces document shape: line 1 is an H1 title, sections are H2 in contract order, no YAML frontmatter, no extra H2s. Gate owner: the author runs the gate pre-review; reviewers verify it, do not own it. Without mdsmith installed, verify sections manually against the contract JSON.
+Before the review gate: `mdsmith check -c <plugin>/contracts/mdsmith.yml <work-item>/02-TECH-OPTIONS.md`, where `<plugin>` = the installed plugin root (the dir containing `contracts/`) and `<work-item>` = `.workflow/<id>/`. Install hints and rule semantics are in the config header. MDS020 = contract violation, fix first. MDS023/MDS036/MDS056 = language budget, rework input. Beyond section names, mdsmith enforces document shape: line 1 is an H1 title, sections are H2 in contract order, no YAML frontmatter, no extra H2s. Gate owner: the phase loop runs the gate as its own step after each author round and routes violations back to the author; reviewers verify it, do not own it. Without mdsmith installed, verify sections manually against the contract JSON.
 
 ## Scorecard
 
