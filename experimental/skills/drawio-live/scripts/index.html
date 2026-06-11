@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}} — live collab</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: sans-serif; }
+  #bar { height: 32px; display: flex; align-items: center; gap: 12px;
+         padding: 0 12px; background: #2d323e; color: #ddd; font-size: 13px; }
+  #status { color: #9ecb7d; }
+  #bar button { font-size: 12px; }
+  iframe { width: 100%; height: calc(100% - 32px); border: 0; display: block; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>{{TITLE}}</b>
+  <span id="status">connecting…</span>
+  <button onclick="forceReload()">⟳ reload from server</button>
+  <span style="margin-left:auto;opacity:.6">autosaves to server · agent edits load in live</span>
+</div>
+<iframe id="ed" src="{{EDITOR_URL}}?embed=1&proto=json&spin=1"></iframe>
+<script>
+const ed = document.getElementById('ed').contentWindow;
+const status = document.getElementById('status');
+let etag = null;          // last server etag we are in sync with
+let posting = false;
+
+function say(msg, ok = true) {
+  status.textContent = msg;
+  status.style.color = ok ? '#9ecb7d' : '#e8a2a2';
+}
+
+async function fetchDiagram() {
+  const r = await fetch('/diagram');
+  etag = r.headers.get('X-Etag');
+  return await r.text();
+}
+
+async function pushDiagram(xml) {
+  posting = true;
+  try {
+    const r = await fetch('/diagram', { method: 'POST', body: xml });
+    if (r.ok) { etag = (await r.json()).etag; say('saved ' + new Date().toLocaleTimeString()); }
+    else say('save failed: HTTP ' + r.status, false);
+  } catch (e) { say('save failed: ' + e, false); }
+  posting = false;
+}
+
+async function forceReload() {
+  const xml = await fetchDiagram();
+  ed.postMessage(JSON.stringify({ action: 'load', xml: xml, autosave: 1, modified: 0 }), '*');
+  say('reloaded from server');
+}
+
+window.addEventListener('message', async (evt) => {
+  let msg;
+  try { msg = JSON.parse(evt.data); } catch { return; }
+  if (msg.event === 'init') {
+    const xml = await fetchDiagram();
+    ed.postMessage(JSON.stringify({ action: 'load', xml: xml, autosave: 1, modified: 0 }), '*');
+    say('loaded');
+  } else if (msg.event === 'autosave' || msg.event === 'save') {
+    await pushDiagram(msg.xml);
+    if (msg.event === 'save')
+      ed.postMessage(JSON.stringify({ action: 'status', message: 'saved to server', modified: false }), '*');
+  }
+});
+
+// Poll for external (agent) edits. Uses the 'load' action, NOT 'merge':
+// merge does not apply value/label changes to existing cells (verified),
+// so load is the only correct way to reflect arbitrary file edits.
+setInterval(async () => {
+  if (posting || etag === null) return;
+  try {
+    const v = await (await fetch('/version')).json();
+    if (v.etag !== etag) {
+      const xml = await fetchDiagram();   // updates etag
+      ed.postMessage(JSON.stringify({ action: 'load', xml: xml, autosave: 1, modified: 0 }), '*');
+      say('loaded agent edit ' + new Date().toLocaleTimeString());
+    }
+  } catch (e) { say('poll failed: ' + e, false); }
+}, 1500);
+</script>
+</body>
+</html>
