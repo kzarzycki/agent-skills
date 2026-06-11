@@ -204,6 +204,71 @@ test('workflow advance regenerates Tech Options after review rework', async () =
   }
 });
 
+test('review evidence writes are filtered to known reviewers before validation', async () => {
+  const baseDir = await tempRoot();
+  try {
+    const { workId, paths } = await seededWork(baseDir);
+    const strayAdapter = {
+      ...adapter,
+      async reviewDecisionSpec() {
+        const review = await adapter.reviewDecisionSpec();
+        return {
+          results: [...review.results, { reviewer: 'rogue', verdict: 'pass', findings: [] }],
+          markdownByReviewer: { ...review.markdownByReviewer, rogue: '# Rogue\n' },
+        };
+      },
+    };
+    await applyWorkflowEvent({ baseDir, workId, expectedRevision: 0, event: 'approve_research_buckets', payload: { bucketIds: ['skills'] } });
+    await advanceWorkflow({ baseDir, workId, adapter: strayAdapter });
+    await advanceWorkflow({ baseDir, workId, adapter: strayAdapter });
+    await assert.rejects(
+      () => advanceWorkflow({ baseDir, workId, adapter: strayAdapter }),
+      error => error.code === 'invalid-transition' && /unknown reviewer rogue/.test(error.message),
+    );
+    const evidence = (await readdir(join(paths.reviewsDir, 'discuss'))).sort();
+    assert.deepEqual(evidence, ['intent.md', 'testability.md'], 'no stray evidence file for unknown reviewer');
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('resume_rework recovers a needs-user work item into the rework loop', async () => {
+  const baseDir = await tempRoot();
+  try {
+    const { workId, paths } = await seededWork(baseDir);
+    const needsUserAdapter = {
+      ...adapter,
+      async reviewDecisionSpec() {
+        return {
+          results: [
+            { reviewer: 'intent', verdict: 'needs-user', findings: ['Pick the runtime.'] },
+            { reviewer: 'testability', verdict: 'pass', findings: [] },
+          ],
+          markdownByReviewer: { intent: '# Intent\n\nneeds-user\n', testability: '# Testability\n\npass\n' },
+        };
+      },
+    };
+    await applyWorkflowEvent({ baseDir, workId, expectedRevision: 0, event: 'approve_research_buckets', payload: { bucketIds: ['skills'] } });
+    await advanceWorkflow({ baseDir, workId, adapter: needsUserAdapter });
+    await advanceWorkflow({ baseDir, workId, adapter: needsUserAdapter });
+    await advanceWorkflow({ baseDir, workId, adapter: needsUserAdapter });
+    let state = await loadState(paths.stateFile);
+    assert.equal(state.current_state, STATES.NEEDS_USER);
+    assert.equal(state.pending_gate.kind, 'discuss_needs_user');
+
+    const resumed = await applyWorkflowEvent({ baseDir, workId, expectedRevision: state.revision, event: 'resume_rework', payload: { notes: ['Runtime: node 22.'] } });
+    assert.equal(resumed.state, STATES.DECISION_SPEC_REWORK);
+    state = await loadState(paths.stateFile);
+    assert.deepEqual(state.blockers, ['Runtime: node 22.']);
+    assert.equal(state.pending_gate, null);
+
+    const advanced = await advanceWorkflow({ baseDir, workId, adapter });
+    assert.equal(advanced.state, STATES.DECISION_SPEC_REVIEWING);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test('workflow advance regenerates Decision Spec after review rework', async () => {
   const baseDir = await tempRoot();
   try {

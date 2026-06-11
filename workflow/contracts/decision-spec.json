@@ -1,5 +1,8 @@
 {
   "filename": "01-DECISION-SPEC.md",
+  "title": "H1 on line 1, no YAML frontmatter",
+  "headingLevel": 2,
+  "closed": true,
   "sections": [
     "Goal",
     "Question / problem",

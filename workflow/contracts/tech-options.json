@@ -1,5 +1,8 @@
 {
   "filename": "02-TECH-OPTIONS.md",
+  "title": "H1 on line 1, no YAML frontmatter",
+  "headingLevel": 2,
+  "closed": true,
   "sections": [
     "Needs",
     "Options considered",

@@ -3,10 +3,16 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createWorkItemPaths, ensureWorkItem, writeHumanArtifact, writePhaseInternal, writeReviewInternal } from '../index.js';
+import { createWorkItemPaths, createWorkItemScaffold, ensureWorkItem, writeHumanArtifact, writePhaseInternal, writeReviewInternal } from '../index.js';
 
 async function tempRoot() {
   return mkdtemp(join(tmpdir(), 'workflow-artifacts-'));
+}
+
+const readContract = async name => JSON.parse(await readFile(new URL(`../../../workflow/contracts/${name}`, import.meta.url), 'utf8'));
+
+function sectionHeadings(markdown) {
+  return [...markdown.matchAll(/^## (.+)$/gm)].map(match => match[1]);
 }
 
 test('default paths use .workflow work item state location', () => {
@@ -47,6 +53,44 @@ test('human artifacts are create-only by default', async () => {
     await assert.rejects(() => writeHumanArtifact(paths, { ordinal: '01', slug: 'DECISION-SPEC', content: 'b' }), error => error.code === 'EEXIST');
     await writeHumanArtifact(paths, { ordinal: '01', slug: 'DECISION-SPEC', content: 'b', overwrite: true });
     assert.equal(await readFile(join(paths.root, '01-DECISION-SPEC.md'), 'utf8'), 'b');
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('createWorkItemScaffold writes contract-conform stubs with state', async () => {
+  const baseDir = await tempRoot();
+  try {
+    const result = await createWorkItemScaffold({ baseDir, workId: '2026-06-11-scaffold', prompt: 'Build the thing.' });
+    assert.equal(result.created, true);
+    assert.equal(result.state.current_state, 'research_proposal_pending');
+
+    const spec = await readFile(join(result.paths.root, '01-DECISION-SPEC.md'), 'utf8');
+    assert.match(spec.split('\n')[0], /^# /, 'line 1 is an H1 title');
+    assert.doesNotMatch(spec, /^---/, 'no YAML frontmatter');
+    assert.deepEqual(sectionHeadings(spec), (await readContract('decision-spec.json')).sections);
+    assert.match(spec, /Build the thing\./);
+
+    const tech = await readFile(join(result.paths.root, '02-TECH-OPTIONS.md'), 'utf8');
+    assert.match(tech.split('\n')[0], /^# /, 'line 1 is an H1 title');
+    assert.doesNotMatch(tech, /^---/, 'no YAML frontmatter');
+    assert.deepEqual(sectionHeadings(tech), (await readContract('tech-options.json')).sections);
+
+    const again = await createWorkItemScaffold({ baseDir, workId: '2026-06-11-scaffold', prompt: 'Different.' });
+    assert.equal(again.created, false);
+    assert.match(await readFile(join(result.paths.root, '01-DECISION-SPEC.md'), 'utf8'), /Build the thing\./);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test('createWorkItemScaffold can skip the tech options stub', async () => {
+  const baseDir = await tempRoot();
+  try {
+    const result = await createWorkItemScaffold({ baseDir, workId: '2026-06-11-discuss-only', prompt: 'Discuss only.', includeTechOptionsStub: false });
+    assert.equal(result.created, true);
+    const rootEntries = (await readdir(result.paths.root)).sort();
+    assert.deepEqual(rootEntries, ['01-DECISION-SPEC.md', '_evidence', '_phases', '_reviews', '_state']);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

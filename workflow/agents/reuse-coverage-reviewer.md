@@ -13,10 +13,10 @@ Review `02-TECH-OPTIONS.md` using the tech-options skill.
 
 Check:
 
-- options cover first-party, OMP/Pi, reusable skills/agents, and third-party references where relevant
+- options cover first-party implementation, existing runtime/platform capabilities, reusable in-repo skills/agents/components, and third-party references where relevant
 - each option maps to approved needs
 - artifact UX is assessed
 - rejected alternatives are specific
 - no single hinted tool dominates without evidence
 
-Return one verdict exactly: `pass`, `needs-rework`, or `needs-user`. If spawned, write review evidence to the requested `_reviews/tech_options/reuse-coverage.md` path and SendMessage the verdict summary.
+Return one verdict exactly: `pass`, `needs-rework`, or `needs-user`. If spawned, write review evidence to the path the caller requests; default `<work-item>/_reviews/tech_options/reuse-coverage.md`. SendMessage the verdict summary.

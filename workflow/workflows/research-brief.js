@@ -1,7 +1,7 @@
 export const meta = {
   name: 'research-brief',
   description: 'Research filter for the Discuss phase. Fans out research angles on a work item and returns a short brief plus the questions for the user.',
-  whenToUse: 'Args: { prompt: string }. Returns { brief, openThreads }.',
+  whenToUse: 'Args: { prompt: string, buckets?: string[] }. One research agent per bucket when given; three default angles otherwise. Returns { brief, openThreads }.',
   phases: [{ title: 'Research' }, { title: 'Synthesize' }],
 };
 
@@ -28,10 +28,15 @@ const FIND = {
   },
 };
 
+const buckets = Array.isArray(a.buckets) && a.buckets.length > 0 ? a.buckets : null;
+const angles = buckets
+  ? buckets.map((lens, i) => ({ id: `bucket-${i + 1}`, lens }))
+  : ANGLES;
+
 phase('Research');
-const perAngle = await parallel(ANGLES.map(x => () => agent(
+const perAngle = await parallel(angles.map(x => () => agent(
   `Work item:\n${prompt}\n\nResearch this angle: ${x.lens}\nReturn concrete findings: names, versions, file paths, facts.`,
-  { label: `research:${x.id}`, phase: 'Research', schema: FIND, agentType: 'Explore' },
+  { label: `research:${x.id}`, phase: 'Research', schema: FIND, agentType: 'explore' },
 )));
 
 phase('Synthesize');

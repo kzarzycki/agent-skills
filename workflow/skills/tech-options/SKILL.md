@@ -7,15 +7,28 @@ description: Use when approved needs require comparing implementation approaches
 
 Compare ways to satisfy the approved Decision Spec. Start from approved needs, not a favored tool.
 
-This file is the phase contract. Whoever executes the phase -- the analyst agent, the workflow engine in-situ, or the OMP driver -- follows it; executors add their own run/return mechanics, not rules.
+This file is the phase contract. Whoever executes the phase -- the analyst agent or the workflow engine in-situ -- follows it; executors add their own run/return mechanics, not rules.
+
+## Execution
+
+Delegated by default: the engine stays orchestrator and runs this plugin's saved workflow
+`Workflow({ name: 'tech-options-phase', args: { workId, pluginRoot, instructions?, contentFrozen? } })`
+(`pluginRoot` = the installed plugin dir containing `contracts/`; fall back to
+`scriptPath: <pluginRoot>/workflows/tech-options-phase.js` when the name is unregistered).
+The workflow runs the whole autonomous loop -- analyst authors `02-TECH-OPTIONS.md`, the format
+gate checks it, both reviewers judge it independently in parallel, rework cycles until pass /
+`needs-user` / the rework cap -- and returns `{ status, rounds, verdicts, formatGate, artifact }`.
+The engine never authors or reviews in its own context; it only presents the result at the
+user gate. Fallbacks, same contract: spawn the analyst as a teammate (no Workflow tool), or
+run in-situ (no agents at all).
 
 ## Contract
 
 - Input: approved `01-DECISION-SPEC.md`.
 - Output: one evolving root human artifact, `02-TECH-OPTIONS.md`.
-- Research multiple option families: first-party implementation, existing OMP/Pi capabilities, reusable skills/agents, and third-party packages as references.
-- Treat third-party workflow packages as references only until safety audit, compatibility check, wrapper design, and user approval.
-- Include artifact UX assessment: root numbered human artifacts, underscore internals, no routine history.
+- Research multiple option families: first-party implementation, capabilities of the existing runtime/platform, reusable in-repo skills/agents/components, and third-party packages as references.
+- Treat third-party workflow packages as references only until safety audit, compatibility check, wrapper design, and user approval; the same rule applies to any third-party dependency.
+- Include artifact UX assessment: how each option affects the user-facing artifact experience. The work-item layout rule stands: root numbered human artifacts, underscore internals, no routine history.
 - If findings change the product need, trigger a focused Discuss addendum instead of silently changing the spec.
 
 ## Artifact shape and language
@@ -27,20 +40,14 @@ This file is the phase contract. Whoever executes the phase -- the analyst agent
 
 ## Format gate
 
-Before the review gate: `mdsmith check -c ../../contracts/mdsmith.yml 02-TECH-OPTIONS.md` (config relative to this skill's base dir; install hints and rule semantics in the config header). MDS020 = contract violation, fix first. MDS023/MDS036/MDS056 = language budget, rework input. Without mdsmith installed, verify sections manually against the contract JSON.
+Before the review gate: `mdsmith check -c <plugin>/contracts/mdsmith.yml <work-item>/02-TECH-OPTIONS.md`, where `<plugin>` = the installed plugin root (the dir containing `contracts/`) and `<work-item>` = `.workflow/<id>/`. Install hints and rule semantics are in the config header. MDS020 = contract violation, fix first. MDS023/MDS036/MDS056 = language budget, rework input. Beyond section names, mdsmith enforces document shape: line 1 is an H1 title, sections are H2 in contract order, no YAML frontmatter, no extra H2s. Gate owner: the author runs the gate pre-review; reviewers verify it, do not own it. Without mdsmith installed, verify sections manually against the contract JSON.
 
 ## Scorecard
 
-Score each option against approved needs:
-
-| Need | What to check |
-|---|---|
-| Limited human artifacts | Does it avoid review-packet sprawl? |
-| Hidden internals | Can runtime files stay under underscore dirs? |
-| Approval gates | Can it pause for human decisions? |
-| Resumability | Can it restart from durable state? |
-| Model-agent orchestration | Can OMP steer agents/filters programmatically? |
-| Maintainability | Is the surface small and first-party enough? |
+Derive the needs from the approved Decision Spec -- its Constraints and Acceptance criteria
+sections, plus any need the spec's Goal makes explicit. One scorecard row per need, one column
+per option, each cell a short verifiable judgment. Do not reuse another work item's needs list;
+if the spec yields fewer than three needs, that is a Discuss gap -- raise it instead of padding.
 
 ## Review gate
 
@@ -51,4 +58,4 @@ Run fixed reviewers. Their checklists are normative in this plugin's `agents/<re
 | Reuse/Coverage Reviewer (`agents/reuse-coverage-reviewer.md`) | Candidate breadth, source coverage, needs mapping |
 | Fit/Risk Reviewer (`agents/fit-risk-reviewer.md`) | Capability fit, lock-in, safety/audit risk, reversibility |
 
-Verdicts are exactly: `pass`, `needs-rework`, `needs-user`.
+Verdicts are exactly: `pass`, `needs-rework`, `needs-user`. Semantics: `needs-user` = a product question only the user can answer, or a contradiction with user-stated intent; `needs-rework` = a fixable defect. Aggregation: any `needs-user` wins, else any `needs-rework`, else `pass`. Rework cap: 2 per phase; exceeding it escalates to the user.

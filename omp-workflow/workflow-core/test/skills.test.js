@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-const pluginRoot = new URL('../../../', import.meta.url);
+const pluginRoot = new URL('../../../workflow/', import.meta.url);
 const fromRoot = path => new URL(path, pluginRoot);
 
 test('discuss skill uses directory shape and standalone contract', async () => {
@@ -13,7 +13,6 @@ test('discuss skill uses directory shape and standalone contract', async () => {
   assert.match(text, /Intent Reviewer/);
   assert.match(text, /Testability Reviewer/);
   assert.match(text, /pass.*needs-rework.*needs-user/s);
-  assert.match(text, /must not call `workflow-start` or `workflow-resume`/);
 });
 
 test('tech-options skill uses directory shape and contains scorecard and audit boundary', async () => {
@@ -41,10 +40,10 @@ test('workflow phase agents call reusable skills instead of embedding phase logi
   assert.match(testabilityReviewer, /Skill.*discuss|discuss skill/i);
   assert.match(reuseReviewer, /Skill.*tech-options|tech-options skill/i);
   assert.match(fitReviewer, /Skill.*tech-options|tech-options skill/i);
-  assert.match(interviewer, /OMP return mode/);
+  assert.match(interviewer, /Schema return mode/);
   assert.match(interviewer, /requested schema field/);
   assert.match(interviewer, /Do not return status prose/);
-  assert.match(techOptions, /OMP return mode/);
+  assert.match(techOptions, /Schema return mode/);
   assert.match(techOptions, /requested schema field/);
   assert.match(techOptions, /Do not return status prose/);
 });

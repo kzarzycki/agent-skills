@@ -1,4 +1,4 @@
-import { createWorkItemPaths, getResumeAction, loadState, renderStatus } from './workflow-core/index.js';
+import { createWorkItemPaths, getResumeAction, loadState, renderStatus } from '../workflow-core/index.js';
 
 export const meta = {
   name: 'workflow-resume',

@@ -1,4 +1,4 @@
-import { applyWorkflowEvent } from './workflow-core/index.js';
+import { applyWorkflowEvent } from '../workflow-core/index.js';
 
 export const meta = {
   name: 'workflow-event',

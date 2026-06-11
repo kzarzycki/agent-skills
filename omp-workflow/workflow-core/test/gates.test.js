@@ -76,6 +76,47 @@ test('pass clears active blockers', () => {
   assert.deepEqual(state.open_questions, []);
 });
 
+test('resume_rework returns a needs-user verdict to decision spec rework with user notes', () => {
+  let state = createInitialState({ workId: 'x' });
+  state.current_state = STATES.DECISION_SPEC_REVIEWING;
+  state = applyGateResult(state, { phase: PHASES.DISCUSS, reviewer: 'intent', verdict: 'needs-user', findings: ['Choose runtime'] });
+  assert.equal(state.current_state, STATES.NEEDS_USER);
+  state = transition(state, { type: 'resume_rework', notes: ['Runtime: node 22'] });
+  assert.equal(state.current_state, STATES.DECISION_SPEC_REWORK);
+  assert.equal(state.pending_gate, null);
+  assert.deepEqual(state.blockers, ['Runtime: node 22']);
+});
+
+test('resume_rework resets the rework counter after a cap-exceeded gate', () => {
+  let state = createInitialState({ workId: 'x' });
+  state.current_phase = PHASES.TECH_OPTIONS;
+  state.current_state = STATES.TECH_OPTIONS_REVIEWING;
+  for (const finding of ['a', 'b', 'c']) {
+    state = applyGateResult(state, { phase: PHASES.TECH_OPTIONS, reviewer: 'fit-risk', verdict: 'needs-rework', findings: [finding] });
+  }
+  assert.equal(state.current_state, STATES.NEEDS_USER);
+  assert.equal(state.pending_gate.kind, 'tech_options_rework_cap_exceeded');
+  assert.equal(state.rework.tech_options, 3);
+  state = transition(state, { type: 'resume_rework' });
+  assert.equal(state.current_state, STATES.TECH_OPTIONS_REWORK);
+  assert.equal(state.rework.tech_options, 0);
+  assert.equal(state.pending_gate, null);
+});
+
+test('resume_rework is invalid outside needs_user', () => {
+  const state = createInitialState({ workId: 'x' });
+  assert.throws(() => transition(state, { type: 'resume_rework' }), error => error.code === 'invalid-transition');
+});
+
+test('denied research sets a recoverable needs-user gate', () => {
+  let state = transition(createInitialState({ workId: 'x' }), { type: 'deny_all_research' });
+  assert.equal(state.current_state, STATES.NEEDS_USER);
+  assert.equal(state.pending_gate.kind, 'discuss_needs_user');
+  state = transition(state, { type: 'resume_rework', notes: ['Skip research; user supplied the context directly.'] });
+  assert.equal(state.current_state, STATES.DECISION_SPEC_REWORK);
+  assert.deepEqual(state.blockers, ['Skip research; user supplied the context directly.']);
+});
+
 test('tech options can trigger and leave discuss addendum', () => {
   let state = createInitialState({ workId: 'x' });
   state.current_state = STATES.TECH_OPTIONS_REVIEWING;

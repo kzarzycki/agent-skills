@@ -14,7 +14,7 @@ import {
   saveState,
   STATES,
   writeHumanArtifact,
-} from '../workflows/workflow-core/index.js';
+} from '../workflow-core/index.js';
 
 const prompt = 'Build a small browser tic-tac-toe game for two local players.';
 const baseDir = join(dirname(fileURLToPath(import.meta.url)), 'runs', 'tic-tac-toe-workflow');

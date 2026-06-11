@@ -1,5 +1,5 @@
 import { transition } from './reducer.js';
-import { STATES, ERROR_CODES, makeError, PHASES } from './schema.js';
+import { STATES, ERROR_CODES, makeError, PHASES, REVIEWERS_BY_PHASE } from './schema.js';
 import { createWorkItemPaths, writeHumanArtifact, writePhaseInternal, writeReviewInternal } from './artifacts.js';
 import { loadState, saveState } from './state-store.js';
 import { applyReviewResults } from './reducer.js';
@@ -12,6 +12,7 @@ const HUMAN_EVENTS = new Set([
   'approve_tech_options_research',
   'approve_discuss_addendum',
   'approve_tech_options',
+  'resume_rework',
 ]);
 
 function invalid(message) {
@@ -52,6 +53,14 @@ async function persist(paths, state) {
   return saveState(paths.stateFile, state, { expectedRevision: state.revision });
 }
 
+async function writeReviewEvidence(paths, phase, markdownByReviewer) {
+  const allowed = new Set(REVIEWERS_BY_PHASE[phase]);
+  for (const [reviewer, markdown] of Object.entries(markdownByReviewer || {})) {
+    if (!allowed.has(reviewer)) continue;
+    await writeReviewInternal(paths, { phase, reviewer, content: markdown });
+  }
+}
+
 export async function advanceWorkflow({ baseDir = '.workflow', workId, adapter }) {
   const paths = createWorkItemPaths({ baseDir, workId });
   const state = await loadState(paths.stateFile);
@@ -81,9 +90,7 @@ export async function advanceWorkflow({ baseDir = '.workflow', workId, adapter }
 
   if (state.current_state === STATES.DECISION_SPEC_REVIEWING) {
     const review = await requireAdapter(adapter, 'reviewDecisionSpec', { state, paths });
-    for (const [reviewer, markdown] of Object.entries(review.markdownByReviewer || {})) {
-      await writeReviewInternal(paths, { phase: PHASES.DISCUSS, reviewer, content: markdown });
-    }
+    await writeReviewEvidence(paths, PHASES.DISCUSS, review.markdownByReviewer);
     const saved = await persist(paths, applyReviewResults(state, { phase: PHASES.DISCUSS, results: review.results }));
     return resultFor(workId, saved, { wrote: '_reviews/discuss/*.md' });
   }
@@ -105,9 +112,7 @@ export async function advanceWorkflow({ baseDir = '.workflow', workId, adapter }
 
   if (state.current_state === STATES.TECH_OPTIONS_REVIEWING) {
     const review = await requireAdapter(adapter, 'reviewTechOptions', { state, paths });
-    for (const [reviewer, markdown] of Object.entries(review.markdownByReviewer || {})) {
-      await writeReviewInternal(paths, { phase: PHASES.TECH_OPTIONS, reviewer, content: markdown });
-    }
+    await writeReviewEvidence(paths, PHASES.TECH_OPTIONS, review.markdownByReviewer);
     const saved = await persist(paths, applyReviewResults(state, { phase: PHASES.TECH_OPTIONS, results: review.results }));
     return resultFor(workId, saved, { wrote: '_reviews/tech_options/*.md' });
   }

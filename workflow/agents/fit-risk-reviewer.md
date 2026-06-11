@@ -19,4 +19,4 @@ Check:
 - risks are concrete enough for a user decision
 - recommendation does not create human-facing artifact sprawl
 
-Return one verdict exactly: `pass`, `needs-rework`, or `needs-user`. If spawned, write review evidence to the requested `_reviews/tech_options/fit-risk.md` path and SendMessage the verdict summary.
+Return one verdict exactly: `pass`, `needs-rework`, or `needs-user`. If spawned, write review evidence to the path the caller requests; default `<work-item>/_reviews/tech_options/fit-risk.md`. SendMessage the verdict summary.

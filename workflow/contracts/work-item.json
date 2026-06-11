@@ -3,6 +3,9 @@
   "workIdConvention": "<yyyy-mm-dd>-<slug>",
   "humanArtifactPattern": "NN-NAME.md",
   "underscoreDirs": ["_state", "_phases", "_reviews", "_evidence"],
+  "stateFile": "_state/state.json",
+  "reviewEvidencePattern": "_reviews/<phase>/<reviewer>.md",
+  "phases": ["discuss", "tech_options", "planning"],
   "gateVerdicts": ["pass", "needs-rework", "needs-user"],
   "reviewersByPhase": {
     "discuss": ["intent", "testability"],

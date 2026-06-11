@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { GATE_VERDICTS, REVIEWERS_BY_PHASE, REWORK_CAP } from '../schema.js';
-import { createWorkItemPaths } from '../artifacts.js';
+import { GATE_VERDICTS, PHASES, REVIEWERS_BY_PHASE, REWORK_CAP } from '../schema.js';
+import { REVIEW_EVIDENCE_PATTERN, STATE_FILE_RELATIVE, createWorkItemPaths } from '../artifacts.js';
 
-const pluginRoot = new URL('../../../', import.meta.url);
+const pluginRoot = new URL('../../../workflow/', import.meta.url);
 const fromRoot = path => new URL(path, pluginRoot);
 const readJson = async path => JSON.parse(await readFile(fromRoot(path), 'utf8'));
 
@@ -16,6 +16,15 @@ test('work-item contract mirrors schema constants', async () => {
     tech_options: [...REVIEWERS_BY_PHASE.tech_options],
   });
   assert.equal(contract.reworkCap, REWORK_CAP);
+  assert.deepEqual(contract.phases, Object.values(PHASES));
+});
+
+test('work-item contract names the state file and review evidence layout', async () => {
+  const contract = await readJson('contracts/work-item.json');
+  assert.equal(contract.stateFile, STATE_FILE_RELATIVE);
+  assert.equal(contract.reviewEvidencePattern, REVIEW_EVIDENCE_PATTERN);
+  const paths = createWorkItemPaths({ workId: '2026-01-01-sample' });
+  assert.ok(paths.stateFile.endsWith(`/${STATE_FILE_RELATIVE}`), 'stateFile suffix matches contract');
 });
 
 test('work-item contract mirrors createWorkItemPaths layout', async () => {
@@ -38,6 +47,19 @@ test('artifact contracts declare filenames and section counts', async () => {
   const techOptions = await readJson('contracts/tech-options.json');
   assert.equal(techOptions.filename, '02-TECH-OPTIONS.md');
   assert.equal(techOptions.sections.length, 7);
+});
+
+test('artifact contracts declare structure rules mirrored by the mdsmith config', async () => {
+  const yml = await readFile(fromRoot('contracts/mdsmith.yml'), 'utf8');
+  for (const name of ['decision-spec', 'tech-options']) {
+    const contract = await readJson(`contracts/${name}.json`);
+    assert.equal(contract.closed, true, `${name} is closed`);
+    assert.equal(contract.headingLevel, 2, `${name} sections are H2s`);
+    assert.match(contract.title, /H1 on line 1/, `${name} title rule`);
+    const kindBody = yml.split(`  ${name}:\n`)[1];
+    assert.ok(kindBody, `mdsmith kind ${name} declared`);
+    assert.match(kindBody, /closed: true/, `mdsmith ${name} kind is closed`);
+  }
 });
 
 test('mdsmith config mirrors artifact contracts', async () => {

@@ -1,7 +1,7 @@
 ---
 name: tech-options-analyst
 description: Use when running the Technology Options phase of a workflow.
-tools: Skill, Read, Grep, Glob, WebSearch, Write, SendMessage
+tools: Skill, Read, Grep, Glob, WebSearch, Write, Bash, SendMessage
 skills:
   - tech-options
 color: purple
@@ -15,16 +15,16 @@ If the preloaded skill is missing from your context, invoke it with the Skill to
 
 ## Modes
 
-### Team file mode
+### File mode
 
-Use when the prompt gives `tech_options_path` or says you were spawned as a teammate.
+Use when the prompt gives `tech_options_path`.
 
-1. Read the Decision Spec and approved research brief.
+1. Read the Decision Spec and the research brief at `<work-item>/_phases/discuss/research-brief.md` if present; skip if absent.
 2. Write the full Tech Options artifact to `tech_options_path`.
-3. SendMessage `team-lead` with the path and one-line summary.
+3. If the prompt names a team-lead, SendMessage it the path and one-line summary; otherwise just write the file.
 4. Final chat output is not the artifact.
 
-### OMP return mode
+### Schema return mode
 
 Use when the prompt asks for schema/JSON/returned markdown, or no `tech_options_path` is provided.
 
@@ -35,4 +35,4 @@ Use when the prompt asks for schema/JSON/returned markdown, or no `tech_options_
 
 ## Rework
 
-Rewrite the same artifact content. Headings come from the caller if provided, else from `../contracts/tech-options.json` (relative to this agent file). Do not create addendum/history files unless the caller explicitly asks.
+Rewrite the same artifact content. Headings always come from the contract: `contracts/tech-options.json` in the installed plugin root (the dir containing `contracts/`). Do not create addendum/history files unless the caller explicitly asks.

@@ -13,7 +13,7 @@ color: blue
 
 You execute the Discuss phase: interview the user and turn a work item into a Decision Spec. The discuss skill (preloaded above) is the phase contract -- interview composition, spec shape and language, format gate, and review gate all live there. This file adds only how you run and return work.
 
-If a preloaded skill is missing from your context (plugin not installed), invoke it with the Skill tool before starting. If it cannot be loaded at all, say so in `_phases/discuss/interview-notes.md` -- do not imitate it.
+If a preloaded skill is missing from your context (plugin not installed), invoke it with the Skill tool before starting. If it cannot be loaded at all, record "could not load X" in `_phases/discuss/interview-notes.md` and continue -- do not imitate it. Reviewers escalate that record as `needs-user`.
 
 ## Modes
 
@@ -27,7 +27,7 @@ Use when the prompt gives `spec_path` or says you were spawned as a teammate.
 4. SendMessage `team-lead` with the path and one-line summary.
 5. Final chat output is not the artifact.
 
-### OMP return mode
+### Schema return mode
 
 Use when the prompt asks for schema/JSON/returned markdown, or no `spec_path` is provided.
 
@@ -38,4 +38,4 @@ Use when the prompt asks for schema/JSON/returned markdown, or no `spec_path` is
 
 ## Rework
 
-Rewrite the same artifact content. Headings come from the caller if provided, else from `../contracts/decision-spec.json` (relative to this agent file). Do not create addendum/history files unless the caller explicitly asks.
+Rewrite the same artifact content. Headings always come from the contract: `contracts/decision-spec.json` in the installed plugin root (the dir containing `contracts/`). Do not create addendum/history files unless the caller explicitly asks.

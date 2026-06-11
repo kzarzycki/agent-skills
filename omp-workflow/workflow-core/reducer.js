@@ -39,7 +39,7 @@ export function transition(inputState, event) {
       if (!Array.isArray(event.bucketIds) || event.bucketIds.length === 0) {
         state.current_state = STATES.NEEDS_USER;
         addBlocker(state, 'No research buckets approved.');
-        clearGate(state);
+        setGate(state, 'discuss_needs_user', state.human_artifacts.decision_spec);
         return withReason(state, 'research-denied');
       }
       state.current_state = STATES.RESEARCH_RUNNING;
@@ -51,7 +51,7 @@ export function transition(inputState, event) {
       assertTransition(state.current_state === STATES.RESEARCH_PROPOSAL_PENDING, event.type, state.current_state);
       state.current_state = STATES.NEEDS_USER;
       addBlocker(state, 'Research cannot proceed without approved buckets.');
-      clearGate(state);
+      setGate(state, 'discuss_needs_user', state.human_artifacts.decision_spec);
       return withReason(state, 'research-denied');
 
     case 'research_brief_ready':
@@ -117,6 +117,23 @@ export function transition(inputState, event) {
       state.current_state = STATES.TECH_OPTIONS_APPROVAL_PENDING;
       setGate(state, 'tech_options_approval', state.human_artifacts.tech_options);
       return withReason(state, 'tech-options-review-passed');
+
+    case 'resume_rework': {
+      assertTransition(state.current_state === STATES.NEEDS_USER, event.type, state.current_state);
+      const gate = state.pending_gate;
+      if (!gate) throw makeError(ERROR_CODES.INVALID_TRANSITION, 'resume_rework requires a pending needs-user gate');
+      const phase = gate.kind.startsWith('tech_options') ? PHASES.TECH_OPTIONS : PHASES.DISCUSS;
+      if (event.notes !== undefined) {
+        if (!Array.isArray(event.notes) || event.notes.some(item => typeof item !== 'string')) {
+          throw makeError(ERROR_CODES.INVALID_TRANSITION, 'notes must be an array of strings');
+        }
+        if (event.notes.length > 0) state.blockers = [...event.notes];
+      }
+      if (gate.kind.endsWith('_rework_cap_exceeded')) state.rework[phase] = 0;
+      clearGate(state);
+      state.current_state = phase === PHASES.TECH_OPTIONS ? STATES.TECH_OPTIONS_REWORK : STATES.DECISION_SPEC_REWORK;
+      return withReason(state, `${phase}:resume-rework`);
+    }
 
     case 'approve_tech_options':
       assertTransition(state.current_state === STATES.TECH_OPTIONS_APPROVAL_PENDING, event.type, state.current_state);
