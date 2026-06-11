@@ -1,0 +1,451 @@
+<mxfile host="100.73.22.69">
+  <diagram name="orchestrator-workflow" id="0">
+    <mxGraphModel dx="1718" dy="787" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="3540" pageHeight="1160" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="laneD" parent="1" style="swimlane;horizontal=0;startSize=40;html=1;fillColor=#d5e8d4;strokeColor=#82b366;swimlaneFillColor=#f7fcf5;fontSize=14;fontStyle=1;" value="⚙️ Delegates (teammates · subagents · workflows)" vertex="1">
+          <mxGeometry height="400" width="3400" x="40" y="440" as="geometry" />
+        </mxCell>
+        <mxCell id="10" parent="laneD" style="swimlane;rounded=1;startSize=26;html=1;fillColor=#fff7e0;strokeColor=#d79b00;swimlaneFillColor=#fffdf5;fontSize=12;fontStyle=1;fontColor=#996600;" value="⚡ spec-phase (saved workflow) — returns pass | needs-user | rework-cap-exceeded" vertex="1">
+          <mxGeometry height="340" width="680" x="1250" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="W1" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="🧩 author / rework&#xa;01-DECISION-SPEC.md" vertex="1">
+          <mxGeometry height="80" width="200" x="10" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="SKw1" parent="10" style="text;html=1;align=center;fontSize=10;fontStyle=2;fontColor=#9673a6;" value="skills: spec (phase contract)" vertex="1">
+          <mxGeometry height="28" width="220" y="112" as="geometry" />
+        </mxCell>
+        <mxCell id="D3" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="🧩🔧 format gate agent&#xa;mdsmith contract check" vertex="1">
+          <mxGeometry height="80" width="200" x="250" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="D4" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="🧩 independent reviewers ∥&#xa;intent · testability" vertex="1">
+          <mxGeometry height="80" width="200" x="250" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="V1" parent="10" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="verdict?" vertex="1">
+          <mxGeometry height="80" width="160" x="470" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="GP1" parent="10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;fontSize=11;" value="🧩 optional: render HTML&#xa;gate page → _phases/spec/&#xa;(communicating-in-html)" vertex="1">
+          <mxGeometry height="80" width="200" x="470" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="GPe1" edge="1" parent="10" source="V1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="GP1" value="on pass">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E8" edge="1" parent="10" source="W1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="D3" value="draft">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E9" edge="1" parent="10" source="D3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="D4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E12" edge="1" parent="10" source="V1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#d79b00;fontColor=#d79b00;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="W1" value="needs-rework (cap 2)">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="550" y="330" />
+              <mxPoint x="110" y="330" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="E10" edge="1" parent="10" source="D4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="V1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="SK4" parent="10" style="text;html=1;align=center;fontSize=10;fontStyle=2;fontColor=#9673a6;" value="skills: spec (phase contract)" vertex="1">
+          <mxGeometry height="28" width="220" x="240" y="292" as="geometry" />
+        </mxCell>
+        <mxCell id="D2" parent="laneD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="🤝 teammate: interviewer&#xa;interviews · authors draft&#xa;01-DECISION-SPEC.md&#xa;then runs ⚡ spec-phase" vertex="1">
+          <mxGeometry height="80" width="200" x="990" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="D1" parent="laneD" style="swimlane;rounded=1;startSize=26;html=1;fillColor=#fff7e0;strokeColor=#d79b00;swimlaneFillColor=#fffdf5;fontSize=12;fontStyle=1;fontColor=#996600;" value="⚡ research-brief (saved workflow)" vertex="1">
+          <mxGeometry height="250" width="460" x="500" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="RB1" parent="D1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" value="🧩 reuse angle" vertex="1">
+          <mxGeometry height="50" width="170" x="15" y="36" as="geometry" />
+        </mxCell>
+        <mxCell id="RB2" parent="D1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" value="🧩 product angle" vertex="1">
+          <mxGeometry height="50" width="170" x="15" y="104" as="geometry" />
+        </mxCell>
+        <mxCell id="RB3" parent="D1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" value="🧩 feasibility angle&#xa;(or one per bucket)" vertex="1">
+          <mxGeometry height="50" width="170" x="15" y="172" as="geometry" />
+        </mxCell>
+        <mxCell id="RBs" parent="D1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" value="🧩 synthesize&#xa;≤200-word brief + open threads&#xa;→ _phases/spec/research-brief.md" vertex="1">
+          <mxGeometry height="86" width="210" x="235" y="86" as="geometry" />
+        </mxCell>
+        <mxCell id="RBe1" edge="1" parent="D1" source="RB1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="RBs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="RBe2" edge="1" parent="D1" source="RB2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="RBs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="RBe3" edge="1" parent="D1" source="RB3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="RBs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="WFTO" parent="laneD" style="swimlane;rounded=1;startSize=26;html=1;fillColor=#fff7e0;strokeColor=#d79b00;swimlaneFillColor=#fffdf5;fontSize=12;fontStyle=1;fontColor=#996600;" value="⚡ tech-options-phase (saved workflow) — returns pass | needs-user | rework-cap-exceeded" vertex="1">
+          <mxGeometry height="340" width="720" x="1950" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="D5" parent="WFTO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" value="🧩 analyst authors&#xa;02-TECH-OPTIONS.md" vertex="1">
+          <mxGeometry height="80" width="200" x="10" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="D6" parent="WFTO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="🧩🔧 format gate agent&#xa;mdsmith contract check" vertex="1">
+          <mxGeometry height="80" width="200" x="250" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="D7" parent="WFTO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="🧩 independent reviewers ∥&#xa;reuse-coverage · fit-risk" vertex="1">
+          <mxGeometry height="80" width="200" x="250" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="V2" parent="WFTO" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" value="verdict?" vertex="1">
+          <mxGeometry height="80" width="160" x="510" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="GP2" parent="WFTO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;fontSize=11;" value="🧩 optional: render HTML&#xa;gate page → _phases/tech_options/&#xa;(communicating-in-html)" vertex="1">
+          <mxGeometry height="80" width="210" x="490" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="GPe2" edge="1" parent="WFTO" source="V2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#6c8ebf;fontColor=#6c8ebf;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="GP2" value="on pass">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="SK5" parent="WFTO" style="text;html=1;align=center;fontSize=10;fontStyle=2;fontColor=#9673a6;" value="skills: tech-options (phase contract)" vertex="1">
+          <mxGeometry height="28" width="220" y="112" as="geometry" />
+        </mxCell>
+        <mxCell id="SK7" parent="WFTO" style="text;html=1;align=center;fontSize=10;fontStyle=2;fontColor=#9673a6;" value="skills: tech-options (phase contract)" vertex="1">
+          <mxGeometry height="28" width="220" x="240" y="292" as="geometry" />
+        </mxCell>
+        <mxCell id="D8" parent="laneD" style="swimlane;rounded=1;startSize=26;html=1;fillColor=#fff7e0;strokeColor=#d79b00;swimlaneFillColor=#fffdf5;fontSize=12;fontStyle=1;fontColor=#996600;dashed=1;" value="⚡ Workflow(&#39;implement&#39;) — ready block" vertex="1">
+          <mxGeometry height="130" width="480" x="2880" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="IM1" parent="D8" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;fontColor=#777777;fontSize=11;" value="🧩 edit&#xa;scoped files" vertex="1">
+          <mxGeometry height="60" width="110" x="15" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="IM2" parent="D8" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;dashed=1;fontColor=#777777;fontSize=11;" value="⚡ polish-diff&#xa;review → simplify&#xa;verify-gated loop" vertex="1">
+          <mxGeometry height="60" width="180" x="155" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="IM3" parent="D8" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;fontColor=#777777;fontSize=11;" value="commit" vertex="1">
+          <mxGeometry height="60" width="100" x="365" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="IMe1" edge="1" parent="D8" source="IM1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#999999;" target="IM2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="IMe2" edge="1" parent="D8" source="IM2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#999999;" target="IM3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="D9" parent="laneD" style="swimlane;rounded=1;startSize=26;html=1;fillColor=#fff7e0;strokeColor=#d79b00;swimlaneFillColor=#fffdf5;fontSize=12;fontStyle=1;fontColor=#996600;dashed=1;" value="⚡ finish-branch (autopilot) — ready block" vertex="1">
+          <mxGeometry height="130" width="480" x="2880" y="230" as="geometry" />
+        </mxCell>
+        <mxCell id="FB1" parent="D9" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;fontColor=#777777;fontSize=11;" value="verify" vertex="1">
+          <mxGeometry height="60" width="90" x="15" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="FB2" parent="D9" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;fontColor=#777777;fontSize=11;" value="🔒 leak-scan&#xa;hard gate" vertex="1">
+          <mxGeometry height="60" width="130" x="135" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="FB3" parent="D9" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;fontColor=#777777;fontSize=11;" value="squash&#xa;→ open PR" vertex="1">
+          <mxGeometry height="60" width="120" x="295" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="FBe1" edge="1" parent="D9" source="FB1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#999999;" target="FB2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="FBe2" edge="1" parent="D9" source="FB2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;strokeColor=#999999;" target="FB3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="SK2" parent="laneD" style="text;html=1;align=center;fontSize=10;fontStyle=2;fontColor=#9673a6;" value="skills: spec (contract) + brainstorming · grill-me (craft, swappable)" vertex="1">
+          <mxGeometry height="28" width="240" x="970" y="122" as="geometry" />
+        </mxCell>
+        <mxCell id="E7b" edge="1" parent="laneD" source="D2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" target="10" value="Workflow(&#39;spec-phase&#39;)">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="title" parent="1" style="text;html=1;align=left;fontSize=18;fontStyle=1;fontColor=#333333;" value="Engineering Orchestration Workflow — the orchestrator stays orchestrator" vertex="1">
+          <mxGeometry height="30" width="1200" x="40" y="10" as="geometry" />
+        </mxCell>
+        <mxCell id="phlbl1" parent="1" style="text;html=1;align=center;fontSize=14;fontStyle=1;fontColor=#888888;" value="PHASE 1 — SPEC" vertex="1">
+          <mxGeometry height="24" width="1880" x="80" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="phlbl2" parent="1" style="text;html=1;align=center;fontSize=14;fontStyle=1;fontColor=#888888;" value="PHASE 2 — TECH OPTIONS" vertex="1">
+          <mxGeometry height="24" width="920" x="2000" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="phlbl3" parent="1" style="text;html=1;align=center;fontSize=14;fontStyle=1;fontColor=#888888;" value="PHASE 3+ — FUTURE (Plan → Implement → Ship)" vertex="1">
+          <mxGeometry height="24" width="480" x="2960" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="sep1" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;strokeColor=#bbbbbb;strokeWidth=2;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1980" y="80" as="sourcePoint" />
+            <mxPoint x="1980" y="840" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="sep2" edge="1" parent="1" style="endArrow=none;dashed=1;html=1;strokeColor=#bbbbbb;strokeWidth=2;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="2940" y="80" as="sourcePoint" />
+            <mxPoint x="2940" y="840" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="laneU" parent="1" style="swimlane;horizontal=0;startSize=40;html=1;fillColor=#fff2cc;strokeColor=#d6b656;swimlaneFillColor=#fffbf0;fontSize=14;fontStyle=1;" value="👤 User" vertex="1">
+          <mxGeometry height="180" width="3400" x="40" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="U1" parent="laneU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;" value="💡 work item idea&#xa;/ prompt" vertex="1">
+          <mxGeometry height="80" width="200" x="40" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="U2" parent="laneU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" value="GATE&#xa;approve / narrow&#xa;research buckets" vertex="1">
+          <mxGeometry height="80" width="200" x="280" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="U3" parent="laneU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;" value="interview Q&amp;A&#xa;one question at a time" vertex="1">
+          <mxGeometry height="80" width="200" x="1000" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="U4" parent="laneU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" value="GATE&#xa;approve Decision Spec&#xa;(reviews the file / HTML page)" vertex="1">
+          <mxGeometry height="80" width="200" x="1800" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="U5" parent="laneU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;" value="GATE&#xa;approve Tech Options&#xa;(reviews the file / HTML page)" vertex="1">
+          <mxGeometry height="80" width="200" x="2680" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="U6" parent="laneU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;dashed=1;fontColor=#777777;" value="GATE&#xa;ship approval&#xa;(review PR — never merge)" vertex="1">
+          <mxGeometry height="80" width="200" x="3160" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="laneO" parent="1" style="swimlane;horizontal=0;startSize=40;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;swimlaneFillColor=#f5f9ff;fontSize=14;fontStyle=1;" value="🧠 Orchestrator (main thread)" vertex="1">
+          <mxGeometry height="180" width="3400" x="40" y="260" as="geometry" />
+        </mxCell>
+        <mxCell id="O1" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="create .workflow/&lt;date&gt;-&lt;slug&gt;/&#xa;propose research buckets" vertex="1">
+          <mxGeometry height="80" width="200" x="40" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="O2" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="delegate research&#xa;⚡ Workflow(&#39;research-brief&#39;)" vertex="1">
+          <mxGeometry height="80" width="200" x="520" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="O3" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="spawn 🤝 interviewer teammate&#xa;Agent(team: spec)&#xa;in-situ fallback w/o tmux" vertex="1">
+          <mxGeometry height="80" width="200" x="760" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="O4" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="ask user for approval of the spec (in the file)" vertex="1">
+          <mxGeometry height="80" width="200" x="1550" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="O5" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="run ⚡ saved workflow&#xa;&#39;tech-options-phase&#39;" vertex="1">
+          <mxGeometry height="80" width="200" x="1960" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="O6" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="ask user for approval of&#xa;02-TECH-OPTIONS.md (in the file)" vertex="1">
+          <mxGeometry height="80" width="200" x="2440" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="O7" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontColor=#777777;" value="PLAN — next phase&#xa;(engine stops after&#xa;Tech Options today)" vertex="1">
+          <mxGeometry height="80" width="200" x="2920" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="note1" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#666666;" value="All artifacts live in .workflow/&lt;work-item&gt;/ — 01-DECISION-SPEC.md · 02-TECH-OPTIONS.md · _reviews/ · _phases/.&#xa;The orchestrator holds only paths, briefs and verdicts; heavy work runs in delegates — gates hand over path + verdicts, the artifact never enters its context.&#xa;Phase skills (spec · tech-options) are the gate contract, preloaded into every phase agent; the craft underneath is swappable (superpowers · Pocock · Osmani)." vertex="1">
+          <mxGeometry height="50" width="1300" x="80" y="856" as="geometry" />
+        </mxCell>
+        <mxCell id="note2" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#666666;" value="Autopilot — today&#39;s separate autonomous path: brainstorm → engine.js (Plan → Plan review → Execute waves → Code review → Verify) → finish-branch → PR.&#xa;Its pieces become the engine&#39;s future phases." vertex="1">
+          <mxGeometry height="50" width="1080" x="1480" y="856" as="geometry" />
+        </mxCell>
+        <mxCell id="note3" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#666666;" value="Outer loop: eval harness (active work item) measures the pipeline, compares variants, swaps skills.&#xa;End-goal: idea → PR with the human only at ideation · artifact review · ship approval." vertex="1">
+          <mxGeometry height="50" width="840" x="2640" y="856" as="geometry" />
+        </mxCell>
+        <mxCell id="E1" edge="1" parent="1" source="U1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="O1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E2" edge="1" parent="1" source="O1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="U2" value="research plan">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E3" edge="1" parent="1" source="U2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="O2" value="approved buckets">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E4" edge="1" parent="1" source="O2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="D1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E5" edge="1" parent="1" source="D1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="O3" value="brief">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E6" edge="1" parent="1" source="O3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="D2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E7" edge="1" parent="1" source="D2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;startArrow=classic;startFill=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="U3" value="interview · needs-user follow-ups">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E11" edge="1" parent="1" source="10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#996600;fontColor=#996600;exitX=0;exitY=0.8;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="D2" value="returns pass | needs-user | cap">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E11b" edge="1" parent="1" source="D2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;fontColor=#82b366;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="O4" value="spec vetted → report">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E14" edge="1" parent="1" source="O4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="U4" value="path + verdicts">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E15" edge="1" parent="1" source="U4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;strokeColor=#d79b00;fontColor=#d79b00;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="U3" value="rework feedback">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1860" y="102" />
+              <mxPoint x="1140" y="102" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="E16" edge="1" parent="1" source="U4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;fontColor=#82b366;fontStyle=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="O5" value="approve">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1970" y="210" />
+              <mxPoint x="1970" y="350" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="E17" edge="1" parent="1" source="O5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="D5" value="Workflow()">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E18" edge="1" parent="1" source="D5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="D6" value="draft">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E19" edge="1" parent="1" source="D6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="D7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E20" edge="1" parent="1" source="D7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="V2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E21" edge="1" parent="1" source="V2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;fontColor=#82b366;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="O6" value="returns pass">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E22" edge="1" parent="1" source="V2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#d79b00;fontColor=#d79b00;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="D5" value="needs-rework (cap 2, internal)">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2540" y="800" />
+              <mxPoint x="2060" y="800" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="E23" edge="1" parent="1" source="V2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#b85450;fontColor=#b85450;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="U5" value="returns needs-user / cap exceeded">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2820" y="720" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="E24" edge="1" parent="1" source="O6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="U5" value="path + verdicts">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E25" edge="1" parent="1" source="U5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;strokeColor=#d79b00;fontColor=#d79b00;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="O5" value="rework + instructions">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2820" y="102" />
+              <mxPoint x="2100" y="102" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="E26" edge="1" parent="1" source="U5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#82b366;fontColor=#82b366;fontStyle=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="O7" value="approve">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E27" edge="1" parent="1" source="O7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;strokeColor=#999999;fontColor=#777777;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="D8">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E28" edge="1" parent="1" source="D8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;strokeColor=#999999;fontColor=#777777;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="D9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="E29" edge="1" parent="1" source="D9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;dashed=1;strokeColor=#999999;fontColor=#777777;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" target="U6" value="PR">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="3300" y="720" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="LGframe" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fafafa;strokeColor=#bbbbbb;verticalAlign=top;align=left;fontStyle=1;fontSize=14;fontColor=#555555;spacing=10;" value="LEGEND" vertex="1">
+          <mxGeometry height="210" width="2520" x="80" y="920" as="geometry" />
+        </mxCell>
+        <mxCell id="LGwf" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff7e0;strokeColor=#d79b00;fontSize=9;fontColor=#996600;verticalAlign=top;" value="⚡" vertex="1">
+          <mxGeometry height="24" width="80" x="100" y="1100" as="geometry" />
+        </mxCell>
+        <mxCell id="LGwfT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="workflow container — deterministic script; everything inside runs unsupervised, returns a status" vertex="1">
+          <mxGeometry height="24" width="680" x="190" y="1100" as="geometry" />
+        </mxCell>
+        <mxCell id="LGgate" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=10;" value="GATE" vertex="1">
+          <mxGeometry height="28" width="80" x="100" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="LGgateT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="human gate — user decides / approves" vertex="1">
+          <mxGeometry height="28" width="300" x="190" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="LGuser" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" value="" vertex="1">
+          <mxGeometry height="28" width="80" x="100" y="988" as="geometry" />
+        </mxCell>
+        <mxCell id="LGuserT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="user activity (User lane)" vertex="1">
+          <mxGeometry height="28" width="300" x="190" y="988" as="geometry" />
+        </mxCell>
+        <mxCell id="LGorch" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="" vertex="1">
+          <mxGeometry height="28" width="80" x="100" y="1026" as="geometry" />
+        </mxCell>
+        <mxCell id="LGorchT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="orchestrator action (main thread, context stays clean)" vertex="1">
+          <mxGeometry height="28" width="340" x="190" y="1026" as="geometry" />
+        </mxCell>
+        <mxCell id="LGauth" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" value="" vertex="1">
+          <mxGeometry height="28" width="80" x="100" y="1064" as="geometry" />
+        </mxCell>
+        <mxCell id="LGauthT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="delegated author — writes the artifact" vertex="1">
+          <mxGeometry height="28" width="300" x="190" y="1064" as="geometry" />
+        </mxCell>
+        <mxCell id="LGrev" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" value="" vertex="1">
+          <mxGeometry height="28" width="80" x="560" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="LGrevT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="independent reviewers (parallel, fresh context)" vertex="1">
+          <mxGeometry height="28" width="380" x="650" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="LGfmt" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;" value="" vertex="1">
+          <mxGeometry height="28" width="80" x="560" y="988" as="geometry" />
+        </mxCell>
+        <mxCell id="LGfmtT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="format gate — mdsmith checks artifact against contract" vertex="1">
+          <mxGeometry height="28" width="380" x="650" y="988" as="geometry" />
+        </mxCell>
+        <mxCell id="LGver" parent="1" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" value="" vertex="1">
+          <mxGeometry height="28" width="60" x="570" y="1026" as="geometry" />
+        </mxCell>
+        <mxCell id="LGverT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="verdict fan-in: needs-user ≻ needs-rework ≻ pass" vertex="1">
+          <mxGeometry height="28" width="380" x="650" y="1026" as="geometry" />
+        </mxCell>
+        <mxCell id="LGfut" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;dashed=1;fontSize=10;" value="" vertex="1">
+          <mxGeometry height="28" width="80" x="560" y="1064" as="geometry" />
+        </mxCell>
+        <mxCell id="LGfutT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="dashed box = future / not implemented yet" vertex="1">
+          <mxGeometry height="28" width="380" x="650" y="1064" as="geometry" />
+        </mxCell>
+        <mxCell id="LGEpass" edge="1" parent="1" style="endArrow=classic;html=1;strokeColor=#82b366;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="964" as="sourcePoint" />
+            <mxPoint x="1180" y="964" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="LGEpassT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="pass / approve — happy path" vertex="1">
+          <mxGeometry height="28" width="400" x="1195" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="LGErw" edge="1" parent="1" style="endArrow=classic;html=1;strokeColor=#d79b00;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="1002" as="sourcePoint" />
+            <mxPoint x="1180" y="1002" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="LGErwT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="needs-rework — autonomous fix loop, cap 2 per phase" vertex="1">
+          <mxGeometry height="28" width="400" x="1195" y="988" as="geometry" />
+        </mxCell>
+        <mxCell id="LGEnu" edge="1" parent="1" style="endArrow=classic;html=1;strokeColor=#b85450;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="1040" as="sourcePoint" />
+            <mxPoint x="1180" y="1040" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="LGEnuT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="needs-user / cap exceeded — escalate: only the user can answer" vertex="1">
+          <mxGeometry height="28" width="400" x="1195" y="1026" as="geometry" />
+        </mxCell>
+        <mxCell id="LGEfb" edge="1" parent="1" style="endArrow=classic;html=1;dashed=1;strokeColor=#d79b00;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1100" y="1078" as="sourcePoint" />
+            <mxPoint x="1180" y="1078" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="LGEfbT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="user feedback at a gate — triggers another rework round" vertex="1">
+          <mxGeometry height="28" width="400" x="1195" y="1064" as="geometry" />
+        </mxCell>
+        <mxCell id="LGEqa" edge="1" parent="1" style="endArrow=classic;startArrow=classic;startFill=1;html=1;dashed=1;strokeColor=#666666;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1680" y="964" as="sourcePoint" />
+            <mxPoint x="1760" y="964" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="LGEqaT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="interactive relay — teammate ⇄ user Q&amp;A" vertex="1">
+          <mxGeometry height="28" width="400" x="1775" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="LGEfut" edge="1" parent="1" style="endArrow=classic;html=1;dashed=1;strokeColor=#999999;">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="1680" y="1002" as="sourcePoint" />
+            <mxPoint x="1760" y="1002" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="LGEfutT" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="future flow (not wired into the engine yet)" vertex="1">
+          <mxGeometry height="28" width="400" x="1775" y="988" as="geometry" />
+        </mxCell>
+        <mxCell id="LGicons" parent="1" style="text;html=1;align=left;fontSize=12;fontColor=#555555;" value="🤝 teammate — interactive agent in a team (SendMessage relay) · 🧩 subagent — fresh context, returns a result · ⚡ saved workflow — deterministic script (Workflow tool) · 🔧 binary — mdsmith, no LLM" vertex="1">
+          <mxGeometry height="28" width="900" x="1680" y="1026" as="geometry" />
+        </mxCell>
+        <mxCell id="LGskill" parent="1" style="text;html=1;align=left;fontSize=12;fontStyle=2;fontColor=#9673a6;" value="skills: … = skills preloaded into the agent (phase contract + swappable craft)" vertex="1">
+          <mxGeometry height="28" width="900" x="1680" y="1064" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
