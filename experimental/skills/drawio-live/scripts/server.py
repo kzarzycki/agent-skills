@@ -81,11 +81,14 @@ class H(BaseHTTPRequestHandler):
         data = self.rfile.read(n)
         if not data.lstrip().startswith(b"<"):
             return self._send(400, b"not xml", "text/plain")
+        etag = hashlib.sha1(data).hexdigest()
+        if etag == read_file()[1]:   # identical content: don't touch the file's mtime
+            return self._send(200, json.dumps({"etag": etag}).encode())
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(FILE))
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         os.replace(tmp, FILE)
-        self._send(200, json.dumps({"etag": hashlib.sha1(data).hexdigest()}).encode())
+        self._send(200, json.dumps({"etag": etag}).encode())
 
     def log_message(self, *a):
         pass

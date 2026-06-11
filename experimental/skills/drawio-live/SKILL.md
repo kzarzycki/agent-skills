@@ -64,6 +64,11 @@ container + one python script; no other deps).
    refresh it (`mkdir -p /tmp/drawio-live && cp <file> ...`) every time you read or
    write the file, diff against it when the user says "look". `git diff` only works
    if the file is tracked.
+7. **diff does not arm the Edit tool.** Only Read refreshes the Edit tool's
+   file-state; diffing against last-seen (even when identical) does not. If the
+   file's mtime moved since your last Read, Read again (a slice is enough) right
+   before an Edit batch — otherwise the whole batch fails with "modified since
+   read" and you re-read anyway, at full price.
 
 ## Common mistakes
 
@@ -75,3 +80,4 @@ container + one python script; no other deps).
 | `pkill -f` to stop the bridge | The pattern matches your own shell's command line and kills it. Use the background-task id or `kill <pid>`. |
 | Port already in use on 8080/8765 | Something else owns it; pick another port (`ss -tlnp | grep <port>`), don't kill the owner. |
 | Expecting your XML formatting to survive | The editor canonicalizes on every autosave. Never byte-compare; compare cells/values. |
+| Treating every autosave as a user edit | The editor autosaves on pan/zoom too (dx/dy live in the XML). Diff filters the noise; the bridge skips identical-content POSTs so they don't touch mtime. |
