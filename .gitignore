@@ -2,6 +2,7 @@
 .worktrees/
 .workflow/
 CLAUDE.md
+!workflow/CLAUDE.md
 .claude/
 __pycache__/
 *.pyc
