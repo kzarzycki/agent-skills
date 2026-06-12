@@ -48,6 +48,16 @@ the carve-outs: `references/when-html.md`.
 4. **Genuinely laid out** — real columns/timelines, not stacked Markdown in a `<div>`.
 5. **Self-explanatory in 5 seconds** — title + one framing sentence up top.
 6. **Exportable when interactive** — the user can get their data back (copy-paste-back token).
+7. **Progressive disclosure** — headline first, detail on demand. Tooltips on terse labels,
+   `<details>` folds for full text, click-for-source on data cells/diagram nodes. Reading
+   depth is the user's choice; nothing optional bloats the first screenful. **Controls are
+   exempt:** primary actions (approve/submit/choose) stay visible at all times — never fold
+   the thing the user came to click. Condense controls into a bar; fold their detail.
+8. **Verified before handover when interactive** — any page with JS gets a jsdom smoke run:
+   load with `runScripts:'dangerously'` + a `fetch` stub, assert zero load errors, fire one
+   DOM event per interactive feature and check its effect. A load-time crash kills everything
+   scheduled after it while hoisted click handlers keep "working" — the page looks alive and
+   is half-dead. `node --check` and HTTP 200 are not verification.
 
 ## The three activities → load the playbook when one fires
 
@@ -78,10 +88,47 @@ any in-client rendering.
 - A static file can't POST back. For forms/option pages, inline `assets/copy-back.js`:
   the page serializes input into a fenced `ANSWERS<<< … >>>ANSWERS` token the user
   pastes into chat; you parse it and continue.
+- **Live answer channel (no copy-paste).** When the user must *decide* on an artifact
+  (approve / request rework) and you can serve HTTP, skip the paste round-trip:
+  see "Live decision pages" below. The token stays as the automatic fallback.
 - **Always leave a 3-5 bullet TL;DR in chat too** — the file is the artifact, the
   chat keeps the headline.
 - **Fallback:** no browser / can't render → degrade to batched `AskUserQuestion`
   rounds. Offer HTML; never trap the user in it.
+
+## Live decision pages (approve / rework without copy-paste)
+
+Two stdlib-python assets turn any markdown artifact into a served page whose buttons reach
+the agent directly. Reusable by any caller (the workflow engine's phase gates are one);
+everything is deterministic — zero LLM tokens per render.
+
+1. **Render**: `python3 assets/render-decision-page.py --artifact <md> --out <dir>/page.html
+   --gate <id> [--verdicts '<json>'] [--banner '<what changed since last version>']`.
+   The page gets: every H2 section annotatable (✎ → targeted comment), an always-visible
+   condensed decision bar (live status · annotation count · Approve · Request rework), and
+   a copy-back token fallback that fires automatically when POST fails (e.g. `file://`).
+2. **Serve**: `nohup python3 assets/gate-server.py --dir <root> --port <port>
+   --state _gate/state.json --answers _gate/answers >/tmp/gate-server-<name>.log 2>&1 &`
+   Probe the port first (curl; taken → increment). Hand out `http://<reachable IP>:<port>/…`
+   — prefer a VPN/tailnet IP from `hostname -I`; the user is often not on localhost.
+3. **State file** (`_gate/state.json`): `{"state":…,"version":N,"updated":<epoch s>,"message":…}`.
+   States the page understands: `idle` (listening) · `working` (page shows spinner + message —
+   update the message as you progress) · `needs-console` (page tells the user to return to chat).
+   Bump `version` only when the page should reload (you re-rendered it); the page polls
+   `/gate/state` and auto-reloads on any bump.
+4. **Watch for answers** (the agent side): arm a background watcher that exits when an answer
+   file lands, which re-invokes you:
+   `for i in $(seq 1 540); do f=$(ls <root>/_gate/answers/*.json 2>/dev/null|head -1); [ -n "$f" ] && { echo "ANSWER:"; cat "$f"; exit 0; }; sleep 1; done; echo EXPIRED`
+   It expires (~9 min) — re-arm whenever it fires or expires while the decision is open.
+5. **Process an answer**: move it to `_gate/answers/processed/`, set state `working`, act on
+   `{gate, decision, feedback?, annotations?:[{target,comment}]}` (each annotation is an
+   instruction targeted at that section), then re-render with `--banner` saying what changed,
+   bump `version`, set `idle`, re-arm. A pasted `ANSWERS<<<…>>>ANSWERS` token is the same
+   answer arriving by chat — process identically.
+
+The page degrades gracefully at every layer: no server → token; no browser → the markdown
+artifact path plus chat. Channel security is LAN/tailnet-grade (anyone who can reach the
+port can POST) — don't expose it past trusted networks.
 
 ## Anti-patterns
 

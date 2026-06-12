@@ -82,22 +82,28 @@ the artifact in your own context.
 
 ## Gate presentation
 
-Every user gate, any phase: hand the user the artifact path plus a verdict/finding summary.
-The artifact content never enters your context; the user reviews the file (or the HTML page)
-directly.
+Every user gate, any phase: a chat summary (verdicts + findings + artifact path) plus a live
+decision page. The artifact content never enters your context; the user reviews the served
+page, and the markdown stays the source of truth.
 
-Render the gate page yourself, deterministically (zero tokens) -- the phase workflows do not
-render it:
-`python3 <plugin root>/scripts/render-gate-page.py --artifact <artifact> --phase <phase>
---verdicts '<verdicts JSON from the workflow return>' --out <work-item dir>/_phases/<phase>/gate.html`
+The mechanics are the communicating-in-html skill's "Live decision pages" protocol (render →
+serve → state file → watcher → process); its two assets live in that skill's `assets/` dir
+(in this repo: `<repo root>/experimental/skills/communicating-in-html/assets/`). Workflow
+bindings on top of that protocol:
 
-Serve the gate page, do not just print its path -- the user is often remote and cannot open
-local files. Start (or reuse) one HTTP server for the work-item dir:
-`cd <work-item dir> && nohup python3 -m http.server <port> --bind 0.0.0.0 &` -- pick a free
-port (`curl` it first; if taken, increment), then give the user the URL
-`http://<reachable host IP>:<port>/_phases/<phase>/gate.html` (prefer a VPN/tailnet IP from
-`hostname -I` over a public one). One server per work item covers every later gate; stop it
-when the engine stops.
-
-If the user pastes the page's copy-back token, parse it as the gate answer. The markdown
-artifact stays the source of truth; without a browser the gate is path + summary.
+- Render (deterministic, zero tokens -- phase workflows do not render):
+  `python3 <assets>/render-decision-page.py --artifact <artifact> --gate <phase>
+  --verdicts '<verdicts JSON from the workflow return>' --out <work-item dir>/_phases/<phase>/gate.html`
+  On re-renders after rework, pass `--banner "Reworked from your gate answer (round N) -- <what changed>"`.
+- Serve with `<assets>/gate-server.py --dir <work-item dir>`; channel files at
+  `<work-item dir>/_gate/` (state.json, answers/). One server and one channel per work item,
+  reused across every phase gate; stop the server when the engine stops.
+- Arm the answer watcher whenever a gate is open; re-arm on fire or expiry.
+- Answer mapping: `decision: approve` -> record approval, continue the engine.
+  `decision: rework` -> re-run the phase workflow with `instructions` built from `feedback`
+  plus the `annotations` (each `{target, comment}` is an instruction scoped to that artifact
+  section); then re-render, bump `version`, set `idle`, re-present. A workflow `needs-user`
+  while the page is open -> set state `needs-console` with the question summary, ask in chat,
+  and bump `version` after resolving.
+- A pasted `ANSWERS<<<…>>>ANSWERS` token is the same answer arriving by chat -- process
+  identically. Without a browser the gate is path + summary.
