@@ -1,7 +1,7 @@
 export const meta = {
   name: 'phase-loop',
   description: 'Generic phase convergence loop: author reworks the artifact (running the format gate itself), independent reviewers judge it in parallel, rework loops until pass, needs-user, or the rework cap. Fresh clean drafts skip the author round. No HTML rendering inside; the gate presenter renders the page.',
-  whenToUse: 'Args: { workId, pluginRoot, phase: "spec"|"tech_options", instructions?, contentFrozen? }. Returns { status, rounds, verdicts, formatGate, artifact }. status: pass | needs-user | rework-cap-exceeded | error. Stateless: agents read/write work-item files only.',
+  whenToUse: 'Args: { workId, pluginRoot, phase: "spec"|"tech_design", instructions?, contentFrozen? }. Returns { status, rounds, verdicts, formatGate, artifact }. status: pass | needs-user | rework-cap-exceeded | error. Stateless: agents read/write work-item files only.',
   phases: [{ title: 'Author' }, { title: 'Review' }],
 };
 
@@ -68,27 +68,27 @@ const PHASES = {
     authorBody: `Your inputs are the existing draft and the interview record at ${root}/_phases/spec/interview-notes.md and ${root}/_phases/spec/research-brief.md. Rework the draft in place to satisfy the contract. This is workflow author mode: do NOT interview anyone, do NOT use AskUserQuestion, do NOT run any Workflow yourself. If the draft is missing, stop and return written=false with the reason in summary.`,
     reviewAgainst: `the interview record (${root}/_phases/spec/interview-notes.md, ${root}/_phases/spec/research-brief.md)`,
   },
-  tech_options: {
-    artifact: `${root}/02-TECH-OPTIONS.md`,
-    contract: 'tech-options.json',
-    reviewsDir: `${root}/_reviews/tech_options`,
-    authorAgentType: 'workflow:tech-options-analyst',
-    skillName: 'tech-options',
+  tech_design: {
+    artifact: `${root}/02-TECH-DESIGN.md`,
+    contract: 'tech-design.json',
+    reviewsDir: `${root}/_reviews/tech_design`,
+    authorAgentType: 'workflow:tech-designer',
+    skillName: 'tech-design',
     reviewers: [
       { name: 'reuse-coverage', agentType: 'workflow:reuse-coverage-reviewer' },
       { name: 'fit-risk', agentType: 'workflow:fit-risk-reviewer' },
     ],
-    // The analyst authors the artifact fresh: round 0 always runs the author.
+    // The designer authors the artifact fresh: round 0 always runs the author.
     skipFreshDraft: false,
-    frozenNouns: 'decision, option, score, and fact',
+    frozenNouns: 'decision, option, score, design element, and fact',
     preserveRule: 'Preserve approved content unless rework findings explicitly contradict it.',
-    authorBody: `Read the approved Decision Spec at ${specPath}. If the artifact exists, rework it in place; otherwise write it fresh (this path is your tech_options_path). If the Decision Spec is missing, stop and return written=false with the reason in summary.`,
+    authorBody: `Read the approved Decision Spec at ${specPath}. If the artifact exists, rework it in place; otherwise write it fresh (this path is your tech_design_path). If the Decision Spec is missing, stop and return written=false with the reason in summary.`,
     reviewAgainst: `the Decision Spec at ${specPath}`,
   },
 };
 
 const cfg = PHASES[a.phase];
-if (!cfg) return { error: `unknown phase "${a.phase}" (expected spec | tech_options)` };
+if (!cfg) return { error: `unknown phase "${a.phase}" (expected spec | tech_design)` };
 
 const mdsmithCmd = `export PATH="$HOME/.local/bin:$PATH" && mdsmith check -c ${a.pluginRoot}/contracts/mdsmith.yml ${cfg.artifact} 2>&1`;
 const gateRules = `If mdsmith is not installed, return toolAvailable=false and verify the H2 sections of ${cfg.artifact} manually against ${a.pluginRoot}/contracts/${cfg.contract}, reporting mismatches as diagnostics. If the artifact file is missing, report that as a diagnostic with structureViolations=1.

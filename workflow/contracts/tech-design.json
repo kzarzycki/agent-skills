@@ -1,5 +1,5 @@
 {
-  "filename": "02-TECH-OPTIONS.md",
+  "filename": "02-TECH-DESIGN.md",
   "title": "H1 on line 1, no YAML frontmatter",
   "headingLevel": 2,
   "closed": true,
@@ -7,7 +7,8 @@
     "Needs",
     "Options considered",
     "Scorecard",
-    "Recommended option",
+    "Chosen design",
+    "Key technical decisions",
     "Rejected alternatives",
     "Risks",
     "Approval record"

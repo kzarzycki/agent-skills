@@ -2,14 +2,33 @@
   "baseDir": ".workflow",
   "workIdConvention": "<yyyy-mm-dd>-<slug>",
   "humanArtifactPattern": "NN-NAME.md",
-  "underscoreDirs": ["_state", "_phases", "_reviews", "_evidence"],
+  "underscoreDirs": [
+    "_state",
+    "_phases",
+    "_reviews",
+    "_evidence"
+  ],
   "stateFile": "_state/state.json",
   "reviewEvidencePattern": "_reviews/<phase>/<reviewer>.md",
-  "phases": ["spec", "tech_options", "planning"],
-  "gateVerdicts": ["pass", "needs-rework", "needs-user"],
+  "phases": [
+    "spec",
+    "tech_design",
+    "planning"
+  ],
+  "gateVerdicts": [
+    "pass",
+    "needs-rework",
+    "needs-user"
+  ],
   "reviewersByPhase": {
-    "spec": ["intent", "testability"],
-    "tech_options": ["reuse-coverage", "fit-risk"]
+    "spec": [
+      "intent",
+      "testability"
+    ],
+    "tech_design": [
+      "reuse-coverage",
+      "fit-risk"
+    ]
   },
   "reworkCap": 2
 }

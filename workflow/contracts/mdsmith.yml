@@ -1,6 +1,6 @@
 # Format gate for workflow artifacts. Two layers:
 #   1. Structure (MDS020): sections, order, filename — mirrors decision-spec.json
-#      and tech-options.json. Single truth is the JSON contracts;
+#      and tech-design.json. Single truth is the JSON contracts;
 #      omp-workflow/workflow-core/test/contracts.test.js keeps this file in sync.
 #      Any MDS020 diagnostic is a contract violation: fix before review.
 #   2. Language budget (MDS023/MDS036/MDS056): brainstorming-style scaling —
@@ -11,7 +11,7 @@
 #          go install github.com/jeduden/mdsmith@latest
 #          (the npm package named "mdsmith" is an unrelated project)
 # Usage:   mdsmith check -c <plugin>/contracts/mdsmith.yml \
-#            <work-item>/01-DECISION-SPEC.md <work-item>/02-TECH-OPTIONS.md
+#            <work-item>/01-DECISION-SPEC.md <work-item>/02-TECH-DESIGN.md
 
 rules:
   # Structure schemas (the kinds below) only run when MDS020 is enabled.
@@ -38,8 +38,8 @@ rules:
 kind-assignment:
   - glob: ["**/01-DECISION-SPEC.md"]
     kinds: [decision-spec]
-  - glob: ["**/02-TECH-OPTIONS.md"]
-    kinds: [tech-options]
+  - glob: ["**/02-TECH-DESIGN.md"]
+    kinds: [tech-design]
 
 kinds:
   decision-spec:
@@ -59,15 +59,16 @@ kinds:
         - heading: "Acceptance criteria"
         - heading: "Risks / open questions"
         - heading: "Approval record"
-  tech-options:
+  tech-design:
     schema:
-      filename: "02-TECH-OPTIONS.md"
+      filename: "02-TECH-DESIGN.md"
       closed: true
       sections:
         - heading: "Needs"
         - heading: "Options considered"
         - heading: "Scorecard"
-        - heading: "Recommended option"
+        - heading: "Chosen design"
+        - heading: "Key technical decisions"
         - heading: "Rejected alternatives"
         - heading: "Risks"
         - heading: "Approval record"

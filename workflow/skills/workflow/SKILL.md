@@ -62,22 +62,22 @@ This engine is stateless -- chat history is the state; to resume, re-read the wo
 5. Close. If you spawned a team, shut down the interviewer (`SendMessage` with
    `{type: 'shutdown_request'}`), then `TeamDelete()`.
 
-## Tech Options phase
+## Tech Design phase
 
 Runs after the user approves the Decision Spec. You stay orchestrator -- never author or review
 the artifact in your own context.
 
-1. Delegate. Run this plugin's `tech-options-phase` saved workflow (args/returns in its meta;
+1. Delegate. Run this plugin's `tech-design-phase` saved workflow (args/returns in its meta;
    `pluginRoot` = the plugin root from Path resolution above; `scriptPath:
-   <plugin root>/workflows/tech-options-phase.js` fallback if the name is not in the session
-   registry). It runs the autonomous loop from the tech-options skill contract (analyst ->
+   <plugin root>/workflows/tech-design-phase.js` fallback if the name is not in the session
+   registry). It runs the autonomous loop from the tech-design skill contract (designer ->
    format gate -> two independent reviewers -> rework, capped). Pass `instructions` for user
    rework feedback and `contentFrozen: true` for shape-only rework. Without the Workflow tool,
-   fall back per the tech-options skill's Execution section.
+   fall back per the tech-design skill's Execution section.
 2. Present. On `status: pass`, hand the user the gate per Gate presentation below. On
    `needs-user` or `rework-cap-exceeded`, surface the reviewers' findings and ask the user to
    decide. Rework requested by the user = re-run step 1 with their feedback as `instructions`.
-3. Stop. After the user approves Tech Options the engine stops -- planning is not implemented
+3. Stop. After the user approves the Tech Design the engine stops -- planning is not implemented
    yet. Tell the user the work-item dir and artifact paths.
 
 ## Gate presentation
