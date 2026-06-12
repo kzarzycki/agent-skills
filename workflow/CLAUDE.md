@@ -49,3 +49,7 @@ Core orchestration concepts (list to be extended):
 - Workflow-tool scripts (`workflows/*.js`): sandbox style — `export const meta` is the first statement, no imports/fs/Node APIs/`Date.now`, top-level `return` is fine. The named-workflow registry is built at session start; for a script added mid-session pass `scriptPath`. Agent types must be plugin-qualified (`workflow:tech-options-analyst`).
 - Artifact shape: structure over prose — tables and lists with bold lead-ins, ~300 words for nuanced sections, short sentences. Sections come from the contract JSON; line 1 is an H1, sections are H2 in contract order, no frontmatter.
 
+## Backlog
+
+- **Design phase:** Tech Options becomes the research step of a broader Design phase (Spec = intent; Design = architecture + technology choices). Decided 2026-06-12, deferred. Must land before the eval harness commits golden traces — the phase name and `02-*` artifact contract are the workflow's public surface the harness pins.
+

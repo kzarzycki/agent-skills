@@ -38,7 +38,7 @@ run in-situ (no agents at all).
 
 ## Format gate
 
-Before the review gate: `mdsmith check -c <plugin>/contracts/mdsmith.yml <work-item>/02-TECH-OPTIONS.md`, where `<plugin>` = the installed plugin root (the dir containing `contracts/`) and `<work-item>` = `.workflow/<id>/`. Install hints and rule semantics are in the config header. MDS020 = contract violation, fix first. MDS023/MDS036/MDS056 = language budget, rework input. Beyond section names, mdsmith enforces document shape: line 1 is an H1 title, sections are H2 in contract order, no YAML frontmatter, no extra H2s. Gate owner: the phase loop runs the gate as its own step after each author round and routes violations back to the author; reviewers verify it, do not own it. Without mdsmith installed, verify sections manually against the contract JSON.
+Before the review gate: `mdsmith check -c <plugin>/contracts/mdsmith.yml <work-item>/02-TECH-OPTIONS.md`, where `<plugin>` = the installed plugin root (the dir containing `contracts/`) and `<work-item>` = `.workflow/<id>/`. Install hints and rule semantics are in the config header. MDS020 = contract violation, fix first. MDS023/MDS036/MDS056 = language budget, rework input. Beyond section names, mdsmith enforces document shape: line 1 is an H1 title, sections are H2 in contract order, no YAML frontmatter, no extra H2s. Gate owner: the author runs the gate itself after each writing round and fixes structure violations before returning; on a fresh draft with no author round, the phase loop runs the gate in parallel with the reviewers; reviewers verify it, do not own it. Without mdsmith installed, verify sections manually against the contract JSON.
 
 ## Scorecard
 

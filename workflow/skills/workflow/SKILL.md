@@ -26,7 +26,8 @@ This engine is stateless -- chat history is the state; to resume, re-read the wo
    `<work-item dir>/_phases/spec/`. Derive research buckets from the prompt (codebase
    precedents, existing docs, external prior art -- whatever the prompt suggests) and gate
    (AskUserQuestion): the user approves, narrows, or rejects each bucket. Run only approved
-   buckets.
+   buckets. Capture any constraint the user adds at this gate verbatim and bake it into the
+   research prompt and the interview.
 2. Research. Call `Workflow({ name: 'research-brief', args: { prompt, buckets } })` with the
    approved buckets. Keep the returned `{ brief, openThreads }` and write both to
    `<work-item dir>/_phases/spec/research-brief.md`.
@@ -46,7 +47,7 @@ This engine is stateless -- chat history is the state; to resume, re-read the wo
      - `Agent({ team_name: 'spec', name: 'interviewer', subagent_type: 'interviewer',
        prompt: "Work item: <prompt>\nResearch brief: <brief>\nOpen threads: <openThreads>\nspec_path: <spec_path>\npluginRoot: <plugin root>" })`
      A teammate's chat output never reaches you, so do not expect a return value. Wait for its
-     message: path + verdicts (+ HTML gate page path if rendered). Do not Read the artifact.
+     message: path + verdicts. Do not Read the artifact.
    - Not in tmux -- run the interview yourself. Load the spec skill and follow its contract;
      the interview shares your context -- that is the cost the user accepted by choosing this
      mode. Lead with the open threads, resolve what you can from the codebase, write the draft to
@@ -81,12 +82,22 @@ the artifact in your own context.
 
 ## Gate presentation
 
-Every user gate, any phase: hand the user the artifact path plus a verdict/finding summary --
-and the HTML gate page path when the phase workflow rendered one (`gatePage` in its return,
-under `_phases/<phase>/`). The artifact content never enters your context; the user reviews
-the file (or the HTML page) directly.
+Every user gate, any phase: hand the user the artifact path plus a verdict/finding summary.
+The artifact content never enters your context; the user reviews the file (or the HTML page)
+directly.
 
-The HTML page is rendered inside the phase workflows, best-effort, via the
-`experimental:communicating-in-html` skill. If the user pastes the page's copy-back token,
-parse it as the gate answer. The markdown artifact stays the source of truth; without that
-skill the gate is path + summary.
+Render the gate page yourself, deterministically (zero tokens) -- the phase workflows do not
+render it:
+`python3 <plugin root>/scripts/render-gate-page.py --artifact <artifact> --phase <phase>
+--verdicts '<verdicts JSON from the workflow return>' --out <work-item dir>/_phases/<phase>/gate.html`
+
+Serve the gate page, do not just print its path -- the user is often remote and cannot open
+local files. Start (or reuse) one HTTP server for the work-item dir:
+`cd <work-item dir> && nohup python3 -m http.server <port> --bind 0.0.0.0 &` -- pick a free
+port (`curl` it first; if taken, increment), then give the user the URL
+`http://<reachable host IP>:<port>/_phases/<phase>/gate.html` (prefer a VPN/tailnet IP from
+`hostname -I` over a public one). One server per work item covers every later gate; stop it
+when the engine stops.
+
+If the user pastes the page's copy-back token, parse it as the gate answer. The markdown
+artifact stays the source of truth; without a browser the gate is path + summary.

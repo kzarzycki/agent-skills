@@ -36,8 +36,16 @@ const angles = buckets
 phase('Research');
 const perAngle = await parallel(angles.map(x => () => agent(
   `Work item:\n${prompt}\n\nResearch this angle: ${x.lens}\nReturn concrete findings: names, versions, file paths, facts.`,
-  { label: `research:${x.id}`, phase: 'Research', schema: FIND, agentType: 'explore' },
+  { label: `research:${x.id}`, phase: 'Research', schema: FIND, agentType: 'Explore' },
 )));
+
+const ok = perAngle.filter(Boolean);
+if (ok.length === 0) {
+  return { error: `research failed: all ${angles.length} bucket agents died — fix the agent config and resume this run`, buckets: angles.map(x => x.id) };
+}
+if (ok.length < angles.length) {
+  log(`WARNING: ${angles.length - ok.length}/${angles.length} bucket agents failed; brief covers only the surviving buckets`);
+}
 
 phase('Synthesize');
 const BRIEF = {
@@ -52,9 +60,10 @@ const BRIEF = {
 const out = await agent(
   'Synthesize these findings into a brief (<= 200 words) that sharpens an interview with the user about this work item. ' +
   'Then list openThreads: the questions only the user can answer (product intent, priorities, preferences).\n\n' +
-  perAngle.filter(Boolean).map(r => `## ${r.angle}\n` + r.findings.join('\n')).join('\n\n'),
+  ok.map(r => `## ${r.angle}\n` + r.findings.join('\n')).join('\n\n'),
   { label: 'synthesize', phase: 'Synthesize', schema: BRIEF },
 );
 
 log(`Brief ready; ${out.openThreads.length} open threads for the user.`);
-return out;
+const failed = angles.length - ok.length;
+return failed > 0 ? { ...out, failedBuckets: failed } : out;

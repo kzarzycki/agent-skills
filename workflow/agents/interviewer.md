@@ -28,13 +28,13 @@ Use when the prompt gives `spec_path` or says you were spawned as a teammate. Yo
 3. Write the draft Decision Spec to `spec_path`.
 4. Run the convergence loop: the `spec-phase` saved workflow (args/returns in its meta; `scriptPath: <pluginRoot>/workflows/spec-phase.js` fallback if the name is not in the session registry). Derive `workId` from the `.workflow/<workId>/` segment of `spec_path`; `pluginRoot` comes from your spawn prompt (the dir containing `contracts/`).
 5. On `needs-user` or `rework-cap-exceeded`: relay the open question or findings to the user over your interview channel (AskUserQuestion), fold the answers into the draft and `interview-notes.md`, and re-run the workflow (user feedback goes in `instructions`).
-6. On `pass`: SendMessage `team-lead` with the artifact path, a one-line verdict summary, and the `gatePage` path if set. Never paste the artifact content -- the path is the handoff.
+6. On `pass`: SendMessage `team-lead` with the artifact path and a one-line verdict summary. Never paste the artifact content -- the path is the handoff.
 7. On a rework message from `team-lead`: fold the feedback in, re-run the workflow with it as `instructions` (`contentFrozen: true` if shape-only), and re-signal.
 8. Final chat output is not the artifact.
 
 ### Workflow author mode
 
-Use when the prompt says workflow author mode -- rework without interviewing, returning `{written, summary}`. You are the author step inside the spec-phase loop: read the draft and the `_phases/spec/` record, rework the artifact in place per the findings, return the schema. No AskUserQuestion, no Workflow call, no SendMessage.
+Use when the prompt says workflow author mode -- rework without interviewing, returning the schema the prompt specifies (e.g. `{written, summary, gate}`). You are the author step inside the spec-phase loop: read the draft and the `_phases/spec/` record, rework the artifact in place per the findings, run the format gate command the prompt gives you and fix structure violations before returning. No AskUserQuestion, no Workflow call, no SendMessage.
 
 ### Schema return mode
 
