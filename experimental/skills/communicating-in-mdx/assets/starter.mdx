@@ -1,0 +1,94 @@
+# communicating-in-mdx — what it is
+
+This file is the exemplar. It shows the house style: **prose carries the
+meaning, components enhance it.** Read it top to bottom — if you stripped every
+component tag, the prose would still make sense. That's the rule.
+
+The skill lets an agent write specs, plans, designs, and recaps as MDX and
+render them with a fully local runner. Nothing is uploaded anywhere.
+
+<Callout tone="decision" title="The one decision that shapes everything">
+The `.mdx` file is the artifact — git-diffable, hand-editable, shareable. The
+rendered page is transient. HTML is never a deliverable.
+</Callout>
+
+## How rendering works
+
+You share MDX; rendering is a local function anyone with the runner applies.
+
+<Mermaid chart={`graph LR
+  A["spec.mdx (the artifact)"] --> B["local Vite process"]
+  B --> C["localhost:5173 — interactive, hot-reloading"]`} />
+
+## MDX vs the HTML skill
+
+They coexist. Pick by what you need.
+
+<Columns>
+
+**MDX** — lighter to author (prose + tags), the source is durable and
+re-renderable, but it needs the runner.
+
+**HTML** — zero dependencies, renders for anyone by double-click, but you
+hand-write the layout.
+
+</Columns>
+
+## Building it took a handful of phases
+
+<Steps>
+
+- Scaffold the Vite + React + MDX runner
+
+- Add the CLI that points the runner at any docs directory
+
+- Build the document component library
+
+- Add the wireframe canvas
+
+- Write the skill and its references
+
+</Steps>
+
+## The shift from the hosted alternative
+
+<Diff code={`- upload plan to plan.agent-native.com
++ render spec.mdx with a local Vite process
+  the .mdx never leaves the machine`} />
+
+## A wireframe, because designs want one
+
+<Canvas>
+  <Screen name="Runner" title="localhost:5173">
+    <WRow>
+      <WCol>
+        <WText lines={1} />
+        <WBox h={120}>document list</WBox>
+      </WCol>
+      <WCol>
+        <WText lines={3} />
+        <WImage h={60} />
+        <WButton>render</WButton>
+      </WCol>
+    </WRow>
+  </Screen>
+</Canvas>
+
+## What it's measured on
+
+<MetricCard label="Remote calls" value="0" delta="fully local" tone="ok" />
+<MetricCard label="Artifact" value=".mdx" delta="not HTML" tone="info" />
+
+<Checklist items={[
+  "Renders with zero network calls",
+  "Raw .mdx still reads as Markdown",
+  "Authoring is lighter than hand-written HTML"
+]} />
+
+<Collapse summary="Why no single-file HTML export in v1?">
+
+Because the `.mdx` is already the durable, shareable artifact. A frozen HTML
+copy would be redundant. It's trivial to add later if a frozen snapshot is ever
+wanted.
+
+</Collapse>
