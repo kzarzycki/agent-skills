@@ -33,3 +33,16 @@
 .steps { counter-reset: step; list-style: none; padding: 0; margin: var(--s4) 0; }
 .steps > li { counter-increment: step; padding-left: var(--s6); position: relative; margin: var(--s3) 0; }
 .steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--bg); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+
+/* Tabs */
+.tabs { margin: var(--s4) 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.tabs__bar { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); }
+.tabs__bar button { background: none; border: none; color: var(--muted); padding: var(--s3) var(--s4); cursor: pointer; font: inherit; border-bottom: 2px solid transparent; }
+.tabs__bar button.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tabs__panel { padding: var(--s4); }
+.tabs__panel > :first-child { margin-top: 0; }
+
+/* Collapse */
+.collapse { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s4); margin: var(--s3) 0; background: var(--surface); }
+.collapse > summary { cursor: pointer; font-weight: 600; }
+.collapse__body { margin-top: var(--s3); }
