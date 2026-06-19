@@ -1,0 +1,25 @@
+{/* TEMPLATE: structured intake. Copy into .work/, change the questions, serve. */}
+
+# Scoping — [what you're scoping]
+
+A short structured intake before we design. This is the **interview** activity:
+I ask, you answer in the form below, and your answers come straight back to me.
+Nothing leaves your machine.
+
+<Callout tone="decision" title="How to submit">
+Fill the fields and click **Submit answers**. They POST to the runner's own
+localhost endpoint and I pick them up automatically — no copy-paste. (If the
+runner isn't reachable, the form falls back to a `ANSWERS<<< … >>>ANSWERS`
+token you paste into chat.)
+</Callout>
+
+<QuestionForm id="scoping" questions={[
+  { id: "primary_goal", label: "What's the one outcome this must deliver?", type: "choice", options: ["Speed — make X faster", "Reach — support more of Y", "Clarity — make Z easier to understand", "Cost — do the same for less"] },
+  { id: "primary_user", label: "Who uses it most?", type: "choice", options: ["Just me / the team internally", "External users / customers", "Both equally"] },
+  { id: "must_have", label: "One must-have for v1 (free text)" },
+  { id: "nice_to_have", label: "One nice-to-have you'd enjoy but don't need" },
+  { id: "dealbreaker", label: "Anything that would make this a non-starter?" }
+]} />
+
+Once your answers land, I'll summarize what you chose and turn it into a short
+spec.

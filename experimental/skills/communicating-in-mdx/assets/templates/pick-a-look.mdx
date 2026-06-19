@@ -1,0 +1,59 @@
+{/* TEMPLATE: offer visual options to choose from. Copy into .work/, swap the mockups. */}
+
+# Pick a look — [what you're laying out]
+
+Three rough mockups for how this could be laid out. Read the prose, then click
+**Select** under the one you prefer and hit **Submit choice** — your pick
+streams straight back to me, no copy-paste.
+
+<Callout tone="info" title="These are wireframes, not final visuals">
+Low-fidelity on purpose — we're deciding *layout*, not colors or copy.
+</Callout>
+
+<OptionGallery id="layout" prompt="Which layout do you prefer?">
+
+  <Option name="strip" label="A · Metrics strip on top">
+    <Canvas>
+      <Screen name="A" width={240}>
+        <WRow><WBox h={36}>12</WBox><WBox h={36}>4</WBox><WBox h={36}>98%</WBox></WRow>
+        <WText lines={2} />
+        <WImage h={70} />
+      </Screen>
+    </Canvas>
+  </Option>
+
+  <Option name="sidebar" label="B · Stats in a side rail">
+    <Canvas>
+      <Screen name="B" width={240}>
+        <WRow>
+          <WCol><WBox h={28}>12</WBox><WBox h={28}>4</WBox><WBox h={28}>98%</WBox></WCol>
+          <WCol><WText lines={5} /></WCol>
+        </WRow>
+      </Screen>
+    </Canvas>
+  </Option>
+
+  <Option name="hero" label="C · One hero number">
+    <Canvas>
+      <Screen name="C" width={240}>
+        <WBox h={64}>98%</WBox>
+        <WRow><WBox h={30} /><WBox h={30} /></WRow>
+        <WText lines={2} />
+      </Screen>
+    </Canvas>
+  </Option>
+
+</OptionGallery>
+
+## Why this beats asking in prose
+
+Describing "strip vs side rail vs hero" in words is slow and ambiguous. Seeing
+the mockups side by side makes the choice obvious at a glance — and the pick
+comes back structured (`{ choice, label }`), ready to act on.
+
+<Collapse summary="What happens after you choose">
+
+I receive `{ form: "layout", choice: "...", label: "..." }` on the local
+endpoint, the watcher wakes me, and I take your chosen layout into the design.
+
+</Collapse>
