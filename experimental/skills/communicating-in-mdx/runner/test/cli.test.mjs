@@ -13,9 +13,13 @@ test("parseArgs defaults dir to null", () => {
   expect(parseArgs([]).dir).toBe(null);
 });
 
-test("prepare creates a .docs symlink to the resolved dir", () => {
+test("prepare links the given symlink path to the resolved dir", () => {
+  // Pass an isolated symlink path so the test never clobbers the runner's
+  // shared `.docs` — doing so would break a live runner serving real docs.
   const target = mkdtempSync(path.join(tmpdir(), "mdx-docs-"));
-  const { docsDir, symlinkPath } = prepare(target);
+  const link = path.join(mkdtempSync(path.join(tmpdir(), "mdx-link-")), ".docs");
+  const { docsDir, symlinkPath } = prepare(target, link);
   expect(docsDir).toBe(realpathSync(target));
+  expect(symlinkPath).toBe(link);
   expect(lstatSync(symlinkPath).isSymbolicLink()).toBe(true);
 });

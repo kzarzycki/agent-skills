@@ -38,9 +38,10 @@ function symlinkExists(p) {
   }
 }
 
-export function prepare(dir) {
+// symlinkPath defaults to the runner's shared `.docs` (what Vite serves).
+// Tests pass an isolated path so running them never clobbers a live runner.
+export function prepare(dir, symlinkPath = path.join(runnerRoot, ".docs")) {
   const docsDir = realpathSync(resolveDir(dir));
-  const symlinkPath = path.join(runnerRoot, ".docs");
   if (symlinkExists(symlinkPath)) rmSync(symlinkPath, { force: true });
   symlinkSync(docsDir, symlinkPath, "dir");
   return { docsDir, symlinkPath };
