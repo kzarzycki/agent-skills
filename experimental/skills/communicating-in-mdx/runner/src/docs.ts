@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import { docs } from "virtual:mdx-docs";
 
 export interface DocEntry {
   slug: string;
@@ -7,12 +8,5 @@ export interface DocEntry {
 }
 
 export function loadDocs(): DocEntry[] {
-  const mods = import.meta.glob("../.docs/**/*.mdx");
-  return Object.entries(mods)
-    .map(([file, load]) => {
-      const slug = file.replace("../.docs/", "").replace(/\.mdx$/, "");
-      const title = slug.split("/").pop()!.replace(/[-_]/g, " ");
-      return { slug, title, load: load as DocEntry["load"] };
-    })
-    .sort((a, b) => a.slug.localeCompare(b.slug));
+  return docs as DocEntry[];
 }

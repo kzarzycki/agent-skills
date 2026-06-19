@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import mdx from "@mdx-js/rollup";
 import path from "node:path";
 import { answersPlugin } from "./answers-plugin";
+import { docsPlugin } from "./docs-plugin";
 
 const docsDir = process.env.MDX_DOCS_DIR;
 const answersFile = process.env.MDX_ANSWERS_FILE;
@@ -11,6 +12,7 @@ export default defineConfig({
   plugins: [
     { enforce: "pre", ...mdx({ providerImportSource: "@mdx-js/react" }) },
     react(),
+    docsPlugin(docsDir),
     ...(answersFile ? [answersPlugin(answersFile)] : []),
   ],
   server: {
