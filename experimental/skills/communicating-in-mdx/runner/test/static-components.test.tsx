@@ -25,7 +25,7 @@ test("Checklist renders items", () => {
   expect(screen.getAllByRole("listitem")).toHaveLength(2);
 });
 
-test("registry exposes all six tags", () => {
+test("registry exposes the static document tags", () => {
   ["Callout", "Columns", "Checklist", "FileTree", "MetricCard", "Steps", "Timeline"].forEach((t) =>
     expect(components[t]).toBeTruthy(),
   );
