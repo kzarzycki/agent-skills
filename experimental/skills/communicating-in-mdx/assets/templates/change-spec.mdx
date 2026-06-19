@@ -1,0 +1,65 @@
+{/* TEMPLATE: a change spec / plan. Copy into .work/, replace the example. */}
+
+# Change spec — [the change]
+
+**Status:** Proposed · **Scope:** `[files or modules this touches]`
+
+One paragraph of context: what exists today, what's wrong or missing, and what
+this change proposes — in plain prose, before any component.
+
+## The proposed shape
+
+Hover the nodes — each explains its role, and the connected edges light up.
+
+<Diagram height={300} nodes={[
+  { id: "in", x: 250, y: 18, w: 200, label: "request", tip: "What comes in. Replace with your real entry point." },
+  { id: "a", x: 40, y: 130, w: 200, h: 64, label: "component A", tip: "What A does and why it exists." },
+  { id: "b", x: 460, y: 130, w: 200, h: 64, label: "component B", tip: "What B does and why it exists." },
+  { id: "out", x: 250, y: 240, w: 200, label: "result", tip: "What the user or caller ends up with." }
+]} edges={[
+  { from: "in", to: "a" },
+  { from: "in", to: "b" },
+  { from: "a", to: "out" },
+  { from: "b", to: "out" }
+]} />
+
+## The change
+
+The smallest diff that captures the idea — before/after, not the whole file.
+
+<Diff code={`- const x = oldWay();
++ const x = newWay();
+  return x;`} />
+
+<Steps>
+
+- First concrete step — name the file and the edit
+
+- Second step — what depends on the first
+
+- Third step — wiring / config
+
+- Last step — make the result observable (print it, test it)
+
+</Steps>
+
+## Detail, folded away
+
+<Collapse summary="Why this approach over the obvious alternative?">
+
+The reasoning that would clutter the main flow. Reader opens it only if they
+doubt the decision.
+
+</Collapse>
+
+<Collapse summary="Rejected: [the alternative you considered]">
+
+What you considered and why you said no — one short paragraph. Keeps the
+decision honest without parking it in the reader's way.
+
+</Collapse>
+
+<Callout tone="warn" title="Migration note">
+Anything a consumer must change, or any backward-incompatibility. Delete this
+block if the change is transparent.
+</Callout>

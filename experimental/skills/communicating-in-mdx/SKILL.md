@@ -67,11 +67,45 @@ Document components (full props + examples in `references/components.md`):
 | `<Tabs>` / `<Collapse>` | progressive disclosure |
 | `<Checklist>` | acceptance criteria, task lists |
 | `<MetricCard>` | recap KPIs and results |
-| `<QuestionForm>` | interviewing — answers come back via a copy-paste token |
+| `<QuestionForm>` | interviewing — answers POST back to the runner (token fallback) |
+| `<OptionGallery>` / `<Option>` | offer visual mockups to pick from; pick streams back |
 
 Wireframe canvas for UI/design docs — `<Canvas>`, `<Screen>`, and low-fi
 primitives (`<WBox>` `<WText>` `<WButton>` `<WInput>` `<WImage>` `<WRow>`
 `<WCol>`): see `references/wireframe.md`.
+
+## Start from a template
+
+Don't author from a blank file. `assets/templates/` holds three worked
+starting points — copy one into the project's `.work/`, rename it, and replace
+the example content:
+
+| Template | Activity | Shows off |
+|---|---|---|
+| `interview.mdx` | intake / brainstorm | `<QuestionForm>` with answer streaming |
+| `change-spec.mdx` | spec / plan | `<Diagram>` (hover tips + edge highlight), `<Diff>`, `<Steps>`, `<Collapse>` |
+| `pick-a-look.mdx` | offer options | `<OptionGallery>` of wireframe mockups |
+
+`assets/starter.mdx` is a broader showcase of the whole component set. These are
+inspiration, not contracts — keep the structure that fits, drop the rest.
+
+## Using this from brainstorming, writing-plans, and other workflows
+
+This skill is the *medium*; another skill is usually driving the *activity*.
+When a workflow asks for a spec, plan, design, recap, or intake — and the user
+wants it rich — render it as MDX instead of flat Markdown:
+
+1. Copy the matching template from `assets/templates/` into the project's
+   `.work/` (e.g. brainstorming intake → `interview.mdx`; a writing-plans plan
+   or a design → `change-spec.mdx`; a layout choice → `pick-a-look.mdx`).
+2. Write the real content into it, prose-first.
+3. **Serve it** with the runner (below) and give the user the URL — that is the
+   review surface. For brainstorming/option questions, the form or gallery
+   streams answers back; you don't block on copy-paste.
+
+The workflow's own discipline still applies (brainstorming asks one question at
+a time; writing-plans keeps tasks bite-sized) — MDX only changes how the
+artifact is rendered, not how the workflow is run.
 
 ## Rendering — run the local runner
 
