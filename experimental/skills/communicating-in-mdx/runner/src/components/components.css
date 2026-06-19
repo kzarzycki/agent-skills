@@ -46,3 +46,19 @@
 .collapse { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s4); margin: var(--s3) 0; background: var(--surface); }
 .collapse > summary { cursor: pointer; font-weight: 600; }
 .collapse__body { margin-top: var(--s3); }
+
+/* Diff */
+.diff { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s3) 0; overflow-x: auto; margin: var(--s4) 0; }
+.diff code { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.diff__line { display: block; padding: 0 var(--s4); white-space: pre; }
+.diff__line--add { background: rgba(90, 209, 154, 0.12); }
+.diff__line--add::before { content: "+ "; color: var(--ok); }
+.diff__line--del { background: rgba(240, 109, 109, 0.12); }
+.diff__line--del::before { content: "- "; color: var(--danger); }
+.diff__line--ctx::before { content: "  "; }
+
+/* AnnotatedCode */
+.annotated { display: grid; grid-template-columns: 1fr; gap: var(--s3); margin: var(--s4) 0; }
+.annotated__code pre { margin: 0; border-radius: var(--radius); }
+.annotated__notes { list-style: none; padding: var(--s3) var(--s4); margin: 0; background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); font-size: 13px; }
+.annotated__notes b { color: var(--accent); }
