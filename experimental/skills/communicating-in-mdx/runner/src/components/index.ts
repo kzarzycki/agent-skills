@@ -10,6 +10,7 @@ import Collapse from "./Collapse";
 import Diff from "./Diff";
 import AnnotatedCode from "./AnnotatedCode";
 import Mermaid from "./Mermaid";
+import QuestionForm from "./QuestionForm";
 
 // MDXProvider registers these globally so .mdx documents use the tags without importing.
 export const components: Record<string, ComponentType<any>> = {};
@@ -27,4 +28,5 @@ Object.assign(components, {
   Diff,
   AnnotatedCode,
   Mermaid,
+  QuestionForm,
 });

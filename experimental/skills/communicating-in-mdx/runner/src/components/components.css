@@ -66,3 +66,11 @@
 /* Mermaid */
 .mermaid { margin: var(--s4) 0; text-align: center; }
 .mermaid svg { max-width: 100%; height: auto; }
+
+/* QuestionForm */
+.qform { display: flex; flex-direction: column; gap: var(--s4); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s5); margin: var(--s4) 0; }
+.qform__field { display: flex; flex-direction: column; gap: var(--s2); }
+.qform__field > span { font-weight: 600; font-size: 14px; }
+.qform input, .qform select, .qform__token { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s3); font: inherit; }
+.qform button { align-self: flex-start; background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius); padding: var(--s2) var(--s4); font: inherit; font-weight: 600; cursor: pointer; }
+.qform__token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
