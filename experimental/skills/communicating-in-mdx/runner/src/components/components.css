@@ -1,0 +1,35 @@
+/* Callout */
+.callout { border-left: 3px solid var(--accent); background: var(--surface); padding: var(--s3) var(--s4); border-radius: var(--radius); margin: var(--s4) 0; }
+.callout__title { margin: 0 0 var(--s2); font-weight: 600; }
+.callout__body > :first-child { margin-top: 0; }
+.callout__body > :last-child { margin-bottom: 0; }
+.callout--info { border-color: var(--accent); }
+.callout--decision { border-color: #b07cff; }
+.callout--warn { border-color: var(--warn); }
+.callout--danger { border-color: var(--danger); }
+
+/* Columns */
+.columns { display: flex; gap: var(--s4); flex-wrap: wrap; margin: var(--s4) 0; }
+.columns > * { flex: 1 1 0; min-width: 200px; }
+
+/* Checklist */
+.checklist { list-style: none; padding: 0; margin: var(--s4) 0; }
+.checklist > li { padding-left: var(--s5); position: relative; margin: var(--s2) 0; }
+.checklist > li::before { content: "☐"; position: absolute; left: 0; color: var(--muted); }
+
+/* FileTree */
+.filetree { background: var(--surface); padding: var(--s4); border-radius: var(--radius); border: 1px solid var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.5; overflow-x: auto; }
+
+/* MetricCard */
+.metric { display: inline-flex; flex-direction: column; gap: var(--s1); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s3) var(--s4); margin: var(--s2) var(--s2) var(--s2) 0; min-width: 120px; }
+.metric__label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.metric__value { font-size: 24px; font-weight: 700; }
+.metric__delta { font-size: 13px; color: var(--muted); }
+.metric--ok .metric__delta { color: var(--ok); }
+.metric--warn .metric__delta { color: var(--warn); }
+.metric--danger .metric__delta { color: var(--danger); }
+
+/* Steps / Timeline */
+.steps { counter-reset: step; list-style: none; padding: 0; margin: var(--s4) 0; }
+.steps > li { counter-increment: step; padding-left: var(--s6); position: relative; margin: var(--s3) 0; }
+.steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--bg); display: grid; place-items: center; font-size: 13px; font-weight: 700; }
