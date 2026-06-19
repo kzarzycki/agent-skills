@@ -46,17 +46,28 @@ export function prepare(dir) {
   return { docsDir, symlinkPath };
 }
 
+export function answersFilePath() {
+  return path.join(runnerRoot, ".answers.jsonl");
+}
+
 export function run(argv) {
   const args = parseArgs(argv);
   const { docsDir } = prepare(args.dir);
+  const answersFile = answersFilePath();
   console.log(`[mdx-runner] serving ${docsDir}`);
+  console.log(`[mdx-runner] answers -> ${answersFile}`);
   if (args.check) return 0;
   const viteArgs = [];
   if (args.open) viteArgs.push("--open");
   const child = spawn("npx", ["vite", ...viteArgs], {
     cwd: runnerRoot,
     stdio: "inherit",
-    env: { ...process.env, MDX_DOCS_DIR: docsDir, MDX_RUNNER_PORT: args.port || "" },
+    env: {
+      ...process.env,
+      MDX_DOCS_DIR: docsDir,
+      MDX_RUNNER_PORT: args.port || "",
+      MDX_ANSWERS_FILE: answersFile,
+    },
   });
   child.on("exit", (code) => process.exit(code ?? 0));
 }

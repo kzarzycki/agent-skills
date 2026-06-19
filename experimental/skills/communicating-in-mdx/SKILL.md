@@ -98,8 +98,11 @@ and troubleshooting: `references/runner.md`.
   rendered page is transient. Never produce HTML as a deliverable.
 - **Always leave a 3-5 bullet TL;DR in chat too** — the file is the artifact,
   the chat keeps the headline.
-- `<QuestionForm>` answers come back as an `ANSWERS<<< … >>>ANSWERS` token the
-  user pastes into chat; parse it and continue.
+- `<QuestionForm>` answers POST back to the runner's own `/__mdx/answers`
+  endpoint (same-origin localhost — nothing leaves the machine) and land in
+  `runner/.answers.jsonl`. Watch that file (a backgrounded watcher that wakes
+  you on a new line) to pick them up with no copy-paste. Offline fallback: a
+  pasteable `ANSWERS<<< … >>>ANSWERS` token.
 
 ## Coexistence with communicating-in-html
 

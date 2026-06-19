@@ -134,15 +134,24 @@ A recap KPI. `tone`: `info` · `ok` · `warn` · `danger` (colors the delta).
 <MetricCard label="Tokens vs HTML" value="-40%" delta="lighter" tone="ok" />
 ```
 
-## `<QuestionForm questions>`
+## `<QuestionForm questions id>`
 
 Interview form. `questions` is `{ id, label, type?, options? }[]` where `type`
-is `text` (default) or `choice` (needs `options: string[]`). The user fills it,
-clicks **Copy answers**, and pastes an `ANSWERS<<< … >>>ANSWERS` token back into
-chat for you to parse.
+is `text` (default) or `choice` (needs `options: string[]`). Optional `id`
+labels the submission (defaults to the document slug).
+
+On **Submit answers** the form POSTs `{ form, answers }` to the runner's own
+`/__mdx/answers` endpoint, which appends them to `runner/.answers.jsonl` — the
+agent reads that file, so answers come straight back with no copy-paste. This is
+same-origin localhost; nothing leaves the machine. If there's no live runner
+(e.g. the file was opened statically), it falls back to a copy-paste
+`ANSWERS<<< … >>>ANSWERS` token.
+
+To pick up answers, the agent watches `runner/.answers.jsonl` for a new line
+(e.g. a backgrounded watcher that wakes it on submit).
 
 ```mdx
-<QuestionForm questions={[
+<QuestionForm id="scope-intake" questions={[
   { id: "scope", label: "v1 scope", type: "choice", options: ["docs only", "docs + canvas"] },
   { id: "notes", label: "Anything else?" }
 ]} />

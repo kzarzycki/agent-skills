@@ -2,13 +2,16 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import mdx from "@mdx-js/rollup";
 import path from "node:path";
+import { answersPlugin } from "./answers-plugin";
 
 const docsDir = process.env.MDX_DOCS_DIR;
+const answersFile = process.env.MDX_ANSWERS_FILE;
 
 export default defineConfig({
   plugins: [
     { enforce: "pre", ...mdx({ providerImportSource: "@mdx-js/react" }) },
     react(),
+    ...(answersFile ? [answersPlugin(answersFile)] : []),
   ],
   server: {
     port: Number(process.env.MDX_RUNNER_PORT) || 5173,

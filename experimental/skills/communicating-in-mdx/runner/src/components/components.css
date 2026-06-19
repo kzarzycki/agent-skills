@@ -83,3 +83,5 @@
 .qform input, .qform select, .qform__token { background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s2) var(--s3); font: inherit; }
 .qform button { align-self: flex-start; background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius); padding: var(--s2) var(--s4); font: inherit; font-weight: 600; cursor: pointer; }
 .qform__token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.qform__sent { color: var(--ok); font-weight: 600; margin: 0; }
+.qform__hint { color: var(--muted); font-size: 13px; margin: 0; }
