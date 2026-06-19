@@ -62,3 +62,7 @@
 .annotated__code pre { margin: 0; border-radius: var(--radius); }
 .annotated__notes { list-style: none; padding: var(--s3) var(--s4); margin: 0; background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); font-size: 13px; }
 .annotated__notes b { color: var(--accent); }
+
+/* Mermaid */
+.mermaid { margin: var(--s4) 0; text-align: center; }
+.mermaid svg { max-width: 100%; height: auto; }
