@@ -11,6 +11,8 @@ import Diff from "./Diff";
 import AnnotatedCode from "./AnnotatedCode";
 import Mermaid from "./Mermaid";
 import QuestionForm from "./QuestionForm";
+import { Canvas, Screen } from "./wireframe/Canvas";
+import { WBox, WText, WButton, WInput, WImage, WRow, WCol } from "./wireframe/primitives";
 
 // MDXProvider registers these globally so .mdx documents use the tags without importing.
 export const components: Record<string, ComponentType<any>> = {};
@@ -29,4 +31,13 @@ Object.assign(components, {
   AnnotatedCode,
   Mermaid,
   QuestionForm,
+  Canvas,
+  Screen,
+  WBox,
+  WText,
+  WButton,
+  WInput,
+  WImage,
+  WRow,
+  WCol,
 });
