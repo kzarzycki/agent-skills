@@ -85,3 +85,20 @@
 .qform__token { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .qform__sent { color: var(--ok); font-weight: 600; margin: 0; }
 .qform__hint { color: var(--muted); font-size: 13px; margin: 0; }
+
+/* OptionGallery — pick a mockup, choice streams back */
+.gallery { margin: var(--s4) 0; }
+.gallery__prompt { font-weight: 600; margin: 0 0 var(--s3); }
+.gallery__grid { display: flex; flex-wrap: wrap; gap: var(--s4); align-items: stretch; }
+.option { flex: 1 1 260px; margin: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); transition: border-color 0.12s, box-shadow 0.12s; }
+.option--active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(110, 168, 254, 0.35); }
+.option__preview { padding: var(--s4); flex: 1; }
+.option__cap { padding: 0 var(--s4) var(--s2); font-weight: 600; }
+.option__btn { margin: 0 var(--s4) var(--s4); background: var(--bg); color: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius); padding: var(--s2) var(--s3); font: inherit; font-weight: 600; cursor: pointer; }
+.option--active .option__btn { background: var(--accent); color: var(--bg); }
+.option__btn:disabled { opacity: 0.6; cursor: default; }
+.gallery__actions { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s4); }
+.gallery__submit { background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius); padding: var(--s2) var(--s5); font: inherit; font-weight: 600; cursor: pointer; }
+.gallery__submit:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+.gallery__pending { color: var(--muted); font-size: 13px; }
+.gallery__chosen { color: var(--ok); font-weight: 600; margin: var(--s3) 0 0; }

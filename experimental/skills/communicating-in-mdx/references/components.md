@@ -157,4 +157,27 @@ To pick up answers, the agent watches `runner/.answers.jsonl` for a new line
 ]} />
 ```
 
+## `<OptionGallery prompt id>` + `<Option name label>`
+
+Offer visual options to choose from — each `<Option>` holds a real rendered
+mockup (wireframes, styled previews, anything). Clicking **Choose this** POSTs
+`{ form, choice, label }` to the runner (same channel as `<QuestionForm>`), so
+the pick streams straight back. `id` labels the submission. This is the
+mockup-picker counterpart to `communicating-in-html`'s "offering options".
+
+```mdx
+<OptionGallery id="dashboard-look" prompt="Which dashboard layout do you prefer?">
+  <Option name="cards" label="Cards grid">
+    <Canvas>
+      <Screen name="A" width={220}><WRow><WBox h={40} /><WBox h={40} /></WRow><WBox h={70} /></Screen>
+    </Canvas>
+  </Option>
+  <Option name="list" label="List + detail">
+    <Canvas>
+      <Screen name="B" width={220}><WRow><WCol><WText lines={4} /></WCol><WBox h={90} /></WRow></Screen>
+    </Canvas>
+  </Option>
+</OptionGallery>
+```
+
 Wireframe canvas components are documented separately in `wireframe.md`.
