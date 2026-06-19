@@ -14,4 +14,8 @@ export default defineConfig({
     port: Number(process.env.MDX_RUNNER_PORT) || 5173,
     fs: { allow: [path.resolve(__dirname), ...(docsDir ? [docsDir] : [])] },
   },
+  // Docs live outside the runner and are symlinked in as `.docs`. Preserving
+  // symlinks resolves their imports (@mdx-js/react, react/jsx-runtime) through
+  // the symlink path against the runner's node_modules, not the doc's real path.
+  resolve: { preserveSymlinks: true },
 });
