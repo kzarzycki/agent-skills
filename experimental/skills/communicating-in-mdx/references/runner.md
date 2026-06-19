@@ -33,17 +33,28 @@ The CLI creates a `.docs` symlink in the runner root pointing at `--dir`, and
 sets `MDX_DOCS_DIR` so Vite's `server.fs.allow` admits that path. The app globs
 `../.docs/**/*.mdx`. The symlink is git-ignored and refreshed on each run.
 
-## tmux lifecycle
+## Lifecycle — run it in the background
 
-Run it in a dedicated window so it survives across turns:
+Start it as a detached background process so it survives across turns. The agent
+launches it directly (e.g. a backgrounded shell command) and starts/stops/
+restarts it autonomously — no tmux required:
+
+```bash
+node <skill>/runner/bin/mdx-runner.mjs --dir <project>/.work > /tmp/mdx-runner.log 2>&1 &
+```
+
+Restart after dependency changes: kill the process and relaunch.
+
+**tmux (optional).** If the user wants a window they can attach to and watch:
 
 ```bash
 tmux new-window -t mdx-runner -n server \
   'node <skill>/runner/bin/mdx-runner.mjs --dir <project>/.work'
 ```
 
-Restart after dependency changes: kill the window and relaunch. The agent may
-start/stop it autonomously.
+**One runner at a time.** The CLI points a single shared `.docs` symlink at
+`--dir`, so launching a second runner for a different directory repoints the
+first. Run one instance; restart it with a new `--dir` to switch projects.
 
 ## Troubleshooting
 

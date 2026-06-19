@@ -84,8 +84,9 @@ Render a project's docs:
 node <skill>/runner/bin/mdx-runner.mjs --dir <project>/.work --open
 ```
 
-Run it in a tmux window named `mdx-runner` and start/stop/restart it
-autonomously (same pattern as a project dev server). It serves every `.mdx` in
+Start it as a background process and start/stop/restart it autonomously — no
+tmux required (the agent's shell can launch a detached process directly; tmux is
+optional if the user wants a window to attach to). It serves every `.mdx` in
 `--dir` at `http://localhost:5173` with a sidebar index and hot reload. Flags
 and troubleshooting: `references/runner.md`.
 
