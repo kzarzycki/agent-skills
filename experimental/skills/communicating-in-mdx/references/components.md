@@ -75,6 +75,22 @@ as the child string.
   MDX[spec.mdx] --> Vite[local Vite] --> Browser`} />
 ```
 
+## `<Diagram nodes edges height>`
+
+Interactive node-graph: nodes highlight on hover, a tooltip follows the cursor,
+and connected edges light up. Use when a diagram benefits from interaction that
+a static `<Mermaid>` can't give. `nodes` is
+`{ id, x, y, w?, h?, label, tip? }[]` (positions in px from the top-left).
+`edges` is `{ from, to, label? }[]` referencing node ids. `height` optional px.
+
+```mdx
+<Diagram height={220} nodes={[
+  { id: "a", x: 20,  y: 80, label: "spec.mdx", tip: "The artifact — git-diffable." },
+  { id: "b", x: 200, y: 80, label: "Vite runner", tip: "Local. Zero network." },
+  { id: "c", x: 380, y: 80, label: "browser", tip: "Interactive, hot-reloading." }
+]} edges={[{ from: "a", to: "b" }, { from: "b", to: "c" }]} />
+```
+
 ## `<Columns>`
 
 Side-by-side comparison. Each direct child becomes a column.

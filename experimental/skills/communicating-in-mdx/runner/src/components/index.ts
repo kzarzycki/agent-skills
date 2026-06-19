@@ -11,6 +11,7 @@ import Diff from "./Diff";
 import AnnotatedCode from "./AnnotatedCode";
 import Mermaid from "./Mermaid";
 import QuestionForm from "./QuestionForm";
+import { Diagram } from "./Diagram";
 import { Canvas, Screen } from "./wireframe/Canvas";
 import { WBox, WText, WButton, WInput, WImage, WRow, WCol } from "./wireframe/primitives";
 
@@ -30,6 +31,7 @@ Object.assign(components, {
   Diff,
   AnnotatedCode,
   Mermaid,
+  Diagram,
   QuestionForm,
   Canvas,
   Screen,
