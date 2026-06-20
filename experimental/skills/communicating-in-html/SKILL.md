@@ -103,10 +103,17 @@ the agent directly. Reusable by any caller (the workflow engine's phase gates ar
 everything is deterministic — zero LLM tokens per render.
 
 1. **Render**: `python3 assets/render-decision-page.py --artifact <md> --out <dir>/page.html
-   --gate <id> [--verdicts '<json>'] [--banner '<what changed since last version>']`.
+   --gate <id> [--contract <json>] [--verdicts '<json>'] [--banner '<what changed since last version>']`.
    The page gets: every H2 section annotatable (✎ → targeted comment), an always-visible
    condensed decision bar (live status · annotation count · Approve · Request rework), and
    a copy-back token fallback that fires automatically when POST fails (e.g. `file://`).
+   **Section widgets (progressive enhancement):** by default every section is annotatable
+   prose (correct for any markdown). When `--contract` points to a JSON with a `display` map
+   (`{"<H2 section name>": "<widget>"}`), named sections render through a deterministic widget
+   instead — e.g. `score-matrix` turns a needs×options table into a sticky matrix with
+   sentiment-tinted cells (✓ yes · ⚠ caution · = parity), full text on hover, and a clear-yes
+   fit row. Widgets derive only from what the markdown carries (no invented numbers); a section
+   with no table or no hint falls back to prose. Add a widget in `WIDGETS` + a `display` entry.
 2. **Serve**: `nohup python3 assets/gate-server.py --dir <root> --port <port>
    --state _gate/state.json --answers _gate/answers >/tmp/gate-server-<name>.log 2>&1 &`
    Probe the port first (curl; taken → increment). Hand out `http://<reachable IP>:<port>/…`

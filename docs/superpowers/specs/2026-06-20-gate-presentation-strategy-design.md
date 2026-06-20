@@ -40,4 +40,4 @@ The eval harness can later measure whether the bespoke ceiling earns its cost. U
 
 ## Status
 
-Directional decision recorded. Not yet built: contract `display` hints and the widget library (layer 2) are the first implementable step. Layers 3–4 are escape hatches to add only when a section's content defeats parsing or an artifact has no contract.
+Layers 1–2 built and verified. The baseline renderer ships; the first layer-2 widget — `score-matrix`, wired via `tech-design.json`'s `display: {"Scorecard": "score-matrix"}` — renders the real `02-TECH-DESIGN.md` scorecard as a sticky sentiment matrix (jsdom-smoked: 13 needs × 4 options, annotatable, full text on hover, clear-yes fit row). It derives only from the markdown table; a section with no hint or no table falls back to prose. `option-cards` and `risk-list` follow the same mold next. Layers 3–4 stay unbuilt escape hatches — add only when a section's content defeats parsing (author-emits-data) or an artifact has no contract (author-emits-fragment); the weighted-slider scorecard with winner-flip is the canonical layer-3 case, since real weights and per-need scores are data the markdown does not carry.

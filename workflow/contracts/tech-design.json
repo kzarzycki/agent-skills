@@ -12,5 +12,8 @@
     "Rejected alternatives",
     "Risks",
     "Approval record"
-  ]
+  ],
+  "display": {
+    "Scorecard": "score-matrix"
+  }
 }

@@ -93,8 +93,11 @@ bindings on top of that protocol:
 
 - Render (deterministic, zero tokens -- phase workflows do not render):
   `python3 <assets>/render-decision-page.py --artifact <artifact> --gate <phase>
+  --contract <plugin root>/contracts/<phase-contract>.json
   --verdicts '<verdicts JSON from the workflow return>' --out <work-item dir>/_phases/<phase>/gate.html`
-  On re-renders after rework, pass `--banner "Reworked from your gate answer (round N) -- <what changed>"`.
+  The contract's `display` map upgrades named sections to widgets (e.g. Tech Design's Scorecard
+  -> sticky sentiment matrix); unhinted sections stay annotatable prose. On re-renders after
+  rework, pass `--banner "Reworked from your gate answer (round N) -- <what changed>"`.
 - Serve with `<assets>/gate-server.py --dir <work-item dir>`; channel files at
   `<work-item dir>/_gate/` (state.json, answers/). One server and one channel per work item,
   reused across every phase gate; stop the server when the engine stops.

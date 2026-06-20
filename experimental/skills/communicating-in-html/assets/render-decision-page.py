@@ -101,8 +101,84 @@ def slug(s):
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", s.lower())).strip("-") or "section"
 
 
-def artifact_html(md):
-    """Wrap the H1 preamble and each H2 section in an annotatable block."""
+def parse_table(lines):
+    """Pull the first markdown table out of a block; returns (header, rows) or None."""
+    rows = [
+        [c.strip() for c in ln.strip().strip("|").split("|")]
+        for ln in lines
+        if ln.strip().startswith("|")
+    ]
+    if len(rows) < 2:
+        return None
+    header, body = rows[0], rows[1:]
+    if body and all(re.fullmatch(r":?-{2,}:?", c) for c in body[0]):
+        body = body[1:]
+    return (header, body) if body else None
+
+
+def _sentiment(cell):
+    """Tint a scorecard cell only on unambiguous leading sentiment; else neutral."""
+    low = cell.strip().lower()
+    if low.startswith(("yes", "strong", "good", "full ")):
+        return "pos", "✓"
+    if low.startswith(("at risk", "weaker", "coarse", "too coarse", "depends")) or "must audit" in low:
+        return "neg", "⚠"
+    if low.startswith(("identical", "same", "equivalent")):
+        return "eq", "="
+    return "neu", ""
+
+
+def w_score_matrix(body):
+    """Scorecard widget: needs as sticky rows, options as sticky columns, sentiment-
+    tinted cells with full text on hover, and a clear-yes fit row. Deterministic from
+    the markdown table; no invented numeric scores. Falls back (None) if no table."""
+    parsed = parse_table(body)
+    if not parsed:
+        return None
+    header, rows = parsed
+    opts = header[1:]
+    fit = [0] * len(opts)
+    trs = []
+    for r in rows:
+        need, cells = r[0], r[1:]
+        tds = []
+        for j, c in enumerate(cells):
+            cls, mark = _sentiment(c)
+            if cls == "pos":
+                fit[j] += 1
+            tds.append(
+                f'<td class="sm-{cls}" title="{html.escape(c, quote=True)}">'
+                f'<span class="mk">{mark}</span><span class="txt">{inline(c)}</span></td>'
+            )
+        trs.append(
+            f'<tr><th scope="row" title="{html.escape(need, quote=True)}">{inline(need)}</th>'
+            f'{"".join(tds)}</tr>'
+        )
+    maxfit = max(fit) if fit else 0
+    ths = "".join(f'<th scope="col">{inline(o)}</th>' for o in opts)
+    foot = ""
+    for j, o in enumerate(opts):
+        w = int(round(100 * fit[j] / maxfit)) if maxfit else 0
+        lead = ' class="lead"' if maxfit and fit[j] == maxfit else ""
+        foot += f'<td{lead}><div class="fitbar"><i style="width:{w}%"></i></div><small>{fit[j]} clear-yes</small></td>'
+    return (
+        '<div class="smwrap"><table class="score-matrix">'
+        f'<thead><tr><th scope="col">{inline(header[0])}</th>{ths}</tr></thead>'
+        f'<tbody>{"".join(trs)}</tbody>'
+        f'<tfoot><tr><th scope="row">fit</th>{foot}</tr></tfoot></table>'
+        '<p class="smnote">Cells tinted on clear sentiment only (✓ yes · ⚠ caution · = parity); '
+        'hover any cell for its full text. The fit row counts clear-yes cells as a reading aid — '
+        'not a weighted score (weighted scoring needs per-need numbers the markdown does not carry).</p></div>'
+    )
+
+
+WIDGETS = {"score-matrix": w_score_matrix}
+
+
+def artifact_html(md, display=None):
+    """Wrap the H1 preamble and each H2 section in an annotatable block. Sections named
+    in the contract's `display` map render through a widget instead of prose."""
+    display = display or {}
     lines = md.splitlines()
     blocks, cur, head = [], [], None
     for line in lines:
@@ -115,7 +191,12 @@ def artifact_html(md):
     blocks.append((head, cur))
     out = []
     for head, body in blocks:
-        content = md_to_html("\n".join(body))
+        widget = WIDGETS.get(display.get(head)) if head else None
+        content = widget(body) if widget else None
+        if content is not None:
+            content = f"<h2>{inline(head)}</h2>{content}"
+        else:
+            content = md_to_html("\n".join(body))
         if not content.strip():
             continue
         s = slug(head) if head else "title"
@@ -142,6 +223,26 @@ padding:8px 12px;margin-top:10px;font-size:.9rem}
 .sec h2{font-size:1.05rem;margin-top:0;color:var(--accent)}
 .sec{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 24px;margin:12px 0}
 table{border-collapse:collapse;width:100%;margin:10px 0;font-size:.92rem;display:block;overflow-x:auto}
+/* score-matrix widget */
+.smwrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+.score-matrix{display:table;border-collapse:separate;border-spacing:0;width:100%;margin:0;font-size:.86rem}
+.score-matrix th,.score-matrix td{border-bottom:1px solid var(--line);border-right:1px solid var(--line);
+padding:7px 9px;text-align:left;vertical-align:top}
+.score-matrix thead th{position:sticky;top:0;z-index:2;background:var(--bg);font-size:.84rem}
+.score-matrix tbody th[scope=row],.score-matrix tfoot th{position:sticky;left:0;z-index:1;background:var(--card);
+font-weight:600;min-width:120px;max-width:160px}
+.score-matrix thead th:first-child{position:sticky;left:0;z-index:3}
+.score-matrix td{min-width:150px}
+.score-matrix td .mk{font-weight:700;margin-right:5px}
+.score-matrix td .txt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.score-matrix td.sm-pos{background:#f0f8f2}.score-matrix td.sm-pos .mk{color:var(--ok)}
+.score-matrix td.sm-neg{background:#fff6ec}.score-matrix td.sm-neg .mk{color:var(--accent)}
+.score-matrix td.sm-eq{background:#f7f7f5}.score-matrix td.sm-eq .mk{color:var(--mut)}
+.score-matrix tfoot td{background:var(--bg);font-size:.8rem}
+.score-matrix tfoot td.lead{box-shadow:inset 0 2px 0 var(--ok)}
+.fitbar{height:6px;background:#e7e4de;border-radius:3px;overflow:hidden;margin-bottom:3px}
+.fitbar i{display:block;height:100%;background:var(--ok)}
+.smnote{color:var(--mut);font-size:.8rem;margin:8px 2px 0}
 th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
 th{background:var(--bg)}code{background:#f1efeb;padding:1px 5px;border-radius:4px;font-size:.88em}
 pre{background:#f1efeb;padding:12px;border-radius:8px;overflow-x:auto}
@@ -297,9 +398,17 @@ def main():
     p.add_argument("--gate", default="review", help="decision id, echoed in the answer payload")
     p.add_argument("--verdicts", default="{}", help='JSON: {"intent":{"verdict":"pass","findings":[]}}')
     p.add_argument("--banner", default="", help="optional notice, e.g. 'Reworked from your gate answer (round 2)'")
+    p.add_argument("--contract", default=None,
+                   help="contract JSON; its `display` map upgrades named sections to widgets")
     a = p.parse_args()
 
     md = Path(a.artifact).read_text(encoding="utf-8")
+    display = {}
+    if a.contract:
+        try:
+            display = json.loads(Path(a.contract).read_text(encoding="utf-8")).get("display", {})
+        except Exception:
+            display = {}
     verdicts = json.loads(a.verdicts)
     chips = []
     findings = []
@@ -323,7 +432,7 @@ rework reach the agent directly when it is listening; otherwise they fall back t
 {banner_html}
 <div class="chips">{''.join(chips)}</div></header>
 {findings_html}
-{artifact_html(md)}
+{artifact_html(md, display)}
 <p class="note">Markdown artifact is the source of truth: {html.escape(a.artifact)}</p>
 </div>
 <div id="bar">
