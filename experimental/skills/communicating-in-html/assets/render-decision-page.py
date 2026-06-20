@@ -172,7 +172,102 @@ def w_score_matrix(body):
     )
 
 
-WIDGETS = {"score-matrix": w_score_matrix}
+def w_option_cards(body):
+    """Options widget: each `### Option …` H3 becomes a selectable card with its prose
+    folded. Clicking a card records `chosenOption` (the override the rework loop reads).
+    Intro prose and a trailing bold-led note render around the cards. Falls back if no H3s."""
+    text = "\n".join(body)
+    parts = re.split(r"(?m)^### +", text)
+    if len(parts) < 2:
+        return None
+    intro = re.sub(r"(?m)^## +.*\n?", "", parts[0], count=1).strip()
+    chunks = parts[1:]
+    cards, trailing, selectable = [], "", False
+    for idx, chunk in enumerate(chunks):
+        lines = chunk.split("\n")
+        title, rest = lines[0].strip(), "\n".join(lines[1:]).strip()
+        if idx == len(chunks) - 1:
+            sm = re.search(r"\n\n(\*\*.+)$", rest, re.S)
+            if sm:
+                trailing, rest = sm.group(1).strip(), rest[: sm.start()].strip()
+        mo = re.match(r"Option\s+([A-Za-z0-9]+)\b", title)
+        data = ""
+        pick = ""
+        if mo:
+            selectable = True
+            data = f' data-opt="{html.escape(mo.group(1), quote=True)}"'
+            pick = '<span class="opt-pick">✓ your choice</span>'
+        body_html = md_to_html(rest) if rest else ""
+        cards.append(
+            f'<div class="opt-card"{data}><div class="opt-head">'
+            f'<span class="opt-title">{inline(title)}</span>{pick}</div>'
+            f"<details><summary>details</summary>{body_html}</details></div>"
+        )
+    intro_html = f'<p class="optintro">{inline(intro)}</p>' if intro else ""
+    note = (
+        '<p class="smnote">Click an option to record your pick — on rework it routes to the '
+        "author as an override; the artifact's recommendation stands otherwise.</p>"
+        if selectable
+        else ""
+    )
+    trail_html = md_to_html(trailing) if trailing else ""
+    return f'{intro_html}<div class="optcards">{"".join(cards)}</div>{note}{trail_html}'
+
+
+def _fold_table(body, summary_from_header):
+    """Shared shape for label→detail tables: headline row, remaining cells folded."""
+    parsed = parse_table(body)
+    if not parsed:
+        return None
+    header, rows = parsed
+    return header, rows
+
+
+def w_decision_table(body):
+    """Key-decisions widget: each row becomes `Decision → Choice` with the rationale folded."""
+    parsed = _fold_table(body, 2)
+    if not parsed:
+        return None
+    header, rows = parsed
+    fold_label = inline(header[2]) if len(header) > 2 else "why"
+    items = []
+    for r in rows:
+        label = f"<b>{inline(r[0])}</b>"
+        if len(r) > 1 and r[1]:
+            label += f' <span class="darrow">→</span> {inline(r[1])}'
+        det = (
+            f"<details><summary>{fold_label}</summary><div>{inline(r[2])}</div></details>"
+            if len(r) > 2 and r[2]
+            else ""
+        )
+        items.append(f'<div class="dcard"><div class="dhead">{label}</div>{det}</div>')
+    return f'<div class="dlist">{"".join(items)}</div>'
+
+
+def w_risk_list(body):
+    """Risks widget: each row becomes a risk headline with its mitigation folded."""
+    parsed = _fold_table(body, 1)
+    if not parsed:
+        return None
+    header, rows = parsed
+    fold_label = inline(header[1]) if len(header) > 1 else "mitigation"
+    items = []
+    for r in rows:
+        det = (
+            f"<details><summary>{fold_label}</summary><div>{inline(r[1])}</div></details>"
+            if len(r) > 1 and r[1]
+            else ""
+        )
+        items.append(f'<div class="rcard"><div class="rrisk">⚠ {inline(r[0])}</div>{det}</div>')
+    return f'<div class="rlist">{"".join(items)}</div>'
+
+
+WIDGETS = {
+    "score-matrix": w_score_matrix,
+    "option-cards": w_option_cards,
+    "decision-table": w_decision_table,
+    "risk-list": w_risk_list,
+}
 
 
 def artifact_html(md, display=None):
@@ -243,6 +338,30 @@ font-weight:600;min-width:120px;max-width:160px}
 .fitbar{height:6px;background:#e7e4de;border-radius:3px;overflow:hidden;margin-bottom:3px}
 .fitbar i{display:block;height:100%;background:var(--ok)}
 .smnote{color:var(--mut);font-size:.8rem;margin:8px 2px 0}
+/* shared fold styling */
+.sec details{margin-top:4px}
+.sec summary{cursor:pointer;font-size:.84rem;color:var(--accent);font-weight:600;list-style:none}
+.sec summary::-webkit-details-marker{display:none}
+.sec summary::before{content:"▸ ";color:var(--mut)}
+.sec details[open] summary::before{content:"▾ "}
+.sec details>div,.opt-card details .full{margin-top:6px;font-size:.92rem}
+/* option cards */
+.optintro{margin:0 0 12px}
+.optcards{display:flex;flex-direction:column;gap:10px}
+.opt-card{border:1px solid var(--line);border-radius:9px;padding:12px 14px;transition:border-color .15s,background .15s}
+.opt-card[data-opt]{cursor:pointer}
+.opt-card[data-opt]:hover{border-color:var(--accent)}
+.opt-card.sel{border-color:var(--ok);background:var(--okbg)}
+.opt-head{display:flex;align-items:center;gap:10px}
+.opt-title{font-weight:700;font-size:1rem}
+.opt-pick{display:none;margin-left:auto;background:var(--ok);color:#fff;border-radius:999px;
+font-size:.74rem;font-weight:700;padding:2px 9px}
+.opt-card.sel .opt-pick{display:inline-block}
+/* decision list */
+.dlist,.rlist{display:flex;flex-direction:column;gap:8px}
+.dcard,.rcard{border:1px solid var(--line);border-radius:8px;padding:9px 12px}
+.dhead{font-size:.95rem}.darrow{color:var(--mut)}
+.rrisk{font-weight:600;font-size:.93rem}.rcard{background:#fffaf4}
 th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
 th{background:var(--bg)}code{background:#f1efeb;padding:1px 5px;border-radius:4px;font-size:.88em}
 pre{background:#f1efeb;padding:12px;border-radius:8px;overflow-x:auto}
@@ -319,21 +438,33 @@ function renderAnn(){
   document.querySelectorAll('#annlist .rm').forEach(function(b){
     b.onclick=function(){delete ANN[b.dataset.k];renderAnn();};});
 }
+/* ---- option choice (option-cards widget) ---- */
+var CHOICE=null;
+document.querySelectorAll('.opt-card[data-opt]').forEach(function(c){
+  c.addEventListener('click',function(e){
+    if(e.target.tagName==='SUMMARY'||e.target.closest('details'))return;
+    CHOICE=c.dataset.opt;
+    document.querySelectorAll('.opt-card[data-opt]').forEach(function(o){
+      o.classList.toggle('sel',o===c);});
+    setStatus('on',null,'option '+CHOICE+' picked \\u2014 Request rework to send it as an override, or Approve to keep the recommendation');
+  });
+});
 /* ---- decision ---- */
 function payload(decision){
   var p={gate:GATE,page:'gate',decision:decision};
   var fb=document.getElementById('fb').value.trim();
   if(fb)p.feedback=fb;
+  if(CHOICE)p.chosenOption=CHOICE;
   var ann=Object.keys(ANN).map(function(k){return {target:k,comment:ANN[k]};});
   if(ann.length)p.annotations=ann;
   return p;
 }
 function emit(decision){
   var p=payload(decision);
-  if(decision==='rework'&&!p.feedback&&!p.annotations){
+  if(decision==='rework'&&!p.feedback&&!p.annotations&&!p.chosenOption){
     document.getElementById('bar').classList.add('open');
     document.getElementById('fb').focus();
-    setStatus('warn',null,'rework needs instructions \\u2014 annotate a section or type feedback below');
+    setStatus('warn',null,'rework needs instructions \\u2014 pick an option, annotate a section, or type feedback');
     return;
   }
   fetch('/gate/answer',{method:'POST',headers:{'Content-Type':'application/json'},

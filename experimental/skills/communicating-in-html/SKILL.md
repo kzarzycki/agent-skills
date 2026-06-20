@@ -110,10 +110,17 @@ everything is deterministic — zero LLM tokens per render.
    **Section widgets (progressive enhancement):** by default every section is annotatable
    prose (correct for any markdown). When `--contract` points to a JSON with a `display` map
    (`{"<H2 section name>": "<widget>"}`), named sections render through a deterministic widget
-   instead — e.g. `score-matrix` turns a needs×options table into a sticky matrix with
-   sentiment-tinted cells (✓ yes · ⚠ caution · = parity), full text on hover, and a clear-yes
-   fit row. Widgets derive only from what the markdown carries (no invented numbers); a section
-   with no table or no hint falls back to prose. Add a widget in `WIDGETS` + a `display` entry.
+   instead. Built-in widgets:
+   - `score-matrix` — a needs×options table → sticky matrix, cells sentiment-tinted (✓ yes ·
+     ⚠ caution · = parity), full text on hover, a clear-yes fit row.
+   - `option-cards` — `### Option …` H3 blocks → selectable cards with prose folded; a click
+     records `chosenOption` (the override the rework loop reads).
+   - `decision-table` — a `label | choice | detail` table → `label → choice` rows, detail folded.
+   - `risk-list` — a `risk | mitigation` table → risk headlines with mitigation folded.
+
+   Widgets derive only from what the markdown carries (no invented numbers); a section with no
+   matching table/H3 or no hint falls back to prose. Add one with a `WIDGETS` entry returning
+   HTML (or `None` to fall back) plus a `display` line in the contract.
 2. **Serve**: `nohup python3 assets/gate-server.py --dir <root> --port <port>
    --state _gate/state.json --answers _gate/answers >/tmp/gate-server-<name>.log 2>&1 &`
    Probe the port first (curl; taken → increment). Hand out `http://<reachable IP>:<port>/…`

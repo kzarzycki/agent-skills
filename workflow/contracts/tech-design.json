@@ -14,6 +14,9 @@
     "Approval record"
   ],
   "display": {
-    "Scorecard": "score-matrix"
+    "Options considered": "option-cards",
+    "Scorecard": "score-matrix",
+    "Key technical decisions": "decision-table",
+    "Risks": "risk-list"
   }
 }
