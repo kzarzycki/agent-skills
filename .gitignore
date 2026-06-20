@@ -6,6 +6,9 @@ CLAUDE.md
 __pycache__/
 *.pyc
 .memsearch/
+.archive/
+node_modules/
+.vite/
 workflow/e2e/runs/*
 !workflow/e2e/runs/.gitkeep
 */.in_use/
