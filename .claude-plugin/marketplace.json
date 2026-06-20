@@ -62,6 +62,19 @@
       },
       "category": "development",
       "tags": ["engineering", "tdd", "debugging", "planning", "matt-pocock"]
+    },
+    {
+      "name": "dagu",
+      "description": "Dagu workflow orchestration skill, sourced upstream from github.com/dagucloud/dagu (tracks upstream, no local copy).",
+      "source": {
+        "source": "git-subdir",
+        "url": "github.com/dagucloud/dagu",
+        "path": "skills/dagu",
+        "ref": "main"
+      },
+      "strict": false,
+      "category": "workflow",
+      "tags": ["dagu", "workflow", "orchestration", "dag", "scheduler"]
     }
   ]
 }
