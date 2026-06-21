@@ -4,6 +4,7 @@
 CLAUDE.md
 !workflow/CLAUDE.md
 .claude/
+.pi/
 __pycache__/
 *.pyc
 .memsearch/
