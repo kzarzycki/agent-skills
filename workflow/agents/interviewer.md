@@ -6,6 +6,7 @@ skills:
   - spec
   - superpowers:brainstorming
   - mattpocock-skills:grill-me
+  - experimental:communicating-in-mdx
 color: blue
 ---
 

@@ -22,7 +22,7 @@ This engine is stateless -- chat history is the state; to resume, re-read the wo
 
 1. Propose research. Create the work-item dir `.workflow/<yyyy-mm-dd>-<slug>/` with the
    layout from this plugin's `../../contracts/work-item.json`; `spec_path` =
-   `<work-item dir>/01-DECISION-SPEC.md`. Runtime extras (interview form, notes) go under
+   `<work-item dir>/01-DECISION-SPEC.mdx`. Runtime extras (interview form, notes) go under
    `<work-item dir>/_phases/spec/`. Derive research buckets from the prompt (codebase
    precedents, existing docs, external prior art -- whatever the prompt suggests) and gate
    (AskUserQuestion): the user approves, narrows, or rejects each bucket. Run only approved
@@ -86,7 +86,14 @@ Every user gate, any phase: a chat summary (verdicts + findings + artifact path)
 decision page. The artifact content never enters your context; the user reviews the served
 page, and the markdown stays the source of truth.
 
-The mechanics are the communicating-in-html skill's "Live decision pages" protocol (render →
+Per-phase rendering. The Decision Spec is MDX authored with communicating-in-mdx components
+(see the spec skill): render and serve it through that skill's runner — `<DocInclude>` the
+current `01-DECISION-SPEC.mdx` so its diagrams and callouts render, demote the changelog and a
+`<DocDiff>` of rework rounds below a `---`, and take the decision with a `<QuestionForm>`. The
+Tech Design and any non-MDX artifact use the communicating-in-html protocol below. Either way
+the answer mapping is the same.
+
+The communicating-in-html mechanics are its "Live decision pages" protocol (render →
 serve → state file → watcher → process); its two assets live in that skill's `assets/` dir
 (in this repo: `<repo root>/experimental/skills/communicating-in-html/assets/`). Workflow
 bindings on top of that protocol:

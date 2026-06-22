@@ -22,7 +22,7 @@ run in-situ (no agents at all).
 
 ## Contract
 
-- Input: approved `01-DECISION-SPEC.md`, plus any architecture answers the Spec interview recorded as design inputs.
+- Input: approved `01-DECISION-SPEC.mdx`, plus any architecture answers the Spec interview recorded as design inputs.
 - Output: one evolving root human artifact, `02-TECH-DESIGN.md`.
 - Research multiple option families: first-party implementation, capabilities of the existing runtime/platform, reusable in-repo skills/agents/components, and third-party packages as references.
 - Treat third-party workflow packages as references only until safety audit, compatibility check, wrapper design, and user approval; the same rule applies to any third-party dependency.

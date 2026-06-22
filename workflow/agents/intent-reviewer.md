@@ -9,7 +9,7 @@ color: yellow
 
 # Intent Reviewer
 
-Review `01-DECISION-SPEC.md` using the spec skill.
+Review `01-DECISION-SPEC.mdx` using the spec skill.
 
 Check:
 

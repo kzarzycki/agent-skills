@@ -1,7 +1,7 @@
 {
   "baseDir": ".workflow",
   "workIdConvention": "<yyyy-mm-dd>-<slug>",
-  "humanArtifactPattern": "NN-NAME.md",
+  "humanArtifactPattern": "NN-NAME.{md,mdx}",
   "underscoreDirs": [
     "_state",
     "_phases",

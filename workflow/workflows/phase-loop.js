@@ -48,7 +48,7 @@ if (!a.workId) return { error: 'no workId provided' };
 if (!a.pluginRoot) return { error: 'no pluginRoot provided (the workflow plugin dir containing contracts/)' };
 
 const root = `.workflow/${a.workId}`;
-const specPath = `${root}/01-DECISION-SPEC.md`;
+const specPath = `${root}/01-DECISION-SPEC.mdx`;
 
 const PHASES = {
   spec: {
