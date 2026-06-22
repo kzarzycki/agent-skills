@@ -2,6 +2,7 @@ import { useState, useMemo, type ReactNode } from "react";
 import { diffWordsWithSpace } from "diff";
 import { sources } from "virtual:mdx-docs";
 import { Rendered } from "./mdxRender";
+import MermaidDiff from "./MermaidDiff";
 
 // A rendered, section-matched diff of two MDX documents. Sections are matched by
 // H2 heading and marked same / changed / added / removed. `same`, `added`, and
@@ -193,6 +194,10 @@ const asTable = (b?: Block) => (b && b.kind === "table" ? b : null);
 const asList = (b?: Block) => (b && b.kind === "list" ? b : null);
 const aText = (b?: Block) => (b && (b.kind === "para" || b.kind === "code") ? b.text : "");
 
+// A ```mermaid fence: diffed as a rendered diagram, not as source text.
+const isMermaidBlock = (b?: Block): b is Extract<Block, { kind: "code" }> =>
+  !!b && b.kind === "code" && /^[ \t]*(```+|~~~+)\s*mermaid\b/i.test(b.text);
+
 function cell(a: Block | null, b: Block | null, r: number, c: number) {
   const av = a && a.kind === "table" ? (r === 0 ? a.head[c] : a.body[r - 1]?.[c]) ?? "" : "";
   const bv = b && b.kind === "table" ? (r === 0 ? b.head[c] : b.body[r - 1]?.[c]) ?? "" : "";
@@ -272,34 +277,60 @@ function renderBlock(aB: Block | undefined, bB: Block | undefined, layout: "a" |
   );
 }
 
-function HighlightedChange({ a, b, mode }: { a?: Section; b?: Section; mode: "split" | "inline" }) {
+function HighlightedChange({
+  a,
+  b,
+  mode,
+  labels,
+}: {
+  a?: Section;
+  b?: Section;
+  mode: "split" | "inline";
+  labels: [string, string];
+}) {
   const aBlocks = useMemo(() => parseBlocks(a?.body ?? ""), [a?.body]);
   const bBlocks = useMemo(() => parseBlocks(b?.body ?? ""), [b?.body]);
   const n = Math.max(aBlocks.length, bBlocks.length);
   const pairs = Array.from({ length: n }, (_, i) => [aBlocks[i], bBlocks[i]] as const);
 
-  if (mode === "inline") {
-    return (
+  // Mermaid fences diff as rendered diagrams (full width, below the text diff).
+  const mermaid = pairs.filter(([ab, bb]) => isMermaidBlock(ab) || isMermaidBlock(bb));
+  const text = pairs.filter(([ab, bb]) => !(isMermaidBlock(ab) || isMermaidBlock(bb)));
+
+  const textView =
+    mode === "inline" ? (
       <div className="docdiff__inline docdiff__blocks">
-        {pairs.map(([ab, bb], i) => (
+        {text.map(([ab, bb], i) => (
           <div key={i}>{renderBlock(ab, bb, "inline")}</div>
         ))}
       </div>
+    ) : (
+      <div className="docdiff__cols">
+        <div className="docdiff__col docdiff__col--a docdiff__blocks">
+          {text.map(([ab, bb], i) => (
+            <div key={i}>{renderBlock(ab, bb, "a")}</div>
+          ))}
+        </div>
+        <div className="docdiff__col docdiff__col--b docdiff__blocks">
+          {text.map(([ab, bb], i) => (
+            <div key={i}>{renderBlock(ab, bb, "b")}</div>
+          ))}
+        </div>
+      </div>
     );
-  }
+
   return (
-    <div className="docdiff__cols">
-      <div className="docdiff__col docdiff__col--a docdiff__blocks">
-        {pairs.map(([ab, bb], i) => (
-          <div key={i}>{renderBlock(ab, bb, "a")}</div>
-        ))}
-      </div>
-      <div className="docdiff__col docdiff__col--b docdiff__blocks">
-        {pairs.map(([ab, bb], i) => (
-          <div key={i}>{renderBlock(ab, bb, "b")}</div>
-        ))}
-      </div>
-    </div>
+    <>
+      {text.length > 0 && textView}
+      {mermaid.map(([ab, bb], i) => (
+        <MermaidDiff
+          key={`m${i}`}
+          before={isMermaidBlock(ab) ? ab.text : undefined}
+          after={isMermaidBlock(bb) ? bb.text : undefined}
+          labels={labels}
+        />
+      ))}
+    </>
   );
 }
 
@@ -401,7 +432,7 @@ export default function DocDiff({
               </div>
             </details>
           ) : r.status === "changed" ? (
-            <HighlightedChange a={r.a} b={r.b} mode={effectiveMode(r, mode)} />
+            <HighlightedChange a={r.a} b={r.b} mode={effectiveMode(r, mode)} labels={labels} />
           ) : (
             <div className="docdiff__cols">
               <div className="docdiff__col docdiff__col--a">

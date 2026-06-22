@@ -10,6 +10,7 @@ import Collapse from "./Collapse";
 import Diff from "./Diff";
 import DocDiff from "./DocDiff";
 import DocInclude from "./DocInclude";
+import MermaidDiff from "./MermaidDiff";
 import AnnotatedCode from "./AnnotatedCode";
 import Mermaid from "./Mermaid";
 import Pre from "./MdxPre";
@@ -35,6 +36,7 @@ Object.assign(components, {
   Diff,
   DocDiff,
   DocInclude,
+  MermaidDiff,
   AnnotatedCode,
   Mermaid,
   pre: Pre,

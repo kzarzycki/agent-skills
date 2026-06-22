@@ -63,6 +63,23 @@ source docs as hidden `_`-prefixed slugs so they don't clutter the sidebar.
 <DocDiff a="_spec-v1" b="_spec-current" labels={["v1 — draft", "v2 — reworked"]} />
 ```
 
+A ` ```mermaid ` fence inside a changed section is diffed as a **rendered diagram**,
+not as source text: both versions render side-by-side with red/green node
+highlighting matching the word-diff — the previous pane reds removed + changed-from
+nodes, the current pane greens added + changed-to nodes (a "diagram source diff"
+toggle shows the granular text). Node-level detection is line-based on flowchart
+definitions (`id["label"]`), so a relabelled node with the same id reads as
+*changed*; edge-label changes show only in the source toggle. When a diagram exists
+on one side only it renders plain (whole-diagram added / removed).
+
+## `<MermaidDiff before after labels>`
+
+Standalone diagram diff, the same widget `<DocDiff>` uses for mermaid fences.
+`before`/`after` are mermaid source strings (fenced or bare); omit one for a
+whole-diagram added/removed. Reach for this only to diff two diagrams outside a
+DocDiff; inside docs, a plain ` ```mermaid ` fence in a DocDiff section is diffed
+automatically.
+
 ## `<DocInclude slug>`
 
 Embed another doc's CURRENT content inline, rendered through the full MDX
