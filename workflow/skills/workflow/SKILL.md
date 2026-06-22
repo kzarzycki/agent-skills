@@ -86,12 +86,13 @@ Every user gate, any phase: a chat summary (verdicts + findings + artifact path)
 decision page. The artifact content never enters your context; the user reviews the served
 page, and the markdown stays the source of truth.
 
-Per-phase rendering. The Decision Spec is MDX authored with communicating-in-mdx components
-(see the spec skill): render and serve it through that skill's runner — `<DocInclude>` the
-current `01-DECISION-SPEC.mdx` so its diagrams and callouts render, demote the changelog and a
-`<DocDiff>` of rework rounds below a `---`, and take the decision with a `<QuestionForm>`. The
-Tech Design and any non-MDX artifact use the communicating-in-html protocol below. Either way
-the answer mapping is the same.
+MDX rendering. Both the Decision Spec and the Tech Design are MDX authored with
+communicating-in-mdx components (see the spec and tech-design skills): render and serve them
+through that skill's runner — `<DocInclude>` the current `01-DECISION-SPEC.mdx` /
+`02-TECH-DESIGN.mdx` so its diagrams and callouts render, demote the changelog and a
+`<DocDiff>` of rework rounds below a `---`, and take the decision with a `<QuestionForm>`. Any
+non-MDX artifact uses the communicating-in-html protocol below; either way the answer mapping
+is the same.
 
 The communicating-in-html mechanics are its "Live decision pages" protocol (render →
 serve → state file → watcher → process); its two assets live in that skill's `assets/` dir

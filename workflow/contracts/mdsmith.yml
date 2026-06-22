@@ -11,12 +11,12 @@
 #          go install github.com/jeduden/mdsmith@latest
 #          (the npm package named "mdsmith" is an unrelated project)
 # Usage:   mdsmith check -c <plugin>/contracts/mdsmith.yml \
-#            <work-item>/01-DECISION-SPEC.mdx <work-item>/02-TECH-DESIGN.md
+#            <work-item>/01-DECISION-SPEC.mdx <work-item>/02-TECH-DESIGN.mdx
 #
-# The Decision Spec is MDX (rich, communicating-in-mdx components). mdsmith reads
-# MDX out of the box: JSX components and ```mermaid fences pass through, and the
-# H2 structure check still applies. Only table-alignment (MDS025) and the
-# language budget fire on component-bearing specs, both advisory.
+# Both human artifacts are MDX (rich, communicating-in-mdx components). mdsmith
+# reads MDX out of the box: JSX components and ```mermaid fences pass through, and
+# the H2 structure check still applies. Only table-alignment (MDS025) and the
+# language budget fire on component-bearing docs, both advisory.
 
 rules:
   # Structure schemas (the kinds below) only run when MDS020 is enabled.
@@ -43,7 +43,7 @@ rules:
 kind-assignment:
   - glob: ["**/01-DECISION-SPEC.mdx"]
     kinds: [decision-spec]
-  - glob: ["**/02-TECH-DESIGN.md"]
+  - glob: ["**/02-TECH-DESIGN.mdx"]
     kinds: [tech-design]
 
 kinds:
@@ -66,7 +66,7 @@ kinds:
         - heading: "Approval record"
   tech-design:
     schema:
-      filename: "02-TECH-DESIGN.md"
+      filename: "02-TECH-DESIGN.mdx"
       closed: true
       sections:
         - heading: "Needs"

@@ -9,7 +9,7 @@ color: red
 
 # Fit/Risk Reviewer
 
-Review `02-TECH-DESIGN.md` using the tech-design skill.
+Review `02-TECH-DESIGN.mdx` using the tech-design skill.
 
 Check:
 

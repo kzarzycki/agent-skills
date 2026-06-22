@@ -1,6 +1,6 @@
 export const meta = {
   name: 'tech-design-phase',
-  description: 'Run the Tech Design phase by delegation: thin wrapper over phase-loop.js with phase=tech_design. The designer authors/reworks 02-TECH-DESIGN.md and runs the format gate itself; two independent reviewers judge in parallel; rework loops until pass, needs-user, or the rework cap.',
+  description: 'Run the Tech Design phase by delegation: thin wrapper over phase-loop.js with phase=tech_design. The designer authors/reworks 02-TECH-DESIGN.mdx and runs the format gate itself; two independent reviewers judge in parallel; rework loops until pass, needs-user, or the rework cap.',
   whenToUse: 'Args: { workId: string, pluginRoot: string, instructions?: string, contentFrozen?: boolean }. Returns { status, rounds, verdicts, formatGate, artifact }. status: pass | needs-user | rework-cap-exceeded | error. Stateless: agents read/write work-item files only.',
 };
 

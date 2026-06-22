@@ -69,7 +69,7 @@ const PHASES = {
     reviewAgainst: `the interview record (${root}/_phases/spec/interview-notes.md, ${root}/_phases/spec/research-brief.md)`,
   },
   tech_design: {
-    artifact: `${root}/02-TECH-DESIGN.md`,
+    artifact: `${root}/02-TECH-DESIGN.mdx`,
     contract: 'tech-design.json',
     reviewsDir: `${root}/_reviews/tech_design`,
     authorAgentType: 'workflow:tech-designer',
