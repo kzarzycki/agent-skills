@@ -5,4 +5,5 @@ declare module "virtual:mdx-docs" {
     title: string;
     load: () => Promise<{ default: ComponentType }>;
   }[];
+  export const sources: Record<string, string>;
 }

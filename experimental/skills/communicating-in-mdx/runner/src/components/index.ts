@@ -8,6 +8,8 @@ import Steps, { Timeline } from "./Steps";
 import Tabs from "./Tabs";
 import Collapse from "./Collapse";
 import Diff from "./Diff";
+import DocDiff from "./DocDiff";
+import DocInclude from "./DocInclude";
 import AnnotatedCode from "./AnnotatedCode";
 import Mermaid from "./Mermaid";
 import QuestionForm from "./QuestionForm";
@@ -30,6 +32,8 @@ Object.assign(components, {
   Tabs,
   Collapse,
   Diff,
+  DocDiff,
+  DocInclude,
   AnnotatedCode,
   Mermaid,
   Diagram,

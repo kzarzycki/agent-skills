@@ -44,6 +44,37 @@ context. Pass the raw diff text as `code`.
   return runner`} />
 ```
 
+## `<DocDiff a b labels mode>`
+
+Rendered, section-matched diff of two MDX docs — each side is the real document
+(tables, callouts, lists render as themselves), not a text diff. `a`/`b` are doc
+**slugs** (filename without `.mdx`) whose source is read from the runner; matched
+by H2 heading and marked same / changed / added / removed. Changed sections get
+word-level highlighting (green added, red strikethrough removed). `labels` is
+`[before, after]` (default `["before","after"]`). `mode` is `auto` (default) ·
+`split` (two columns) · `inline` (one unified tracked-changes column); a toolbar
+toggle flips it live. **Auto heuristic:** a section with a table → `split`
+(aligned cells compare best side-by-side); prose / lists → `inline`. Caveat:
+bold/`code` *inside* a diffed run renders as plain text (highlight is on text,
+never injected into MDX source, so table pipes / markers never break). Keep diff
+source docs as hidden `_`-prefixed slugs so they don't clutter the sidebar.
+
+```mdx
+<DocDiff a="_spec-v1" b="_spec-current" labels={["v1 — draft", "v2 — reworked"]} />
+```
+
+## `<DocInclude slug>`
+
+Embed another doc's CURRENT content inline, rendered through the full MDX
+pipeline. Lets a page show a live artifact without duplicating its text — point
+it at a canonical slug that always mirrors the latest version (e.g. a review/gate
+page that shows the spec itself, with meta/changelog kept separate below). `slug`
+is the doc filename without `.mdx`.
+
+```mdx
+<DocInclude slug="_spec-current" />
+```
+
 ## `<AnnotatedCode code lang notes>`
 
 Syntax-highlighted code (Shiki) with margin notes. `lang` default `ts`. `notes`

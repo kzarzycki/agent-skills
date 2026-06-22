@@ -15,6 +15,11 @@ export default function App() {
   const docs = useMemo(() => loadDocs(), []);
   const slug = useHash();
   const current = docs.find((d) => d.slug === slug);
+  // `_`-prefixed docs are diff sources (fed to <DocDiff>), not browsable pages.
+  const visible = useMemo(
+    () => docs.filter((d) => !(d.slug.split("/").pop() ?? "").startsWith("_")),
+    [docs],
+  );
 
   if (docs.length === 0)
     return (
@@ -28,7 +33,7 @@ export default function App() {
       <nav className="sidebar">
         <h2 className="sidebar__title">Documents</h2>
         <ul>
-          {docs.map((d) => (
+          {visible.map((d) => (
             <li key={d.slug}>
               <a href={`#${d.slug}`} className={d.slug === slug ? "active" : ""}>
                 {d.title}

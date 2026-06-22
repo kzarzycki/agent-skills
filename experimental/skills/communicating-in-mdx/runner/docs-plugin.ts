@@ -1,4 +1,4 @@
-import { readdirSync, statSync, existsSync } from "node:fs";
+import { readdirSync, statSync, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Plugin } from "vite";
 
@@ -30,13 +30,18 @@ export function docsPlugin(docsDir?: string): Plugin {
     load(id) {
       if (id !== RESOLVED) return;
       const files = docsDir && existsSync(docsDir) ? listMdx(docsDir) : [];
+      const sources: string[] = [];
       const entries = files.map((rel) => {
         const slug = rel.replace(/\.mdx$/, "");
         const title = (slug.split("/").pop() ?? slug).replace(/[-_]/g, " ");
         const url = "/.docs/" + rel;
+        // Raw source is exposed alongside the compiled component so DocDiff can
+        // re-render arbitrary versions section-by-section at runtime.
+        const raw = docsDir ? readFileSync(path.join(docsDir, rel), "utf8") : "";
+        sources.push(`${JSON.stringify(slug)}: ${JSON.stringify(raw)}`);
         return `{ slug: ${JSON.stringify(slug)}, title: ${JSON.stringify(title)}, load: () => import(${JSON.stringify(url)}) }`;
       });
-      return `export const docs = [${entries.join(",")}];`;
+      return `export const docs = [${entries.join(",")}];\nexport const sources = {${sources.join(",")}};`;
     },
     configureServer(server) {
       if (!docsDir) return;
@@ -49,6 +54,9 @@ export function docsPlugin(docsDir?: string): Plugin {
       };
       server.watcher.on("add", onChange);
       server.watcher.on("unlink", onChange);
+      // Also on content change: the exported `sources` map is read at load time,
+      // so an edited doc must re-run load for DocDiff to see the new source.
+      server.watcher.on("change", onChange);
     },
   };
 }

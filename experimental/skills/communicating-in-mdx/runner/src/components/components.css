@@ -102,3 +102,67 @@
 .gallery__submit:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
 .gallery__pending { color: var(--muted); font-size: 13px; }
 .gallery__chosen { color: var(--ok); font-weight: 600; margin: var(--s3) 0 0; }
+
+/* DocDiff — rendered, section-matched side-by-side diff of two MDX docs */
+.docdiff { margin: var(--s4) 0; }
+.docdiff__bar { position: sticky; top: 0; z-index: 4; display: flex; flex-direction: column; gap: var(--s2); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s3) var(--s4); margin-bottom: var(--s4); }
+.docdiff__legend { font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.docdiff__labels { font-weight: 600; font-size: 13px; display: inline-flex; gap: var(--s2); }
+.docdiff__label { padding: var(--s1) var(--s3); border-radius: var(--radius); }
+.docdiff__label--a { background: rgba(240, 109, 109, 0.12); color: var(--danger); }
+.docdiff__label--b { background: rgba(90, 209, 154, 0.12); color: var(--ok); }
+.docdiff__cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); }
+.docdiff__sec { border: 1px solid var(--border); border-radius: var(--radius); margin: var(--s4) 0; overflow: hidden; }
+.docdiff__sec--changed { border-color: var(--warn); }
+.docdiff__sec--added { border-color: var(--ok); }
+.docdiff__sec--removed { border-color: var(--danger); }
+.docdiff__sec--same { border-style: dashed; opacity: 0.85; }
+.docdiff__head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); padding: var(--s2) var(--s4); background: var(--surface); border-bottom: 1px solid var(--border); }
+.docdiff__title { font-weight: 600; font-size: 14px; }
+.docdiff__sec .docdiff__cols, .docdiff__same > div { padding: var(--s4); }
+.docdiff__col { min-width: 0; overflow-x: auto; }
+.docdiff__col--a { border-right: 1px dashed var(--border); padding-right: var(--s4); }
+.docdiff__missing { color: var(--muted); font-style: italic; padding: var(--s4) 0; }
+.docdiff__loading { color: var(--muted); font-size: 13px; padding: var(--s2) 0; }
+.docdiff__err { background: rgba(240, 109, 109, 0.12); color: var(--danger); padding: var(--s3); border-radius: var(--radius); white-space: pre-wrap; font-size: 12px; }
+.docdiff__same > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: var(--s2) var(--s4); }
+.docdiff__badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; padding: var(--s1) var(--s2); border-radius: var(--radius); }
+.docdiff__badge--changed { background: rgba(230, 180, 80, 0.18); color: var(--warn); }
+.docdiff__badge--added { background: rgba(90, 209, 154, 0.15); color: var(--ok); }
+.docdiff__badge--removed { background: rgba(240, 109, 109, 0.15); color: var(--danger); }
+.docdiff__badge--same { background: var(--surface); color: var(--muted); }
+@media (max-width: 900px) {
+  .docdiff__cols { grid-template-columns: 1fr; }
+  .docdiff__col--a { border-right: none; border-bottom: 1px dashed var(--border); padding-right: 0; padding-bottom: var(--s4); }
+}
+
+/* DocDiff — toolbar + segmented mode toggle */
+.docdiff__toolbar { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.docdiff__modes { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+.docdiff__mode { appearance: none; background: transparent; color: var(--muted); border: none; border-right: 1px solid var(--border); padding: var(--s2) var(--s4); font: inherit; font-size: 13px; font-weight: 600; text-transform: capitalize; cursor: pointer; transition: background 0.12s, color 0.12s; }
+.docdiff__mode:last-child { border-right: none; }
+.docdiff__mode:hover { color: var(--fg); background: var(--bg); }
+.docdiff__mode.is-active { background: var(--accent); color: var(--bg); }
+.docdiff__tags { display: inline-flex; gap: var(--s2); align-items: center; }
+.docdiff__badge--mode { background: rgba(110, 168, 254, 0.15); color: var(--accent); }
+
+/* DocDiff — word-level marks (tracked-changes markup) */
+.docdiff__ins { background: rgba(90, 209, 154, 0.22); color: var(--ok); text-decoration: none; border-radius: 3px; padding: 0 1px; }
+.docdiff__del { background: rgba(240, 109, 109, 0.20); color: var(--danger); text-decoration: line-through; border-radius: 3px; padding: 0 1px; }
+.docdiff__inline { padding: var(--s4); line-height: 1.6; }
+.docdiff__inline ins, .docdiff__inline del { text-decoration-thickness: 1px; }
+.docdiff__blocks > div { margin: var(--s2) 0; }
+.docdiff__blocks p { margin: var(--s2) 0; }
+.docdiff__list { margin: var(--s2) 0; padding-left: var(--s5); }
+.docdiff__list li { margin: var(--s1) 0; }
+.docdiff__code { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: var(--s3); overflow-x: auto; font-size: 12px; }
+
+/* DocDiff — diffed tables */
+.docdiff__table { border-collapse: collapse; width: 100%; font-size: 13px; margin: var(--s2) 0; }
+.docdiff__table th, .docdiff__table td { border: 1px solid var(--border); padding: var(--s2); text-align: left; vertical-align: top; }
+.docdiff__table th { background: var(--surface); font-weight: 600; }
+.docdiff__inline .docdiff__table { max-width: 920px; }
+
+/* DocInclude — embed a doc's current content inline */
+.docinclude { margin: var(--s2) 0; }
+.docinclude > :first-child { margin-top: 0; }

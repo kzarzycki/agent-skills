@@ -60,6 +60,8 @@ Document components (full props + examples in `references/components.md`):
 | `<Callout tone>` | decisions, warnings, notes |
 | `<Steps>` / `<Timeline>` | phased plans |
 | `<Diff>` | before/after code |
+| `<DocDiff>` | rendered diff of two MDX docs (split/inline/auto, word-level) |
+| `<DocInclude>` | embed another doc's live content inline |
 | `<AnnotatedCode>` | code with margin notes |
 | `<FileTree>` | structure |
 | `<Mermaid>` | architecture, flow, sequence |

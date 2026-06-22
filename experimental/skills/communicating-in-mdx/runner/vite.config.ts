@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import mdx from "@mdx-js/rollup";
+import remarkGfm from "remark-gfm";
 import path from "node:path";
 import { answersPlugin } from "./answers-plugin";
 import { docsPlugin } from "./docs-plugin";
@@ -14,7 +15,7 @@ export default defineConfig({
   // `.vite` dir escapes into the repo root and shows up as untracked noise.
   cacheDir: path.resolve(__dirname, "node_modules/.vite"),
   plugins: [
-    { enforce: "pre", ...mdx({ providerImportSource: "@mdx-js/react" }) },
+    { enforce: "pre", ...mdx({ providerImportSource: "@mdx-js/react", remarkPlugins: [remarkGfm] }) },
     react(),
     docsPlugin(docsDir),
     ...(answersFile ? [answersPlugin(answersFile)] : []),
@@ -35,6 +36,9 @@ export default defineConfig({
       "react/jsx-runtime",
       "react/jsx-dev-runtime",
       "@mdx-js/react",
+      "@mdx-js/mdx",
+      "remark-gfm",
+      "diff",
       "mermaid",
       "shiki",
     ],
