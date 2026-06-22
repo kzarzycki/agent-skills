@@ -106,6 +106,12 @@ as the child string.
   MDX[spec.mdx] --> Vite[local Vite] --> Browser`} />
 ```
 
+A plain ` ```mermaid ` fenced code block renders as a diagram too — the runner
+overrides `pre`, so a mermaid fence becomes a `<Mermaid>` automatically. Prefer
+the fence in documents (specs, plans) so the source stays portable Markdown that
+GitHub also renders; reach for the `<Mermaid>` tag only when the diagram string
+is computed. Fences render inside `<DocInclude>` / `<DocDiff>` as well.
+
 ## `<Diagram nodes edges height>`
 
 Interactive node-graph: nodes highlight on hover, a tooltip follows the cursor,

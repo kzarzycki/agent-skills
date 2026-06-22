@@ -12,6 +12,7 @@ import DocDiff from "./DocDiff";
 import DocInclude from "./DocInclude";
 import AnnotatedCode from "./AnnotatedCode";
 import Mermaid from "./Mermaid";
+import Pre from "./MdxPre";
 import QuestionForm from "./QuestionForm";
 import { OptionGallery, Option } from "./OptionGallery";
 import { Diagram } from "./Diagram";
@@ -36,6 +37,7 @@ Object.assign(components, {
   DocInclude,
   AnnotatedCode,
   Mermaid,
+  pre: Pre,
   Diagram,
   QuestionForm,
   OptionGallery,
