@@ -17,6 +17,7 @@ Check:
 - edge cases and error states are named
 - real E2E verification is required where behavior changes
 - criteria test behavior, not implementation plumbing
+- every capability-based rationale has a matching AC: "chose X for capability C" is `needs-rework` unless an AC exercises C. (At design/build, satisfying such an AC may require a throwaway spike — but that's downstream, not a separate spec rule.)
 - open questions are separated from accepted scope
 - format gate: run `mdsmith check -c <plugin>/contracts/mdsmith.yml` on the spec, where `<plugin>` = the installed plugin root (the dir containing `contracts/`); any MDS020 diagnostic is `needs-rework`, and language-budget findings (MDS023/MDS036/MDS056) go into the review evidence. If given the spec inline with no path, write it to a temp dir as `01-DECISION-SPEC.mdx` first (mdsmith kind-assignment matches that filename), or report the gate as not-run. If mdsmith is unavailable, check sections against `contracts/decision-spec.json` in the plugin root manually.
 
