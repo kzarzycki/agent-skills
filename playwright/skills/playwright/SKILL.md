@@ -5,7 +5,24 @@ description: Use when driving a browser via the Playwright MCP (mcp__playwright_
 
 # Playwright MCP
 
-Microsoft's `@playwright/mcp` — browser automation as MCP tools (`mcp__playwright__browser_*`). It launches its own browser (headed by default), so it does NOT share your logged-in Chrome/Brave session unless you connect via CDP. For the user's logged-in session, use `brave-automation` or `claude-in-chrome` instead.
+Microsoft's `@playwright/mcp` — browser automation as MCP tools. This plugin registers two servers; pick by task:
+
+| Server | Tool prefix | Browser |
+|--------|-------------|---------|
+| `playwright` | `mcp__plugin_playwright_playwright__browser_*` | Fresh headed browser, temp profile. Default for general automation/scraping. |
+| `playwright-brave` | `mcp__plugin_playwright_playwright-brave__browser_*` | Attaches over CDP to the user's running Brave (`:9222`) — the real logged-in session. Requires Brave already running with `--remote-debugging-port=9222`. |
+
+So switching "use case" = calling a different server's tools. The default server does NOT share the logged-in Brave/Chrome session.
+
+## More profiles / use cases
+
+Add named servers to this plugin's `.mcp.json` (then `/reload-plugins`). Each is its own tool namespace:
+- `--user-data-dir <path>` — a persistent Chromium profile (logins survive). One dir per identity. Can't point at Brave's live profile while Brave runs (locked) — use `--cdp-endpoint` for that.
+- `--isolated` (+ optional `--storage-state <file>`) — ephemeral clean room, optionally seeded with saved auth.
+- `--headless` — no window, for unattended/bulk runs.
+- `--config <file.json>` — move long arg sets into a preset file.
+
+Each enabled server is one idle node process; the browser launches lazily on first tool call. Don't declare presets you won't use.
 
 ## The one rule: snapshot, don't screenshot
 
@@ -62,6 +79,7 @@ Set these by editing the plugin's `.mcp.json` args, or per-task. Defaults are us
 
 ## Gotchas
 
-- Fresh browser ≠ your logged-in session. Use `--cdp-endpoint` or a different skill for authenticated sites.
+- Fresh browser ≠ your logged-in session. Use the `playwright-brave` server (or `--cdp-endpoint`) for authenticated sites.
 - `ref`s go stale after navigation/DOM change — re-`browser_snapshot` before acting.
 - `browser_run_code_unsafe` executes in the Node server, not the page sandbox — never feed it untrusted code.
+- Inside `browser_run_code_unsafe` the scope is tight: no `require`, no global `fetch`. For node-side HTTP (e.g. hitting a CDP endpoint), use Playwright's own client: `await page.request.get(url)`. `chromium.connectOverCDP` to a browser with many tabs/extensions can hang — prefer the CDP HTTP API (`/json/list`) via `page.request`.

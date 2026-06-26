@@ -2,5 +2,9 @@
   "playwright": {
     "command": "npx",
     "args": ["@playwright/mcp@latest"]
+  },
+  "playwright-brave": {
+    "command": "npx",
+    "args": ["@playwright/mcp@latest", "--cdp-endpoint", "http://localhost:9222"]
   }
 }
