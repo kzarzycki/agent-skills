@@ -7,6 +7,13 @@
   },
   "plugins": [
     {
+      "name": "playwright",
+      "description": "Microsoft's Playwright MCP server (browser automation + scriptable Playwright code execution) plus a skill teaching efficient agent-driven use. The MCP equivalent of playwright-cli.",
+      "source": "./playwright",
+      "category": "development",
+      "tags": ["playwright", "browser", "automation", "mcp", "scraping", "e2e", "scripting"]
+    },
+    {
       "name": "workflow",
       "description": "Workflow infrastructure for Claude Code: persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, learning consolidation, and durable human-gated workflows.",
       "source": "./workflow",

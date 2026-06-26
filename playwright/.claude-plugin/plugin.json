@@ -1,0 +1,8 @@
+{
+  "name": "playwright",
+  "version": "0.1.0",
+  "description": "Microsoft's Playwright MCP server (browser automation + scriptable Playwright code execution), bundled with a skill teaching efficient agent-driven use. The MCP equivalent of playwright-cli.",
+  "author": {
+    "name": "Krzysztof Zarzycki"
+  }
+}
