@@ -3,7 +3,7 @@
     "command": "npx",
     "args": ["@playwright/mcp@latest"]
   },
-  "playwright-brave": {
+  "user-session": {
     "command": "npx",
     "args": ["@playwright/mcp@latest", "--cdp-endpoint", "http://localhost:9222"]
   }

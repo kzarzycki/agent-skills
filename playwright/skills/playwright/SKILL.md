@@ -1,6 +1,6 @@
 ---
 name: playwright
-description: Use when driving a browser via the Playwright MCP — navigating sites, filling forms, clicking, scraping, end-to-end testing, or running arbitrary Playwright scripts against a page. Trigger on "use playwright", "automate this site", "fill this form", "scrape", "write a playwright script", "run playwright code", or any browser-automation task once the playwright MCP is enabled. TWO SERVERS, pick by the prefix you call — `mcp__plugin_playwright_playwright__*` = a fresh throwaway browser with NO logins (default; scraping public pages, e2e tests); `mcp__plugin_playwright_playwright-brave__*` = attaches to the user's LIVE logged-in Brave on :9222 (use ONLY when the task needs existing sessions/logins or the user's actual open tabs; requires Brave running). The two emit identical tools — the server prefix is the only difference. Distinct from claude-in-chrome (Chrome extension) and brave-automation (playwright-cli over CDP).
+description: Use when driving a browser via the Playwright MCP — navigating sites, filling forms, clicking, scraping, end-to-end testing, or running arbitrary Playwright scripts against a page. Trigger on "use playwright", "automate this site", "fill this form", "scrape", "write a playwright script", "run playwright code", or any browser-automation task once the playwright MCP is enabled. TWO SERVERS, pick by the prefix you call — `mcp__plugin_playwright_playwright__*` = a fresh throwaway browser with NO logins (default; scraping public pages, e2e tests); `mcp__plugin_playwright_user-session__*` = the user's own LIVE logged-in browser and their actual open tabs (use ONLY when the task needs existing sessions/logins; requires the user's browser running with its debug port). The two emit identical tools — the server prefix is the only difference. Distinct from claude-in-chrome (Chrome extension) and brave-automation (playwright-cli over CDP).
 ---
 
 # Playwright MCP
@@ -10,7 +10,7 @@ Microsoft's `@playwright/mcp` — browser automation as MCP tools. This plugin r
 | Server | Tool prefix | Browser |
 |--------|-------------|---------|
 | `playwright` | `mcp__plugin_playwright_playwright__browser_*` | Fresh headed browser, temp profile. Default for general automation/scraping. |
-| `playwright-brave` | `mcp__plugin_playwright_playwright-brave__browser_*` | Attaches over CDP to the user's running Brave (`:9222`) — the real logged-in session. Requires Brave already running with `--remote-debugging-port=9222`. |
+| `user-session` | `mcp__plugin_playwright_user-session__browser_*` | The user's own live, logged-in browser and open tabs. Attaches over CDP to the running browser on `:9222` (currently Brave). Requires that browser running with `--remote-debugging-port=9222`. |
 
 So switching "use case" = calling a different server's tools. The default server does NOT share the logged-in Brave/Chrome session.
 
@@ -79,7 +79,7 @@ Set these by editing the plugin's `.mcp.json` args, or per-task. Defaults are us
 
 ## Gotchas
 
-- Fresh browser ≠ your logged-in session. Use the `playwright-brave` server (or `--cdp-endpoint`) for authenticated sites.
+- Fresh browser ≠ your logged-in session. Use the `user-session` server (or `--cdp-endpoint`) for authenticated sites.
 - `ref`s go stale after navigation/DOM change — re-`browser_snapshot` before acting.
 - `browser_run_code_unsafe` executes in the Node server, not the page sandbox — never feed it untrusted code.
 - Inside `browser_run_code_unsafe` the scope is tight: no `require`, no global `fetch`. For node-side HTTP (e.g. hitting a CDP endpoint), use Playwright's own client: `await page.request.get(url)`. `chromium.connectOverCDP` to a browser with many tabs/extensions can hang — prefer the CDP HTTP API (`/json/list`) via `page.request`.
