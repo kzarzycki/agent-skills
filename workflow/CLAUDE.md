@@ -43,7 +43,7 @@ Core orchestration concepts (list to be extended):
 
 ## Operational reference
 
-- Work item: `.workflow/<yyyy-mm-dd>-<slug>/` — numbered root human artifacts (`01-DECISION-SPEC.mdx`, `02-TECH-DESIGN.mdx`), runtime extras in `_phases/<phase>/`, review evidence in `_reviews/<phase>/<reviewer>.md`. No routine history files; current truth in the artifact, history in its Approval record.
+- Work item: `.workflow/<yyyy-mm-dd>-<slug>/` — numbered root human artifacts (`01-DECISION-SPEC.mdx`, `02-TECH-DESIGN.mdx`), runtime extras in `_phases/<phase>/`, review evidence in `_reviews/<phase>/<reviewer>.md`. No routine history files; current truth in the artifact. The Approval record is a one-line pointer to `_phases/`, not a recap; history and cross-round diffs live on the gate page, never the artifact body.
 - Verdicts: exactly `pass` | `needs-rework` | `needs-user`. Aggregation: any `needs-user` wins, else any `needs-rework`, else `pass`. Rework cap: 2 per phase, then escalate to the user. `needs-user` = a product question only the user can answer.
 - Format gate: `mdsmith check -c <plugin>/contracts/mdsmith.yml <artifact>` (binary in `~/.local/bin`). MDS020 structure violations = hard, fix before the user sees the artifact. MDS023/MDS036/MDS056 language budget = rework input, not a blocker.
 - Workflow-tool scripts (`workflows/*.js`): sandbox style — `export const meta` is the first statement, no imports/fs/Node APIs/`Date.now`, top-level `return` is fine. The named-workflow registry is built at session start; for a script added mid-session pass `scriptPath`. Agent types must be plugin-qualified (`workflow:tech-designer`).

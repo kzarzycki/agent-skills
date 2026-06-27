@@ -1,0 +1,8 @@
+{
+  "name": "utilities",
+  "version": "0.1.0",
+  "description": "Standalone utility skills for Claude Code, independent of any one workflow — e.g. searching past Claude Code sessions by topic.",
+  "author": {
+    "name": "Krzysztof Zarzycki"
+  }
+}

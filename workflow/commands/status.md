@@ -1,34 +1,21 @@
-Show current project status.
+Show the status of workflow work-items in this project.
 
-Read all .work/ state and present a concise overview:
+Scan `.workflow/<yyyy-mm-dd>-<slug>/` directories and present a concise overview. For each work item, most recent first:
 
-1. Read .work/brief.md for project name
-2. Read .work/state.md for tempo and active item
-3. Scan .work/items/ — for each item directory, read its ITEM.md
-4. Read .work/log.md (last 5 entries)
-5. Read .work/ideas.md (count items)
+1. Which phase artifacts exist — `01-DECISION-SPEC.mdx` (Spec), `02-TECH-DESIGN.mdx` (Tech Design).
+2. The furthest phase reached and its gate state — read the verdicts in `_reviews/<phase>/<reviewer>.md` (`intent`/`testability` for `spec`; `reuse-coverage`/`fit-risk` for `tech_design`). Both `pass` with no later artifact = awaiting user approval; any `needs-user` = blocked on the user.
+3. Anything still open (an unresolved gate, a `needs-user`).
 
 Present in this format:
 
 ```
-## [Project Name]
-Tempo: [structured/creative]
-Active: [item name or "none"]
+## Work items — .workflow/
+| Item | Phase | Latest artifact | Gate |
+|------|-------|-----------------|------|
+| 2026-06-25-borrow-feedbacks | Tech Design | 02-TECH-DESIGN.mdx | reviewers pass — awaiting approval |
 
-## Items
-| Item | Status | Progress |
-|------|--------|----------|
-| auth | in_progress | 3/5 steps |
-| data-model | not_started | — |
-
-## Recent Activity
-- [last 3-5 log entries]
-
-## Ideas Backlog
-[N] ideas captured
-
-## Suggested Next
-[What makes sense to work on next, based on status and dependencies]
+## Suggested next
+[the open gate to act on, or the next phase to run]
 ```
 
-If .work/ doesn't exist, say: "No Flow workspace found. Run /flow:init to set one up."
+If `.workflow/` does not exist or is empty, say: "No workflow work-items found. Start one with the `workflow:workflow` skill."

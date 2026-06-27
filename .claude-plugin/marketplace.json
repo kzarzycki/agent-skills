@@ -15,10 +15,17 @@
     },
     {
       "name": "workflow",
-      "description": "Workflow infrastructure for Claude Code: persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, learning consolidation, and durable human-gated workflows.",
+      "description": "Durable, human-gated engineering workflows for Claude Code: a Spec → Tech Design pipeline where each phase converges through a format gate and independent reviewers before a human approval gate, plus subagent orchestration and learning consolidation.",
       "source": "./workflow",
       "category": "workflow",
-      "tags": ["flow", "orchestration", "memory", "sessions", "workflow-engine", "review-gates"]
+      "tags": ["orchestration", "workflow-engine", "review-gates", "spec", "tech-design"]
+    },
+    {
+      "name": "utilities",
+      "description": "Standalone utility skills for Claude Code, independent of any one workflow — e.g. searching past Claude Code sessions by topic.",
+      "source": "./utilities",
+      "category": "productivity",
+      "tags": ["utilities", "sessions", "search", "conversations"]
     },
     {
       "name": "research",

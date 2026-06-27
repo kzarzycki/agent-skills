@@ -20,5 +20,6 @@ Check:
 - lock-in and reversibility are covered
 - risks are concrete enough for a user decision
 - the design does not create human-facing artifact sprawl
+- clean-slate, not a log: no fact recurs across **Scorecard**, **Key technical decisions**, **Rejected alternatives**, and **Approval record**; the Approval record is a checkbox plus a one-line pointer to `_phases/`, not a recap of the design; a rejected option (e.g. a compared tool) appears only in **Rejected alternatives**, never threaded through the body as a running baseline; no history-words (*settled*, *the old*, *obsolete*, *no longer*, *this pass*, *superseding*) and no *the user wanted/rejected X* framing — `needs-rework` on a violation
 
 Return one verdict exactly: `pass`, `needs-rework`, or `needs-user`. If spawned, write review evidence to the path the caller requests; default `<work-item>/_reviews/tech_design/fit-risk.md`. SendMessage the verdict summary.

@@ -1,34 +1,16 @@
-Research a topic, optionally tied to an active work item.
+Research a topic with the engine's `research-brief` workflow.
 
 Arguments: $ARGUMENTS (the research topic or question)
 
 Follow these steps:
 
-1. Determine research scope:
-   - If there's an active item in state.md and the topic relates to it: item-specific research
-   - Otherwise: standalone research
+1. Scope: if a `.workflow/<yyyy-mm-dd>-<slug>/` work item is active and the topic relates to it, tie the research to that item; otherwise treat it as standalone.
 
-2. Check for existing research:
-   - Item-specific: check items/<name>/research.md
-   - Standalone: check .work/research/ for related files
-   - If found: "Found existing research on [topic]. Build on it, or start fresh?"
+2. Run the research workflow instead of reimplementing research:
+   `Workflow({ name: 'workflow:research-brief', args: { prompt: "<topic>" } })` — it fans research angles out across subagents and returns `{ brief, openThreads }`. Pass `buckets: [...]` only if you already know the angles to split on.
 
-3. Gather context for the research agent:
-   - Read the research methodology from the flow skill's references/research.md
-   - Read .work/brief.md
-   - Read .work/standards/ (if any files exist)
-   - If item-specific: read the item's ITEM.md and any existing research
+3. Write the returned `brief` + `openThreads` to:
+   - Tied to a work item: `<item>/_phases/spec/research-brief.md`.
+   - Standalone: a path the user names (or the session scratchpad).
 
-4. Spawn research agent:
-   - Inline ALL context into the prompt (methodology + brief + standards + item context + the research question)
-   - Use subagent_type: "general-purpose"
-   - Description: "Research: <topic summary>"
-
-5. When agent returns:
-   - Write findings to the appropriate location:
-     - Item-specific: .work/items/<name>/research.md
-     - Standalone: .work/research/<slug>.md (slugify the topic)
-   - If item-specific: update ITEM.md status to "researching", add log entry, check progress box
-   - Append to .work/log.md: "YYYY-MM-DD: Research completed — <topic>"
-
-6. Present a brief summary of findings and recommendation to the user.
+4. Present the brief and the open questions to the user.
