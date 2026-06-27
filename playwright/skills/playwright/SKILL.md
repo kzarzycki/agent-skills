@@ -1,6 +1,6 @@
 ---
 name: playwright
-description: Use when driving a browser via the Playwright MCP (mcp__playwright__* tools) — navigating sites, filling forms, clicking, scraping, end-to-end testing, or running arbitrary Playwright scripts against a page. Trigger on "use playwright", "automate this site", "fill this form", "scrape", "write a playwright script", "run playwright code", or any browser-automation task once the playwright MCP is enabled. Distinct from claude-in-chrome (drives the user's Chrome extension) and brave-automation (playwright-cli over CDP against logged-in Brave).
+description: Use when driving a browser via the Playwright MCP — navigating sites, filling forms, clicking, scraping, end-to-end testing, or running arbitrary Playwright scripts against a page. Trigger on "use playwright", "automate this site", "fill this form", "scrape", "write a playwright script", "run playwright code", or any browser-automation task once the playwright MCP is enabled. TWO SERVERS, pick by the prefix you call — `mcp__plugin_playwright_playwright__*` = a fresh throwaway browser with NO logins (default; scraping public pages, e2e tests); `mcp__plugin_playwright_playwright-brave__*` = attaches to the user's LIVE logged-in Brave on :9222 (use ONLY when the task needs existing sessions/logins or the user's actual open tabs; requires Brave running). The two emit identical tools — the server prefix is the only difference. Distinct from claude-in-chrome (Chrome extension) and brave-automation (playwright-cli over CDP).
 ---
 
 # Playwright MCP
