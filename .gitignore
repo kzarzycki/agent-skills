@@ -1,8 +1,6 @@
 .work/
 .worktrees/
 .workflow/
-CLAUDE.md
-!workflow/CLAUDE.md
 .claude/
 .pi/
 __pycache__/
