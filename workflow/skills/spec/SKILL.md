@@ -11,7 +11,7 @@ This file is the phase contract — the rules the artifact must satisfy. Executi
 
 ## Execution
 
-The interviewer teammate owns the phase by default: interview the user, write `01-DECISION-SPEC.mdx`, then run the `spec-phase` workflow — the convergence loop of author rework, format gate, both reviewers in parallel, and capped rework cycles, until it returns `pass`, `needs-user`, or the rework cap. `needs-user` and the cap go back to the user over the interview channel. The user gate is the artifact path plus verdicts plus the rendered MDX page; the artifact content stays out of the orchestrator's context. With no tmux, the engine interviews in-situ and runs the same workflow.
+An executor owns the phase: interview the user, write `01-DECISION-SPEC.mdx`, then run the `spec-phase` workflow — the convergence loop of author rework, format gate, both reviewers in parallel, and capped rework cycles, until it returns `pass`, `needs-user`, or the rework cap. `needs-user` and the cap go back to the user over the interview channel. The user gate is the artifact path plus verdicts plus the rendered MDX page; the artifact content stays out of the orchestrator's context. Whether the engine delegates the interview or runs it in-situ is the engine's call, not this contract's.
 
 ## Contract
 

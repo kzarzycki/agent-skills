@@ -201,7 +201,7 @@
         <mxCell id="O2" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="delegate research&#xa;⚡ Workflow(&#39;research-brief&#39;)" vertex="1">
           <mxGeometry height="80" width="200" x="520" y="50" as="geometry" />
         </mxCell>
-        <mxCell id="O3" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="spawn 🤝 interviewer teammate&#xa;Agent(team: spec)&#xa;in-situ fallback w/o tmux" vertex="1">
+        <mxCell id="O3" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="fork engine → interviewer (default)&#xa;Agent(subagent_type: fork)&#xa;in-situ on request" vertex="1">
           <mxGeometry height="80" width="200" x="760" y="50" as="geometry" />
         </mxCell>
         <mxCell id="O4" parent="laneO" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" value="ask user for approval of the spec (in the file)" vertex="1">

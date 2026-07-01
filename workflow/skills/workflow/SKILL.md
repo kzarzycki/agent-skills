@@ -31,36 +31,42 @@ This engine is stateless -- chat history is the state; to resume, re-read the wo
 2. Research. Call `Workflow({ name: 'research-brief', args: { prompt, buckets } })` with the
    approved buckets. Keep the returned `{ brief, openThreads }` and write both to
    `<work-item dir>/_phases/spec/research-brief.md`.
-3. Interview + converge. The interview grills the user one question at a time, so it needs a live
-   channel to them. A spawned teammate only gets that channel inside tmux. Detect with
-   `[ -n "$TMUX" ]`, tell the user which mode applies and its cost, and ask them to accept
-   (AskUserQuestion) before you start.
+3. Interview + converge. By default the engine delegates the interview to a **fork** of itself
+   (`Agent({ subagent_type: 'fork' })`). A fork is the one delegate that can run the interview:
+   it inherits the whole conversation so far -- the research brief, the open threads, the
+   brainstorming already done -- and inherits this agent's tools, including `AskUserQuestion`, so
+   it prompts the user one question at a time in the background while its Q&A stays out of the
+   engine's context. (A fresh `interviewer` agent only has `AskUserQuestion` because its
+   definition grants it, and starts blind to the conversation -- the fork beats it on both
+   counts.) The fork owns the whole phase: interview, write the draft to `spec_path`, run this
+   plugin's `spec-phase` saved workflow (format gate -> intent + testability reviewers -> rework,
+   capped), relay any `needs-user` to the user itself, and SendMessage you the artifact path +
+   verdict summary when it passes.
+   - `Agent({ subagent_type: 'fork', name: 'interviewer',
+     prompt: "You are the spec interviewer. You have the full conversation context, including the
+     research brief and open threads. Load the spec contract (Skill workflow:spec) and its
+     interview skills (superpowers:brainstorming, mattpocock-skills:grill-me) -- a fork does not
+     pick up the interviewer agent definition, so load them yourself. Lead with the open threads,
+     resolve what you can from the codebase, write the draft to <spec_path>, then run spec-phase
+     with pluginRoot <plugin root>. Relay needs-user to the user; SendMessage me the path +
+     verdicts when it passes." })`
+   A fork's tool output never reaches you, so do not expect a return value. Wait for its message:
+   path + verdicts. Do not Read the artifact.
 
-   - In tmux -- spawn the interviewer; it owns the whole phase: interview in its own pane, write
-     the draft to `spec_path`, run this plugin's `spec-phase` saved workflow (format gate -> intent
-     + testability reviewers -> rework, capped), relay any `needs-user` question to the user
-     itself, and SendMessage you the artifact path + verdict summary when it passes. Compose the
-     prompt yourself: work item, brief, open threads, `spec_path`, and `pluginRoot` inline --
-     `spec_path` is what selects the interviewer's team file mode, `pluginRoot` is what it passes
-     to the workflow:
-     - `TeamCreate({ team_name: 'spec' })`
-     - `Agent({ team_name: 'spec', name: 'interviewer', subagent_type: 'interviewer',
-       prompt: "Work item: <prompt>\nResearch brief: <brief>\nOpen threads: <openThreads>\nspec_path: <spec_path>\npluginRoot: <plugin root>" })`
-     A teammate's chat output never reaches you, so do not expect a return value. Wait for its
-     message: path + verdicts. Do not Read the artifact.
-   - Not in tmux -- run the interview yourself. Load the spec skill and follow its contract;
-     the interview shares your context -- that is the cost the user accepted by choosing this
-     mode. Lead with the open threads, resolve what you can from the codebase, write the draft to
-     `spec_path`, then run the same loop: the `spec-phase` saved workflow (args/returns in its
-     meta; `scriptPath: <plugin root>/workflows/spec-phase.js` fallback if the name is not in
-     the session registry). On `needs-user` or `rework-cap-exceeded`, ask the user and re-run
-     with their answer as `instructions`.
+   In-situ on request -- only when the user asks for it (an `in-situ`/`inline` cue in the prompt
+   or `--inline`): run the interview yourself instead of delegating. Load the spec skill and
+   follow its contract; the interview shares your context -- the cost the user opted into. Lead
+   with the open threads, resolve what you can from the codebase, write the draft to `spec_path`,
+   then run the same `spec-phase` loop (args/returns in its meta; `scriptPath: <plugin
+   root>/workflows/spec-phase.js` fallback if the name is not in the session registry). On
+   `needs-user` or `rework-cap-exceeded`, ask the user and re-run with their answer as
+   `instructions`.
 
 4. Present. Hand the user the gate per Gate presentation below. To approve, continue. To rework,
    message the interviewer if you spawned one (it re-runs the loop and re-signals) or re-run the
    `spec-phase` workflow yourself with the user's feedback as `instructions` -- then present again.
-5. Close. If you spawned a team, shut down the interviewer (`SendMessage` with
-   `{type: 'shutdown_request'}`), then `TeamDelete()`.
+5. Close. If the interviewer fork is still alive after approval, shut it down (`SendMessage` with
+   `{type: 'shutdown_request'}`). The fork path uses no team, so there is nothing to `TeamDelete`.
 
 ## Tech Design phase
 
