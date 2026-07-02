@@ -1,6 +1,6 @@
 ---
 name: update-delta-audit
-description: Use when a user sees a software update prompt, "new version available", "run <tool> update", app updater notice, package-manager upgrade notice, or asks whether an already-installed/trusted tool is safe to update before installing.
+description: "Pre-install safety check for a software update — invoke on an update prompt, 'new version available', upgrade notice, or when asked if an installed/trusted tool is safe to update."
 ---
 
 # Update Delta Audit

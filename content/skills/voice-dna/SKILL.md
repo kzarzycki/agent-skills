@@ -1,16 +1,7 @@
 ---
 name: voice-dna
-description: >
-  Extract and analyze a person's writing voice DNA from their LinkedIn posts.
-  Produces an 8-dimension style profile with posting mode classification,
-  vocabulary fingerprint, signature moves, and a Prompt Engineering Guide
-  for AI-assisted writing in that voice. Use when the user wants to analyze
-  someone's writing style, extract voice DNA, study how someone writes on
-  LinkedIn, or prepare a style profile for content creation. Trigger on
-  "analyze their writing style", "voice DNA", "extract their style",
-  "how does [person] write", "style analysis", "LinkedIn voice",
-  "writing DNA", "study their posts", "process another person",
-  or any request to understand or replicate someone's LinkedIn writing patterns.
+description: "Extract a person's LinkedIn writing voice DNA into an 8-dimension style profile with vocabulary fingerprint, signature moves, and a Prompt Engineering Guide."
+when_to_use: "Analyzing someone's writing style, extracting voice DNA, or preparing a style profile for content creation — 'voice DNA', 'how does X write', 'style analysis'."
 ---
 
 # Voice DNA — LinkedIn Style Extraction & Analysis

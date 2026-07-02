@@ -1,18 +1,7 @@
 ---
 name: communicating-in-mdx
-description: >
-  Optional enrichment layer. When loaded, the agent writes specs, plans,
-  designs, recaps, and reports as MDX — Markdown prose plus a registered
-  component library — rendered by a fully local Vite runner the agent runs
-  itself. No remote services: the .mdx is the artifact (git-diffable,
-  hand-editable, shareable, degrades to plain Markdown), and rendering is a
-  local function. Orthogonal and zero-coupling: other skills keep working in
-  plain Markdown when this isn't loaded. Fires when you are about to write a
-  spec / plan / design / recap / report / dashboard the user will read,
-  iterate on, or decide from — and prose-only Markdown would lose layout,
-  comparison, diagrams, wireframes, or interaction. Coexists with
-  communicating-in-html (use HTML for zero-dependency one-off files; use MDX
-  for rich documents you and the user iterate on where Node is available).
+description: "Optional layer: write specs, plans, designs, and reports as MDX (Markdown + a component library) rendered locally via Vite — git-diffable, degrades to plain Markdown, no remote services."
+when_to_use: "Writing a spec/plan/design/recap/report the user will iterate on or decide from, where plain Markdown would lose layout, comparison, diagrams, or interaction. Use communicating-in-html instead for zero-dependency one-off files."
 ---
 
 # Communicating in MDX

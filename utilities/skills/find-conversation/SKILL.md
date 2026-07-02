@@ -1,6 +1,7 @@
 ---
 name: find-conversation
-description: Search through past Claude Code conversations to find specific sessions by topic, content, date, or working directory. Use when the user asks to find a previous conversation, recall what was discussed, locate a session they worked on, or resume past work. Trigger on "find that conversation", "which session did we", "we talked about X before", "find the session where", "I was working on X yesterday", "resume that conversation", "open that session", or any reference to past Claude Code conversations.
+description: "Search past Claude Code conversations (JSONL session history) by topic, content, date, or working directory."
+when_to_use: "Finding a previous conversation, recalling what was discussed, locating a session, or resuming past work — 'find that conversation', 'we talked about X before', 'resume that session'."
 ---
 
 # Find Conversation Skill

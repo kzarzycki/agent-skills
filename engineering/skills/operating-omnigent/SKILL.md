@@ -1,6 +1,7 @@
 ---
 name: operating-omnigent
-description: Use when diagnosing or operating a local Omnigent install — "did omnigent crash?", can't open it / new tab shows {"detail":"Not Found"}, web UI blank, restarting the server, listing/attaching/resuming/disposing sessions, or making sense of the many omnigent processes (runners, terminals). Also when spawning, delegating to, or monitoring other agents/sessions from inside a turn via the sys_* MCP tools. Saves a fresh agent from port-scanning and source-diving to relearn the topology.
+description: "Operate a local Omnigent install — crashes, blank UI, restarts, session attach/resume/dispose, process topology — and drive other agents via the sys_* MCP tools."
+when_to_use: "Any omnigent operational question or when spawning/monitoring other agents from inside a turn."
 ---
 
 # Operating Omnigent

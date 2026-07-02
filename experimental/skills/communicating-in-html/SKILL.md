@@ -1,18 +1,7 @@
 ---
 name: communicating-in-html
-description: >
-  Optional enrichment layer. When loaded, the agent communicates with the user
-  in self-contained HTML instead of Markdown wherever a rendered page beats a
-  chat dump — reports, interviews/intake, and option/mockup choices. Orthogonal
-  and zero-coupling: other skills keep working in plain Markdown when this isn't
-  loaded. Fires when you are about to deliver a report / summary / analysis /
-  dashboard / scorecard, interview the user for more than ~3 fields, or offer
-  options / mockups to choose from — and the content has comparison, layout,
-  interaction, color/charts, or would exceed ~100 lines of Markdown. Output is
-  one offline-safe .html file; forms and option pages hand answers back via a
-  copy-paste token. Trigger on "report", "write it up nicely", "dashboard",
-  "summarize visually", "interview me", "intake form", "gather requirements",
-  "show me options", "mockups to choose from", "as HTML", "nicer than chat".
+description: "When loaded: deliver reports, intake interviews (>3 fields), and option/mockup choices as one self-contained offline .html page instead of chat Markdown. Forms return answers via a copy-paste token."
+when_to_use: "About to deliver a report/summary/dashboard, interview the user for >3 fields, or offer options/mockups — and the content has comparison, layout, charts, or would exceed ~100 lines of Markdown."
 ---
 
 # Communicating in HTML

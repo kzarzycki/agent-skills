@@ -1,6 +1,8 @@
 ---
 name: audit-third-party-software
-description: Audit third-party software (GitHub repos, tarballs, compiled binaries, npm packages, Claude Code plugins) for safety BEFORE install. Checks for telemetry, data exfiltration, prompt injection, supply-chain attacks, closed-source phone-home components, hardcoded credentials, user-hostile defaults, and unauthenticated local services. Produces a structured verdict (SAFE/CAUTION/UNSAFE) with file:line citations, a plain-English description of what the software actually does based on code rather than marketing, and a concrete install recommendation. Use this skill whenever the user wants to clone/install/try/run/use ANY third-party code, package, binary, or tool from the internet — even casually. Trigger on phrases like "is X safe to install", "clone and review", "audit this repo", "check this before I use it", "no telemetry check", "should I install X", "what does this do", "review this tool", or whenever the user shares a GitHub URL, npm package name, tarball, or plugin/skill reference with apparent install intent. Also trigger proactively whenever the user is about to run an install command (`pnpm add`, `npm install`, `brew install`, `curl | sh`, `git clone` followed by build/run) against an unfamiliar source. Skip only when the user explicitly says they've already audited it or it's first-party code they wrote.
+description: "Audit third-party code (repos, npm packages, binaries, plugins) for telemetry, exfiltration, supply-chain risk, and hostile defaults before install; verdict SAFE/CAUTION/UNSAFE with file:line evidence."
+when_to_use: "User shows install intent for unfamiliar software — a GitHub URL, npm/brew install, curl|sh, 'is X safe', 'audit this repo'. Skip for first-party or already-audited code."
+argument-hint: "[repo-url-or-package]"
 ---
 
 # Audit Third-Party Software

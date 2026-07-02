@@ -1,17 +1,7 @@
 ---
 name: deep-research
-description: >
-  Orchestrate multi-round, multi-source deep research using parallel agents and multiple
-  search providers (Perplexity, Tavily, Exa, Gemini, native WebSearch). Produces comprehensive
-  reports with citations, confidence scores, and identified gaps. Use this skill whenever the
-  user wants thorough, multi-angle research on any topic — trigger on "deep research",
-  "research this thoroughly", "comprehensive analysis of", "what does the internet say about",
-  "gather everything about", "investigate X in depth", "multi-source research", "find all
-  recent info on", or any request implying broad internet research beyond a simple search.
-  Also trigger when the user needs cited research for a presentation, report, or decision,
-  wants to compare sources, triangulate information, or needs source quality assessment.
-  Even casual requests like "look into X for me" or "what's the latest on X" should trigger
-  this if the topic is complex enough to benefit from structured multi-source research.
+description: "Multi-round multi-source research (Perplexity, Tavily, Exa, Gemini, WebSearch) producing a cited report with confidence scores and gaps."
+when_to_use: "Any nontrivial research request ('research X', 'what's the latest on', 'look into'), or when a decision/report needs verified multi-source evidence."
 ---
 
 # Deep Research

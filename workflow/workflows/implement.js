@@ -1,7 +1,7 @@
 export const meta = {
   name: 'implement',
-  description: 'Implement a described change in a scoped set of files, then review (correctness) + simplify (quality) the resulting diff in a verify-gated loop, then commit. Edits only the named files, so it is safe to run alongside another agent working elsewhere. Quality pass and commit are on by default.',
-  whenToUse: 'End-to-end: when you have a fix/feature to BUILD. Args: {task: string, files?: string[], verifyCmd: string, baseRef?: string, maxIters?: number, commit?: boolean}. Provide files[] to hard-scope edits away from a parallel agent. The commit message is written by the workflow from the diff; pass commit:false to skip committing.',
+  description: 'Build a described change in a scoped file set, then review+simplify the diff in a verify-gated loop and commit. Args: {task, files?, verifyCmd, baseRef?, maxIters?, commit?}. Pass files[] to run safely beside another agent.',
+  whenToUse: 'End-to-end when you have a fix/feature to build. Commit message is generated from the diff; pass commit:false to skip committing.',
   phases: [
     { title: 'Implement' },
     { title: 'Polish' },

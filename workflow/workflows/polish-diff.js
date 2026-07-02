@@ -1,7 +1,7 @@
 export const meta = {
   name: 'polish-diff',
-  description: 'Review (correctness) then simplify (quality) a scoped working-tree diff in a feedback loop, gated on a verify command. Only edits the named files.',
-  whenToUse: 'After a scoped code change, to run a correctness review then a quality/simplify pass, apply fixes, and re-verify in a loop until clean. Args: {files: string[], verifyCmd: string, baseRef?: string, maxIters?: number}. Safe to run alongside another agent as long as files[] does not overlap their work.',
+  description: 'Review (correctness) then simplify (quality) a scoped working-tree diff in a verify-gated loop, editing only the named files. Args: {files, verifyCmd, baseRef?, maxIters?}.',
+  whenToUse: 'Use after a scoped code change to review, fix, and re-verify in a loop until clean.',
   phases: [
     { title: 'Review' },
     { title: 'Simplify' },

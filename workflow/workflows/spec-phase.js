@@ -1,7 +1,7 @@
 export const meta = {
   name: 'spec-phase',
-  description: 'Run the Spec convergence loop by delegation: thin wrapper over phase-loop.js with phase=spec. A fresh draft goes straight to review; the author reworks only on findings and runs the format gate itself. No interviewing happens inside.',
-  whenToUse: 'Args: { workId: string, pluginRoot: string, instructions?: string, contentFrozen?: boolean }. Returns { status, rounds, verdicts, formatGate, artifact }. status: pass | needs-user | rework-cap-exceeded | error. Requires an existing draft plus _phases/spec/ notes. Stateless: agents read/write work-item files only.',
+  description: 'Spec convergence loop via phase-loop (draft → review → rework → format gate; no interviewing). Args: {workId, pluginRoot, instructions?, contentFrozen?} → {status, rounds, verdicts, formatGate, artifact}. Requires existing draft + _phases/spec/ notes.',
+  whenToUse: 'Stateless: agents read/write work-item files only.',
 };
 
 const a = typeof args === 'string' ? JSON.parse(args) : (args || {});
