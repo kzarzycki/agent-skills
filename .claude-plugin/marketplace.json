@@ -95,7 +95,7 @@
       "description": "Compiles plain-language work into concise, host-aware, verifiable /goal-style agent contracts (done state, proof, constraints, stop policy, completion receipt) for Codex, Claude Code, Cursor, and other agents. Sourced upstream from github.com/mysticaltech/goal-creator-skill (tracks upstream, no local copy).",
       "source": {
         "source": "git-subdir",
-        "url": "github.com/mysticaltech/goal-creator-skill",
+        "url": "https://github.com/mysticaltech/goal-creator-skill",
         "path": "goal-creator",
         "ref": "main"
       },
