@@ -91,6 +91,19 @@
       "tags": ["dagu", "workflow", "orchestration", "dag", "scheduler"]
     },
     {
+      "name": "goal-creator",
+      "description": "Compiles plain-language work into concise, host-aware, verifiable /goal-style agent contracts (done state, proof, constraints, stop policy, completion receipt) for Codex, Claude Code, Cursor, and other agents. Sourced upstream from github.com/mysticaltech/goal-creator-skill (tracks upstream, no local copy).",
+      "source": {
+        "source": "git-subdir",
+        "url": "github.com/mysticaltech/goal-creator-skill",
+        "path": "goal-creator",
+        "ref": "main"
+      },
+      "strict": false,
+      "category": "workflow",
+      "tags": ["goal", "agent-contract", "verification", "codex", "claude-code"]
+    },
+    {
       "name": "project-templates",
       "description": "Scaffold new repositories from Copier templates with sensible engineering conventions baked in (git, pinned pre-commit/commit-msg/pre-push hooks, CLAUDE.md, CI, language toolchain). Provides the bootstrap-project skill that auto-triggers on 'new project' intent. Sourced from github.com/kzarzycki/project-templates.",
       "source": {
