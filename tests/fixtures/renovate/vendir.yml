@@ -1,0 +1,10 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: skills
+    contents:
+      - path: alpha
+        git:
+          url: https://example.invalid/upstream.git
+          ref: origin/main
+        newRootPath: skills/engineering/alpha

@@ -1,0 +1,35 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: skills
+    contents:
+      - path: .upstream/engineering
+        git:
+          url: UPSTREAM_REPOSITORY
+          ref: origin/main
+        includePaths:
+          - skills/engineering/**/*
+        excludePaths:
+          - skills/engineering/setup-matt-pocock-skills/**/*
+        legalPaths: []
+        newRootPath: skills/engineering
+        ignorePaths:
+          - audit-third-party-software/**/*
+      - path: .upstream/productivity
+        git:
+          url: UPSTREAM_REPOSITORY
+          ref: origin/main
+        includePaths:
+          - skills/productivity/**/*
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/productivity
+        ignorePaths:
+          - audit-third-party-software/**/*
+      - path: audit-third-party-software
+        inline:
+          paths:
+            SKILL.md: vendir must not replace the owned skill
+        legalPaths: []
+        ignorePaths:
+          - "**/*"

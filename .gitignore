@@ -5,6 +5,7 @@
 .pi/
 __pycache__/
 *.pyc
+.venv/
 .memsearch/
 .archive/
 node_modules/

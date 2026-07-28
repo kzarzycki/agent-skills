@@ -1,0 +1,12 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: LockConfig
+directories:
+  - path: skills
+    contents:
+      - path: alpha
+        git:
+          sha: "0000000000000000000000000000000000000000"
+qualificationArtifacts:
+  - vendir.lock.yml
+  - skills/alpha/SKILL.md
+  - skills/grilling/SKILL.md

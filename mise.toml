@@ -1,0 +1,21 @@
+[tools]
+python = "3.14.6"
+uv = "0.11.8"
+"ubi:microsoft/apm" = "0.26.0"
+"ubi:carvel-dev/vendir" = "0.46.0"
+"npm:renovate" = "43.285.7"
+
+[tasks.vendor-engineering]
+run = "uv run python -m tools.capability_pack.cli update engineering"
+
+[tasks.vendor-engineering-check]
+run = "uv run python -m tools.capability_pack.cli check engineering"
+
+[tasks.test-engineering-package]
+run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_consumer_e2e.py"
+
+[tasks.test-engineering-agents]
+run = "uv run pytest -q -m live_agent engineering/tests/e2e"
+
+[tasks.test]
+run = "uv run pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests && uv run ruff format --check tools tests engineering/tests"
