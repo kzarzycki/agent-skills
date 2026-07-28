@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "renovate"
 ROOT = Path(__file__).parents[2]
@@ -38,10 +40,37 @@ def test_probe_task_pins_runtime_and_explicit_renovate_download() -> None:
     assert config["tools"]["node"] == "24.18.0"
     assert all("renovate" not in tool for tool in config["tools"])
     task = config["tasks"]["probe-renovate-vendir"]
-    assert task["dir"] == "tests/fixtures/renovate"
-    assert "gtimeout 120" in task["run"]
-    assert "npx --yes renovate@43.285.7" in task["run"]
-    assert "--platform=local" in task["run"]
-    assert "--dry-run=full" in task["run"]
-    assert "--require-config=required" in task["run"]
-    assert "--binary-source=global" in task["run"]
+    assert "dir" not in task
+    assert task["run"] == "uv run python tests/adoption/run_renovate_probe.py"
+
+
+def test_probe_runner_uses_exact_renovate_command_and_propagates_status() -> None:
+    path = Path(__file__).with_name("run_renovate_probe.py")
+    spec = importlib.util.spec_from_file_location("run_renovate_probe", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+
+    def run(argv: list[str], *, cwd: Path, timeout: int, check: bool) -> SimpleNamespace:
+        calls.append((argv, cwd, timeout, check))
+        return SimpleNamespace(returncode=7)
+
+    assert module.main(run=run) == 7
+    assert calls == [
+        (
+            [
+                "npx",
+                "--yes",
+                "renovate@43.285.7",
+                "--platform=local",
+                "--dry-run=full",
+                "--require-config=required",
+                "--binary-source=global",
+                "--base-dir=/tmp/dotagents-renovate-vendir-probe",
+            ],
+            FIXTURE,
+            120,
+            False,
+        )
+    ]

@@ -12,8 +12,7 @@ run = "uv run python -m tools.capability_pack.cli update engineering"
 run = "uv run python -m tools.capability_pack.cli check engineering"
 
 [tasks.probe-renovate-vendir]
-dir = "tests/fixtures/renovate"
-run = "gtimeout 120 npx --yes renovate@43.285.7 --platform=local --dry-run=full --require-config=required --binary-source=global --base-dir=/tmp/dotagents-renovate-vendir-probe"
+run = "uv run python tests/adoption/run_renovate_probe.py"
 
 [tasks.test-engineering-package]
 run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_consumer_e2e.py"
