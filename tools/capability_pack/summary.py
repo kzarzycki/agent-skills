@@ -26,7 +26,7 @@ def render_summary(
     new_skills = set(proposed.included_skills)
     added = tuple(sorted(new_skills - old_skills))
     removed = tuple(sorted(old_skills - new_skills))
-    if removed or setup_contract_changed:
+    if removed or setup_contract_changed or patch_failures:
         version = "BLOCKED"
     elif added:
         version = "minor"
@@ -52,5 +52,5 @@ def render_summary(
 def _license_changes(previous: Provenance | None, proposed: Provenance) -> str:
     old = set(previous.license_files if previous else ())
     new = set(proposed.license_files)
-    changed = sorted(item.path for item in old ^ new)
+    changed = sorted({item.path for item in old ^ new})
     return ", ".join(changed) if changed else "none"

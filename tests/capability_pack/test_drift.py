@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tools.capability_pack.qualify import BreakingDriftError, QualificationError, qualify
 
@@ -42,16 +44,50 @@ def test_missing_recorded_legal_file_fails_qualification(package: Path, fake_ven
         qualify(package, "locked")
 
 
-def test_owned_skill_collision_stops_promotion(
+def test_owned_skill_collision_is_preserved_by_vendir_ignore_paths(
     package: Path, upstream: Path, fake_vendir: Path
 ) -> None:
-    """Catch an upstream skill replacing repository-owned behavior."""
+    """Catch an upstream same-name skill replacing repository-owned behavior."""
     colliding = upstream / "skills" / "engineering" / "context-extractor"
     colliding.mkdir()
     (colliding / "SKILL.md").write_text("# Upstream collision\n")
     owned = (package / "skills" / "context-extractor" / "SKILL.md").read_bytes()
 
-    with pytest.raises(QualificationError, match="context-extractor"):
-        qualify(package, "update")
+    qualify(package, "update")
 
     assert (package / "skills" / "context-extractor" / "SKILL.md").read_bytes() == owned
+
+
+@pytest.mark.parametrize("change", ["added", "deleted"])
+def test_file_addition_or_deletion_marks_existing_skill_changed(
+    package: Path, upstream: Path, fake_vendir: Path, change: str
+) -> None:
+    """Catch changed-skill detection considering only shared file paths."""
+    legacy = package / "skills" / "alpha" / "legacy.txt"
+    upstream_legacy = upstream / "skills" / "engineering" / "alpha" / "legacy.txt"
+    if change == "added":
+        (upstream / "skills" / "engineering" / "alpha" / "new.txt").write_text("new\n")
+    else:
+        legacy.write_text("legacy\n")
+        upstream_legacy.write_text("legacy\n")
+        provenance = package / "provenance.yml"
+        data = yaml.safe_load(provenance.read_text())
+        digest = hashlib.sha256(b"legacy\n").hexdigest()
+        item = {"path": "skills/alpha/legacy.txt", "sha256": digest}
+        data["source_files"].append(item)
+        data["output_files"].append(item)
+        provenance.write_text(yaml.safe_dump(data, sort_keys=False))
+        upstream_legacy.unlink()
+
+    result = qualify(package, "update")
+
+    assert "Changed skills: alpha" in result.summary
+
+
+def test_matt_locks_must_resolve_to_same_commit(package: Path, fake_vendir: Path) -> None:
+    """Catch combining engineering and grilling content from different Matt commits."""
+    lock = package / "vendir.grilling.lock.yml"
+    lock.write_text(lock.read_text().replace("1" * 40, "9" * 40))
+
+    with pytest.raises(QualificationError, match="different commits"):
+        qualify(package, "locked")

@@ -3,7 +3,7 @@ kind: Config
 directories:
   - path: skills
     contents:
-      - path: .upstream/engineering
+      - path: .
         git:
           url: UPSTREAM_REPOSITORY
           ref: origin/main
@@ -15,21 +15,7 @@ directories:
         newRootPath: skills/engineering
         ignorePaths:
           - audit-third-party-software/**/*
-      - path: .upstream/productivity
-        git:
-          url: UPSTREAM_REPOSITORY
-          ref: origin/main
-        includePaths:
-          - skills/productivity/**/*
-        excludePaths: []
-        legalPaths: []
-        newRootPath: skills/productivity
-        ignorePaths:
-          - audit-third-party-software/**/*
-      - path: audit-third-party-software
-        inline:
-          paths:
-            SKILL.md: vendir must not replace the owned skill
-        legalPaths: []
-        ignorePaths:
-          - "**/*"
+          - context-extractor/**/*
+          - operating-omnigent/**/*
+          - setup-engineering-workflow-for-apm/**/*
+          - grilling/**/*

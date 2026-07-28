@@ -11,6 +11,7 @@ from tools.capability_pack.qualify import QualificationError, qualify
 
 def _write_package(package: Path) -> None:
     package.mkdir()
+    (package / "skills").mkdir()
     (package / "vendir.yml").write_text(
         yaml.safe_dump(
             {
@@ -42,6 +43,8 @@ def _write_package(package: Path) -> None:
         )
     )
     (package / "patches").mkdir()
+    (package / "vendir.grilling.yml").write_text((package / "vendir.yml").read_text())
+    (package / "vendir.grilling.lock.yml").write_text((package / "vendir.lock.yml").read_text())
 
 
 def _install_noop_vendir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,3 +164,28 @@ def test_symlink_escaping_staged_package_is_rejected(
         qualify(package, "update")
 
     assert (outside / "value.txt").read_text() == "one\n"
+
+
+def test_patch_failure_writes_deterministic_blocked_summary(
+    package: Path, fake_vendir: Path, tmp_path: Path
+) -> None:
+    """Catch losing review evidence when a staged patch is rejected."""
+    patch = package / "patches" / "broken.patch"
+    patch.write_text(_patch("skills/alpha/SKILL.md", "# Missing", "# Patched"))
+    (package / "patches" / "series").write_text("patches/broken.patch\n")
+    summary = tmp_path / "blocked-summary.txt"
+
+    with pytest.raises(QualificationError, match="patch failed"):
+        qualify(package, "update", summary)
+
+    first = summary.read_bytes()
+    assert b"Previous source commit: 1111111111111111111111111111111111111111" in first
+    assert b"Proposed source commit: 2222222222222222222222222222222222222222" in first
+    assert b"Patch failures: patches/broken.patch" in first
+    assert b"License hashes: LICENSES/mattpocock-skills-LICENSE=" in first
+    assert b"Proposed version: BLOCKED" in first
+    assert b"Output hashes:" not in first
+
+    with pytest.raises(QualificationError):
+        qualify(package, "update", summary)
+    assert summary.read_bytes() == first

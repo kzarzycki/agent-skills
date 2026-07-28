@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from conftest import OWNED_SKILLS
 
@@ -73,3 +74,47 @@ def test_failed_non_live_package_test_leaves_package_unchanged(
         raise AssertionError("failed staged package tests must stop replacement")
 
     assert (package / "skills" / "alpha" / "SKILL.md").read_bytes() == before
+
+
+@pytest.mark.parametrize("mode", ["update", "locked"])
+def test_summary_path_inside_package_is_rejected_without_mutation(
+    package: Path, fake_vendir: Path, mode: str
+) -> None:
+    """Catch update replacement or check mode writing through an in-package summary."""
+    before = (package / "skills" / "alpha" / "SKILL.md").read_bytes()
+    summary = package / "qualification-summary.txt"
+
+    with pytest.raises(QualificationError, match="summary path must be outside"):
+        qualify(package, mode, summary)
+
+    assert not summary.exists()
+    assert (package / "skills" / "alpha" / "SKILL.md").read_bytes() == before
+
+
+def test_external_summary_survives_update_swap(
+    package: Path, fake_vendir: Path, tmp_path: Path
+) -> None:
+    """Catch placing update evidence in the staged tree that is lost during rename."""
+    summary = tmp_path / "summary.txt"
+
+    qualify(package, "update", summary)
+
+    assert summary.is_file()
+    assert "Proposed source commit: " + "2" * 40 in summary.read_text()
+
+
+@pytest.mark.parametrize("field", ["excluded_skills", "source_files", "output_files"])
+def test_locked_mode_compares_every_provenance_field(
+    package: Path, fake_vendir: Path, field: str
+) -> None:
+    """Catch accepting committed provenance that does not match reconstruction."""
+    path = package / "provenance.yml"
+    data = yaml.safe_load(path.read_text())
+    if field == "excluded_skills":
+        data[field].append("ghost-skill")
+    else:
+        data[field][0]["sha256"] = "f" * 64
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    with pytest.raises(QualificationError, match="committed provenance"):
+        qualify(package, "locked")

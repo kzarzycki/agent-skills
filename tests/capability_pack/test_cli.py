@@ -67,3 +67,20 @@ def test_cli_returns_usage_exit_for_bad_syntax() -> None:
 def test_cli_returns_configuration_exit_for_missing_package(tmp_path: Path) -> None:
     """Catch a bad package path being reported as a reproduction failure."""
     assert cli.main(["check", str(tmp_path / "missing")]) == 2
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "[]\n",
+        "directories:\n  - contents: invalid\n",
+        "directories:\n  - contents:\n      - legalPaths: invalid\n",
+    ],
+)
+def test_cli_maps_malformed_vendir_and_license_structures_to_configuration_exit(
+    package: Path, fake_vendir: Path, malformed: str
+) -> None:
+    """Catch malformed YAML structures leaking AttributeError or returning exit 4."""
+    (package / "vendir.yml").write_text(malformed)
+
+    assert cli.main(["check", str(package)]) == 2

@@ -13,6 +13,11 @@ from tools.capability_pack.model import FileHash, Provenance, QualificationResul
 from tools.capability_pack.provenance import hash_files, load_provenance, write_provenance
 from tools.capability_pack.summary import render_summary
 
+VENDIR_MANIFESTS = (
+    ("vendir.yml", "vendir.lock.yml"),
+    ("vendir.grilling.yml", "vendir.grilling.lock.yml"),
+)
+
 
 class QualificationError(RuntimeError):
     """The staged package could not be reproduced or qualified."""
@@ -26,19 +31,65 @@ class BreakingDriftError(QualificationError):
     """An imported skill disappeared or was renamed upstream."""
 
 
-def _source_commit(package: Path) -> str:
+def _mapping(value: object, label: str) -> dict:
+    if not isinstance(value, dict):
+        raise ConfigurationError(f"{label} must be a mapping")
+    return value
+
+
+def _sequence(value: object, label: str) -> list:
+    if not isinstance(value, list):
+        raise ConfigurationError(f"{label} must be a list")
+    return value
+
+
+def _load_manifest(path: Path) -> dict:
     try:
-        lock = yaml.safe_load((package / "vendir.lock.yml").read_text())
-        commits = [
-            content["git"]["sha"]
-            for directory in lock["directories"]
-            for content in directory["contents"]
-            if "git" in content
-        ]
-    except (KeyError, TypeError, yaml.YAMLError, OSError) as error:
-        raise QualificationError(f"invalid vendir lock: {error}") from error
+        config = _mapping(yaml.safe_load(path.read_text()), path.name)
+        directories = _sequence(config.get("directories"), f"{path.name} directories")
+        for index, raw_directory in enumerate(directories):
+            directory = _mapping(raw_directory, f"{path.name} directory {index}")
+            if not isinstance(directory.get("path"), str):
+                raise ConfigurationError(f"{path.name} directory {index} path must be a string")
+            contents = _sequence(
+                directory.get("contents"), f"{path.name} directory {index} contents"
+            )
+            for content_index, raw_content in enumerate(contents):
+                content = _mapping(
+                    raw_content, f"{path.name} directory {index} content {content_index}"
+                )
+                for field in ("ignorePaths", "excludePaths", "legalPaths"):
+                    values = content.get(field, [])
+                    if not isinstance(values, list) or any(
+                        not isinstance(value, str) for value in values
+                    ):
+                        raise ConfigurationError(
+                            f"{path.name} {field} in content {content_index} must be a string list"
+                        )
+        return config
+    except FileNotFoundError as error:
+        raise ConfigurationError(f"missing vendir manifest: {path.name}") from error
+    except yaml.YAMLError as error:
+        raise ConfigurationError(f"invalid vendir manifest {path.name}: {error}") from error
+
+
+def _source_commit(package: Path) -> str:
+    commits = []
+    for _, lock_name in VENDIR_MANIFESTS:
+        try:
+            lock = _mapping(yaml.safe_load((package / lock_name).read_text()), lock_name)
+            directories = _sequence(lock.get("directories"), f"{lock_name} directories")
+            for raw_directory in directories:
+                directory = _mapping(raw_directory, f"{lock_name} directory")
+                for raw_content in _sequence(directory.get("contents"), f"{lock_name} contents"):
+                    content = _mapping(raw_content, f"{lock_name} content")
+                    if "git" in content:
+                        git = _mapping(content["git"], f"{lock_name} git lock")
+                        commits.append(git.get("sha"))
+        except (OSError, yaml.YAMLError) as error:
+            raise ConfigurationError(f"invalid vendir lock {lock_name}: {error}") from error
     if not commits or any(not isinstance(commit, str) for commit in commits):
-        raise QualificationError("vendir lock contains no Git source commit")
+        raise ConfigurationError("vendir locks contain no Git source commit")
     if len(set(commits)) != 1:
         raise QualificationError("vendir lock Git sources resolved to different commits")
     return commits[0]
@@ -125,17 +176,14 @@ def _manifest_files(root: Path) -> list[Path]:
     return [path for path in root.rglob("*") if path.is_file() and not path.is_symlink()]
 
 
-def _excluded_skills(package: Path) -> tuple[str, ...]:
-    try:
-        config = yaml.safe_load((package / "vendir.yml").read_text())
-        patterns = [
-            pattern
-            for directory in config.get("directories", [])
-            for content in directory.get("contents", [])
-            for pattern in content.get("excludePaths", [])
-        ]
-    except (AttributeError, OSError, yaml.YAMLError) as error:
-        raise QualificationError(f"invalid vendir configuration: {error}") from error
+def _excluded_skills(configs: tuple[dict, ...]) -> tuple[str, ...]:
+    patterns = [
+        pattern
+        for config in configs
+        for directory in config["directories"]
+        for content in directory["contents"]
+        for pattern in content.get("excludePaths", [])
+    ]
     names = {
         parts[index + 2]
         for pattern in patterns
@@ -146,38 +194,62 @@ def _excluded_skills(package: Path) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _promote_staged_skills(
-    stage: Path, previous: Provenance | None
-) -> tuple[tuple[str, ...], tuple[FileHash, ...]]:
+def _owned_skills(configs: tuple[dict, ...]) -> tuple[str, ...]:
+    ignored = {
+        PurePosixPath(pattern).parts[0]
+        for directory in configs[0]["directories"]
+        for content in directory["contents"]
+        for pattern in content.get("ignorePaths", [])
+        if PurePosixPath(pattern).parts
+    }
+    separately_managed = {
+        PurePosixPath(directory["path"]).parts[1]
+        for config in configs[1:]
+        for directory in config["directories"]
+        if len(PurePosixPath(directory["path"]).parts) > 1
+        and PurePosixPath(directory["path"]).parts[0] == "skills"
+    }
+    return tuple(sorted(ignored - separately_managed))
+
+
+def _inventory(stage: Path, owned: tuple[str, ...]) -> tuple[str, ...]:
     skills = stage / "skills"
-    skills.mkdir(exist_ok=True)
-    staging = skills / ".upstream"
-    roots = sorted(path for path in staging.iterdir() if path.is_dir()) if staging.exists() else []
-    source_paths = [path for root in roots for path in _manifest_files(root)]
-    source_files = hash_files(stage, source_paths)
-    candidates = {
-        skill.name: skill
-        for root in roots
-        for skill in root.iterdir()
-        if skill.is_dir() and (skill / "SKILL.md").is_file()
-    }
-    previous_imports = set(previous.included_skills if previous else ())
-    owned = {
-        path.name
-        for path in skills.iterdir()
-        if path.is_dir() and path.name != ".upstream" and path.name not in previous_imports
-    }
-    collisions = sorted(owned & candidates.keys())
-    if collisions:
-        raise QualificationError(
-            f"upstream skills collide with owned skills: {', '.join(collisions)}"
+    return tuple(
+        sorted(
+            path.name
+            for path in skills.iterdir()
+            if path.is_dir() and path.name not in owned and (path / "SKILL.md").is_file()
         )
-    for name in previous_imports:
-        shutil.rmtree(skills / name, ignore_errors=True)
-    for name, source in sorted(candidates.items()):
-        shutil.copytree(source, skills / name)
-    shutil.rmtree(staging, ignore_errors=True)
-    return tuple(sorted(candidates)), source_files
+    )
+
+
+def _sync_manifests(stage: Path, mode: Literal["update", "locked"]) -> None:
+    for manifest, lock in VENDIR_MANIFESTS:
+        command = [
+            "vendir",
+            "sync",
+            "--file",
+            manifest,
+            "--lock-file",
+            lock,
+        ]
+        if mode == "locked":
+            command.append("--locked")
+        command.extend(["--chdir", str(stage)])
+        try:
+            subprocess.run(command, check=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise QualificationError(f"vendir sync failed for {manifest}: {error}") from error
+
+
+def _owned_manifest(package: Path, owned: tuple[str, ...]) -> tuple[FileHash, ...]:
+    paths = [
+        path
+        for name in owned
+        if (package / "skills" / name).exists()
+        for path in _manifest_files(package / "skills" / name)
+    ]
+    return hash_files(package, paths)
 
 
 def _patch_manifest(stage: Path) -> tuple[FileHash, ...]:
@@ -193,7 +265,9 @@ def _patch_manifest(stage: Path) -> tuple[FileHash, ...]:
     return hash_files(stage, patches)
 
 
-def _license_manifest(stage: Path, previous: Provenance | None) -> tuple[FileHash, ...]:
+def _license_manifest(
+    stage: Path, previous: Provenance | None, configs: tuple[dict, ...] | None = None
+) -> tuple[FileHash, ...]:
     if previous:
         missing = [
             item.path for item in previous.license_files if not (stage / item.path).is_file()
@@ -202,10 +276,10 @@ def _license_manifest(stage: Path, previous: Provenance | None) -> tuple[FileHas
             raise QualificationError(f"missing legal file: {', '.join(missing)}")
     licenses = stage / "LICENSES"
     manifest = hash_files(stage, _manifest_files(licenses)) if licenses.exists() else ()
-    config = yaml.safe_load((stage / "vendir.yml").read_text())
-    legal_required = any(
+    legal_required = bool(configs) and any(
         content.get("legalPaths")
-        for directory in config.get("directories", [])
+        for config in configs
+        for directory in config["directories"]
         for content in directory.get("contents", [])
     )
     if legal_required and not manifest:
@@ -225,8 +299,8 @@ def _changed_skills(previous: Provenance | None, proposed: Provenance) -> tuple[
     new = {item.path: item.sha256 for item in proposed.output_files}
     names = {
         PurePosixPath(path).parts[1]
-        for path in old.keys() & new.keys()
-        if old[path] != new[path] and len(PurePosixPath(path).parts) > 2
+        for path in old.keys() | new.keys()
+        if old.get(path) != new.get(path) and len(PurePosixPath(path).parts) > 2
     }
     return tuple(sorted(names))
 
@@ -279,8 +353,12 @@ def qualify(
         raise ValueError(f"unknown qualification mode: {mode}")
     if not package.is_dir():
         raise ConfigurationError(f"package does not exist: {package}")
-    if not (package / "vendir.yml").is_file():
-        raise ConfigurationError(f"package has no vendir.yml: {package}")
+    if summary_path and _is_below(summary_path.resolve(strict=False), package):
+        raise ConfigurationError("summary path must be outside the package root")
+    configs = tuple(_load_manifest(package / manifest) for manifest, _ in VENDIR_MANIFESTS)
+    _source_commit(package)
+    owned = _owned_skills(configs)
+    original_owned = _owned_manifest(package, owned)
 
     temporary = Path(tempfile.mkdtemp(prefix=f".{package.name}-stage-", dir=package.parent))
     staged = temporary / package.name
@@ -292,31 +370,54 @@ def qualify(
             previous = None
         except (KeyError, TypeError, ValueError, yaml.YAMLError) as error:
             raise QualificationError(f"invalid provenance: {error}") from error
-        command = ["vendir", "sync"]
-        if mode == "locked":
-            command.append("-l")
-        command.extend(["--chdir", str(staged)])
-        try:
-            subprocess.run(command, check=True, timeout=120)
-        except (OSError, subprocess.SubprocessError) as error:
-            raise QualificationError(f"vendir sync failed: {error}") from error
+        _sync_manifests(staged, mode)
         _validate_symlinks(staged)
-        inventory, source_files = _promote_staged_skills(staged, previous)
+        if _owned_manifest(staged, owned) != original_owned:
+            raise QualificationError("vendir changed a repository-owned skill")
+        inventory = _inventory(staged, owned)
+        source_files = _output_manifest(staged, inventory)
         removed = tuple(sorted(set(previous.included_skills if previous else ()) - set(inventory)))
         if removed:
             old_commit = previous.source_commit if previous else "unknown"
             raise BreakingDriftError(
                 f"removed or renamed imported skill(s) {', '.join(removed)} from {old_commit}"
             )
-        _apply_patches(staged)
         source_commit = _source_commit(staged)
+        patch_files = _patch_manifest(staged)
+        license_files = _license_manifest(staged, previous, configs)
+        try:
+            _apply_patches(staged)
+        except QualificationError as error:
+            if summary_path:
+                partial = Provenance(
+                    source_commit=source_commit,
+                    included_skills=inventory,
+                    excluded_skills=_excluded_skills(configs),
+                    source_files=source_files,
+                    patch_files=patch_files,
+                    license_files=license_files,
+                    output_files=(),
+                )
+                failure = str(error).split(":", 2)[1].strip()
+                summary_path.write_text(
+                    render_summary(
+                        previous,
+                        partial,
+                        changed_skills=(),
+                        patch_failures=(failure,),
+                        test_command="python -m pytest -q -m 'not live_agent' tests",
+                        test_result="NOT RUN",
+                        setup_contract_changed=False,
+                    )
+                )
+            raise
         proposed = Provenance(
             source_commit=source_commit,
             included_skills=inventory,
-            excluded_skills=_excluded_skills(staged),
+            excluded_skills=_excluded_skills(configs),
             source_files=source_files,
-            patch_files=_patch_manifest(staged),
-            license_files=_license_manifest(staged, previous),
+            patch_files=patch_files,
+            license_files=license_files,
             output_files=_output_manifest(staged, inventory),
         )
         added = tuple(sorted(set(inventory) - set(previous.included_skills if previous else ())))
@@ -339,12 +440,7 @@ def qualify(
             changed = previous != proposed
         else:
             _validate_locked_reproduction(package, proposed)
-            if previous and (
-                previous.source_commit != proposed.source_commit
-                or previous.included_skills != proposed.included_skills
-                or previous.patch_files != proposed.patch_files
-                or previous.license_files != proposed.license_files
-            ):
+            if previous and previous != proposed:
                 raise QualificationError("locked reproduction differs from committed provenance")
             if summary_path:
                 summary_path.write_text(summary)

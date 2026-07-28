@@ -38,44 +38,30 @@ def write_package(package: Path, upstream: Path) -> None:
     (package / "patches").mkdir()
     (package / "patches" / "series").write_text("")
 
-    contents = []
-    for category in ("engineering", "productivity"):
-        contents.append(
-            {
-                "path": f".upstream/{category}",
-                "git": {"url": "https://example.invalid/upstream.git", "ref": "origin/main"},
-                "includePaths": [f"skills/{category}/***"],
-                "excludePaths": (
-                    ["skills/engineering/setup-matt-pocock-skills/***"]
-                    if category == "engineering"
-                    else []
-                ),
-                "legalPaths": ["LICENSE"],
-                "newRootPath": f"skills/{category}",
-                "ignorePaths": [f"{name}/***" for name in OWNED_SKILLS],
-            }
-        )
     (package / "vendir.yml").write_text(
         yaml.safe_dump(
             {
                 "apiVersion": "vendir.k14s.io/v1alpha1",
                 "kind": "Config",
-                "directories": [{"path": "skills", "contents": contents}],
-            },
-            sort_keys=False,
-        )
-    )
-    (package / "vendir.lock.yml").write_text(
-        yaml.safe_dump(
-            {
-                "apiVersion": "vendir.k14s.io/v1alpha1",
-                "kind": "LockConfig",
                 "directories": [
                     {
                         "path": "skills",
                         "contents": [
-                            {"path": f".upstream/{category}", "git": {"sha": OLD_COMMIT}}
-                            for category in ("engineering", "productivity")
+                            {
+                                "path": ".",
+                                "git": {
+                                    "url": "https://example.invalid/upstream.git",
+                                    "ref": "origin/main",
+                                },
+                                "includePaths": ["skills/engineering/***"],
+                                "excludePaths": ["skills/engineering/setup-matt-pocock-skills/***"],
+                                "legalPaths": ["LICENSE"],
+                                "newRootPath": "skills/engineering",
+                                "ignorePaths": [
+                                    *(f"{name}/***" for name in OWNED_SKILLS),
+                                    "grilling/***",
+                                ],
+                            }
                         ],
                     }
                 ],
@@ -83,6 +69,52 @@ def write_package(package: Path, upstream: Path) -> None:
             sort_keys=False,
         )
     )
+    (package / "vendir.grilling.yml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "vendir.k14s.io/v1alpha1",
+                "kind": "Config",
+                "directories": [
+                    {
+                        "path": "skills/grilling",
+                        "contents": [
+                            {
+                                "path": ".",
+                                "git": {
+                                    "url": "https://example.invalid/upstream.git",
+                                    "ref": "origin/main",
+                                },
+                                "includePaths": ["skills/productivity/grilling/***"],
+                                "excludePaths": [],
+                                "legalPaths": [],
+                                "newRootPath": "skills/productivity/grilling",
+                            }
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        )
+    )
+    for lock_name, directory_path in (
+        ("vendir.lock.yml", "skills"),
+        ("vendir.grilling.lock.yml", "skills/grilling"),
+    ):
+        (package / lock_name).write_text(
+            yaml.safe_dump(
+                {
+                    "apiVersion": "vendir.k14s.io/v1alpha1",
+                    "kind": "LockConfig",
+                    "directories": [
+                        {
+                            "path": directory_path,
+                            "contents": [{"path": ".", "git": {"sha": OLD_COMMIT}}],
+                        }
+                    ],
+                },
+                sort_keys=False,
+            )
+        )
     output_files = [
         {"path": f"skills/{name}/SKILL.md", "sha256": sha256(skills / name / "SKILL.md")}
         for name in ("alpha", "grilling")
@@ -137,16 +169,24 @@ from pathlib import Path
 
 stage = Path(sys.argv[sys.argv.index("--chdir") + 1])
 upstream = Path(os.environ["FAKE_VENDIR_UPSTREAM"])
-staging = stage / "skills" / ".upstream"
-shutil.rmtree(staging, ignore_errors=True)
-for category in ("engineering", "productivity"):
-    source = upstream / "skills" / category
-    if source.exists():
-        shutil.copytree(source, staging / category)
-setup = staging / "engineering" / "setup-matt-pocock-skills"
-shutil.rmtree(setup, ignore_errors=True)
-if "-l" not in sys.argv:
-    lock = stage / "vendir.lock.yml"
+manifest = sys.argv[sys.argv.index("--file") + 1]
+lock_name = sys.argv[sys.argv.index("--lock-file") + 1]
+skills = stage / "skills"
+if manifest == "vendir.yml":
+    preserved = {"audit-third-party-software", "context-extractor", "operating-omnigent", "setup-engineering-workflow-for-apm", "grilling"}
+    for child in skills.iterdir():
+        if child.is_dir() and child.name not in preserved:
+            shutil.rmtree(child)
+    for source in (upstream / "skills" / "engineering").iterdir():
+        if source.name != "setup-matt-pocock-skills" and source.name not in preserved:
+            shutil.copytree(source, skills / source.name)
+elif manifest == "vendir.grilling.yml":
+    shutil.rmtree(skills / "grilling", ignore_errors=True)
+    shutil.copytree(upstream / "skills" / "productivity" / "grilling", skills / "grilling")
+else:
+    raise SystemExit(f"unexpected manifest: {manifest}")
+if "--locked" not in sys.argv:
+    lock = stage / lock_name
     lock.write_text(lock.read_text().replace("1111111111111111111111111111111111111111", os.environ.get("FAKE_VENDIR_COMMIT", "2222222222222222222222222222222222222222")))
 """
     )

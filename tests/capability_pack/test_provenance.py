@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from tools.capability_pack.model import FileHash, Provenance
@@ -99,3 +100,25 @@ def test_summary_blocks_removed_skill() -> None:
     assert "Removed skills: beta" in summary
     assert "Patch failures: patches/broken.patch: rejected" in summary
     assert "Proposed version: BLOCKED" in summary
+
+
+def test_summary_deduplicates_changed_license_paths() -> None:
+    """Catch reporting one changed license twice because both hashes differ."""
+    previous = _provenance("1" * 40)
+    proposed = replace(
+        _provenance("2" * 40),
+        license_files=(FileHash("LICENSES/LICENSE", "e" * 64),),
+    )
+
+    summary = render_summary(
+        previous,
+        proposed,
+        changed_skills=(),
+        patch_failures=(),
+        test_command="uv run pytest",
+        test_result="PASS",
+        setup_contract_changed=False,
+    )
+
+    line = next(line for line in summary.splitlines() if line.startswith("License changes:"))
+    assert line == "License changes: LICENSES/LICENSE"

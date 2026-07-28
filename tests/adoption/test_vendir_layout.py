@@ -7,6 +7,10 @@ from pathlib import Path
 import yaml
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
+MANIFESTS = (
+    ("vendir.yml", "vendir.lock.yml"),
+    ("vendir.grilling.yml", "vendir.grilling.lock.yml"),
+)
 
 
 def run(*args: str, cwd: Path) -> None:
@@ -14,74 +18,84 @@ def run(*args: str, cwd: Path) -> None:
     assert result.returncode == 0, f"{' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
 
 
-def promote_staged_skills(package: Path, owned_skills: set[str]) -> None:
-    staging = package / "skills" / ".upstream"
-    staged_skills = [
-        skill for selected_root in staging.iterdir() for skill in selected_root.iterdir()
-    ]
-    collisions = sorted(skill.name for skill in staged_skills if skill.name in owned_skills)
-    if collisions:
-        raise ValueError(f"upstream skills collide with owned skills: {', '.join(collisions)}")
-    for skill in staged_skills:
-        shutil.copytree(skill, package / "skills" / skill.name)
+def sync_manifests(package: Path) -> None:
+    for manifest, lock in MANIFESTS:
+        run(
+            "vendir",
+            "sync",
+            "--file",
+            manifest,
+            "--lock-file",
+            lock,
+            "--chdir",
+            str(package),
+            cwd=package,
+        )
 
 
-def test_vendir_flattens_selected_skill_roots_and_preserves_owned_skills(tmp_path: Path) -> None:
-    """Catch nested upstream roots, setup-skill leakage, and owned-skill replacement."""
-    upstream = tmp_path / "upstream"
-    package = tmp_path / "package"
-    shutil.copytree(FIXTURES / "vendir-upstream", upstream)
-    shutil.copytree(FIXTURES / "vendir-package", package)
+def configure_upstream(package: Path, upstream: Path) -> None:
+    for manifest, _ in MANIFESTS:
+        config_path = package / manifest
+        config = yaml.safe_load(config_path.read_text())
+        for directory in config["directories"]:
+            for content in directory["contents"]:
+                if "git" in content:
+                    content["git"]["url"] = upstream.as_uri()
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
+
+def initialize_upstream(upstream: Path) -> None:
     run("git", "init", "-b", "main", cwd=upstream)
     run("git", "config", "user.name", "Vendir Probe", cwd=upstream)
     run("git", "config", "user.email", "vendir-probe@example.invalid", cwd=upstream)
     run("git", "add", ".", cwd=upstream)
     run("git", "commit", "-m", "fixture", cwd=upstream)
 
-    config_path = package / "vendir.yml"
-    config = yaml.safe_load(config_path.read_text())
-    for content in config["directories"][0]["contents"]:
-        if "git" in content:
-            content["git"]["url"] = upstream.as_uri()
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
 
+def test_sequential_vendir_sync_writes_final_paths_and_preserves_owned_skills(
+    tmp_path: Path,
+) -> None:
+    """Catch Python promotion, nested upstream roots, and owned-skill replacement."""
+    upstream = tmp_path / "upstream"
+    package = tmp_path / "package"
+    shutil.copytree(FIXTURES / "vendir-upstream", upstream)
+    shutil.copytree(FIXTURES / "vendir-package", package)
+    initialize_upstream(upstream)
+    configure_upstream(package, upstream)
     owned_path = package / "skills" / "audit-third-party-software" / "SKILL.md"
     owned_text = owned_path.read_text()
 
-    run("vendir", "sync", "--chdir", str(package), cwd=package)
-    promote_staged_skills(package, {"audit-third-party-software"})
+    sync_manifests(package)
 
     skills = package / "skills"
     assert (skills / "alpha" / "SKILL.md").is_file()
     assert (skills / "grilling" / "SKILL.md").is_file()
+    assert not (skills / ".upstream").exists()
     assert not (skills / "setup-matt-pocock-skills").exists()
-    assert (skills / "audit-third-party-software" / "SKILL.md").read_text() == owned_text
+    assert owned_path.read_text() == owned_text
+    assert (package / "vendir.lock.yml").is_file()
+    assert (package / "vendir.grilling.lock.yml").is_file()
 
 
-def test_promotion_rejects_owned_skill_collision_before_mutation(tmp_path: Path) -> None:
+def test_primary_ignore_paths_preserve_owned_skill_on_upstream_collision(
+    tmp_path: Path,
+) -> None:
+    """Catch an upstream same-name skill replacing repository-owned behavior."""
+    upstream = tmp_path / "upstream"
     package = tmp_path / "package"
-    shutil.copytree(FIXTURES / "vendir-package", package)
-    staging = package / "skills" / ".upstream" / "engineering"
+    shutil.copytree(FIXTURES / "vendir-upstream", upstream)
     shutil.copytree(
-        FIXTURES
-        / "vendir-upstream-collision"
-        / "skills"
-        / "engineering"
-        / "audit-third-party-software",
-        staging / "audit-third-party-software",
+        FIXTURES / "vendir-upstream-collision" / "skills" / "engineering",
+        upstream / "skills" / "engineering",
+        dirs_exist_ok=True,
     )
-    (staging / "alpha").mkdir()
-    (staging / "alpha" / "SKILL.md").write_text("# Alpha\n")
+    shutil.copytree(FIXTURES / "vendir-package", package)
+    initialize_upstream(upstream)
+    configure_upstream(package, upstream)
     owned = package / "skills" / "audit-third-party-software" / "SKILL.md"
     owned_bytes = owned.read_bytes()
 
-    try:
-        promote_staged_skills(package, {"audit-third-party-software"})
-    except ValueError as error:
-        assert "audit-third-party-software" in str(error)
-    else:
-        raise AssertionError("collision must stop promotion")
+    sync_manifests(package)
 
     assert owned.read_bytes() == owned_bytes
-    assert not (package / "skills" / "alpha").exists()
+    assert (package / "skills" / "alpha" / "SKILL.md").is_file()
