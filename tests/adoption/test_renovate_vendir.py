@@ -1,35 +1,30 @@
 from __future__ import annotations
 
-import subprocess
+import json
 from pathlib import Path
-
-import yaml
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "renovate"
 QUALIFICATION_COMMAND = "python -m tools.capability_pack.cli update engineering"
-EXPECTED_ARTIFACTS = {
-    "vendir.lock.yml",
-    "skills/alpha/SKILL.md",
-    "skills/grilling/SKILL.md",
-}
 
 
-def test_pinned_renovate_records_the_vendir_artifact_boundary() -> None:
-    """Catch a Renovate upgrade that changes the adopted updater decision."""
-    version = subprocess.run(
-        ["renovate", "--version"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert version == "43.285.7"
+def test_real_renovate_probe_records_why_scheduled_workflow_is_required() -> None:
+    """Keep the one-time Renovate 43.285.7 dry-run result reviewable."""
+    records = [
+        json.loads(line) for line in (FIXTURE / "renovate-dry-run.jsonl").read_text().splitlines()
+    ]
 
-    fixture = yaml.safe_load((FIXTURE / "vendir.lock.yml").read_text())
-    assert set(fixture["qualificationArtifacts"]) == EXPECTED_ARTIFACTS
+    assert records[0]["renovateVersion"] == "43.285.7"
+    extracted = next(record for record in records if record["msg"] == "packageFiles with updates")
+    dependencies = extracted["config"]["vendir"][0]["deps"]
+    assert len(dependencies) == 2
+    assert {dependency["skipReason"] for dependency in dependencies} == {"invalid-value"}
+    assert records[-1]["msg"] == "Repository finished"
 
 
-def test_hosted_safe_configuration_cannot_run_qualification_command() -> None:
-    """Catch accidental claims that hosted Renovate can run the local qualification step."""
-    hosted_safe = {"allowedCommands": [], "updater": "scheduled-workflow"}
-    assert QUALIFICATION_COMMAND not in hosted_safe["allowedCommands"]
-    assert hosted_safe["updater"] == "scheduled-workflow"
+def test_hosted_configuration_cannot_run_qualification_command() -> None:
+    """Hosted Renovate has no command boundary for the qualification step."""
+    boundary = json.loads((FIXTURE / "hosted-boundary.json").read_text())
+
+    assert QUALIFICATION_COMMAND not in boundary["allowedCommands"]
+    assert QUALIFICATION_COMMAND not in boundary["postUpgradeTasks"]["commands"]
+    assert boundary["updater"] == "scheduled-workflow"

@@ -6,7 +6,3 @@ directories:
       - path: alpha
         git:
           sha: "0000000000000000000000000000000000000000"
-qualificationArtifacts:
-  - vendir.lock.yml
-  - skills/alpha/SKILL.md
-  - skills/grilling/SKILL.md

@@ -1,9 +1,8 @@
 [tools]
 python = "3.14.6"
 uv = "0.11.8"
-"ubi:microsoft/apm" = "0.26.0"
+"github:microsoft/apm" = "0.26.0"
 "ubi:carvel-dev/vendir" = "0.46.0"
-"npm:renovate" = "43.285.7"
 
 [tasks.vendor-engineering]
 run = "uv run python -m tools.capability_pack.cli update engineering"
