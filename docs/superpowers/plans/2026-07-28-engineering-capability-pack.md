@@ -16,7 +16,7 @@
 - Preserve the owned skills `audit-third-party-software`, `context-extractor`, and `operating-omnigent`.
 - Add the owned skill `setup-engineering-workflow-for-apm`; never create a local skill named `setup-matt-pocock-skills`.
 - Vendir owns Git acquisition, path filtering, legal-file copying, resolved-SHA locking, and locked reproduction. Python must not implement Git fetch, ref resolution, or a second include/exclude copier.
-- Imported files are generated. Changes come from `engineering/vendir.yml`, `engineering/patches/series`, or the upstream ref.
+- Imported files are generated. Changes come from the package's vendir manifests, `engineering/patches/series`, or the upstream ref.
 - The first import is based on `mattpocock/skills` commit `2ab958093e83e0ec752e6c1c5932da465bf23e0c`, observed on 2026-07-28.
 - GitHub Issue creation requires a complete review batch and an approval immediately before the first external write. Resume uses deterministic issue markers and must not duplicate confirmed issues.
 - Claude Code and Codex must discover the same portable skill payload with empty user configuration directories.
@@ -39,7 +39,8 @@
 
 **Engineering package**
 
-- `engineering/vendir.yml`, `engineering/vendir.lock.yml` — acquisition policy and vendir's resolved source lock.
+- `engineering/vendir.yml`, `engineering/vendir.lock.yml` — engineering collection policy and resolved source lock.
+- `engineering/vendir.grilling.yml`, `engineering/vendir.grilling.lock.yml` — `grilling` support-skill policy and resolved source lock.
 - `engineering/provenance.yml` — generated inventory, mappings, hashes, and applied-patch evidence.
 - `engineering/patches/series` and `engineering/patches/mattpocock-skills/*.patch` — ordered APM/setup and GitHub Issues adaptations.
 - `engineering/LICENSES/mattpocock-skills/LICENSE` — upstream redistribution license selected through vendir.
@@ -71,12 +72,13 @@
 - Create: `tests/fixtures/vendir-upstream/skills/productivity/grilling/SKILL.md`
 - Create: `tests/fixtures/vendir-package/skills/audit-third-party-software/SKILL.md`
 - Create: `tests/fixtures/vendir-package/vendir.yml`
+- Create: `tests/fixtures/vendir-package/vendir.grilling.yml`
 - Create: `tests/fixtures/renovate/vendir.yml`
 - Create: `tests/fixtures/renovate/vendir.lock.yml`
 
 **Interfaces:**
 - Produces: the command environment used by every later task: `mise exec -- uv run pytest`, `vendir`, and `apm`.
-- Produces: a proven vendir layout with imported `alpha/` and `grilling/`, excluded upstream setup, and preserved owned skills.
+- Produces: two non-overlapping vendir runs that import `alpha/` and `grilling/`, exclude upstream setup, and preserve owned skills.
 - Produces: the updater decision: use the scheduled workflow in Task 8 unless Renovate 43.285.7 demonstrates that it can run the full qualification command and commit its outputs.
 
 - [ ] **Step 1: Add the pinned tool and Python project**
@@ -134,7 +136,7 @@ assert not (skills / "setup-matt-pocock-skills").exists()
 assert (skills / "audit-third-party-software" / "SKILL.md").read_text() == owned_text
 ```
 
-The fixture `vendir.yml` must exercise two upstream selections, `newRootPath`, `includePaths`, `excludePaths`, `legalPaths`, and `ignorePaths`; it must not list `alpha` by name.
+The primary fixture manifest must exercise `newRootPath`, `includePaths`, `excludePaths`, `legalPaths`, and `ignorePaths` without listing `alpha` by name. It owns `skills/` and preserves `skills/grilling/` plus owned paths. The grilling manifest owns only `skills/grilling/`.
 
 - [ ] **Step 4: Run the layout probe and capture the expected failure**
 
@@ -148,7 +150,7 @@ Expected before correcting the fixture: FAIL because the first attempted two-sou
 
 - [ ] **Step 5: Correct the vendir composition, not the copied output**
 
-Adjust only `tests/fixtures/vendir-package/vendir.yml` until the two selections flatten to sibling skill directories and `ignorePaths` preserves `audit-third-party-software`. If vendir cannot safely express the two roots in one managed directory, make vendir target a staging directory and encode promotion as a later qualification responsibility; do not add one content entry per engineering skill.
+Split the selections into two vendir manifests with non-overlapping managed outputs. Run the primary manifest first and the grilling manifest second, each with its own lock. `ignorePaths` preserves `audit-third-party-software` and `grilling` during the primary sync. Do not copy or promote vendir output in Python and do not add one content entry per discovered engineering skill.
 
 - [ ] **Step 6: Prove Renovate's artifact boundary**
 
@@ -294,7 +296,7 @@ Expected: FAIL because drift and ownership checks are absent.
 
 Derive imported inventory from staged `skills/*/SKILL.md` minus vendir `ignorePaths`. Compare it to `provenance.yml`. Allow additions; reject any removal with a message naming the old skill and source commit.
 
-Hash bytes with SHA-256 in sorted POSIX-path order. Serialize YAML with `sort_keys=False`; do not write timestamps. Read the source SHA from `vendir.lock.yml`.
+Hash bytes with SHA-256 in sorted POSIX-path order. Serialize YAML with `sort_keys=False`; do not write timestamps. Read the source SHA from both vendir locks and fail when the Matt commits differ.
 
 After every check passes, replace the package with two same-filesystem renames:
 
@@ -339,7 +341,9 @@ git commit -m "feat: qualify vendir capability imports"
 
 **Files:**
 - Create: `engineering/vendir.yml`
+- Create: `engineering/vendir.grilling.yml`
 - Create: `engineering/vendir.lock.yml`
+- Create: `engineering/vendir.grilling.lock.yml`
 - Create: `engineering/provenance.yml`
 - Create: `engineering/patches/series`
 - Create: `engineering/patches/mattpocock-skills/0001-use-apm-setup-skill.patch`
@@ -367,16 +371,17 @@ Expected: FAIL because `wayfinder`, `grilling`, and provenance do not exist.
 
 - [ ] **Step 2: Add the real vendir policy**
 
-Configure source `https://github.com/mattpocock/skills.git`, tracked ref `origin/main`, engineering glob selection, setup exclusion, a second `grilling` selection, upstream legal path, and ignore paths for:
+Configure both manifests against `https://github.com/mattpocock/skills.git` at tracked ref `origin/main`. The primary manifest owns `skills/`, selects the engineering collection, excludes setup, copies the upstream legal path, and preserves:
 
 ```text
 skills/audit-third-party-software/**
 skills/context-extractor/**
 skills/operating-omnigent/**
 skills/setup-engineering-workflow-for-apm/**
+skills/grilling/**
 ```
 
-Use the layout proven in Task 1. Set `minimumRequiredVersion: 0.46.0`.
+The grilling manifest owns only `skills/grilling/` and selects `skills/productivity/grilling`. Use the two-manifest layout proven in Task 1. Set `minimumRequiredVersion: 0.46.0` in both manifests.
 
 - [ ] **Step 3: Author and verify the setup-reference patch**
 
@@ -400,10 +405,10 @@ Run:
 
 ```bash
 mise run vendor-engineering
-git diff -- engineering/vendir.lock.yml engineering/provenance.yml engineering/skills engineering/LICENSES
+git diff -- engineering/vendir.lock.yml engineering/vendir.grilling.lock.yml engineering/provenance.yml engineering/skills engineering/LICENSES
 ```
 
-Expected: the lock resolves `2ab958093e83e0ec752e6c1c5932da465bf23e0c`; all 16 non-setup engineering skills plus `grilling` are imported; the three owned skills are unchanged.
+Expected: both locks resolve `2ab958093e83e0ec752e6c1c5932da465bf23e0c`; all 16 non-setup engineering skills plus `grilling` are imported; the three owned skills are unchanged.
 
 - [ ] **Step 5: Add repository editing rules**
 
@@ -421,7 +426,7 @@ Expected: locked reproduction passes; the isolated direct-edit fixture is report
 - [ ] **Step 7: Commit the controlled import**
 
 ```bash
-git add CLAUDE.md engineering/vendir.yml engineering/vendir.lock.yml engineering/provenance.yml engineering/patches engineering/LICENSES engineering/skills engineering/tests/test_contract.py
+git add CLAUDE.md engineering/vendir.yml engineering/vendir.grilling.yml engineering/vendir.lock.yml engineering/vendir.grilling.lock.yml engineering/provenance.yml engineering/patches engineering/LICENSES engineering/skills engineering/tests/test_contract.py
 git commit -m "feat(engineering): import controlled upstream skills"
 ```
 
@@ -814,7 +819,7 @@ git commit -m "ci(engineering): qualify updates and package tags"
 
 ```bash
 mise run vendor-engineering-check
-git diff --exit-code -- engineering/skills engineering/vendir.lock.yml engineering/provenance.yml engineering/LICENSES
+git diff --exit-code -- engineering/skills engineering/vendir.lock.yml engineering/vendir.grilling.lock.yml engineering/provenance.yml engineering/LICENSES
 ```
 
 Expected: PASS and no diff.
