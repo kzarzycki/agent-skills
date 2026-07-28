@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tools.capability_pack import cli
 from tools.capability_pack.qualify import QualificationError, qualify
 
 
@@ -188,4 +189,33 @@ def test_patch_failure_writes_deterministic_blocked_summary(
 
     with pytest.raises(QualificationError):
         qualify(package, "update", summary)
+    assert summary.read_bytes() == first
+
+
+@pytest.mark.parametrize(
+    ("series_entry", "failure"),
+    [
+        ("../escaped.patch", "unsafe patch series path: ../escaped.patch"),
+        ("patches/missing.patch", "missing patch file: patches/missing.patch"),
+    ],
+)
+def test_pre_apply_patch_failure_writes_blocked_summary_and_returns_exit_four(
+    package: Path,
+    fake_vendir: Path,
+    tmp_path: Path,
+    series_entry: str,
+    failure: str,
+) -> None:
+    """Catch patch-manifest failures escaping the deterministic evidence boundary."""
+    (package / "patches" / "series").write_text(series_entry + "\n")
+    summary = tmp_path / "blocked-summary.txt"
+
+    assert cli.main(["update", str(package), "--summary", str(summary)]) == 4
+
+    first = summary.read_bytes()
+    assert b"Proposed source commit: 2222222222222222222222222222222222222222" in first
+    assert f"Patch failures: {failure}".encode() in first
+    assert b"Proposed version: BLOCKED" in first
+
+    assert cli.main(["update", str(package), "--summary", str(summary)]) == 4
     assert summary.read_bytes() == first

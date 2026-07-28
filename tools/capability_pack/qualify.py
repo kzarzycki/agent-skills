@@ -257,12 +257,24 @@ def _patch_manifest(stage: Path) -> tuple[FileHash, ...]:
     if not series.exists():
         return ()
     patches = []
-    for line in series.read_text().splitlines():
+    try:
+        lines = series.read_text().splitlines()
+    except OSError as error:
+        raise QualificationError("unreadable patch series: patches/series") from error
+    for line in lines:
         value = line.strip()
         if value and not value.startswith("#"):
             relative = _validate_relative_path(value, label="patch series path")
-            patches.append(stage.joinpath(*relative.parts))
-    return hash_files(stage, patches)
+            patch = stage.joinpath(*relative.parts)
+            if not patch.is_file():
+                raise QualificationError(f"missing patch file: {value}")
+            patches.append(patch)
+    try:
+        return hash_files(stage, patches)
+    except OSError as error:
+        path = Path(error.filename) if error.filename else None
+        label = path.relative_to(stage).as_posix() if path and _is_below(path, stage) else "unknown"
+        raise QualificationError(f"unreadable patch file: {label}") from error
 
 
 def _license_manifest(
@@ -383,9 +395,10 @@ def qualify(
                 f"removed or renamed imported skill(s) {', '.join(removed)} from {old_commit}"
             )
         source_commit = _source_commit(staged)
-        patch_files = _patch_manifest(staged)
         license_files = _license_manifest(staged, previous, configs)
+        patch_files: tuple[FileHash, ...] = ()
         try:
+            patch_files = _patch_manifest(staged)
             _apply_patches(staged)
         except QualificationError as error:
             if summary_path:
@@ -398,7 +411,12 @@ def qualify(
                     license_files=license_files,
                     output_files=(),
                 )
-                failure = str(error).split(":", 2)[1].strip()
+                message = str(error)
+                failure = (
+                    message.split(":", 2)[1].strip()
+                    if message.startswith("patch failed:")
+                    else message
+                )
                 summary_path.write_text(
                     render_summary(
                         previous,
