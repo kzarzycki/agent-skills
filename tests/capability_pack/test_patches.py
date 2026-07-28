@@ -219,3 +219,21 @@ def test_pre_apply_patch_failure_writes_blocked_summary_and_returns_exit_four(
 
     assert cli.main(["update", str(package), "--summary", str(summary)]) == 4
     assert summary.read_bytes() == first
+
+
+def test_invalid_utf8_patch_series_writes_stable_blocked_summary(
+    package: Path, fake_vendir: Path, tmp_path: Path
+) -> None:
+    """Catch patch-series decode failures escaping the evidence boundary."""
+    (package / "patches" / "series").write_bytes(b"\xff\xfe")
+    summary = tmp_path / "blocked-summary.txt"
+
+    assert cli.main(["update", str(package), "--summary", str(summary)]) == 4
+
+    first = summary.read_bytes()
+    assert b"Proposed source commit: 2222222222222222222222222222222222222222" in first
+    assert b"Patch failures: unreadable patch series: patches/series" in first
+    assert b"Proposed version: BLOCKED" in first
+
+    assert cli.main(["update", str(package), "--summary", str(summary)]) == 4
+    assert summary.read_bytes() == first

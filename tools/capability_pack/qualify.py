@@ -259,7 +259,7 @@ def _patch_manifest(stage: Path) -> tuple[FileHash, ...]:
     patches = []
     try:
         lines = series.read_text().splitlines()
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         raise QualificationError("unreadable patch series: patches/series") from error
     for line in lines:
         value = line.strip()
