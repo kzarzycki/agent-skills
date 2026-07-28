@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "renovate"
+ROOT = Path(__file__).parents[2]
 QUALIFICATION_COMMAND = "python -m tools.capability_pack.cli update engineering"
 
 
@@ -28,3 +30,18 @@ def test_hosted_configuration_cannot_run_qualification_command() -> None:
     assert QUALIFICATION_COMMAND not in boundary["allowedCommands"]
     assert QUALIFICATION_COMMAND not in boundary["postUpgradeTasks"]["commands"]
     assert boundary["updater"] == "scheduled-workflow"
+
+
+def test_probe_task_pins_runtime_and_explicit_renovate_download() -> None:
+    config = tomllib.loads((ROOT / "mise.toml").read_text())
+
+    assert config["tools"]["node"] == "24.18.0"
+    assert all("renovate" not in tool for tool in config["tools"])
+    task = config["tasks"]["probe-renovate-vendir"]
+    assert task["dir"] == "tests/fixtures/renovate"
+    assert "gtimeout 120" in task["run"]
+    assert "npx --yes renovate@43.285.7" in task["run"]
+    assert "--platform=local" in task["run"]
+    assert "--dry-run=full" in task["run"]
+    assert "--require-config=required" in task["run"]
+    assert "--binary-source=global" in task["run"]

@@ -5,6 +5,17 @@ directories:
     contents:
       - path: alpha
         git:
-          url: https://example.invalid/upstream.git
-          ref: origin/main
-        newRootPath: skills/engineering/alpha
+          url: https://github.com/mattpocock/skills.git
+          ref: main
+        includePaths:
+          - skills/engineering/wayfinder/**/*
+        legalPaths: []
+        newRootPath: skills/engineering/wayfinder
+      - path: grilling
+        git:
+          url: https://github.com/mattpocock/skills.git
+          ref: main
+        includePaths:
+          - skills/productivity/grilling/**/*
+        legalPaths: []
+        newRootPath: skills/productivity/grilling

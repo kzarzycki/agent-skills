@@ -1,5 +1,6 @@
 [tools]
 python = "3.14.6"
+node = "24.18.0"
 uv = "0.11.8"
 "github:microsoft/apm" = "0.26.0"
 "ubi:carvel-dev/vendir" = "0.46.0"
@@ -9,6 +10,10 @@ run = "uv run python -m tools.capability_pack.cli update engineering"
 
 [tasks.vendor-engineering-check]
 run = "uv run python -m tools.capability_pack.cli check engineering"
+
+[tasks.probe-renovate-vendir]
+dir = "tests/fixtures/renovate"
+run = "gtimeout 120 npx --yes renovate@43.285.7 --platform=local --dry-run=full --require-config=required --binary-source=global --base-dir=/tmp/dotagents-renovate-vendir-probe"
 
 [tasks.test-engineering-package]
 run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_consumer_e2e.py"

@@ -1,0 +1,9 @@
+{
+  "enabledManagers": ["vendir"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
+  "onboarding": false,
+  "requireConfig": "required"
+}
