@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import hashlib
+import os
+import shutil
+from pathlib import Path
+
+import pytest
+import yaml
+
+FIXTURE_UPSTREAM = Path(__file__).parents[1] / "fixtures" / "upstreams" / "mattpocock-skills"
+OLD_COMMIT = "1" * 40
+OWNED_SKILLS = (
+    "audit-third-party-software",
+    "context-extractor",
+    "operating-omnigent",
+    "setup-engineering-workflow-for-apm",
+)
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write_package(package: Path, upstream: Path) -> None:
+    package.mkdir()
+    skills = package / "skills"
+    skills.mkdir()
+    for name in OWNED_SKILLS:
+        skill = skills / name
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(f"# Owned {name}\n")
+    for category, name in (("engineering", "alpha"), ("productivity", "grilling")):
+        shutil.copytree(upstream / "skills" / category / name, skills / name)
+    licenses = package / "LICENSES"
+    licenses.mkdir()
+    shutil.copy2(upstream / "LICENSE", licenses / "mattpocock-skills-LICENSE")
+    (package / "patches").mkdir()
+    (package / "patches" / "series").write_text("")
+
+    contents = []
+    for category in ("engineering", "productivity"):
+        contents.append(
+            {
+                "path": f".upstream/{category}",
+                "git": {"url": "https://example.invalid/upstream.git", "ref": "origin/main"},
+                "includePaths": [f"skills/{category}/***"],
+                "excludePaths": (
+                    ["skills/engineering/setup-matt-pocock-skills/***"]
+                    if category == "engineering"
+                    else []
+                ),
+                "legalPaths": ["LICENSE"],
+                "newRootPath": f"skills/{category}",
+                "ignorePaths": [f"{name}/***" for name in OWNED_SKILLS],
+            }
+        )
+    (package / "vendir.yml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "vendir.k14s.io/v1alpha1",
+                "kind": "Config",
+                "directories": [{"path": "skills", "contents": contents}],
+            },
+            sort_keys=False,
+        )
+    )
+    (package / "vendir.lock.yml").write_text(
+        yaml.safe_dump(
+            {
+                "apiVersion": "vendir.k14s.io/v1alpha1",
+                "kind": "LockConfig",
+                "directories": [
+                    {
+                        "path": "skills",
+                        "contents": [
+                            {"path": f".upstream/{category}", "git": {"sha": OLD_COMMIT}}
+                            for category in ("engineering", "productivity")
+                        ],
+                    }
+                ],
+            },
+            sort_keys=False,
+        )
+    )
+    output_files = [
+        {"path": f"skills/{name}/SKILL.md", "sha256": sha256(skills / name / "SKILL.md")}
+        for name in ("alpha", "grilling")
+    ]
+    license_path = licenses / "mattpocock-skills-LICENSE"
+    (package / "provenance.yml").write_text(
+        yaml.safe_dump(
+            {
+                "source_commit": OLD_COMMIT,
+                "included_skills": ["alpha", "grilling"],
+                "excluded_skills": ["setup-matt-pocock-skills"],
+                "source_files": output_files,
+                "patch_files": [],
+                "license_files": [
+                    {
+                        "path": "LICENSES/mattpocock-skills-LICENSE",
+                        "sha256": sha256(license_path),
+                    }
+                ],
+                "output_files": output_files,
+            },
+            sort_keys=False,
+        )
+    )
+
+
+@pytest.fixture
+def upstream(tmp_path: Path) -> Path:
+    path = tmp_path / "upstream"
+    shutil.copytree(FIXTURE_UPSTREAM, path)
+    return path
+
+
+@pytest.fixture
+def package(tmp_path: Path, upstream: Path) -> Path:
+    path = tmp_path / "engineering"
+    write_package(path, upstream)
+    return path
+
+
+@pytest.fixture
+def fake_vendir(tmp_path: Path, upstream: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    vendir = bin_dir / "vendir"
+    vendir.write_text(
+        """#!/usr/bin/env python3
+import os
+import shutil
+import sys
+from pathlib import Path
+
+stage = Path(sys.argv[sys.argv.index("--chdir") + 1])
+upstream = Path(os.environ["FAKE_VENDIR_UPSTREAM"])
+staging = stage / "skills" / ".upstream"
+shutil.rmtree(staging, ignore_errors=True)
+for category in ("engineering", "productivity"):
+    source = upstream / "skills" / category
+    if source.exists():
+        shutil.copytree(source, staging / category)
+setup = staging / "engineering" / "setup-matt-pocock-skills"
+shutil.rmtree(setup, ignore_errors=True)
+if "-l" not in sys.argv:
+    lock = stage / "vendir.lock.yml"
+    lock.write_text(lock.read_text().replace("1111111111111111111111111111111111111111", os.environ.get("FAKE_VENDIR_COMMIT", "2222222222222222222222222222222222222222")))
+"""
+    )
+    vendir.chmod(0o755)
+    monkeypatch.setenv("FAKE_VENDIR_UPSTREAM", str(upstream))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return vendir

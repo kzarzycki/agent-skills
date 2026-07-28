@@ -9,6 +9,7 @@ dev = ["pytest==9.1.1", "ruff==0.16.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests"]
+pythonpath = ["."]
 markers = ["live_agent: tests that require a live agent runtime"]
 
 [tool.ruff]
