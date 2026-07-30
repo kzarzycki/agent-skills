@@ -53,10 +53,6 @@ jobs:
       - run: mise run test-engineering-package
       - name: Check changed-file whitespace
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [ -n "$BASE_SHA" ]; then
-            git diff --check "$BASE_SHA"...HEAD
-          else
-            git diff --check HEAD^ HEAD
-          fi
+          git diff --check "$BASE_SHA"...HEAD

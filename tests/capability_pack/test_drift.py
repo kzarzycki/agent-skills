@@ -240,6 +240,30 @@ def test_engineering_source_policy_rejects_unapproved_source_or_ref(
         qualify(package, "locked")
 
 
+@pytest.mark.parametrize("claim", ["destination", "source_alias"])
+def test_engineering_source_policy_rejects_claiming_owned_skill(package: Path, claim: str) -> None:
+    manifest = package / "vendir.yml"
+    config = yaml.safe_load(manifest.read_text())
+    entry = config["directories"][0]
+    if claim == "destination":
+        entry["path"] = "skills/context-extractor"
+    else:
+        content = entry["contents"][0]
+        content["newRootPath"] = "skills/engineering/context-extractor"
+        content["includePaths"] = ["skills/engineering/context-extractor/**/*"]
+    manifest.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    with pytest.raises(ConfigurationError, match="repository-owned"):
+        qualify(package, "locked")
+
+
+def test_engineering_source_policy_rejects_missing_owned_skill(package: Path) -> None:
+    shutil.rmtree(package / "skills" / "context-extractor")
+
+    with pytest.raises(ConfigurationError, match=r"repository-owned.*missing.*context-extractor"):
+        qualify(package, "locked")
+
+
 @pytest.mark.parametrize("change", ["added", "deleted"])
 def test_file_addition_or_deletion_marks_existing_skill_changed(
     package: Path, upstream: Path, fake_vendir: Path, change: str

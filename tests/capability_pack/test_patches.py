@@ -14,7 +14,16 @@ from tools.capability_pack.qualify import QualificationError, qualify
 
 def _write_package(package: Path) -> None:
     package.mkdir()
-    (package / "skills").mkdir()
+    skills = package / "skills"
+    skills.mkdir()
+    for name in (
+        "audit-third-party-software",
+        "context-extractor",
+        "operating-omnigent",
+    ):
+        owned = skills / name
+        owned.mkdir()
+        (owned / "SKILL.md").write_text(f"# {name}\n")
     (package / "vendir.yml").write_text(
         yaml.safe_dump(
             {

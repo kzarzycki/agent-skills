@@ -21,6 +21,9 @@ def test_engineering_ci_is_path_scoped_and_runs_all_deterministic_gates() -> Non
     workflow = _workflow("engineering-ci.yml")
     paths = set(workflow["on"]["pull_request"]["paths"])
     commands = "\n".join(step.get("run", "") for step in _steps(workflow))
+    whitespace = next(
+        step for step in _steps(workflow) if step.get("name") == "Check changed-file whitespace"
+    )
 
     assert {
         ".github/workflows/engineering-*.yml",
@@ -37,6 +40,10 @@ def test_engineering_ci_is_path_scoped_and_runs_all_deterministic_gates() -> Non
         "CLAUDE.md",
     } <= paths
     assert set(workflow["on"]["push"]["paths"]) == paths
+    assert whitespace["env"]["BASE_SHA"] == (
+        "${{ github.event.pull_request.base.sha || github.event.before }}"
+    )
+    assert "HEAD^" not in whitespace["run"]
     for command in (
         "mise install",
         "uv sync --frozen",

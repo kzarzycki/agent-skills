@@ -26,6 +26,11 @@ VENDIR_MANIFEST = "vendir.yml"
 VENDIR_LOCK = "vendir.lock.yml"
 ENGINEERING_SOURCE_URL = "https://github.com/mattpocock/skills.git"
 ENGINEERING_TRACKED_REF = "origin/main"
+ENGINEERING_OWNED_SKILLS = (
+    "audit-third-party-software",
+    "context-extractor",
+    "operating-omnigent",
+)
 
 
 class QualificationError(RuntimeError):
@@ -137,6 +142,28 @@ def _validate_source_policy(package: Path, config: dict) -> None:
         raise ConfigurationError(
             "engineering source policy requires "
             f"{ENGINEERING_SOURCE_URL} at {ENGINEERING_TRACKED_REF}"
+        )
+    managed = set(_managed_skills(config))
+    source_leaves = {
+        PurePosixPath(content.get("newRootPath", "")).name
+        for directory in config["directories"]
+        for content in directory["contents"]
+        if content.get("newRootPath")
+    }
+    claimed = sorted(set(ENGINEERING_OWNED_SKILLS) & (managed | source_leaves))
+    missing = sorted(
+        name
+        for name in ENGINEERING_OWNED_SKILLS
+        if not (package / "skills" / name / "SKILL.md").is_file()
+    )
+    if claimed or missing:
+        details = []
+        if claimed:
+            details.append(f"claimed by vendir: {', '.join(claimed)}")
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        raise ConfigurationError(
+            "engineering repository-owned skill policy violated: " + "; ".join(details)
         )
 
 
