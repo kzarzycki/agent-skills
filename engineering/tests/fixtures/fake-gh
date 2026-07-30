@@ -14,7 +14,13 @@ def _option(arguments: list[str], name: str) -> str:
 arguments = sys.argv[1:]
 log_path = Path(os.environ["FAKE_GH_LOG"])
 state_path = Path(os.environ["FAKE_GH_STATE"])
-state = json.loads(state_path.read_text()) if state_path.exists() else {"issues": []}
+state = (
+    json.loads(state_path.read_text())
+    if state_path.exists()
+    else {"issues": [], "relationships": [], "lost_create_responses": []}
+)
+state.setdefault("relationships", [])
+state.setdefault("lost_create_responses", [])
 
 with log_path.open("a") as log:
     log.write(json.dumps(arguments, separators=(",", ":")) + "\n")
@@ -43,10 +49,22 @@ if arguments[:2] == ["issue", "create"]:
     }
     state["issues"].append(issue)
     state_path.write_text(json.dumps(state, indent=2) + "\n")
+    lose_for_title = os.environ.get("FAKE_GH_LOSE_CREATE_RESPONSE_FOR_TITLE")
+    if lose_for_title == issue["title"] and issue["title"] not in state["lost_create_responses"]:
+        state["lost_create_responses"].append(issue["title"])
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
+        print("simulated lost create response", file=sys.stderr)
+        raise SystemExit(1)
     print(issue["url"])
     raise SystemExit(0)
 
 if arguments[:2] == ["issue", "edit"]:
+    target = arguments[2]
+    blocker = _option(arguments, "--add-blocked-by")
+    edge = {"blocked": target, "blocker": blocker}
+    if edge not in state["relationships"]:
+        state["relationships"].append(edge)
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
     raise SystemExit(0)
 
 print(f"unsupported fake gh invocation: {arguments}", file=sys.stderr)

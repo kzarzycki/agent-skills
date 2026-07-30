@@ -15,10 +15,14 @@ The generated GitHub tracker template now:
 - adds
   `<!-- agent-skills-batch:{batch_sha256}:ticket:{ordinal} -->`
   to each issue body;
-- asks “Create these GitHub Issues now?” after review and before the first
-  mutating `gh` call;
+- derives one total order with an exact UTF-8 title tie-break and canonical
+  blocker ordering;
+- reconciles every marker before showing the exact remaining write plan;
+- asks “Create these GitHub Issues now?” immediately before the first mutating
+  `gh` call;
 - limits approval to the displayed batch;
-- searches every marker across all issue states before creation;
+- stores the exact approval, marked issues, resolved URLs, and relationship
+  progress in an atomically replaced state file;
 - reuses one exact match, stops on multiple matches, and creates only missing
   issues;
 - prints each confirmed issue URL as soon as it is known; and
@@ -32,16 +36,21 @@ resume, and relationship details to `docs/agents/issue-tracker.md`.
 
 `engineering/tests/test_github_issue_workflow.py` runs the declared tracker
 protocol against `engineering/tests/fixtures/fake-gh`. The fake logs every
-invocation, persists issue state, and can fail after two successful creations.
+invocation, persists issue and relationship state, and can lose a successful
+creation response.
 The scenarios prove:
 
-- pending approval invokes no `gh` command;
+- pending approval performs marker reads and no mutating `gh` command;
 - rejection creates zero issues;
-- approval creates issues in dependency order with the reviewed labels,
-  deterministic markers, and immediate URL output;
-- relationships start after all three issue identities exist; and
-- a retry after the third creation fails reuses issues one and two, creates only
-  issue three, and leaves exactly three issues in state.
+- approval creates issues in a deterministic total order with reviewed labels,
+  stable markers, and immediate URL output;
+- exact-batch approval and confirmed URLs survive a fresh process;
+- a successful create with a lost response is recovered by marker without a
+  duplicate;
+- equivalent input permutations produce one hash and marker set;
+- changed canonical batches require new approval;
+- duplicate markers stop before approval or mutation; and
+- the persisted and remote blocker graphs match.
 
 TDD evidence:
 
@@ -69,3 +78,36 @@ same outputs and patch hashes.
 
 The deterministic fixture exercises the declared command boundary and resume
 state without GitHub access. It does not run a live agent or call GitHub.
+
+## Fix Round 1
+
+The review findings were verified against `4ee2361`. Approval, issue URLs, and
+relationship progress existed only in one function call; the failure fixture
+stopped before a remote write; sibling and blocker order followed input order;
+approval preceded marker reads; and duplicate, changed-batch, and relationship
+state branches were not exercised.
+
+The tracker protocol now stores durable state at
+`.scratch/agent-skills/github-issue-batches/{batch_sha256}.json`. Each transition
+uses a sibling temporary file, file `fsync`, atomic replacement, and parent
+directory `fsync`. Exact-batch resume loads the saved approval, reconciles all
+markers, persists recovered URLs, creates only missing issues, and replays
+pending relationship additions idempotently. Changed fingerprints start a new
+preview and approval flow.
+
+Fix-round TDD evidence:
+
+- RED: 11 focused scenarios failed because the generated tracker declared
+  fixture protocol version 1 and had no durable state contract.
+- GREEN: the focused workflow, setup, and contract run passed 21 tests.
+
+Fix-round final verification:
+
+- `mise run test`: 77 tests passed; Ruff lint passed; 31 files passed format
+  checking.
+- `mise run vendor-engineering-check`: locked reproduction passed; 21 package
+  tests passed; patch failures were none; changed skills were none.
+- `git diff --check`: passed.
+
+The deterministic fake remains the test boundary. No live GitHub command or
+live-agent session ran.

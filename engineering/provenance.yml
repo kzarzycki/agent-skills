@@ -258,7 +258,7 @@ patch_files:
   sha256: 6f7008d4e5147778b24d657e166e7e206f5d8e434243be3ac72a312f88dec681
   mode: '100644'
 - path: patches/mattpocock-skills/0002-github-issue-batch.patch
-  sha256: 85b734ea901abe5480d950402dcd9f8f99b5d29b9af8566272dc60490c987e8f
+  sha256: d87c9c1d63a47d70f3bedcc6c700ec15f8970fdb6c6f720bd8ac5a4553ab64eb
   mode: '100644'
 license_files:
 - path: LICENSES/mattpocock-skills/LICENSE
@@ -368,7 +368,7 @@ output_files:
   sha256: 2a92018418e9e0a683df249cdc1240cb40511fd5d0b9627430e097ac1d00c0e9
   mode: '100644'
 - path: skills/setup-engineering-workflow-for-apm/templates/issue-tracker-github.md
-  sha256: c977e3d86ff9fbffd25598d548fce8f7b5a4749ff6e92c1459b250d9b9437ad4
+  sha256: 7fcabd573728879e71711fe548f4f0bb6ec680c899de0ab6fb1909d3255c2f96
   mode: '100644'
 - path: skills/setup-engineering-workflow-for-apm/templates/project-guidance.md
   sha256: 4760ab89a42a4e37809b9662c4080625ef3fde927a47c0f40312feb145025f85
