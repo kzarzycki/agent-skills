@@ -52,8 +52,9 @@ conventions.
 
 Wrap skill-owned content in the start and end markers. On a later run, replace
 only the content between those markers. Preserve every byte outside the marked
-section. If the markers are absent, append one marked section; if the file is
-absent, create it with one marked section.
+section. If the markers are absent, append one marked section without trimming
+or reformatting the existing content; if the file is absent, create it with one
+marked section.
 
 ### 3. Show the proposal
 
@@ -86,8 +87,10 @@ or delete compiled targets directly. If it succeeds, report the two source
 paths and the compiler result.
 
 A second run with the same choices must propose no source diff. When there is
-no source diff, ask whether the user wants to run `mise run agent-sync` to
-recheck compiled output; do not rewrite the source files.
+no source diff, stop and ask for a fresh explicit confirmation before scheduling
+`mise run agent-sync` to recheck compiled output. Approval from a prior run or
+from the source-change proposal does not carry into this no-diff flow. Do not
+rewrite the source files.
 
 <!-- setup-fixture-protocol
 version: 1
@@ -95,6 +98,9 @@ fixture: tests/fixtures/setup-project
 markers:
   start: "<!-- engineering-workflow:start -->"
   end: "<!-- engineering-workflow:end -->"
+confirmations:
+  source_changes: required
+  no_diff_recheck: fresh
 source_files:
   - template: templates/project-guidance.md
     destination: .apm/instructions/engineering-workflow.md
