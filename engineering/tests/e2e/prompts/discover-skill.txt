@@ -1,0 +1,2 @@
+Invoke {invocation} explicitly. Do not perform its workflow. Return exactly one line:
+ACTIVATED_SKILL: {skill_name}
