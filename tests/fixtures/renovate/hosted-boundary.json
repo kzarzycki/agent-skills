@@ -1,0 +1,8 @@
+{
+  "allowedCommands": [],
+  "postUpgradeTasks": {
+    "commands": [],
+    "fileFilters": []
+  },
+  "updater": "scheduled-workflow"
+}

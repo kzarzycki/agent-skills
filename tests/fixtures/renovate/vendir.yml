@@ -1,0 +1,21 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+directories:
+  - path: skills
+    contents:
+      - path: alpha
+        git:
+          url: https://github.com/mattpocock/skills.git
+          ref: main
+        includePaths:
+          - skills/engineering/wayfinder/**/*
+        legalPaths: []
+        newRootPath: skills/engineering/wayfinder
+      - path: grilling
+        git:
+          url: https://github.com/mattpocock/skills.git
+          ref: main
+        includePaths:
+          - skills/productivity/grilling/**/*
+        legalPaths: []
+        newRootPath: skills/productivity/grilling

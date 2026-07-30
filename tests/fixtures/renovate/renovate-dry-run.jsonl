@@ -1,0 +1,5 @@
+{"msg":"Renovate started","renovateVersion":"43.285.7"}
+{"msg":"Skipping unsupported/unversioned value main (versioning=semver-coerced)","repository":"local"}
+{"msg":"Skipping https://github.com/mattpocock/skills.git because no currentDigest or pinDigests","repository":"local"}
+{"config":{"vendir":[{"deps":[{"currentValue":"main","datasource":"git-refs","depName":"https://github.com/mattpocock/skills.git","skipReason":"invalid-value"},{"currentValue":"main","datasource":"git-refs","depName":"https://github.com/mattpocock/skills.git","skipReason":"invalid-value"}],"packageFile":"vendir.yml"}]},"msg":"packageFiles with updates","repository":"local"}
+{"durationMs":73,"msg":"Repository finished","repository":"local"}

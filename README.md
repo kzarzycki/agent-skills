@@ -1,6 +1,8 @@
 # agent-skills
 
-Krzysztof Zarzycki's plugin marketplace for Claude Code.
+A distribution monorepo for independently versioned coding-agent capability
+packs. APM is the project installation path; native agent manifests provide
+optional adapters.
 
 ## Plugins
 
@@ -15,7 +17,26 @@ Krzysztof Zarzycki's plugin marketplace for Claude Code.
 Each plugin's skills self-describe once installed (`/plugin` → browse). Descriptions
 here stay plugin-level on purpose — see [Conventions](#conventions).
 
-## Install
+## Install engineering with APM
+
+Add one project dependency:
+
+```yaml
+dependencies:
+  apm:
+    - git: kzarzycki/agent-skills/engineering
+      ref: ^0.2.0
+```
+
+```bash
+apm install
+apm compile --validate
+```
+
+APM compiles for the coding agents declared by the project and resolves
+`^0.2.0` from package-scoped tags such as `engineering-v0.2.0`.
+
+## Install native Claude plugins
 
 Add the marketplace, then install plugins by name.
 
@@ -30,6 +51,10 @@ Add the marketplace, then install plugins by name.
 ```
 
 Pick the plugins you want. Each is independent.
+
+The imported `engineering` payload is generated from its pinned vendir lock,
+then qualified and patched. Edit `engineering/vendir.yml` or the owned patch
+series; do not edit imported skill files directly.
 
 ## Local Development
 
@@ -54,6 +79,8 @@ To pull in changes from a local edit without pushing first, see `.claude/CLAUDE.
 - **`experimental` is unstable by contract.** Skills there may change or be
   removed without notice; they graduate into a stable plugin once settled. Pin a
   commit if you depend on one.
-- Plugin versions in `<plugin>/.claude-plugin/plugin.json` follow semver. Bump on every PR with changes.
+- Capability-pack versions in `<pack>/apm.yml` and
+  `<pack>/.claude-plugin/plugin.json` follow semver. Tags are package-scoped:
+  `<pack>-vX.Y.Z`.
 - PR titles use Conventional Commits (`feat:`, `fix:`, `chore:`, etc.).
 - Each plugin can be installed independently. Cross-plugin dependencies are documented in the plugin's README.

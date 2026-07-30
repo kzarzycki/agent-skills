@@ -1,0 +1,4 @@
+Invoke {invocation} to orient to this repository without mutating issue-tracker
+state. Read the top-level overview, follow its orientation directions, and
+report the repository-relative paths you opened plus concise facts that preserve
+source identifiers and assignments exactly.

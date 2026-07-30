@@ -1,0 +1,157 @@
+apiVersion: vendir.k14s.io/v1alpha1
+kind: Config
+minimumRequiredVersion: 0.46.0
+directories:
+  - path: skills/ask-matt
+    contents:
+      - path: .
+        git: &matt
+          url: https://github.com/mattpocock/skills.git
+          ref: origin/main
+        includePaths: [skills/engineering/ask-matt/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/ask-matt
+  - path: skills/code-review
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/code-review/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/code-review
+  - path: skills/codebase-design
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/codebase-design/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/codebase-design
+  - path: skills/diagnosing-bugs
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/diagnosing-bugs/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/diagnosing-bugs
+  - path: skills/domain-modeling
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/domain-modeling/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/domain-modeling
+  - path: skills/grill-with-docs
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/grill-with-docs/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/grill-with-docs
+  - path: skills/implement
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/implement/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/implement
+  - path: skills/improve-codebase-architecture
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/improve-codebase-architecture/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/improve-codebase-architecture
+  - path: skills/prototype
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/prototype/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/prototype
+  - path: skills/research
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/research/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/research
+  - path: skills/resolving-merge-conflicts
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/resolving-merge-conflicts/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/resolving-merge-conflicts
+  - path: skills/setup-engineering-workflow-for-apm
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/setup-matt-pocock-skills/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/setup-matt-pocock-skills
+  - path: skills/tdd
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/tdd/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/tdd
+  - path: skills/to-spec
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/to-spec/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/to-spec
+  - path: skills/to-tickets
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/to-tickets/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/to-tickets
+  - path: skills/triage
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/triage/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/triage
+  - path: skills/wayfinder
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/engineering/wayfinder/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/wayfinder
+  - path: skills/grilling
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [skills/productivity/grilling/**/*]
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/productivity/grilling
+  - path: LICENSES/mattpocock-skills
+    contents:
+      - path: .
+        git: *matt
+        includePaths: [LICENSE]
+        excludePaths: []
+        legalPaths: [LICENSE]

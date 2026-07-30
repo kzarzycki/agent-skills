@@ -36,10 +36,10 @@
     },
     {
       "name": "engineering",
-      "description": "Engineering toolkit for Claude Code: safely vetting and adopting third-party code, and capturing a project's conventions.",
+      "description": "Project-scoped engineering workflows for design, implementation, testing, review, and maintenance.",
       "source": "./engineering",
       "category": "development",
-      "tags": ["security", "audit", "claude-md", "conventions"]
+      "tags": ["engineering", "design", "implementation", "testing", "review"]
     },
     {
       "name": "content",
@@ -65,17 +65,6 @@
       },
       "category": "productivity",
       "tags": ["google", "gmail", "drive", "calendar", "sheets", "docs", "gws"]
-    },
-    {
-      "name": "mattpocock-skills",
-      "description": "Matt Pocock's 'Skills for Real Engineers' — small, composable engineering and productivity skills, loaded directly from upstream (no local copy vendored).",
-      "source": {
-        "source": "github",
-        "repo": "mattpocock/skills",
-        "ref": "main"
-      },
-      "category": "development",
-      "tags": ["engineering", "tdd", "debugging", "planning", "matt-pocock"]
     },
     {
       "name": "dagu",
