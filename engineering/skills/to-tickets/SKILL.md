@@ -8,7 +8,10 @@ disable-model-invocation: true
 
 Break a plan, spec, or conversation into a set of **tickets** — tracer-bullet vertical slices, each declaring the tickets that **block** it.
 
-The issue tracker and triage label vocabulary should have been provided to you — run `/setup-engineering-workflow-for-apm` if not.
+GitHub Issues is the default real tracker. The issue tracker and triage label
+vocabulary should have been provided to you — run
+`/setup-engineering-workflow-for-apm` if `docs/agents/issue-tracker.md` is
+missing.
 
 ## Process
 
@@ -57,7 +60,16 @@ Iterate until the user approves the breakdown.
 
 ### 5. Publish the tickets to the configured tracker
 
-Publish the approved tickets. **How** depends on the tracker `/setup-engineering-workflow-for-apm` configured — the tickets are the same either way, only the shape of the blocking edges changes:
+Render one complete publication batch containing every approved ticket's title,
+body, labels, blockers, and dependency order. Review this batch before issue
+creation.
+
+Publish the approved tickets. GitHub Issues is the default real tracker.
+`docs/agents/issue-tracker.md` defines its approval boundary, deterministic
+markers, resume search, creation commands, confirmed-URL recording, and
+relationship wiring. Follow that contract rather than improvising tracker
+commands. A repository-configured alternative tracker may replace it; the
+tickets stay the same and only the tracker operations change:
 
 - **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below — one ticket per file, never a single combined file.
 - **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply the `ready-for-agent` triage label unless instructed otherwise — the tickets are agent-grabbable by construction.
