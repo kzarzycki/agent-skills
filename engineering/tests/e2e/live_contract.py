@@ -149,14 +149,16 @@ def _relative_evidence(raw_path: str, repo: Path) -> str | None:
 
 
 READ_COMMANDS = {"awk", "bat", "cat", "grep", "head", "less", "more", "rg", "sed", "tail"}
+SHELL_COMMANDS = {"bash", "dash", "ksh", "sh", "zsh"}
 SHELL_SEPARATORS = {"&&", "||", ";", "|"}
 
 
 def _command_segments(command: str) -> list[list[str]]:
     tokens = shlex.split(command)
-    for index, token in enumerate(tokens[:-1]):
-        if token in {"-c", "-lc"}:
-            return _command_segments(tokens[index + 1])
+    if tokens and Path(tokens[0]).name in SHELL_COMMANDS:
+        for index, token in enumerate(tokens[:-1]):
+            if token in {"-c", "-lc"}:
+                return _command_segments(tokens[index + 1])
     segments: list[list[str]] = [[]]
     for token in tokens:
         if token in SHELL_SEPARATORS:

@@ -170,6 +170,37 @@ def test_codex_printf_cannot_fake_content_markers(
     assert result.activation_skills == ()
 
 
+def test_codex_non_shell_c_argument_cannot_fake_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    relative = ".agents/skills/wayfinder/SKILL.md"
+    skill = repo / relative
+    skill.parent.mkdir(parents=True)
+    marker = "description: Orient to a repository from evidence."
+    skill.write_text(f"---\nname: wayfinder\n{marker}\n---\n")
+    event = {
+        "type": "item.completed",
+        "item": {
+            "type": "command_execution",
+            "command": f"printf '{marker}' -c 'cat {relative}'",
+            "aggregated_output": marker,
+        },
+    }
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "codex"
+    executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{json.dumps(event)}'\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    result = run_agent("codex", "prompt without result literals", repo)
+
+    assert result.activation_skills == ()
+
+
 def test_exact_echo_probe_cannot_fake_activation_or_wayfinder_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
