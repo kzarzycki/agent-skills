@@ -43,10 +43,39 @@ def test_package_contains_the_pinned_upstream_inventory_and_owned_skills() -> No
 
 def test_provenance_records_the_pinned_import_boundary() -> None:
     provenance = yaml.safe_load((PACKAGE / "provenance.yml").read_text())
+    manifest = yaml.safe_load((PACKAGE / "vendir.yml").read_text())
+    expected_mappings = {
+        (
+            content["git"]["url"],
+            PINNED_COMMIT,
+            content["newRootPath"],
+            directory["path"],
+        )
+        for directory in manifest["directories"]
+        if directory["path"].startswith("skills/")
+        for content in directory["contents"]
+    }
+    actual_mappings = {
+        (
+            item["source_repository"],
+            item["source_commit"],
+            item["source_path"],
+            item["destination_path"],
+        )
+        for item in provenance["source_mappings"]
+    }
 
     assert provenance["source_commit"] == PINNED_COMMIT
     assert set(provenance["included_skills"]) == IMPORTED_SKILLS
     assert provenance["excluded_skills"] == ["setup-matt-pocock-skills"]
+    assert actual_mappings == expected_mappings
+    assert (
+        "skills/engineering/setup-matt-pocock-skills",
+        "skills/setup-engineering-workflow-for-apm",
+    ) in {(source, destination) for _, _, source, destination in actual_mappings}
+    assert ("skills/productivity/grilling", "skills/grilling") in {
+        (source, destination) for _, _, source, destination in actual_mappings
+    }
 
 
 def test_imported_text_uses_the_owned_setup_command() -> None:

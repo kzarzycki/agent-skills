@@ -10,7 +10,12 @@ from typing import Literal
 
 import yaml
 
-from tools.capability_pack.model import FileHash, Provenance, QualificationResult
+from tools.capability_pack.model import (
+    FileHash,
+    Provenance,
+    QualificationResult,
+    SourceMapping,
+)
 from tools.capability_pack.provenance import hash_files, load_provenance, write_provenance
 from tools.capability_pack.summary import render_summary
 
@@ -203,6 +208,53 @@ def _excluded_skills(config: dict) -> tuple[str, ...]:
     return tuple(sorted(aliases))
 
 
+def _source_mappings(
+    config: dict, source_commit: str, inventory: tuple[str, ...]
+) -> tuple[SourceMapping, ...]:
+    mappings: list[SourceMapping] = []
+    for directory in config["directories"]:
+        destination = PurePosixPath(directory["path"])
+        if len(destination.parts) != 2 or destination.parts[0] != "skills":
+            continue
+        git_contents = [content for content in directory["contents"] if "git" in content]
+        if len(git_contents) != 1:
+            raise QualificationError(
+                f"source mapping for {destination.as_posix()} must have exactly one Git source"
+            )
+        content = git_contents[0]
+        git = content.get("git")
+        repository = git.get("url") if isinstance(git, dict) else None
+        source = content.get("newRootPath")
+        if not isinstance(repository, str) or not repository:
+            raise QualificationError(
+                f"source mapping for {destination.as_posix()} has no repository URL"
+            )
+        if not isinstance(source, str) or not source:
+            raise QualificationError(
+                f"source mapping for {destination.as_posix()} has no source path"
+            )
+        source_path = _validate_relative_path(source, label="source mapping path")
+        mappings.append(
+            SourceMapping(
+                source_repository=repository,
+                source_commit=source_commit,
+                source_path=source_path.as_posix(),
+                destination_path=destination.as_posix(),
+            )
+        )
+
+    destinations = [item.destination_path for item in mappings]
+    sources = [(item.source_repository, item.source_path) for item in mappings]
+    expected = {f"skills/{name}" for name in inventory}
+    if len(destinations) != len(set(destinations)) or set(destinations) != expected:
+        raise QualificationError(
+            "source mapping destinations must match the imported skill inventory"
+        )
+    if len(sources) != len(set(sources)):
+        raise QualificationError("source mapping source paths must be unique")
+    return tuple(sorted(mappings, key=lambda item: item.destination_path))
+
+
 def _owned_skills(package: Path, managed: tuple[str, ...]) -> tuple[str, ...]:
     skills = package / "skills"
     return tuple(
@@ -294,8 +346,8 @@ def _output_manifest(stage: Path, inventory: tuple[str, ...]) -> tuple[FileHash,
 def _changed_skills(previous: Provenance | None, proposed: Provenance) -> tuple[str, ...]:
     if not previous:
         return ()
-    old = {item.path: item.sha256 for item in previous.output_files}
-    new = {item.path: item.sha256 for item in proposed.output_files}
+    old = {item.path: (item.sha256, item.mode) for item in previous.output_files}
+    new = {item.path: (item.sha256, item.mode) for item in proposed.output_files}
     names = {
         PurePosixPath(path).parts[1]
         for path in old.keys() | new.keys()
@@ -383,6 +435,7 @@ def qualify(
                 f"removed or renamed imported skill(s) {', '.join(removed)} from {old_commit}"
             )
         source_commit = _source_commit(staged)
+        source_mappings = _source_mappings(config, source_commit, inventory)
         license_files = _license_manifest(staged, previous, (config,))
         patch_files: tuple[FileHash, ...] = ()
         try:
@@ -394,6 +447,7 @@ def qualify(
                     source_commit=source_commit,
                     included_skills=inventory,
                     excluded_skills=_excluded_skills(config),
+                    source_mappings=source_mappings,
                     source_files=source_files,
                     patch_files=patch_files,
                     license_files=license_files,
@@ -421,6 +475,7 @@ def qualify(
             source_commit=source_commit,
             included_skills=inventory,
             excluded_skills=_excluded_skills(config),
+            source_mappings=source_mappings,
             source_files=source_files,
             patch_files=patch_files,
             license_files=license_files,

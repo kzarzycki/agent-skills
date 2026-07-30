@@ -81,6 +81,31 @@ def test_check_detects_direct_edit_without_mutating_package(
     assert edited.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    ("source_mode", "committed_mode"),
+    [(0o644, 0o755), (0o755, 0o644)],
+)
+def test_check_detects_imported_executable_mode_drift(
+    package: Path,
+    upstream: Path,
+    fake_vendir: Path,
+    source_mode: int,
+    committed_mode: int,
+) -> None:
+    """Catch accepting a 0644/0755 drift when imported bytes are unchanged."""
+    source = upstream / "skills" / "engineering" / "alpha" / "SKILL.md"
+    committed = package / "skills" / "alpha" / "SKILL.md"
+    source.chmod(source_mode)
+    committed.chmod(committed_mode)
+
+    with pytest.raises(
+        QualificationError, match="reproduction differs from committed imported files"
+    ):
+        qualify(package, "locked")
+
+    assert committed.stat().st_mode & 0o777 == committed_mode
+
+
 def test_check_ignores_legacy_import_timestamp(package: Path, fake_vendir: Path) -> None:
     """Catch volatile provenance metadata making identical content appear changed."""
     path = package / "provenance.yml"
@@ -139,7 +164,9 @@ def test_external_summary_survives_update_swap(
     assert "Proposed source commit: " + "2" * 40 in summary.read_text()
 
 
-@pytest.mark.parametrize("field", ["excluded_skills", "source_files", "output_files"])
+@pytest.mark.parametrize(
+    "field", ["excluded_skills", "source_mappings", "source_files", "output_files"]
+)
 def test_locked_mode_compares_every_provenance_field(
     package: Path, fake_vendir: Path, field: str
 ) -> None:
@@ -148,6 +175,8 @@ def test_locked_mode_compares_every_provenance_field(
     data = yaml.safe_load(path.read_text())
     if field == "excluded_skills":
         data[field].append("ghost-skill")
+    elif field == "source_mappings":
+        data[field][0]["destination_path"] = "skills/ghost-skill"
     else:
         data[field][0]["sha256"] = "f" * 64
     path.write_text(yaml.safe_dump(data, sort_keys=False))

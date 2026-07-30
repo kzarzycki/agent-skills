@@ -127,3 +127,22 @@ def test_all_matt_leaf_locks_must_resolve_to_same_commit(package: Path, fake_ven
 
     with pytest.raises(QualificationError, match="different commits"):
         qualify(package, "locked")
+
+
+@pytest.mark.parametrize("invalid", ["missing", "duplicate"])
+def test_manifest_source_mappings_must_be_complete_and_unique(
+    package: Path, fake_vendir: Path, invalid: str
+) -> None:
+    """Catch ambiguous or incomplete imported leaf provenance."""
+    manifest = package / "vendir.yml"
+    data = yaml.safe_load(manifest.read_text())
+    if invalid == "missing":
+        del data["directories"][0]["contents"][0]["newRootPath"]
+    else:
+        data["directories"][1]["contents"][0]["newRootPath"] = data["directories"][0]["contents"][
+            0
+        ]["newRootPath"]
+    manifest.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    with pytest.raises(QualificationError, match="source mapping"):
+        qualify(package, "locked")

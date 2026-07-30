@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from tools.capability_pack.model import FileHash, Provenance
+from tools.capability_pack.model import FileHash, Provenance, SourceMapping
 from tools.capability_pack.provenance import hash_files, load_provenance, write_provenance
 from tools.capability_pack.summary import render_summary
 
@@ -13,6 +13,14 @@ def _provenance(commit: str, *, skills: tuple[str, ...] = ("alpha",)) -> Provena
         source_commit=commit,
         included_skills=skills,
         excluded_skills=("setup-matt-pocock-skills",),
+        source_mappings=(
+            SourceMapping(
+                "https://example.invalid/upstream.git",
+                commit,
+                "skills/engineering/alpha",
+                "skills/alpha",
+            ),
+        ),
         source_files=(FileHash("source/a", "a" * 64),),
         patch_files=(FileHash("patches/a.patch", "b" * 64),),
         license_files=(FileHash("LICENSES/LICENSE", "c" * 64),),
@@ -49,6 +57,25 @@ def test_hash_files_uses_sorted_posix_paths_and_file_bytes(tmp_path: Path) -> No
         "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
         "594e519ae499312b29433b7dd8a97ff068defcba9755b6d5d00e84c524d67b06",
     ]
+
+
+def test_hash_files_normalizes_only_the_git_executable_bit(tmp_path: Path) -> None:
+    """Catch platform permission noise while preserving Git's 0644/0755 distinction."""
+    path = tmp_path / "tool"
+    path.write_text("same bytes")
+
+    path.chmod(0o600)
+    non_executable = hash_files(tmp_path, [path])
+    path.chmod(0o644)
+    normal = hash_files(tmp_path, [path])
+    path.chmod(0o755)
+    executable = hash_files(tmp_path, [path])
+
+    assert non_executable[0].mode == normal[0].mode == "100644"
+    assert executable[0].mode == "100755"
+    assert {item.sha256 for item in (*non_executable, *normal, *executable)} == {
+        non_executable[0].sha256
+    }
 
 
 def test_summary_is_deterministic_and_contains_release_evidence() -> None:

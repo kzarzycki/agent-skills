@@ -121,6 +121,7 @@ def write_package(package: Path, upstream: Path) -> None:
         {
             "path": path.relative_to(package).as_posix(),
             "sha256": sha256(path),
+            "mode": "100755" if path.stat().st_mode & 0o111 else "100644",
         }
         for name in imported
         for path in sorted((skills / name).rglob("*"))
@@ -133,12 +134,22 @@ def write_package(package: Path, upstream: Path) -> None:
                 "source_commit": OLD_COMMIT,
                 "included_skills": list(imported),
                 "excluded_skills": ["setup-matt-pocock-skills"],
+                "source_mappings": [
+                    {
+                        "source_repository": "https://example.invalid/upstream.git",
+                        "source_commit": OLD_COMMIT,
+                        "source_path": source,
+                        "destination_path": destination,
+                    }
+                    for destination, source in sorted(destinations)
+                ],
                 "source_files": output_files,
                 "patch_files": [],
                 "license_files": [
                     {
                         "path": "LICENSES/mattpocock-skills/LICENSE",
                         "sha256": sha256(license_path),
+                        "mode": "100644",
                     }
                 ],
                 "output_files": output_files,
