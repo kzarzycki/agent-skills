@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +36,42 @@ class ConfigurationError(QualificationError):
 
 class BreakingDriftError(QualificationError):
     """An imported skill disappeared or was renamed upstream."""
+
+
+def validate_release_candidate(package_root: Path, tag: str) -> None:
+    package = package_root.resolve()
+    match = re.fullmatch(rf"{re.escape(package.name)}-v(\d+\.\d+\.\d+)", tag)
+    if not match:
+        raise ConfigurationError(f"release tag must match {package.name}-vX.Y.Z: {tag}")
+    tag_version = match.group(1)
+    try:
+        apm = _mapping(yaml.safe_load((package / "apm.yml").read_text()), "apm.yml")
+        plugin = _mapping(
+            json.loads((package / ".claude-plugin" / "plugin.json").read_text()),
+            "plugin.json",
+        )
+    except (OSError, json.JSONDecodeError, yaml.YAMLError) as error:
+        raise ConfigurationError(f"invalid package release metadata: {error}") from error
+    versions = {"apm.yml": apm.get("version"), "plugin.json": plugin.get("version")}
+    mismatched = [name for name, version in versions.items() if version != tag_version]
+    if mismatched:
+        raise ConfigurationError(f"release tag {tag} does not match {', '.join(mismatched)}")
+
+    repository = Path(_git_output(["rev-parse", "--show-toplevel"], cwd=package))
+    changed = _git_output(
+        ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "HEAD"],
+        cwd=repository,
+    ).splitlines()
+    other_manifests = sorted(
+        path
+        for path in changed
+        if re.fullmatch(r"[^/]+/\.claude-plugin/plugin\.json", path)
+        and not path.startswith(f"{package.name}/")
+    )
+    if other_manifests:
+        raise ConfigurationError(
+            "release commit changes other package manifest(s): " + ", ".join(other_manifests)
+        )
 
 
 def _mapping(value: object, label: str) -> dict:
@@ -206,6 +245,121 @@ def _excluded_skills(config: dict) -> tuple[str, ...]:
             if source.parts and source.name != destination.name and source.name not in managed:
                 aliases.add(source.name)
     return tuple(sorted(aliases))
+
+
+def _git_output(arguments: list[str], *, cwd: Path | None = None) -> str:
+    try:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=cwd,
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=120,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise QualificationError(f"Git command failed: {error}") from error
+
+
+def _reconcile_inventory(
+    stage: Path,
+    config: dict,
+    owned: tuple[str, ...],
+) -> tuple[dict, str | None]:
+    git_sources = {
+        (git.get("url"), git.get("ref"))
+        for directory in config["directories"]
+        for content in directory["contents"]
+        if isinstance((git := content.get("git")), dict)
+    }
+    if not git_sources:
+        return config, None
+    if len(git_sources) != 1:
+        raise ConfigurationError("vendir inventory sources must use one Git repository and ref")
+    repository, ref = next(iter(git_sources))
+    if not isinstance(repository, str) or not isinstance(ref, str):
+        raise ConfigurationError("vendir inventory Git repository and ref must be strings")
+
+    temporary = Path(tempfile.mkdtemp(prefix=".engineering-inventory-"))
+    checkout = temporary / "upstream"
+    try:
+        _git_output(
+            ["clone", "--quiet", "--filter=blob:none", "--no-checkout", repository, str(checkout)]
+        )
+        candidate = _git_output(["rev-parse", f"{ref}^{{commit}}"], cwd=checkout)
+        upstream_names = set(
+            _git_output(
+                ["ls-tree", "-d", "--name-only", f"{candidate}:skills/engineering"],
+                cwd=checkout,
+            ).splitlines()
+        )
+        upstream_names = {
+            name
+            for name in upstream_names
+            if name
+            and subprocess.run(
+                [
+                    "git",
+                    "cat-file",
+                    "-e",
+                    f"{candidate}:skills/engineering/{name}/SKILL.md",
+                ],
+                cwd=checkout,
+                check=False,
+                capture_output=True,
+                timeout=30,
+            ).returncode
+            == 0
+        }
+    finally:
+        shutil.rmtree(temporary)
+
+    configured: dict[str, str] = {}
+    template: dict | None = None
+    for directory in config["directories"]:
+        destination = PurePosixPath(directory["path"])
+        if len(destination.parts) != 2 or destination.parts[0] != "skills":
+            continue
+        for content in directory["contents"]:
+            source = PurePosixPath(content.get("newRootPath", ""))
+            if source.parts[:2] != ("skills", "engineering"):
+                continue
+            configured[source.name] = destination.name
+            if source.name == destination.name and template is None:
+                template = directory
+
+    missing = sorted(set(configured) - upstream_names)
+    if missing:
+        raise BreakingDriftError(
+            "removed or renamed configured upstream leaf(s) "
+            f"{', '.join(missing)} at candidate {candidate}"
+        )
+    additions = sorted(upstream_names - set(configured) - set(owned))
+    if additions and template is None:
+        raise ConfigurationError("no ordinary engineering leaf available as inventory template")
+
+    committed = copy.deepcopy(config)
+    for name in additions:
+        directory = copy.deepcopy(template)
+        directory["path"] = f"skills/{name}"
+        content = directory["contents"][0]
+        content["newRootPath"] = f"skills/engineering/{name}"
+        content["includePaths"] = [f"skills/engineering/{name}/**/*"]
+        committed["directories"].append(directory)
+    committed["directories"].sort(
+        key=lambda item: (
+            not str(item["path"]).startswith("skills/"),
+            str(item["path"]),
+        )
+    )
+
+    pinned = copy.deepcopy(committed)
+    for directory in pinned["directories"]:
+        for content in directory["contents"]:
+            if isinstance(content.get("git"), dict):
+                content["git"]["ref"] = candidate
+    (stage / VENDIR_MANIFEST).write_text(yaml.safe_dump(pinned, sort_keys=False))
+    return committed, candidate
 
 
 def _source_mappings(
@@ -411,8 +565,8 @@ def qualify(
         raise ConfigurationError("summary path must be outside the package root")
     config = _load_manifest(package / VENDIR_MANIFEST)
     _source_commit(package)
-    managed = _managed_skills(config)
-    owned = _owned_skills(package, managed)
+    original_managed = _managed_skills(config)
+    owned = _owned_skills(package, original_managed)
     original_owned = _owned_manifest(package, owned)
 
     temporary = Path(tempfile.mkdtemp(prefix=f".{package.name}-stage-", dir=package.parent))
@@ -425,7 +579,13 @@ def qualify(
             previous = None
         except (KeyError, TypeError, ValueError, yaml.YAMLError) as error:
             raise QualificationError(f"invalid provenance: {error}") from error
+        committed_config = config
+        if mode == "update":
+            committed_config, _ = _reconcile_inventory(staged, config, owned)
+        managed = _managed_skills(committed_config)
         _sync_manifest(staged, mode)
+        if mode == "update":
+            (staged / VENDIR_MANIFEST).write_text(yaml.safe_dump(committed_config, sort_keys=False))
         _validate_symlinks(staged)
         if _owned_manifest(staged, owned) != original_owned:
             raise QualificationError("vendir changed a repository-owned skill")
@@ -438,8 +598,8 @@ def qualify(
                 f"removed or renamed imported skill(s) {', '.join(removed)} from {old_commit}"
             )
         source_commit = _source_commit(staged)
-        source_mappings = _source_mappings(config, source_commit, inventory)
-        license_files = _license_manifest(staged, previous, (config,))
+        source_mappings = _source_mappings(committed_config, source_commit, inventory)
+        license_files = _license_manifest(staged, previous, (committed_config,))
         patch_files: tuple[FileHash, ...] = ()
         try:
             patch_files = _patch_manifest(staged)
@@ -449,7 +609,7 @@ def qualify(
                 partial = Provenance(
                     source_commit=source_commit,
                     included_skills=inventory,
-                    excluded_skills=_excluded_skills(config),
+                    excluded_skills=_excluded_skills(committed_config),
                     source_mappings=source_mappings,
                     source_files=source_files,
                     patch_files=patch_files,
@@ -477,7 +637,7 @@ def qualify(
         proposed = Provenance(
             source_commit=source_commit,
             included_skills=inventory,
-            excluded_skills=_excluded_skills(config),
+            excluded_skills=_excluded_skills(committed_config),
             source_mappings=source_mappings,
             source_files=source_files,
             patch_files=patch_files,

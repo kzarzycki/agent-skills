@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -43,6 +45,49 @@ def _add_leaf(package: Path, destination: str, source: str) -> None:
     lock.write_text(yaml.safe_dump(locked, sort_keys=False))
 
 
+def _commit(upstream: Path, message: str) -> str:
+    env = os.environ | {
+        "GIT_AUTHOR_NAME": "Fixture",
+        "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+        "GIT_COMMITTER_NAME": "Fixture",
+        "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+    }
+    subprocess.run(["git", "add", "."], cwd=upstream, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=upstream, env=env, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=upstream,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+
+def _enable_inventory_reconciliation(
+    package: Path,
+    upstream: Path,
+) -> None:
+    subprocess.run(["git", "init", "-b", "main"], cwd=upstream, check=True)
+    _commit(upstream, "initial")
+    manifest = package / "vendir.yml"
+    config = yaml.safe_load(manifest.read_text())
+    for directory in config["directories"]:
+        for content in directory["contents"]:
+            if "git" in content:
+                content["git"]["url"] = str(upstream)
+    manifest.write_text(yaml.safe_dump(config, sort_keys=False))
+
+
+def _package_bytes(package: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(package).as_posix(): path.read_bytes()
+        for path in package.rglob("*")
+        if path.is_file()
+    }
+
+
 def test_new_upstream_skill_is_reported_and_promoted(
     package: Path, upstream: Path, fake_vendir: Path
 ) -> None:
@@ -68,6 +113,65 @@ def test_removed_upstream_skill_is_breaking_drift(
         BreakingDriftError, match=r"alpha.*1111111111111111111111111111111111111111"
     ):
         qualify(package, "update")
+
+
+def test_refresh_reconciles_new_upstream_leaf_and_converges(
+    package: Path,
+    upstream: Path,
+    fake_vendir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _enable_inventory_reconciliation(package, upstream)
+    beta = upstream / "skills" / "engineering" / "beta"
+    beta.mkdir()
+    (beta / "SKILL.md").write_text("# Beta\n")
+    candidate = _commit(upstream, "add beta")
+    monkeypatch.setenv("FAKE_VENDIR_COMMIT", candidate)
+    summary = tmp_path / "summary.md"
+
+    result = qualify(package, "update", summary)
+
+    config = yaml.safe_load((package / "vendir.yml").read_text())
+    beta_entry = next(
+        directory for directory in config["directories"] if directory["path"] == "skills/beta"
+    )
+    setup_entry = next(
+        directory
+        for directory in config["directories"]
+        if directory["path"] == "skills/setup-engineering-workflow-for-apm"
+    )
+    assert beta_entry["contents"][0]["newRootPath"] == "skills/engineering/beta"
+    assert beta_entry["contents"][0]["git"]["ref"] == "origin/main"
+    assert (
+        setup_entry["contents"][0]["newRootPath"] == "skills/engineering/setup-matt-pocock-skills"
+    )
+    assert result.source_commit == candidate
+    assert result.added_skills == ("beta",)
+    assert "Added skills: beta" in summary.read_text()
+    first = _package_bytes(package)
+
+    qualify(package, "update", summary)
+
+    assert _package_bytes(package) == first
+
+
+def test_refresh_blocks_removed_configured_leaf_before_mutation(
+    package: Path,
+    upstream: Path,
+    fake_vendir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_inventory_reconciliation(package, upstream)
+    shutil.rmtree(upstream / "skills" / "engineering" / "alpha")
+    candidate = _commit(upstream, "remove alpha")
+    monkeypatch.setenv("FAKE_VENDIR_COMMIT", candidate)
+    before = _package_bytes(package)
+
+    with pytest.raises(BreakingDriftError, match=rf"alpha.*{candidate}"):
+        qualify(package, "update")
+
+    assert _package_bytes(package) == before
 
 
 def test_missing_recorded_legal_file_fails_qualification(package: Path, fake_vendir: Path) -> None:

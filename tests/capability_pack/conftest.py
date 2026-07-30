@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import os
 import shutil
 from pathlib import Path
@@ -211,6 +212,21 @@ if "--locked" not in sys.argv:
 """
     )
     vendir.chmod(0o755)
+    qualify_module = importlib.import_module("tools.capability_pack.qualify")
+    reconcile = qualify_module._reconcile_inventory
+
+    def reconcile_fixture(stage: Path, config: dict, owned: tuple[str, ...]):
+        urls = {
+            content["git"]["url"]
+            for directory in config["directories"]
+            for content in directory["contents"]
+            if "git" in content
+        }
+        if urls == {"https://example.invalid/upstream.git"}:
+            return config, None
+        return reconcile(stage, config, owned)
+
+    monkeypatch.setattr(qualify_module, "_reconcile_inventory", reconcile_fixture)
     monkeypatch.setenv("FAKE_VENDIR_UPSTREAM", str(upstream))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     return vendir
