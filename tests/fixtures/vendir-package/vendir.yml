@@ -1,21 +1,48 @@
 apiVersion: vendir.k14s.io/v1alpha1
 kind: Config
+minimumRequiredVersion: 0.46.0
 directories:
-  - path: skills
+  - path: skills/alpha
     contents:
       - path: .
         git:
           url: UPSTREAM_REPOSITORY
           ref: origin/main
         includePaths:
-          - skills/engineering/**/*
-        excludePaths:
-          - skills/engineering/setup-matt-pocock-skills/**/*
+          - skills/engineering/alpha/**/*
+        excludePaths: []
         legalPaths: []
-        newRootPath: skills/engineering
-        ignorePaths:
-          - audit-third-party-software/**/*
-          - context-extractor/**/*
-          - operating-omnigent/**/*
-          - setup-engineering-workflow-for-apm/**/*
-          - grilling/**/*
+        newRootPath: skills/engineering/alpha
+  - path: skills/beta
+    contents:
+      - path: .
+        git:
+          url: UPSTREAM_REPOSITORY
+          ref: origin/main
+        includePaths:
+          - skills/engineering/beta/**/*
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/beta
+  - path: skills/setup-engineering-workflow-for-apm
+    contents:
+      - path: .
+        git:
+          url: UPSTREAM_REPOSITORY
+          ref: origin/main
+        includePaths:
+          - skills/engineering/setup-matt-pocock-skills/**/*
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/engineering/setup-matt-pocock-skills
+  - path: skills/grilling
+    contents:
+      - path: .
+        git:
+          url: UPSTREAM_REPOSITORY
+          ref: origin/main
+        includePaths:
+          - skills/productivity/grilling/**/*
+        excludePaths: []
+        legalPaths: []
+        newRootPath: skills/productivity/grilling

@@ -10,6 +10,39 @@ import yaml
 from tools.capability_pack.qualify import BreakingDriftError, QualificationError, qualify
 
 
+def _add_leaf(package: Path, destination: str, source: str) -> None:
+    manifest = package / "vendir.yml"
+    config = yaml.safe_load(manifest.read_text())
+    config["directories"].append(
+        {
+            "path": f"skills/{destination}",
+            "contents": [
+                {
+                    "path": ".",
+                    "git": {
+                        "url": "https://example.invalid/upstream.git",
+                        "ref": "origin/main",
+                    },
+                    "includePaths": [f"{source}/**/*"],
+                    "excludePaths": [],
+                    "legalPaths": [],
+                    "newRootPath": source,
+                }
+            ],
+        }
+    )
+    manifest.write_text(yaml.safe_dump(config, sort_keys=False))
+    lock = package / "vendir.lock.yml"
+    locked = yaml.safe_load(lock.read_text())
+    locked["directories"].append(
+        {
+            "path": f"skills/{destination}",
+            "contents": [{"path": ".", "git": {"sha": "1" * 40}}],
+        }
+    )
+    lock.write_text(yaml.safe_dump(locked, sort_keys=False))
+
+
 def test_new_upstream_skill_is_reported_and_promoted(
     package: Path, upstream: Path, fake_vendir: Path
 ) -> None:
@@ -17,6 +50,7 @@ def test_new_upstream_skill_is_reported_and_promoted(
     beta = upstream / "skills" / "engineering" / "beta"
     beta.mkdir()
     (beta / "SKILL.md").write_text("# Beta\n")
+    _add_leaf(package, "beta", "skills/engineering/beta")
 
     result = qualify(package, "update")
 
@@ -38,13 +72,13 @@ def test_removed_upstream_skill_is_breaking_drift(
 
 def test_missing_recorded_legal_file_fails_qualification(package: Path, fake_vendir: Path) -> None:
     """Catch publishing a reconstructed payload without its required license."""
-    (package / "LICENSES" / "mattpocock-skills-LICENSE").unlink()
+    (package / "LICENSES" / "mattpocock-skills" / "LICENSE").unlink()
 
     with pytest.raises(QualificationError, match="legal file"):
         qualify(package, "locked")
 
 
-def test_owned_skill_collision_is_preserved_by_vendir_ignore_paths(
+def test_undeclared_owned_sibling_is_preserved_on_upstream_collision(
     package: Path, upstream: Path, fake_vendir: Path
 ) -> None:
     """Catch an upstream same-name skill replacing repository-owned behavior."""
@@ -84,10 +118,12 @@ def test_file_addition_or_deletion_marks_existing_skill_changed(
     assert "Changed skills: alpha" in result.summary
 
 
-def test_matt_locks_must_resolve_to_same_commit(package: Path, fake_vendir: Path) -> None:
-    """Catch combining engineering and grilling content from different Matt commits."""
-    lock = package / "vendir.grilling.lock.yml"
-    lock.write_text(lock.read_text().replace("1" * 40, "9" * 40))
+def test_all_matt_leaf_locks_must_resolve_to_same_commit(package: Path, fake_vendir: Path) -> None:
+    """Catch combining imported leaf content from different Matt commits."""
+    lock = package / "vendir.lock.yml"
+    data = yaml.safe_load(lock.read_text())
+    data["directories"][-1]["contents"][0]["git"]["sha"] = "9" * 40
+    lock.write_text(yaml.safe_dump(data, sort_keys=False))
 
     with pytest.raises(QualificationError, match="different commits"):
         qualify(package, "locked")

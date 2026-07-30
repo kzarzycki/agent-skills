@@ -9,9 +9,9 @@ from conftest import OWNED_SKILLS
 from tools.capability_pack.qualify import QualificationError, qualify
 
 
-def _owned_bytes(package: Path) -> dict[str, bytes]:
+def _owned_state(package: Path) -> dict[str, tuple[bytes, int]]:
     return {
-        path.relative_to(package).as_posix(): path.read_bytes()
+        path.relative_to(package).as_posix(): (path.read_bytes(), path.stat().st_mode & 0o777)
         for name in OWNED_SKILLS
         for path in (package / "skills" / name).rglob("*")
         if path.is_file()
@@ -20,11 +20,47 @@ def _owned_bytes(package: Path) -> dict[str, bytes]:
 
 def test_update_preserves_all_owned_skill_trees(package: Path, fake_vendir: Path) -> None:
     """Catch staging or promotion rewriting any repository-owned skill."""
-    before = _owned_bytes(package)
+    executable = package / "skills" / "audit-third-party-software" / "run.sh"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    before = _owned_state(package)
 
     qualify(package, "update")
 
-    assert _owned_bytes(package) == before
+    assert _owned_state(package) == before
+
+
+def test_update_then_locked_repeat_converges(package: Path, fake_vendir: Path) -> None:
+    """Catch one-lock reproduction changing payload, provenance, or source identity."""
+    qualify(package, "update")
+    before = _owned_state(package)
+
+    result = qualify(package, "locked")
+
+    assert result.changed is False
+    assert _owned_state(package) == before
+
+
+def test_staged_package_tests_receive_complete_provenance(package: Path, fake_vendir: Path) -> None:
+    """Catch running package contracts before proposed provenance is generated."""
+    tests = package / "tests"
+    tests.mkdir()
+    (tests / "test_provenance.py").write_text(
+        "from pathlib import Path\n"
+        "import yaml\n\n"
+        "def test_complete_provenance():\n"
+        "    package = Path(__file__).parents[1]\n"
+        "    data = yaml.safe_load((package / 'provenance.yml').read_text())\n"
+        "    assert data['source_commit'] == '" + "2" * 40 + "'\n"
+        "    assert data['included_skills'] == [\n"
+        "        'alpha', 'grilling', 'setup-engineering-workflow-for-apm'\n"
+        "    ]\n"
+        "    assert data['source_files']\n"
+        "    assert data['license_files']\n"
+        "    assert data['output_files']\n"
+    )
+
+    qualify(package, "update")
 
 
 def test_check_detects_direct_edit_without_mutating_package(

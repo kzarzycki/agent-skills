@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -44,8 +45,6 @@ def _write_package(package: Path) -> None:
         )
     )
     (package / "patches").mkdir()
-    (package / "vendir.grilling.yml").write_text((package / "vendir.yml").read_text())
-    (package / "vendir.grilling.lock.yml").write_text((package / "vendir.lock.yml").read_text())
 
 
 def _install_noop_vendir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,6 +98,30 @@ def test_patch_series_is_applied_in_declared_order(
     qualify(package, "update")
 
     assert target.read_text() == "three\n"
+
+
+def test_patch_in_nested_git_worktree_changes_only_staged_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch git apply discovering a parent worktree instead of using the stage root."""
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    package = repository / "engineering"
+    _write_package(package)
+    _install_noop_vendir(tmp_path, monkeypatch)
+    target = package / "value.txt"
+    target.write_text("one\n")
+    parent_target = repository / "value.txt"
+    parent_target.write_text("parent\n")
+    patch = package / "patches" / "change.patch"
+    patch.write_text(_patch("value.txt", "one", "two"))
+    (package / "patches" / "series").write_text("patches/change.patch\n")
+
+    qualify(package, "update")
+
+    assert target.read_text() == "two\n"
+    assert parent_target.read_text() == "parent\n"
 
 
 def test_rejected_patch_leaves_real_package_byte_identical(
@@ -183,7 +206,7 @@ def test_patch_failure_writes_deterministic_blocked_summary(
     assert b"Previous source commit: 1111111111111111111111111111111111111111" in first
     assert b"Proposed source commit: 2222222222222222222222222222222222222222" in first
     assert b"Patch failures: patches/broken.patch" in first
-    assert b"License hashes: LICENSES/mattpocock-skills-LICENSE=" in first
+    assert b"License hashes: LICENSES/mattpocock-skills/LICENSE=" in first
     assert b"Proposed version: BLOCKED" in first
     assert b"Output hashes:" not in first
 

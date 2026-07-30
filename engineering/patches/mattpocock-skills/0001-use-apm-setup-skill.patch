@@ -1,0 +1,95 @@
+diff --git a/skills/ask-matt/SKILL.md b/skills/ask-matt/SKILL.md
+index 70b807b..dd50638 100644
+--- a/skills/ask-matt/SKILL.md
++++ b/skills/ask-matt/SKILL.md
+@@ -75,4 +75,4 @@ Off the main flow entirely.
+ 
+ ## Precondition
+ 
+-**`/setup-matt-pocock-skills`** — run before your first engineering flow to configure the issue tracker, triage labels, and doc layout the other skills assume. Custom issue trackers also work.
++**`/setup-engineering-workflow-for-apm`** — run before your first engineering flow to configure the issue tracker, triage labels, and doc layout the other skills assume. Custom issue trackers also work.
+diff --git a/skills/code-review/SKILL.md b/skills/code-review/SKILL.md
+index 2a0b524..4b4bc44 100644
+--- a/skills/code-review/SKILL.md
++++ b/skills/code-review/SKILL.md
+@@ -10,7 +10,7 @@ Two-axis review of the diff between `HEAD` and a fixed point the user supplies:
+ 
+ Both axes run as **parallel sub-agents** so they don't pollute each other's context, then this skill aggregates their findings.
+ 
+-The issue tracker should have been provided to you — run `/setup-matt-pocock-skills` if `docs/agents/issue-tracker.md` is missing.
++The issue tracker should have been provided to you — run `/setup-engineering-workflow-for-apm` if `docs/agents/issue-tracker.md` is missing.
+ 
+ ## Process
+ 
+diff --git a/skills/setup-engineering-workflow-for-apm/SKILL.md b/skills/setup-engineering-workflow-for-apm/SKILL.md
+index aecf855..3a36fe4 100644
+--- a/skills/setup-engineering-workflow-for-apm/SKILL.md
++++ b/skills/setup-engineering-workflow-for-apm/SKILL.md
+@@ -1,5 +1,5 @@
+ ---
+-name: setup-matt-pocock-skills
++name: setup-engineering-workflow-for-apm
+ description: Configure this repo for the engineering skills — set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.
+ disable-model-invocation: true
+ ---
+diff --git a/skills/to-spec/SKILL.md b/skills/to-spec/SKILL.md
+index f3cca8d..ed50faf 100644
+--- a/skills/to-spec/SKILL.md
++++ b/skills/to-spec/SKILL.md
+@@ -6,7 +6,7 @@ disable-model-invocation: true
+ 
+ This skill takes the current conversation context and codebase understanding and produces a spec (you may know this document as a PRD). Do NOT interview the user — just synthesize what you already know.
+ 
+-The issue tracker and triage label vocabulary should have been provided to you — run `/setup-matt-pocock-skills` if not.
++The issue tracker and triage label vocabulary should have been provided to you — run `/setup-engineering-workflow-for-apm` if not.
+ 
+ ## Process
+ 
+diff --git a/skills/to-tickets/SKILL.md b/skills/to-tickets/SKILL.md
+index 96deac5..da1e8cc 100644
+--- a/skills/to-tickets/SKILL.md
++++ b/skills/to-tickets/SKILL.md
+@@ -8,7 +8,7 @@ disable-model-invocation: true
+ 
+ Break a plan, spec, or conversation into a set of **tickets** — tracer-bullet vertical slices, each declaring the tickets that **block** it.
+ 
+-The issue tracker and triage label vocabulary should have been provided to you — run `/setup-matt-pocock-skills` if not.
++The issue tracker and triage label vocabulary should have been provided to you — run `/setup-engineering-workflow-for-apm` if not.
+ 
+ ## Process
+ 
+@@ -57,7 +57,7 @@ Iterate until the user approves the breakdown.
+ 
+ ### 5. Publish the tickets to the configured tracker
+ 
+-Publish the approved tickets. **How** depends on the tracker `/setup-matt-pocock-skills` configured — the tickets are the same either way, only the shape of the blocking edges changes:
++Publish the approved tickets. **How** depends on the tracker `/setup-engineering-workflow-for-apm` configured — the tickets are the same either way, only the shape of the blocking edges changes:
+ 
+ - **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below — one ticket per file, never a single combined file.
+ - **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply the `ready-for-agent` triage label unless instructed otherwise — the tickets are agent-grabbable by construction.
+diff --git a/skills/triage/SKILL.md b/skills/triage/SKILL.md
+index be47b78..54868ec 100644
+--- a/skills/triage/SKILL.md
++++ b/skills/triage/SKILL.md
+@@ -40,7 +40,7 @@ For a PR, the same states read against the attached code: `ready-for-agent` mean
+ 
+ Every triaged issue should carry exactly one category role and one state role. If state roles conflict, flag it and ask the maintainer before doing anything else.
+ 
+-These are canonical role names — the actual label strings used in the issue tracker may differ. The mapping should have been provided to you - run `/setup-matt-pocock-skills` if not.
++These are canonical role names — the actual label strings used in the issue tracker may differ. The mapping should have been provided to you - run `/setup-engineering-workflow-for-apm` if not.
+ 
+ State transitions: an unlabeled issue normally goes to `needs-triage` first; from there it moves to `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`. `needs-info` returns to `needs-triage` once the reporter replies. The maintainer can override at any time — flag transitions that look unusual and ask before proceeding.
+ 
+diff --git a/skills/wayfinder/SKILL.md b/skills/wayfinder/SKILL.md
+index 42e3644..111b520 100644
+--- a/skills/wayfinder/SKILL.md
++++ b/skills/wayfinder/SKILL.md
+@@ -22,7 +22,7 @@ The map is a single issue on this repo's issue tracker, labelled `wayfinder:map`
+ 
+ The map is an **index**, not a store. It lists the decisions made and points at the tickets that hold their detail; a decision lives in exactly one place — its ticket — so the map never restates it, only gists it and links.
+ 
+-**Where the map, its child tickets, blocking, and frontier queries physically live is tracker-specific.** The issue tracker should have been provided to you — run `/setup-matt-pocock-skills` if not. Consult the tracker doc's "Wayfinding operations" section for how _this_ repo expresses them. If no tracker has been provided, default to the local-markdown tracker.
++**Where the map, its child tickets, blocking, and frontier queries physically live is tracker-specific.** The issue tracker should have been provided to you — run `/setup-engineering-workflow-for-apm` if not. Consult the tracker doc's "Wayfinding operations" section for how _this_ repo expresses them. If no tracker has been provided, default to the local-markdown tracker.
+ 
+ ### The map body
+ 
