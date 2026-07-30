@@ -24,6 +24,8 @@ from tools.capability_pack.summary import render_summary
 
 VENDIR_MANIFEST = "vendir.yml"
 VENDIR_LOCK = "vendir.lock.yml"
+ENGINEERING_SOURCE_URL = "https://github.com/mattpocock/skills.git"
+ENGINEERING_TRACKED_REF = "origin/main"
 
 
 class QualificationError(RuntimeError):
@@ -117,6 +119,25 @@ def _load_manifest(path: Path) -> dict:
         raise ConfigurationError(f"missing vendir manifest: {path.name}") from error
     except yaml.YAMLError as error:
         raise ConfigurationError(f"invalid vendir manifest {path.name}: {error}") from error
+
+
+def _validate_source_policy(package: Path, config: dict) -> None:
+    if package.name != "engineering":
+        return
+    sources = [
+        content.get("git")
+        for directory in config["directories"]
+        for content in directory["contents"]
+    ]
+    if not sources or any(not isinstance(source, dict) for source in sources):
+        raise ConfigurationError("engineering source policy requires Git sources only")
+    urls = {source.get("url") for source in sources}
+    refs = {source.get("ref") for source in sources}
+    if urls != {ENGINEERING_SOURCE_URL} or refs != {ENGINEERING_TRACKED_REF}:
+        raise ConfigurationError(
+            "engineering source policy requires "
+            f"{ENGINEERING_SOURCE_URL} at {ENGINEERING_TRACKED_REF}"
+        )
 
 
 def _source_commit(package: Path) -> str:
@@ -348,6 +369,12 @@ def _reconcile_inventory(
             "removed or renamed configured upstream leaf(s) "
             f"{', '.join(missing)} at candidate {candidate}"
         )
+    collisions = sorted(upstream_names & set(owned) - set(configured))
+    if collisions:
+        raise BreakingDriftError(
+            "upstream leaf collides with repository-owned skill(s) "
+            f"{', '.join(collisions)} at candidate {candidate}"
+        )
     additions = sorted(upstream_names - set(configured) - set(owned))
     if additions and template is None:
         raise ConfigurationError("no ordinary engineering leaf available as inventory template")
@@ -524,6 +551,15 @@ def _changed_skills(previous: Provenance | None, proposed: Provenance) -> tuple[
     return tuple(sorted(names))
 
 
+def _setup_contract_changed(previous: Provenance | None, proposed: Provenance) -> bool:
+    if previous is None:
+        return False
+    prefix = "skills/setup-engineering-workflow-for-apm/"
+    old = tuple(item for item in previous.output_files if item.path.startswith(prefix))
+    new = tuple(item for item in proposed.output_files if item.path.startswith(prefix))
+    return old != new
+
+
 def _validate_locked_reproduction(package: Path, proposed: Provenance) -> None:
     actual = _output_manifest(package, proposed.included_skills)
     if actual != proposed.output_files:
@@ -578,6 +614,7 @@ def qualify(
     if summary_path and _is_below(summary_path.resolve(strict=False), package):
         raise ConfigurationError("summary path must be outside the package root")
     config = _load_manifest(package / VENDIR_MANIFEST)
+    _validate_source_policy(package, config)
     _source_commit(package)
     original_managed = _managed_skills(config)
     owned = _owned_skills(package, original_managed)
@@ -669,7 +706,7 @@ def qualify(
             patch_failures=(),
             test_command=test_command,
             test_result=test_result,
-            setup_contract_changed=False,
+            setup_contract_changed=_setup_contract_changed(previous, proposed),
         )
         if mode == "update":
             if summary_path:

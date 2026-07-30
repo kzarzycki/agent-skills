@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack.qualify import BreakingDriftError, QualificationError, qualify
+from tools.capability_pack.qualify import (
+    BreakingDriftError,
+    ConfigurationError,
+    QualificationError,
+    qualify,
+)
 
 
 def _add_leaf(package: Path, destination: str, source: str) -> None:
@@ -22,7 +27,7 @@ def _add_leaf(package: Path, destination: str, source: str) -> None:
                 {
                     "path": ".",
                     "git": {
-                        "url": "https://example.invalid/upstream.git",
+                        "url": "https://github.com/mattpocock/skills.git",
                         "ref": "origin/main",
                     },
                     "includePaths": [f"{source}/**/*"],
@@ -183,18 +188,56 @@ def test_missing_recorded_legal_file_fails_qualification(package: Path, fake_ven
         qualify(package, "locked")
 
 
-def test_undeclared_owned_sibling_is_preserved_on_upstream_collision(
-    package: Path, upstream: Path, fake_vendir: Path
+def test_undeclared_owned_sibling_collision_blocks_update(
+    package: Path,
+    upstream: Path,
+    fake_vendir: Path,
 ) -> None:
-    """Catch an upstream same-name skill replacing repository-owned behavior."""
+    _enable_inventory_reconciliation(package, upstream)
     colliding = upstream / "skills" / "engineering" / "context-extractor"
     colliding.mkdir()
     (colliding / "SKILL.md").write_text("# Upstream collision\n")
-    owned = (package / "skills" / "context-extractor" / "SKILL.md").read_bytes()
+    candidate = _commit(upstream, "add owned-name collision")
+    before = _package_bytes(package)
 
-    qualify(package, "update")
+    with pytest.raises(BreakingDriftError, match=rf"context-extractor.*{candidate}"):
+        qualify(package, "update")
 
-    assert (package / "skills" / "context-extractor" / "SKILL.md").read_bytes() == owned
+    assert _package_bytes(package) == before
+
+
+def test_setup_payload_change_blocks_version_proposal(
+    package: Path, upstream: Path, fake_vendir: Path
+) -> None:
+    setup = upstream / "skills" / "engineering" / "setup-matt-pocock-skills" / "SKILL.md"
+    setup.write_text(setup.read_text() + "\nChanged contract.\n")
+
+    result = qualify(package, "update")
+
+    assert "Changed skills: setup-engineering-workflow-for-apm" in result.summary
+    assert "Proposed version: BLOCKED" in result.summary
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("url", "https://example.invalid/upstream.git"),
+        ("ref", "origin/feature"),
+    ],
+)
+def test_engineering_source_policy_rejects_unapproved_source_or_ref(
+    package: Path, field: str, value: str
+) -> None:
+    manifest = package / "vendir.yml"
+    config = yaml.safe_load(manifest.read_text())
+    for directory in config["directories"]:
+        for content in directory["contents"]:
+            if "git" in content:
+                content["git"][field] = value
+    manifest.write_text(yaml.safe_dump(config, sort_keys=False))
+
+    with pytest.raises(ConfigurationError, match="source policy"):
+        qualify(package, "locked")
 
 
 @pytest.mark.parametrize("change", ["added", "deleted"])

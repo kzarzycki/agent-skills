@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 from pathlib import Path
@@ -19,7 +20,20 @@ def _write_package(package: Path) -> None:
             {
                 "apiVersion": "vendir.k14s.io/v1alpha1",
                 "kind": "Config",
-                "directories": [],
+                "directories": [
+                    {
+                        "path": ".upstream",
+                        "contents": [
+                            {
+                                "path": ".",
+                                "git": {
+                                    "url": "https://github.com/mattpocock/skills.git",
+                                    "ref": "origin/main",
+                                },
+                            }
+                        ],
+                    }
+                ],
             },
             sort_keys=False,
         )
@@ -31,10 +45,10 @@ def _write_package(package: Path) -> None:
                 "kind": "LockConfig",
                 "directories": [
                     {
-                        "path": "skills",
+                        "path": ".upstream",
                         "contents": [
                             {
-                                "path": ".upstream/engineering",
+                                "path": ".",
                                 "git": {"sha": "a" * 40},
                             }
                         ],
@@ -54,6 +68,12 @@ def _install_noop_vendir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     vendir.write_text("#!/bin/sh\nexit 0\n")
     vendir.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    qualify_module = importlib.import_module("tools.capability_pack.qualify")
+    monkeypatch.setattr(
+        qualify_module,
+        "_reconcile_inventory",
+        lambda _stage, config, _owned: (config, None),
+    )
 
 
 def _patch(path: str, before: str, after: str) -> str:

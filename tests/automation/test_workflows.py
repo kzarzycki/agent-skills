@@ -23,6 +23,8 @@ def test_engineering_ci_is_path_scoped_and_runs_all_deterministic_gates() -> Non
     commands = "\n".join(step.get("run", "") for step in _steps(workflow))
 
     assert {
+        ".github/workflows/engineering-*.yml",
+        ".gitattributes",
         "engineering/**",
         "tools/capability_pack/**",
         "tests/capability_pack/**",
@@ -34,12 +36,14 @@ def test_engineering_ci_is_path_scoped_and_runs_all_deterministic_gates() -> Non
         "README.md",
         "CLAUDE.md",
     } <= paths
+    assert set(workflow["on"]["push"]["paths"]) == paths
     for command in (
         "mise install",
         "uv sync --frozen",
         "mise run vendor-engineering-check",
         "mise run test",
         "mise run test-engineering-package",
+        "git diff --check",
     ):
         assert command in commands
 

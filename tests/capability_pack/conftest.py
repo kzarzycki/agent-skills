@@ -29,7 +29,7 @@ def git_leaf(destination: str, source: str) -> dict:
             {
                 "path": ".",
                 "git": {
-                    "url": "https://example.invalid/upstream.git",
+                    "url": "https://github.com/mattpocock/skills.git",
                     "ref": "origin/main",
                 },
                 "includePaths": [f"{source}/**/*"],
@@ -90,7 +90,7 @@ def write_package(package: Path, upstream: Path) -> None:
                             {
                                 "path": ".",
                                 "git": {
-                                    "url": "https://example.invalid/upstream.git",
+                                    "url": "https://github.com/mattpocock/skills.git",
                                     "ref": "origin/main",
                                 },
                                 "includePaths": ["LICENSE"],
@@ -137,7 +137,7 @@ def write_package(package: Path, upstream: Path) -> None:
                 "excluded_skills": ["setup-matt-pocock-skills"],
                 "source_mappings": [
                     {
-                        "source_repository": "https://example.invalid/upstream.git",
+                        "source_repository": "https://github.com/mattpocock/skills.git",
                         "source_commit": OLD_COMMIT,
                         "source_path": source,
                         "destination_path": destination,
@@ -229,6 +229,7 @@ if "--locked" not in sys.argv:
     vendir.chmod(0o755)
     qualify_module = importlib.import_module("tools.capability_pack.qualify")
     reconcile = qualify_module._reconcile_inventory
+    validate_source_policy = qualify_module._validate_source_policy
 
     def reconcile_fixture(stage: Path, config: dict, owned: tuple[str, ...]):
         urls = {
@@ -237,11 +238,23 @@ if "--locked" not in sys.argv:
             for content in directory["contents"]
             if "git" in content
         }
-        if urls == {"https://example.invalid/upstream.git"}:
+        if urls == {"https://github.com/mattpocock/skills.git"}:
             return config, None
         return reconcile(stage, config, owned)
 
+    def validate_fixture_source_policy(package: Path, config: dict) -> None:
+        urls = {
+            content["git"]["url"]
+            for directory in config["directories"]
+            for content in directory["contents"]
+            if "git" in content
+        }
+        if urls and all(Path(url).is_dir() for url in urls):
+            return
+        validate_source_policy(package, config)
+
     monkeypatch.setattr(qualify_module, "_reconcile_inventory", reconcile_fixture)
+    monkeypatch.setattr(qualify_module, "_validate_source_policy", validate_fixture_source_policy)
     monkeypatch.setenv("FAKE_VENDIR_UPSTREAM", str(upstream))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     return vendir
