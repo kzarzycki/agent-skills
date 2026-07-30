@@ -1,2 +1,2 @@
-Invoke {invocation} explicitly. Do not perform its workflow. Return exactly one line:
-ACTIVATED_SKILL: {skill_name}
+Invoke {invocation} explicitly. Do not perform its workflow. Stop after the
+runtime records the skill activation.

@@ -18,7 +18,7 @@ run = "uv run python tests/adoption/run_renovate_probe.py"
 run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_package_metadata.py engineering/tests/test_consumer_e2e.py"
 
 [tasks.test-engineering-agents]
-run = "uv run pytest -q -m live_agent engineering/tests/e2e"
+run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e"
 
 [tasks.test]
 run = "uv run pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests && uv run ruff format --check tools tests engineering/tests"

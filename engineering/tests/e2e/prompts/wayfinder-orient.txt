@@ -1,4 +1,4 @@
-Invoke {invocation} to orient to this repository without creating or changing any
-GitHub Issue. Treat README.md, src/domain.py, and tests/test_domain.py as the required
-evidence boundary. Return one line per file in this exact form:
-EVIDENCE: <repository-relative path>
+Invoke {invocation} to orient to this repository without mutating issue-tracker
+state. Read the top-level overview, follow its orientation directions, and
+report the repository-relative paths you opened plus concise facts that preserve
+source identifiers and assignments exactly.

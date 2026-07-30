@@ -11,6 +11,14 @@ import pytest
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
+def test_live_agent_gate_requests_both_supported_agents() -> None:
+    task = (REPOSITORY / "mise.toml").read_text()
+
+    assert (
+        'run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e"'
+    ) in task
+
+
 @pytest.mark.parametrize("mutation", ["corrupt", "delete"])
 def test_advertised_package_gate_rejects_marketplace_mutation(
     tmp_path: Path,

@@ -24,6 +24,9 @@ class TargetAdapter:
     name: str
     catalog_path: Path
 
+    def catalog(self, root: Path) -> SkillCatalog:
+        return SkillCatalog(root / self.catalog_path)
+
 
 CLAUDE = TargetAdapter("claude", Path(".claude/skills"))
 CODEX = TargetAdapter("codex", Path(".agents/skills"))
@@ -60,30 +63,20 @@ class SkillCatalog:
 class InstalledFixture:
     consumer: Path
     expected_skills: set[str]
-    global_catalogs_before: dict[str, tuple[tuple[str, int, int], ...]]
-    global_catalogs_after: dict[str, tuple[tuple[str, int, int], ...]]
+    global_catalogs_before: dict[str, dict[str, str]]
+    global_catalogs_after: dict[str, dict[str, str]]
 
     def catalog(self, adapter: TargetAdapter) -> SkillCatalog:
-        return SkillCatalog(self.consumer / adapter.catalog_path)
+        return adapter.catalog(self.consumer)
 
 
-def _catalog_state(root: Path) -> tuple[tuple[str, int, int], ...]:
+def _catalog_state(root: Path) -> dict[str, str]:
     if not root.exists():
-        return ()
-    return tuple(
-        sorted(
-            (
-                path.relative_to(root).as_posix(),
-                path.stat().st_size,
-                path.stat().st_mtime_ns,
-            )
-            for path in root.rglob("*")
-            if path.is_file()
-        )
-    )
+        return {}
+    return file_manifest(root)
 
 
-def _global_catalogs() -> dict[str, tuple[tuple[str, int, int], ...]]:
+def _global_catalogs() -> dict[str, dict[str, str]]:
     home = Path.home()
     codex_home = Path(os.environ.get("CODEX_HOME", home / ".codex"))
     roots = {
@@ -92,6 +85,27 @@ def _global_catalogs() -> dict[str, tuple[tuple[str, int, int], ...]]:
         "codex": codex_home / "skills",
     }
     return {name: _catalog_state(root) for name, root in roots.items()}
+
+
+def assert_catalog_matches(source: dict[str, str], catalog: SkillCatalog) -> None:
+    actual = file_manifest(catalog.root)
+    missing = sorted(source.keys() - actual.keys())
+    extra = sorted(actual.keys() - source.keys())
+    changed = sorted(path for path in source.keys() & actual.keys() if source[path] != actual[path])
+    assert not (missing or extra or changed), (
+        f"catalog mismatch: missing={missing}, extra={extra}, changed={changed}"
+    )
+
+
+def pack_catalog(tmp_path: Path) -> Path:
+    env = _isolated_env(tmp_path)
+    package_copy = tmp_path / "engineering"
+    shutil.copytree(PACKAGE, package_copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    pack_dir = tmp_path / "packed"
+    _run(["apm", "pack", "--output", str(pack_dir)], cwd=package_copy, env=env)
+    manifests = list(pack_dir.rglob("plugin.json"))
+    assert len(manifests) == 1
+    return manifests[0].parent
 
 
 def install_fixture(tmp_path: Path) -> InstalledFixture:
