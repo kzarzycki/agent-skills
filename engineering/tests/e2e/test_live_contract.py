@@ -47,14 +47,20 @@ def _event_lines(agent: str, repo: Path) -> str:
                 "type": "item.completed",
                 "item": {
                     "type": "command_execution",
-                    "command": "cat .agents/skills/wayfinder/SKILL.md",
+                    "command": '/bin/bash -lc "cat .agents/skills/wayfinder/SKILL.md"',
+                    "aggregated_output": (
+                        repo / ".agents" / "skills" / "wayfinder" / "SKILL.md"
+                    ).read_text(),
                 },
             },
             {
                 "type": "item.completed",
                 "item": {
                     "type": "command_execution",
-                    "command": "sed -n 1,160p " + " ".join(EVIDENCE_PATHS),
+                    "command": '/bin/bash -lc "sed -n 1,160p ' + " ".join(EVIDENCE_PATHS) + '"',
+                    "aggregated_output": "\n".join(
+                        (repo / path).read_text() for path in EVIDENCE_PATHS
+                    ),
                 },
             },
             {
@@ -75,7 +81,9 @@ def test_structured_agent_events_are_the_only_activation_and_evidence_oracle(
     repo.mkdir()
     skill = repo / ".agents" / "skills" / "wayfinder" / "SKILL.md"
     skill.parent.mkdir(parents=True)
-    skill.write_text("# Wayfinder\n")
+    skill.write_text(
+        "---\nname: wayfinder\ndescription: Orient to a repository from evidence.\n---\n"
+    )
     for relative in EVIDENCE_PATHS:
         path = repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +101,73 @@ def test_structured_agent_events_are_the_only_activation_and_evidence_oracle(
     assert result.activation_skills == ("wayfinder",)
     assert result.evidence_paths == EVIDENCE_PATHS
     assert all(fact in result.response_text for fact in WAYFINDER_FACTS)
+
+
+def test_codex_path_only_commands_cannot_fake_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    paths = (".agents/skills/wayfinder/SKILL.md", *EVIDENCE_PATHS)
+    for relative in paths:
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"content marker for {relative}\n")
+    events = [
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": f"printf %s {relative}",
+                "aggregated_output": relative,
+            },
+        }
+        for relative in paths
+    ]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "codex"
+    payload = "\n".join(json.dumps(event) for event in events)
+    executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{payload}'\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    result = run_agent("codex", "prompt without result literals", repo)
+
+    assert result.activation_skills == ()
+    assert result.evidence_paths == ()
+
+
+def test_codex_printf_cannot_fake_content_markers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    relative = ".agents/skills/wayfinder/SKILL.md"
+    skill = repo / relative
+    skill.parent.mkdir(parents=True)
+    marker = "description: Orient to a repository from evidence."
+    skill.write_text(f"---\nname: wayfinder\n{marker}\n---\n")
+    event = {
+        "type": "item.completed",
+        "item": {
+            "type": "command_execution",
+            "command": f"printf %s {relative}",
+            "aggregated_output": marker,
+        },
+    }
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "codex"
+    executable.write_text(f"#!/bin/sh\nprintf '%s\\n' '{json.dumps(event)}'\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+
+    result = run_agent("codex", "prompt without result literals", repo)
+
+    assert result.activation_skills == ()
 
 
 def test_exact_echo_probe_cannot_fake_activation_or_wayfinder_evidence(

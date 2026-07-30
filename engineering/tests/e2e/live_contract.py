@@ -148,6 +148,40 @@ def _relative_evidence(raw_path: str, repo: Path) -> str | None:
         return None
 
 
+READ_COMMANDS = {"awk", "bat", "cat", "grep", "head", "less", "more", "rg", "sed", "tail"}
+SHELL_SEPARATORS = {"&&", "||", ";", "|"}
+
+
+def _command_segments(command: str) -> list[list[str]]:
+    tokens = shlex.split(command)
+    for index, token in enumerate(tokens[:-1]):
+        if token in {"-c", "-lc"}:
+            return _command_segments(tokens[index + 1])
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token in SHELL_SEPARATORS:
+            segments.append([])
+        else:
+            segments[-1].append(token)
+    return [segment for segment in segments if segment]
+
+
+def _file_marker(path: Path) -> str | None:
+    try:
+        lines = path.read_text().splitlines()
+    except UnicodeDecodeError:
+        return None
+    stripped = [line.strip() for line in lines]
+    if path.name == "SKILL.md":
+        return next((line for line in stripped if line.startswith("description:")), None)
+    candidates = [
+        line
+        for line in stripped
+        if len(line) >= 12 and line != "---" and not line.startswith(("from ", "import "))
+    ]
+    return max(candidates, key=len, default=None)
+
+
 def _claude_trace(events: list[dict], repo: Path) -> tuple[list[str], list[str], list[str]]:
     skills: list[str] = []
     paths: list[str] = []
@@ -184,20 +218,30 @@ def _codex_trace(events: list[dict], repo: Path) -> tuple[list[str], list[str], 
         if item_type == "agent_message" and isinstance(item.get("text"), str):
             messages.append(item["text"])
         if item_type == "command_execution" and isinstance(item.get("command"), str):
-            for token in shlex.split(item["command"]):
-                candidate = token.removesuffix(":")
-                if (repo / candidate).is_file() and (
-                    relative := _relative_evidence(candidate, repo)
-                ):
-                    parts = Path(relative).parts
+            output = item.get("aggregated_output")
+            if not isinstance(output, str):
+                continue
+            for segment in _command_segments(item["command"]):
+                if Path(segment[0]).name not in READ_COMMANDS:
+                    continue
+                for token in segment[1:]:
+                    candidate = token.removesuffix(":")
+                    file_path = repo / candidate
+                    marker = _file_marker(file_path) if file_path.is_file() else None
                     if (
-                        len(parts) == 4
-                        and parts[:2] == (".agents", "skills")
-                        and parts[3] == "SKILL.md"
+                        marker
+                        and marker in output
+                        and (relative := _relative_evidence(candidate, repo))
                     ):
-                        skills.append(parts[2])
-                    else:
-                        paths.append(relative)
+                        parts = Path(relative).parts
+                        if (
+                            len(parts) == 4
+                            and parts[:2] == (".agents", "skills")
+                            and parts[3] == "SKILL.md"
+                        ):
+                            skills.append(parts[2])
+                        else:
+                            paths.append(relative)
     return skills, paths, messages
 
 
