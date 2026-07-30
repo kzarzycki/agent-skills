@@ -4,7 +4,7 @@
 
 **Goal:** Publish `engineering` as an independently versioned APM capability pack containing the controlled Matt Pocock engineering workflow, the existing owned skills, and tested Claude Code/Codex adapters.
 
-**Architecture:** Carvel vendir acquires selected upstream paths and owns the primary Git lock. A small Python qualification command stages the vendir result, applies integration patches, enforces inventory and ownership policy, writes extended provenance, runs package checks, and swaps the package only after success. APM and native plugin manifests expose the same `engineering/skills` payload; GitHub Actions qualifies updates and package-scoped tags.
+**Architecture:** Carvel vendir owns one destination leaf per imported skill and one Git lock. This preserves repository-owned sibling skills while producing one conventional `engineering/skills/` tree for APM and native agent adapters. A small Python qualification command stages the vendir result, applies integration patches, enforces inventory and ownership policy, writes extended provenance, runs package checks, and swaps the package only after success. GitHub Actions qualifies updates and package-scoped tags.
 
 **Tech Stack:** mise, Carvel vendir 0.46.0, Microsoft APM 0.26.0, Python 3.14.6, uv 0.11.8, PyYAML 6.0.3, pytest 9.1.1, Ruff 0.16.0, Renovate 43.285.7 for the adoption probe, GitHub Actions, Claude Code, Codex.
 
@@ -14,8 +14,13 @@
 - Pin Python 3.14.6, uv 0.11.8, APM 0.26.0, vendir 0.46.0, pytest 9.1.1, Ruff 0.16.0, and PyYAML 6.0.3. Commit `uv.lock` for transitive pins.
 - `engineering/` is the package root. Root `apm.yml` remains this repository's private consumer manifest and must not leak into the package.
 - Preserve the owned skills `audit-third-party-software`, `context-extractor`, and `operating-omnigent`.
-- Add the owned skill `setup-engineering-workflow-for-apm`; never create a local skill named `setup-matt-pocock-skills`.
-- Vendir owns Git acquisition, path filtering, legal-file copying, resolved-SHA locking, and locked reproduction. Python must not implement Git fetch, ref resolution, or a second include/exclude copier.
+- Import upstream setup directly at `skills/setup-engineering-workflow-for-apm`, then transform it through the ordered repository-owned patch series. Never create a local skill named `setup-matt-pocock-skills`.
+- Vendir owns payload acquisition, path filtering, legal-file copying,
+  resolved-SHA locking, and locked reproduction. Refresh-time inventory
+  reconciliation added in Task 8 may use a temporary shallow, filtered Git
+  checkout only to enumerate skill directory names at the candidate commit.
+  Python must not copy payload files or implement a second include/exclude
+  copier.
 - Imported files are generated. Changes come from the package's vendir manifests, `engineering/patches/series`, or the upstream ref.
 - The first import is based on `mattpocock/skills` commit `2ab958093e83e0ec752e6c1c5932da465bf23e0c`, observed on 2026-07-28.
 - GitHub Issue creation requires a complete review batch and an approval immediately before the first external write. Resume uses deterministic issue markers and must not duplicate confirmed issues.
@@ -33,19 +38,18 @@
 - `pyproject.toml`, `uv.lock` — qualification/test dependencies and Ruff/pytest configuration.
 - `tools/capability_pack/cli.py` — CLI parsing and exit codes.
 - `tools/capability_pack/model.py` — immutable policy, inventory, provenance, and result types.
-- `tools/capability_pack/qualify.py` — staging, vendir invocation, patch series, drift checks, owned-path checks, and atomic package swap.
+- `tools/capability_pack/qualify.py` — staging, vendir invocation, refresh-time leaf-inventory reconciliation, patch series, drift checks, owned-path checks, and atomic package swap.
 - `tools/capability_pack/provenance.py` — stable SHA-256 manifests and YAML serialization.
 - `tools/capability_pack/summary.py` — deterministic draft-PR evidence and semantic-version proposal.
 
 **Engineering package**
 
-- `engineering/vendir.yml`, `engineering/vendir.lock.yml` — engineering collection policy and resolved source lock.
-- `engineering/vendir.grilling.yml`, `engineering/vendir.grilling.lock.yml` — `grilling` support-skill policy and resolved source lock.
+- `engineering/vendir.yml`, `engineering/vendir.lock.yml` — leaf-level engineering and `grilling` policies with one resolved source lock.
 - `engineering/provenance.yml` — generated inventory, mappings, hashes, and applied-patch evidence.
 - `engineering/patches/series` and `engineering/patches/mattpocock-skills/*.patch` — ordered APM/setup and GitHub Issues adaptations.
 - `engineering/LICENSES/mattpocock-skills/LICENSE` — upstream redistribution license selected through vendir.
 - `engineering/apm.yml`, `engineering/.claude-plugin/plugin.json` — APM and Claude adapters at version `0.2.0`.
-- `engineering/skills/setup-engineering-workflow-for-apm/` — owned setup skill and templates.
+- `engineering/skills/setup-engineering-workflow-for-apm/` — generated setup skill and templates produced from upstream setup plus repository patches.
 - `engineering/README.md`, `engineering/CLAUDE.md`, `engineering/CHANGELOG.md` — package use, editing contract, and release notes.
 
 **Tests and automation**
@@ -68,17 +72,18 @@
 - Create: `tests/adoption/test_vendir_layout.py`
 - Create: `tests/adoption/test_renovate_vendir.py`
 - Create: `tests/fixtures/vendir-upstream/skills/engineering/alpha/SKILL.md`
+- Create: `tests/fixtures/vendir-upstream/skills/engineering/alpha/scripts/run.sh`
+- Create: `tests/fixtures/vendir-upstream/skills/engineering/beta/SKILL.md`
 - Create: `tests/fixtures/vendir-upstream/skills/engineering/setup-matt-pocock-skills/SKILL.md`
 - Create: `tests/fixtures/vendir-upstream/skills/productivity/grilling/SKILL.md`
 - Create: `tests/fixtures/vendir-package/skills/audit-third-party-software/SKILL.md`
 - Create: `tests/fixtures/vendir-package/vendir.yml`
-- Create: `tests/fixtures/vendir-package/vendir.grilling.yml`
 - Create: `tests/fixtures/renovate/vendir.yml`
 - Create: `tests/fixtures/renovate/vendir.lock.yml`
 
 **Interfaces:**
 - Produces: the command environment used by every later task: `mise exec -- uv run pytest`, `vendir`, and `apm`.
-- Produces: two non-overlapping vendir runs that import `alpha/` and `grilling/`, exclude upstream setup, and preserve owned skills.
+- Produces: one vendir run with leaf destinations for `alpha/`, a second engineering skill, the setup alias, and `grilling/`, while preserving owned sibling skills.
 - Produces: the updater decision: use the scheduled workflow in Task 8 unless Renovate 43.285.7 demonstrates that it can run the full qualification command and commit its outputs.
 
 - [ ] **Step 1: Add the pinned tool and Python project**
@@ -132,11 +137,18 @@ The test must initialize a temporary Git repository from `tests/fixtures/vendir-
 ```python
 assert (skills / "alpha" / "SKILL.md").is_file()
 assert (skills / "grilling" / "SKILL.md").is_file()
+assert (skills / "setup-engineering-workflow-for-apm" / "SKILL.md").is_file()
 assert not (skills / "setup-matt-pocock-skills").exists()
 assert (skills / "audit-third-party-software" / "SKILL.md").read_text() == owned_text
+assert os.access(skills / "alpha" / "scripts" / "run.sh", os.X_OK)
 ```
 
-The primary fixture manifest must exercise `newRootPath`, `includePaths`, `excludePaths`, `legalPaths`, and `ignorePaths` without listing `alpha` by name. It owns `skills/` and preserves `skills/grilling/` plus owned paths. The grilling manifest owns only `skills/grilling/`.
+The fixture manifest must use one `directories` entry per imported leaf. Each
+entry uses `includePaths` and `newRootPath` to select one exact upstream skill.
+Map the upstream setup leaf to the final
+`skills/setup-engineering-workflow-for-apm` destination and map `grilling`
+from `skills/productivity/grilling`. Include a representative executable
+script in the upstream fixture.
 
 - [ ] **Step 4: Run the layout probe and capture the expected failure**
 
@@ -146,11 +158,16 @@ Run:
 mise exec -- uv run pytest -q tests/adoption/test_vendir_layout.py
 ```
 
-Expected before correcting the fixture: FAIL because the first attempted two-source layout nests `grilling` under the upstream `productivity/` path or overwrites the owned directory.
+Expected before correcting the fixture: FAIL because collection-level ownership overwrites an owned sibling or leaves setup and `grilling` at their upstream paths.
 
 - [ ] **Step 5: Correct the vendir composition, not the copied output**
 
-Split the selections into two vendir manifests with non-overlapping managed outputs. Run the primary manifest first and the grilling manifest second, each with its own lock. `ignorePaths` preserves `audit-third-party-software` and `grilling` during the primary sync. Do not copy or promote vendir output in Python and do not add one content entry per discovered engineering skill.
+Use one vendir manifest and lock. Declare one managed directory for every
+imported upstream skill leaf. Owned skill directories are absent from the
+manifest and remain untouched. Run unlocked sync followed by locked sync and
+assert identical content, lock bytes, owned sentinel bytes, and executable
+mode. The explicit leaf inventory is package acquisition policy; Python must
+not copy or promote vendir output.
 
 - [ ] **Step 6: Prove Renovate's artifact boundary**
 
@@ -160,9 +177,10 @@ Split the selections into two vendir manifests with non-overlapping managed outp
 vendir.lock.yml
 skills/alpha/SKILL.md
 skills/grilling/SKILL.md
+skills/setup-engineering-workflow-for-apm/SKILL.md
 ```
 
-Then assert the hosted-safe configuration cannot invoke `python -m tools.capability_pack.cli update engineering` as part of the same atomic artifact update. Expected outcome: Renovate can commit vendir-managed files, but the required patch/provenance/qualification step needs self-hosted `postUpgradeTasks`; select the short scheduled GitHub workflow for Task 7.
+Then assert the hosted-safe configuration cannot invoke `python -m tools.capability_pack.cli update engineering` as part of the same atomic artifact update. Expected outcome: Renovate can commit vendir-managed files, but the required patch/provenance/qualification step needs self-hosted `postUpgradeTasks`; select the short scheduled GitHub workflow for Task 8.
 
 Run:
 
@@ -200,7 +218,9 @@ git commit -m "test: prove capability vendoring tool boundaries"
 - Produces: `qualify(package_root: Path, mode: Literal["update", "locked"], summary_path: Path | None = None) -> QualificationResult`.
 - Produces: `load_provenance(path: Path) -> Provenance` and `write_provenance(path: Path, provenance: Provenance) -> None`.
 - Produces: exit `0` for success/current, `2` for usage/configuration, `3` for breaking drift, and `4` for reproduction/qualification failure.
-- Consumes: vendir as a subprocess; it never calls `git fetch`, `git clone`, or implements source copying.
+- Consumes: vendir as the only payload-acquisition subprocess. The core
+  qualification path implemented here does not call `git fetch` or `git
+  clone`; Task 8 adds the bounded metadata-only inventory checkout.
 
 - [ ] **Step 1: Write RED tests for patch ordering and path safety**
 
@@ -254,7 +274,11 @@ Map `update` to vendir refresh and atomic replacement; map `check` to locked sta
 
 - [ ] **Step 3: Implement minimal patch and staging behavior**
 
-`qualify()` must copy the whole package into a sibling temporary directory, run `vendir sync --chdir str(staged_package)` for update or `vendir sync -l --chdir str(staged_package)` for locked mode, read newline-delimited relative patch paths from `patches/series`, and run each with:
+`qualify()` must copy the whole package into a sibling temporary directory,
+run the package's single vendir manifest with
+`vendir sync --chdir str(staged_package)` for update or
+`vendir sync -l --chdir str(staged_package)` for locked mode, read
+newline-delimited relative patch paths from `patches/series`, and run each with:
 
 ```python
 subprocess.run(
@@ -277,10 +301,11 @@ Validate every patch header path resolves below the staged package before invoki
 
 Cover:
 
-- a new `skills/engineering/beta/SKILL.md` appears in `added_skills`;
+- adding the `beta` leaf to the proposed manifest and fixture source makes it
+  appear in `added_skills`;
 - a missing or renamed previously imported skill returns exit `3`;
 - a missing legal file returns exit `4`;
-- all four owned skill trees remain byte-identical;
+- all three owned sibling skill trees remain byte-identical;
 - changing an imported file causes `check` to return exit `4`;
 - changing only an import timestamp does not affect comparison.
 
@@ -294,9 +319,14 @@ Expected: FAIL because drift and ownership checks are absent.
 
 - [ ] **Step 5: Implement drift, provenance, and atomic replacement**
 
-Derive imported inventory from staged `skills/*/SKILL.md` minus vendir `ignorePaths`. Compare it to `provenance.yml`. Allow additions; reject any removal with a message naming the old skill and source commit.
+Derive imported inventory from the vendir manifest's declared destination
+leaves and staged `skills/*/SKILL.md`. Compare it to `provenance.yml`. Allow
+additions; reject any removal with a message naming the old skill and source
+commit. Verify every undeclared sibling skill tree remains byte-identical.
 
-Hash bytes with SHA-256 in sorted POSIX-path order. Serialize YAML with `sort_keys=False`; do not write timestamps. Read the source SHA from both vendir locks and fail when the Matt commits differ.
+Hash bytes with SHA-256 in sorted POSIX-path order. Serialize YAML with
+`sort_keys=False`; do not write timestamps. Read every source SHA from the
+single vendir lock and fail when Matt entries resolve to different commits.
 
 After every check passes, replace the package with two same-filesystem renames:
 
@@ -341,9 +371,7 @@ git commit -m "feat: qualify vendir capability imports"
 
 **Files:**
 - Create: `engineering/vendir.yml`
-- Create: `engineering/vendir.grilling.yml`
 - Create: `engineering/vendir.lock.yml`
-- Create: `engineering/vendir.grilling.lock.yml`
 - Create: `engineering/provenance.yml`
 - Create: `engineering/patches/series`
 - Create: `engineering/patches/mattpocock-skills/0001-use-apm-setup-skill.patch`
@@ -355,11 +383,16 @@ git commit -m "feat: qualify vendir capability imports"
 **Interfaces:**
 - Consumes: `qualify(..., mode="update")`.
 - Produces: complete imported inventory at the locked SHA plus the three existing owned skills.
-- Produces: one ordered patch redirecting every `/setup-matt-pocock-skills` reference to `/setup-engineering-workflow-for-apm`.
+- Produces: one ordered patch transforming imported setup into `setup-engineering-workflow-for-apm` and redirecting every setup reference.
 
 - [ ] **Step 1: Write the failing package contract**
 
-Assert the imported inventory equals all upstream `skills/engineering/*/SKILL.md` directories except `setup-matt-pocock-skills`, plus `grilling`; assert the three owned skills remain present; assert no imported text contains `/setup-matt-pocock-skills`.
+Assert the imported inventory maps every upstream
+`skills/engineering/*/SKILL.md` directory to the same final name except
+`setup-matt-pocock-skills`, which maps to
+`setup-engineering-workflow-for-apm`, and adds `grilling`. Assert the three
+owned skills remain present and no installed text contains
+`/setup-matt-pocock-skills`.
 
 Run:
 
@@ -371,24 +404,33 @@ Expected: FAIL because `wayfinder`, `grilling`, and provenance do not exist.
 
 - [ ] **Step 2: Add the real vendir policy**
 
-Configure both manifests against `https://github.com/mattpocock/skills.git` at tracked ref `origin/main`. The primary manifest owns `skills/`, selects the engineering collection, excludes setup, copies the upstream legal path, and preserves:
+Configure one manifest against `https://github.com/mattpocock/skills.git` at
+tracked ref `origin/main`. Declare one `directories` entry for each current
+upstream engineering skill. Each entry owns only its final
+`skills/<skill-name>` leaf and selects the exact upstream leaf with
+`includePaths` and `newRootPath`. Map upstream
+`skills/engineering/setup-matt-pocock-skills` to
+`skills/setup-engineering-workflow-for-apm`. Add one leaf entry mapping
+`skills/productivity/grilling` to `skills/grilling`, plus the legal-file
+entry. These owned siblings are outside every vendir destination:
 
 ```text
 skills/audit-third-party-software/**
 skills/context-extractor/**
 skills/operating-omnigent/**
-skills/setup-engineering-workflow-for-apm/**
-skills/grilling/**
 ```
 
-The grilling manifest owns only `skills/grilling/` and selects `skills/productivity/grilling`. Use the two-manifest layout proven in Task 1. Set `minimumRequiredVersion: 0.46.0` in both manifests.
+Use the leaf-level layout proven in Task 1. Set
+`minimumRequiredVersion: 0.46.0`. The generated lock must record the same full
+Matt commit for every imported leaf.
 
 - [ ] **Step 3: Author and verify the setup-reference patch**
 
-Create a Git-format patch against the staged vendir output that changes exact references in:
+Create a Git-format patch against the exact staged vendir output. It changes
+the imported setup skill's frontmatter, content, and self-references to
+`setup-engineering-workflow-for-apm`, and changes exact references in:
 
 ```text
-skills/README.md
 skills/ask-matt/SKILL.md
 skills/code-review/SKILL.md
 skills/to-spec/SKILL.md
@@ -405,10 +447,13 @@ Run:
 
 ```bash
 mise run vendor-engineering
-git diff -- engineering/vendir.lock.yml engineering/vendir.grilling.lock.yml engineering/provenance.yml engineering/skills engineering/LICENSES
+git diff -- engineering/vendir.lock.yml engineering/provenance.yml engineering/skills engineering/LICENSES
 ```
 
-Expected: both locks resolve `2ab958093e83e0ec752e6c1c5932da465bf23e0c`; all 16 non-setup engineering skills plus `grilling` are imported; the three owned skills are unchanged.
+Expected: every lock entry resolves
+`2ab958093e83e0ec752e6c1c5932da465bf23e0c`; all 17 upstream engineering
+capabilities appear under their final names plus `grilling`; the three owned
+skills are unchanged.
 
 - [ ] **Step 5: Add repository editing rules**
 
@@ -426,21 +471,22 @@ Expected: locked reproduction passes; the isolated direct-edit fixture is report
 - [ ] **Step 7: Commit the controlled import**
 
 ```bash
-git add CLAUDE.md engineering/vendir.yml engineering/vendir.grilling.yml engineering/vendir.lock.yml engineering/vendir.grilling.lock.yml engineering/provenance.yml engineering/patches engineering/LICENSES engineering/skills engineering/tests/test_contract.py
+git add CLAUDE.md engineering/vendir.yml engineering/vendir.lock.yml engineering/provenance.yml engineering/patches engineering/LICENSES engineering/skills engineering/tests/test_contract.py
 git commit -m "feat(engineering): import controlled upstream skills"
 ```
 
-### Task 4: Add the APM-owned setup workflow
+### Task 4: Complete the patched APM setup workflow
 
 **Files:**
-- Create: `engineering/skills/setup-engineering-workflow-for-apm/SKILL.md`
-- Create: `engineering/skills/setup-engineering-workflow-for-apm/templates/project-guidance.md`
-- Create: `engineering/skills/setup-engineering-workflow-for-apm/templates/issue-tracker-github.md`
+- Modify: `engineering/patches/mattpocock-skills/0001-use-apm-setup-skill.patch`
+- Modify generated: `engineering/skills/setup-engineering-workflow-for-apm/SKILL.md`
+- Create through patch: `engineering/skills/setup-engineering-workflow-for-apm/templates/project-guidance.md`
+- Create through patch: `engineering/skills/setup-engineering-workflow-for-apm/templates/issue-tracker-github.md`
 - Create: `engineering/tests/test_setup_skill.py`
 - Create: `engineering/tests/fixtures/setup-project/`
 
 **Interfaces:**
-- Produces: the owned skill `setup-engineering-workflow-for-apm`.
+- Produces: the patched skill `setup-engineering-workflow-for-apm`.
 - Writes before compilation only below `.apm/instructions/` and `docs/agents/`.
 - Invokes exactly `mise run agent-sync` after showing the proposed source-file changes.
 
@@ -463,11 +509,12 @@ Also test a second setup run produces no diff and user-authored text outside mar
 mise exec -- uv run pytest -q engineering/tests/test_setup_skill.py
 ```
 
-Expected: FAIL because the owned skill and templates are absent.
+Expected: FAIL because the imported setup adaptation is incomplete and its templates are absent.
 
-- [ ] **Step 3: Write the owned setup skill**
+- [ ] **Step 3: Complete the setup adaptation patch**
 
-The skill must:
+Build the patch against the exact locked vendir output; do not edit the
+generated destination as its source of truth. The resulting skill must:
 
 1. Inspect repository structure and existing `.apm/instructions/` and `docs/agents/`.
 2. Default the tracker to GitHub Issues.
@@ -491,7 +538,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit the setup workflow**
 
 ```bash
-git add engineering/skills/setup-engineering-workflow-for-apm engineering/tests/test_setup_skill.py engineering/tests/fixtures/setup-project
+git add engineering/patches/mattpocock-skills/0001-use-apm-setup-skill.patch engineering/provenance.yml engineering/skills/setup-engineering-workflow-for-apm engineering/tests/test_setup_skill.py engineering/tests/fixtures/setup-project
 git commit -m "feat(engineering): add APM setup workflow"
 ```
 
@@ -500,7 +547,7 @@ git commit -m "feat(engineering): add APM setup workflow"
 **Files:**
 - Create: `engineering/patches/mattpocock-skills/0002-github-issue-batch.patch`
 - Modify: `engineering/patches/series`
-- Modify: `engineering/skills/setup-engineering-workflow-for-apm/templates/issue-tracker-github.md`
+- Modify through patch: `engineering/skills/setup-engineering-workflow-for-apm/templates/issue-tracker-github.md`
 - Create: `engineering/tests/test_github_issue_workflow.py`
 - Create: `engineering/tests/fixtures/fake-gh`
 
@@ -530,7 +577,8 @@ Expected: FAIL because the GitHub template and imported ticket instructions do n
 
 - [ ] **Step 2: Define the GitHub tracker protocol**
 
-Add to the owned GitHub template:
+Add to the generated GitHub template through
+`0002-github-issue-batch.patch`:
 
 1. Render the complete numbered batch.
 2. Compute `batch_sha256` from canonical titles, bodies, labels, blockers, and order.
@@ -631,11 +679,17 @@ apm audit --ci --no-policy
 apm install --frozen
 ```
 
-Assert every name from `engineering/provenance.yml` plus the four owned skills appears under both target skill directories, and root private dependencies never appear.
+Assert every imported name from `engineering/provenance.yml` plus the three
+owned skills appears under both target skill directories, and root private
+dependencies never appear.
 
 - [ ] **Step 4: Add package documentation and editing rules**
 
-Document APM and Claude marketplace channels separately, imported/owned paths, `mise run vendor-engineering`, locked checking, `engineering-v0.2.0`, and the removal of the floating Matt marketplace entry. `engineering/CLAUDE.md` must require vendir-check before commits and list the four owned skills.
+Document APM and Claude marketplace channels separately, generated imported
+paths, owned sibling paths, `mise run vendor-engineering`, locked checking,
+`engineering-v0.2.0`, and the removal of the floating Matt marketplace entry.
+`engineering/CLAUDE.md` must require vendir-check before commits and list the
+three owned skills plus the patched setup skill.
 
 - [ ] **Step 5: Run package checks**
 
@@ -721,12 +775,16 @@ git commit -m "test(engineering): qualify Claude Codex and Wayfinder"
 - Create: `.github/workflows/engineering-ci.yml`
 - Create: `.github/workflows/engineering-upstream-check.yml`
 - Create: `.github/workflows/engineering-tag-check.yml`
+- Modify: `tools/capability_pack/qualify.py`
+- Modify: `tests/capability_pack/test_drift.py`
 - Create: `tests/automation/test_workflows.py`
 - Create: `tests/automation/test_release_scope.py`
 - Modify: `README.md`
 
 **Interfaces:**
 - Weekly updater invokes `mise run vendor-engineering -- --summary /tmp/engineering-update.md`.
+- Refresh reconciles the upstream engineering directory inventory into
+  deterministic leaf entries before vendir acquisition.
 - Update PR is always draft and never automerged.
 - Tag workflow accepts only `engineering-v0.2.0`-shaped package tags matching both package manifests.
 
@@ -742,6 +800,22 @@ Parse workflow YAML and assert:
 - tag workflow triggers only `engineering-v*`;
 - every `uses:` value ends in a 40-character SHA;
 - changing `research/.claude-plugin/plugin.json` or `workflow/.claude-plugin/plugin.json` fails release scope.
+
+Add a local Git fixture test that starts from a manifest without `beta`, adds
+`skills/engineering/beta/SKILL.md` in a new fixture commit, and asserts refresh:
+
+- resolves the candidate full SHA;
+- adds one sorted `skills/beta` vendir directory entry with the exact upstream
+  leaf mapping;
+- maps upstream setup to `skills/setup-engineering-workflow-for-apm`;
+- pins staged acquisition to the candidate SHA while retaining `origin/main`
+  in the committed manifest;
+- reports `beta` in the inventory summary;
+- produces identical manifest and payload bytes on a second refresh.
+
+Delete or rename a configured fixture leaf and assert refresh stops with
+breaking-drift evidence naming the leaf and candidate SHA. It must preserve the
+committed manifest, lock, and payload.
 
 Run:
 
@@ -769,7 +843,10 @@ Use the scheduled workflow selected by Task 1. It must:
 
 1. Check out without persisted credentials.
 2. Install pinned mise tools.
-3. Run `mise run vendor-engineering -- --summary /tmp/engineering-update.md`.
+3. Run `mise run vendor-engineering -- --summary
+   /tmp/engineering-update.md`. Update mode resolves the candidate SHA,
+   enumerates the temporary checkout, reconciles leaf entries, and runs vendir
+   against that exact candidate.
 4. Exit cleanly when no diff exists.
 5. Run all non-live qualification.
 6. Open or update one branch, `automation/engineering-upstream`.
@@ -819,7 +896,7 @@ git commit -m "ci(engineering): qualify updates and package tags"
 
 ```bash
 mise run vendor-engineering-check
-git diff --exit-code -- engineering/skills engineering/vendir.lock.yml engineering/vendir.grilling.lock.yml engineering/provenance.yml engineering/LICENSES
+git diff --exit-code -- engineering/skills engineering/vendir.lock.yml engineering/provenance.yml engineering/LICENSES
 ```
 
 Expected: PASS and no diff.
