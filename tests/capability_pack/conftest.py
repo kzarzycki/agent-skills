@@ -182,6 +182,7 @@ def fake_vendir(tmp_path: Path, upstream: Path, monkeypatch: pytest.MonkeyPatch)
     vendir.write_text(
         """#!/usr/bin/env python3
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -191,6 +192,14 @@ import yaml
 stage = Path(sys.argv[sys.argv.index("--chdir") + 1])
 upstream = Path(os.environ["FAKE_VENDIR_UPSTREAM"])
 config = yaml.safe_load((stage / "vendir.yml").read_text())
+refs = {
+    content["git"]["ref"]
+    for directory in config["directories"]
+    for content in directory["contents"]
+    if "git" in content
+}
+if ref_log := os.environ.get("FAKE_VENDIR_REF_LOG"):
+    Path(ref_log).write_text("\\n".join(sorted(refs)) + "\\n")
 for directory in config["directories"]:
     destination = stage / directory["path"]
     content = directory["contents"][0]
@@ -204,10 +213,16 @@ for directory in config["directories"]:
         destination.mkdir(parents=True, exist_ok=True)
         shutil.copy2(upstream / "LICENSE", destination / "LICENSE")
 if "--locked" not in sys.argv:
+    pinned = next(iter(refs)) if len(refs) == 1 else ""
+    commit = (
+        pinned
+        if re.fullmatch(r"[0-9a-f]{40}", pinned)
+        else os.environ.get("FAKE_VENDIR_COMMIT", "2" * 40)
+    )
     lock = stage / "vendir.lock.yml"
     lock.write_text(lock.read_text().replace(
         "1111111111111111111111111111111111111111",
-        os.environ.get("FAKE_VENDIR_COMMIT", "2222222222222222222222222222222222222222"),
+        commit,
     ))
 """
     )

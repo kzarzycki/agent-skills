@@ -91,10 +91,33 @@ def test_release_candidate_rejects_other_package_manifest_change(
 
 @pytest.mark.parametrize(
     "tag",
-    ["v0.2.0", "engineering-0.2.0", "engineering-v0.2", "engineering-v0.2.0-beta"],
+    [
+        "v0.2.0",
+        "engineering-0.2.0",
+        "engineering-v0.2",
+        "engineering-v0.2.0-beta",
+        "engineering-v00.2.0",
+        "engineering-v0.02.0",
+        "engineering-v0.2.00",
+    ],
 )
 def test_release_candidate_rejects_invalid_tag_shape(tmp_path: Path, tag: str) -> None:
     repo = _repository(tmp_path)
 
     with pytest.raises(ConfigurationError, match="tag"):
         validate_release_candidate(repo / "engineering", tag)
+
+
+@pytest.mark.parametrize("version", ["00.2.0", "0.02.0", "0.2.00"])
+def test_release_candidate_rejects_leading_zero_versions(tmp_path: Path, version: str) -> None:
+    repo = _repository(tmp_path)
+    engineering = repo / "engineering"
+    (engineering / "apm.yml").write_text(
+        yaml.safe_dump({"name": "engineering", "version": version})
+    )
+    (engineering / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": "engineering", "version": version})
+    )
+
+    with pytest.raises(ConfigurationError, match="tag"):
+        validate_release_candidate(engineering, f"engineering-v{version}")

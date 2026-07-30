@@ -127,7 +127,8 @@ def test_refresh_reconciles_new_upstream_leaf_and_converges(
     beta.mkdir()
     (beta / "SKILL.md").write_text("# Beta\n")
     candidate = _commit(upstream, "add beta")
-    monkeypatch.setenv("FAKE_VENDIR_COMMIT", candidate)
+    ref_log = tmp_path / "vendir-refs.txt"
+    monkeypatch.setenv("FAKE_VENDIR_REF_LOG", str(ref_log))
     summary = tmp_path / "summary.md"
 
     result = qualify(package, "update", summary)
@@ -149,6 +150,7 @@ def test_refresh_reconciles_new_upstream_leaf_and_converges(
     assert result.source_commit == candidate
     assert result.added_skills == ("beta",)
     assert "Added skills: beta" in summary.read_text()
+    assert ref_log.read_text().splitlines() == [candidate]
     first = _package_bytes(package)
 
     qualify(package, "update", summary)
@@ -165,7 +167,6 @@ def test_refresh_blocks_removed_configured_leaf_before_mutation(
     _enable_inventory_reconciliation(package, upstream)
     shutil.rmtree(upstream / "skills" / "engineering" / "alpha")
     candidate = _commit(upstream, "remove alpha")
-    monkeypatch.setenv("FAKE_VENDIR_COMMIT", candidate)
     before = _package_bytes(package)
 
     with pytest.raises(BreakingDriftError, match=rf"alpha.*{candidate}"):

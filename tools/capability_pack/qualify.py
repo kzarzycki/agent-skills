@@ -40,7 +40,10 @@ class BreakingDriftError(QualificationError):
 
 def validate_release_candidate(package_root: Path, tag: str) -> None:
     package = package_root.resolve()
-    match = re.fullmatch(rf"{re.escape(package.name)}-v(\d+\.\d+\.\d+)", tag)
+    component = r"(?:0|[1-9]\d*)"
+    match = re.fullmatch(
+        rf"{re.escape(package.name)}-v({component}\.{component}\.{component})", tag
+    )
     if not match:
         raise ConfigurationError(f"release tag must match {package.name}-vX.Y.Z: {tag}")
     tag_version = match.group(1)
@@ -283,10 +286,21 @@ def _reconcile_inventory(
     temporary = Path(tempfile.mkdtemp(prefix=".engineering-inventory-"))
     checkout = temporary / "upstream"
     try:
+        _git_output(["init", "--quiet", str(checkout)])
+        fetch_ref = ref.removeprefix("origin/")
         _git_output(
-            ["clone", "--quiet", "--filter=blob:none", "--no-checkout", repository, str(checkout)]
+            [
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--filter=blob:none",
+                "--no-tags",
+                repository,
+                fetch_ref,
+            ],
+            cwd=checkout,
         )
-        candidate = _git_output(["rev-parse", f"{ref}^{{commit}}"], cwd=checkout)
+        candidate = _git_output(["rev-parse", "FETCH_HEAD^{commit}"], cwd=checkout)
         upstream_names = set(
             _git_output(
                 ["ls-tree", "-d", "--name-only", f"{candidate}:skills/engineering"],
