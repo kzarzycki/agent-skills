@@ -15,7 +15,7 @@ run = "uv run python -m tools.capability_pack.cli check engineering"
 run = "uv run python tests/adoption/run_renovate_probe.py"
 
 [tasks.test-engineering-package]
-run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_consumer_e2e.py"
+run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/test_package_metadata.py engineering/tests/test_consumer_e2e.py"
 
 [tasks.test-engineering-agents]
 run = "uv run pytest -q -m live_agent engineering/tests/e2e"

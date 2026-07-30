@@ -63,6 +63,23 @@ def test_staged_package_tests_receive_complete_provenance(package: Path, fake_ve
     qualify(package, "update")
 
 
+def test_staged_package_tests_receive_explicit_boundary_signal(
+    package: Path, fake_vendir: Path
+) -> None:
+    """Catch package-only tests inferring their boundary from missing repository files."""
+    tests = package / "tests"
+    tests.mkdir()
+    (tests / "test_stage_boundary.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n\n"
+        "def test_stage_boundary():\n"
+        "    package = Path(__file__).parents[1].resolve()\n"
+        "    assert Path(os.environ['CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT']) == package\n"
+    )
+
+    qualify(package, "update")
+
+
 def test_check_detects_direct_edit_without_mutating_package(
     package: Path, fake_vendir: Path
 ) -> None:

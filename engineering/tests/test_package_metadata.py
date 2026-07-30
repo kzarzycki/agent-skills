@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import yaml
 REPOSITORY = Path(__file__).resolve().parents[2]
 PACKAGE = REPOSITORY / "engineering"
 EXPECTED_VERSION = "0.2.0"
+QUALIFICATION_STAGE_ROOT = "CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT"
 
 
 def test_apm_and_claude_metadata_publish_the_same_independent_package() -> None:
@@ -25,8 +27,10 @@ def test_apm_and_claude_metadata_publish_the_same_independent_package() -> None:
 
 def test_claude_marketplace_exposes_only_the_owned_engineering_package() -> None:
     marketplace_path = REPOSITORY / ".claude-plugin" / "marketplace.json"
-    if not marketplace_path.exists():
-        pytest.skip("repository marketplace is outside the reproduced package boundary")
+    stage_root = os.environ.get(QUALIFICATION_STAGE_ROOT)
+    if stage_root is not None:
+        assert Path(stage_root).resolve() == PACKAGE.resolve()
+        pytest.skip("repository marketplace is outside the explicit package stage")
     marketplace = json.loads(marketplace_path.read_text())
     engineering_entries = [
         plugin for plugin in marketplace["plugins"] if plugin["name"] == "engineering"

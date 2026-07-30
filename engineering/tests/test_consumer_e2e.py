@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -64,6 +65,14 @@ def _expected_skills() -> set[str]:
     return set(provenance["included_skills"]) | OWNED_SKILLS
 
 
+def _file_manifest(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 def _installed_skills(consumer: Path, target: str) -> set[str]:
     root = consumer / target / "skills"
     return {path.parent.name for path in root.glob("*/SKILL.md")}
@@ -99,7 +108,14 @@ def test_local_package_packs_and_installs_for_claude_and_codex(tmp_path: Path) -
 
     pack_dir = tmp_path / "packed"
     _run(["apm", "pack", "--output", str(pack_dir)], cwd=package_copy, env=env)
-    assert list(pack_dir.rglob("plugin.json"))
+    packed_manifests = list(pack_dir.rglob("plugin.json"))
+    assert len(packed_manifests) == 1
+    bundle = packed_manifests[0].parent
+    assert bundle.resolve().is_relative_to(pack_dir.resolve())
+    assert _file_manifest(bundle / "skills") == _file_manifest(package_copy / "skills")
+    assert {path.parent.name for path in (bundle / "skills").glob("*/SKILL.md")} == (
+        _expected_skills()
+    )
 
     consumer = tmp_path / "local-consumer"
     consumer.mkdir()

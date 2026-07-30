@@ -370,10 +370,13 @@ def _run_package_tests(stage: Path) -> tuple[str, str]:
     command_text = "python -m pytest -q -m 'not live_agent' tests"
     if not tests.is_dir():
         return command_text, "NOT RUN (no package tests)"
+    env = os.environ.copy()
+    env["CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT"] = str(stage.resolve())
     try:
         subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-m", "not live_agent", "tests"],
             cwd=stage,
+            env=env,
             check=True,
             timeout=120,
         )
