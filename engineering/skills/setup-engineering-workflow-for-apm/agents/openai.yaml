@@ -1,5 +1,5 @@
 interface:
-  display_name: "Setup Matt Pocock Skills"
-  short_description: "Configure a repo for the skills"
+  display_name: "Setup Engineering Workflow for APM"
+  short_description: "Configure APM engineering workflow sources"
 policy:
   allow_implicit_invocation: false

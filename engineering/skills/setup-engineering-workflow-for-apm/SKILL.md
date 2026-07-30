@@ -1,116 +1,107 @@
 ---
 name: setup-engineering-workflow-for-apm
-description: Configure this repo for the engineering skills — set up its issue tracker, triage label vocabulary, and domain doc layout. Run once before first use of the other engineering skills.
+description: Configure repository-owned APM instruction sources for the engineering workflow, then compile and audit them with agent-sync. Run before first use of the other engineering skills.
 disable-model-invocation: true
 ---
 
-# Setup Matt Pocock's Skills
+# Setup Engineering Workflow for APM
 
-Scaffold the per-repo configuration that the engineering skills assume:
+Configure the repository-owned source files consumed by APM. This skill writes
+only below `.apm/instructions/` and `docs/agents/`, then delegates all compiled
+agent-file changes to `mise run agent-sync`.
 
-- **Issue tracker** — where issues live (GitHub by default; local markdown is also supported out of the box)
-- **Triage labels** — the strings used for the five canonical triage roles
-- **Domain docs** — where `CONTEXT.md` and ADRs live, and the consumer rules for reading them
-
-This is a prompt-driven skill, not a deterministic script. Explore, present what you found, confirm with the user, then write.
+Never write `AGENTS.md`, `CLAUDE.md`, or another compiled target directly.
 
 ## Process
 
-### 1. Explore
+### 1. Inspect the repository
 
-Look at the current repo to understand its starting state. Read whatever exists; don't assume:
+Read enough of the repository to understand its existing conventions:
 
-- `git remote -v` and `.git/config` — is this a GitHub repo? Which one?
-- `AGENTS.md` and `CLAUDE.md` at the repo root — does either exist? Is there already an `## Agent skills` section in either?
-- `CONTEXT.md` and `CONTEXT-MAP.md` at the repo root
-- `docs/adr/` and any `src/*/docs/adr/` directories
-- `docs/agents/` — does this skill's prior output already exist?
-- `.scratch/` — sign that a local-markdown issue tracker convention is already in use
-- Is the `triage` skill installed? (a `triage` skill folder alongside this one, or `triage` in your available skills.) This decides whether Section B runs at all.
-- Monorepo signals — a `pnpm-workspace.yaml`, a `workspaces` field in `package.json`, or a populated `packages/*` with its own `src/`. Present only in a genuinely large multi-package repo; their absence means single-context, which is almost every repo.
+- Top-level directories and build/task configuration.
+- Git remotes and issue-tracker references.
+- Existing files below `.apm/instructions/` and `docs/agents/`.
+- Root `AGENTS.md` and `CLAUDE.md`, when present, as compiled-output context
+  only.
+- Domain documentation such as `CONTEXT.md`, `CONTEXT-MAP.md`, and
+  `docs/adr/`.
 
-### 2. Present findings and ask
-
-Summarise what's present and what's missing. Then take the sections in order — one section, one answer, then the next.
-
-Lead each section with the recommended answer so the user can accept it in a word. Give a one-line explainer only when the choice genuinely branches; skip the section entirely when exploration already settled it (Section B when `triage` isn't installed, Section C when there's no monorepo).
-
-**Section A — Issue tracker.**
-
-> Explainer: The "issue tracker" is where issues live for this repo. Skills like `to-tickets`, `triage`, `to-spec`, and `qa` read from and write to it — they need to know whether to call `gh issue create`, write a markdown file under `.scratch/`, or follow some other workflow you describe. Pick the place you actually track work for this repo.
-
-Default posture: these skills were designed for GitHub. If a `git remote` points at GitHub, propose that. If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. Otherwise (or if the user prefers), offer:
-
-- **GitHub** — issues live in the repo's GitHub Issues (uses the `gh` CLI)
-- **GitLab** — issues live in the repo's GitLab Issues (uses the [`glab`](https://gitlab.com/gitlab-org/cli) CLI)
-- **Local markdown** — issues live as files under `.scratch/<feature>/` in this repo (good for solo projects or repos without a remote)
-- **Other** (Jira, Linear, etc.) — ask the user to describe the workflow in one paragraph; the skill will record it as freeform prose
-
-Record the choice in `docs/agents/issue-tracker.md`. The GitHub and GitLab templates carry a "PRs as a request surface" flag, defaulted **off** — leave it off and don't raise it; a user who wants external PRs in the triage queue can flip the flag in the file later.
-
-**Section B — Triage label vocabulary.** Skip this section entirely if the `triage` skill isn't installed (exploration told you) — an uninstalled skill needs no labels.
-
-If it is installed, ask exactly one question:
-
-> Do you want to keep the default triage labels? (recommended: **yes**)
-
-The defaults are the five canonical roles, each label string equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. On **yes**, write them as-is. Only if the user says no — usually because their tracker already uses other names (e.g. `bug:triage` for `needs-triage`) — collect the overrides so `triage` applies existing labels instead of creating duplicates.
-
-**Section C — Domain docs.** Default to **single-context** — one `CONTEXT.md` + `docs/adr/` at the repo root. This fits almost every repo; write it without asking.
-
-Offer **multi-context** — a root `CONTEXT-MAP.md` pointing to per-context `CONTEXT.md` files — only when exploration found monorepo signals. Then confirm which layout they want.
-
-### 3. Confirm and edit
-
-Show the user a draft of:
-
-- The `## Agent skills` block to add to whichever of `CLAUDE.md` / `AGENTS.md` is being edited (see step 4 for selection rules)
-- The contents of `docs/agents/issue-tracker.md`, `docs/agents/domain.md`, and `docs/agents/triage-labels.md` (the last only when `triage` is installed)
-
-Let them edit before writing.
-
-### 4. Write
-
-**Pick the file to edit:**
-
-- If `CLAUDE.md` exists, edit it.
-- Else if `AGENTS.md` exists, edit it.
-- If neither exists, ask the user which one to create — don't pick for them.
-
-Never create `AGENTS.md` when `CLAUDE.md` already exists (or vice versa) — always edit the one that's already there.
-
-If an `## Agent skills` block already exists in the chosen file, update its contents in-place rather than appending a duplicate. Don't overwrite user edits to the surrounding sections.
-
-The block:
+Identify prior output from this skill by the markers:
 
 ```markdown
-## Agent skills
-
-### Issue tracker
-
-[one-line summary of where issues are tracked]. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-[one-line summary of the label vocabulary]. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-[one-line summary of layout — "single-context" or "multi-context"]. See `docs/agents/domain.md`.
+<!-- engineering-workflow:start -->
+<!-- engineering-workflow:end -->
 ```
 
-Include the `### Triage labels` sub-block, and write `docs/agents/triage-labels.md`, only when `triage` is installed and Section B ran. When it isn't, both are omitted.
+If a file contains only one marker or contains either marker more than once,
+report the malformed file and stop before writing.
 
-Then write the docs files using the seed templates in this skill folder as a starting point:
+### 2. Prepare the two source files
 
-- [issue-tracker-github.md](./issue-tracker-github.md) — GitHub issue tracker
-- [issue-tracker-gitlab.md](./issue-tracker-gitlab.md) — GitLab issue tracker
-- [issue-tracker-local.md](./issue-tracker-local.md) — local-markdown issue tracker
-- [triage-labels.md](./triage-labels.md) — label mapping (only if `triage` is installed)
-- [domain.md](./domain.md) — domain doc consumer rules + layout
+Prepare these exact source paths:
 
-For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
+- `.apm/instructions/engineering-workflow.md`, starting from
+  [templates/project-guidance.md](./templates/project-guidance.md).
+- `docs/agents/issue-tracker.md`, starting from
+  [templates/issue-tracker-github.md](./templates/issue-tracker-github.md).
 
-### 5. Done
+Default the issue tracker to GitHub Issues. When repository evidence or the user
+selects another tracker, adapt the marked section in
+`docs/agents/issue-tracker.md` to the repository's actual commands and
+conventions.
 
-Tell the user the setup is complete and which engineering skills will now read from these files. Mention they can edit `docs/agents/*.md` directly later — re-running this skill is only necessary if they want to switch issue trackers or restart from scratch.
+Wrap skill-owned content in the start and end markers. On a later run, replace
+only the content between those markers. Preserve every byte outside the marked
+section. If the markers are absent, append one marked section; if the file is
+absent, create it with one marked section.
+
+### 3. Show the proposal
+
+Before writing, show:
+
+1. Every proposed source path.
+2. A unified diff for each path, including new files.
+3. A note that approval will write the displayed source changes and then run
+   `mise run agent-sync`.
+
+Ask the user to approve or edit the proposal. A rejection or requested edit
+causes no writes and no sync command.
+
+### 4. Write and compile
+
+After approval, write exactly the displayed marked-section changes. Do not
+change any other path.
+
+Then invoke exactly:
+
+```sh
+mise run agent-sync
+```
+
+Do not substitute an underlying APM command or add another compile command.
+
+If compilation or its audit fails, report the command output and leave the
+repository-owned source files for the user to inspect. Do not repair, replace,
+or delete compiled targets directly. If it succeeds, report the two source
+paths and the compiler result.
+
+A second run with the same choices must propose no source diff. When there is
+no source diff, ask whether the user wants to run `mise run agent-sync` to
+recheck compiled output; do not rewrite the source files.
+
+<!-- setup-fixture-protocol
+version: 1
+fixture: tests/fixtures/setup-project
+markers:
+  start: "<!-- engineering-workflow:start -->"
+  end: "<!-- engineering-workflow:end -->"
+source_files:
+  - template: templates/project-guidance.md
+    destination: .apm/instructions/engineering-workflow.md
+  - template: templates/issue-tracker-github.md
+    destination: docs/agents/issue-tracker.md
+sync_command:
+  - mise
+  - run
+  - agent-sync
+-->

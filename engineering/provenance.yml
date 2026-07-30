@@ -255,7 +255,7 @@ source_files:
   mode: '100644'
 patch_files:
 - path: patches/mattpocock-skills/0001-use-apm-setup-skill.patch
-  sha256: 7c657d2559a868eefb09f7793839f1d5beeb55aef0b86fc689c0c6a65a30cee5
+  sha256: e64ac84ab3f06f77c474cdf2bb7f9593f8d5d0f668e23db098dcfb46779b3b59
   mode: '100644'
 license_files:
 - path: LICENSES/mattpocock-skills/LICENSE
@@ -359,10 +359,10 @@ output_files:
   sha256: a1f4f96838f2ed6282eb28abbbf99029cb8fadce552baf53da90a025b8bffddf
   mode: '100644'
 - path: skills/setup-engineering-workflow-for-apm/SKILL.md
-  sha256: 70c8119c25f542e864cdf5404f6a43617a25be58b02511d5c46e9c7347e9ccfe
+  sha256: 0f686a2feda9dad3cc23df955d6b6aabe93560c9edc1fa768132d37ab22a83e8
   mode: '100644'
 - path: skills/setup-engineering-workflow-for-apm/agents/openai.yaml
-  sha256: 9527de0110541c45712319025155aeab8dc7d77c6ed6e5e83271bab1851ab939
+  sha256: 2a92018418e9e0a683df249cdc1240cb40511fd5d0b9627430e097ac1d00c0e9
   mode: '100644'
 - path: skills/setup-engineering-workflow-for-apm/domain.md
   sha256: 25be404b58798b3cb2d51c93dba2ab052fc3a425632185726ac3f5fcff193b99
@@ -375,6 +375,12 @@ output_files:
   mode: '100644'
 - path: skills/setup-engineering-workflow-for-apm/issue-tracker-local.md
   sha256: ed6add9fe3cdcd2d1ebb2a463cf0eb6a1a86df500f4922b31a1ab50f15b3a705
+  mode: '100644'
+- path: skills/setup-engineering-workflow-for-apm/templates/issue-tracker-github.md
+  sha256: 04c6312234d4f4259f45903adc1e2a4c465753e4eca0c530432ce54d2b3deb63
+  mode: '100644'
+- path: skills/setup-engineering-workflow-for-apm/templates/project-guidance.md
+  sha256: 4760ab89a42a4e37809b9662c4080625ef3fde927a47c0f40312feb145025f85
   mode: '100644'
 - path: skills/setup-engineering-workflow-for-apm/triage-labels.md
   sha256: 4f53c9b40ce2651e3611aa090eaedbd6dbc9b71ef8c5f7e65eac0d8263190d0d
