@@ -1,19 +1,19 @@
 name: agent-skills
 version: 0.1.0
-description: APM project for agent-skills
-author: CI
+description: Development agent configuration for the agent-skills repository.
+author: kzarzycki
 # Which agent platforms to deploy to.
 # Resolution order: --target flag > this field > auto-detect from filesystem.
 # Accepted values: vscode, agents, copilot, claude, cursor, opencode, codex,
 # gemini, antigravity, windsurf, kiro, agent-skills, all
 targets:
-- claude
-- codex
+  - claude
+  - codex
 dependencies:
-  # dotagents is a private repo — colleagues need GitHub access to `apm install` these.
   apm:
-    - kzarzycki/dotagents/toolkits/agents
-    - kzarzycki/dotagents/toolkits/dev
+    - git: kzarzycki/agent-skills/engineering
+      ref: ^0.2.0
   mcp: []
-includes: auto
+includes:
+  - .apm/instructions/**/*.md
 scripts: {}
