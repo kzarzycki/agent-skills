@@ -55,6 +55,14 @@ directories:
       tags:
       - v1.1.0-42-g2ab9580
     path: .
+  path: skills/grilling
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
+      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      tags:
+      - v1.1.0-42-g2ab9580
+    path: .
   path: skills/implement
 - contents:
   - git:
@@ -136,14 +144,6 @@ directories:
       - v1.1.0-42-g2ab9580
     path: .
   path: skills/wayfinder
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/grilling
 - contents:
   - git:
       commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
