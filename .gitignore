@@ -1,7 +1,9 @@
 .work/
 .worktrees/
 .workflow/
-.claude/
+.claude/settings.json
+.claude/settings.local.json
+.claude/hooks/
 .pi/
 __pycache__/
 *.pyc
@@ -23,3 +25,6 @@ engineering/engineering
 experimental/experimental
 research/research
 workflow/workflow
+
+# APM dependencies
+apm_modules/
