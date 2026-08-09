@@ -9,7 +9,7 @@ import yaml
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 PACKAGE = REPOSITORY / "engineering"
-EXPECTED_VERSION = "0.2.0"
+EXPECTED_VERSION = "0.3.0"
 QUALIFICATION_STAGE_ROOT = "CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT"
 
 
@@ -49,7 +49,7 @@ def test_consumer_contract_uses_one_versioned_virtual_subdirectory_dependency() 
         "apm": [
             {
                 "git": "kzarzycki/agent-skills/engineering",
-                "ref": "^0.2.0",
+                "ref": "^0.3.0",
             }
         ],
         "mcp": [],

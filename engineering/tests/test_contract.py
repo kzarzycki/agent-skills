@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
-PINNED_COMMIT = "2ab958093e83e0ec752e6c1c5932da465bf23e0c"
+PINNED_COMMIT = "84fdeffd12f2ee307994d1eb6feb48173b6e0502"
 OWNED_SKILLS = {
     "audit-third-party-software",
     "context-extractor",
@@ -30,6 +30,7 @@ IMPORTED_SKILLS = {
     "to-tickets",
     "triage",
     "wayfinder",
+    "wizard",
 }
 
 

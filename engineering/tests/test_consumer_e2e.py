@@ -142,7 +142,7 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
     _run(["git", "init", "-q"], cwd=source, env=env)
     _run(["git", "add", "."], cwd=source, env=env)
     _run(["git", "commit", "-q", "-m", "fixture"], cwd=source, env=env)
-    _run(["git", "tag", "engineering-v0.2.0"], cwd=source, env=env)
+    _run(["git", "tag", "engineering-v0.3.0"], cwd=source, env=env)
 
     origin = tmp_path / "agent-skills.git"
     _run(["git", "clone", "-q", "--bare", str(source), str(origin)], cwd=tmp_path, env=env)
@@ -164,7 +164,7 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
     dependency = fixture["dependencies"]["apm"][0]
     assert dependency == {
         "git": "kzarzycki/agent-skills/engineering",
-        "ref": "^0.2.0",
+        "ref": "^0.3.0",
     }
 
     _run(["apm", "install"], cwd=consumer, env=env)
@@ -175,5 +175,5 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
 
     lockfile = yaml.safe_load((consumer / "apm.lock.yaml").read_text())
     serialized_lock = json.dumps(lockfile, sort_keys=True)
-    assert "^0.2.0" in serialized_lock
-    assert "engineering-v0.2.0" in serialized_lock
+    assert "^0.3.0" in serialized_lock
+    assert "engineering-v0.3.0" in serialized_lock

@@ -25,7 +25,7 @@ Add one project dependency:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.2.0
+      ref: ^0.3.0
 ```
 
 ```bash
@@ -34,7 +34,7 @@ apm compile --validate
 ```
 
 APM compiles for the coding agents declared by the project and resolves
-`^0.2.0` from package-scoped tags such as `engineering-v0.2.0`.
+`^0.3.0` from package-scoped tags such as `engineering-v0.3.0`.
 
 ## Install native Claude plugins
 
