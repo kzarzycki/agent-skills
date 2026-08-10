@@ -4,7 +4,11 @@ on:
   pull_request:
     paths:
       - .github/workflows/engineering-*.yml
+      - .agents/**
+      - .claude/**
       - .gitattributes
+      - apm.yml
+      - apm.lock.yaml
       - engineering/**
       - tools/capability_pack/**
       - tests/capability_pack/**
@@ -20,7 +24,11 @@ on:
       - main
     paths:
       - .github/workflows/engineering-*.yml
+      - .agents/**
+      - .claude/**
       - .gitattributes
+      - apm.yml
+      - apm.lock.yaml
       - engineering/**
       - tools/capability_pack/**
       - tests/capability_pack/**
