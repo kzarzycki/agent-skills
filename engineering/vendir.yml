@@ -112,15 +112,6 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/resolving-merge-conflicts
-- path: skills/setup-engineering-workflow-for-apm
-  contents:
-  - path: .
-    git: *id001
-    includePaths:
-    - skills/engineering/setup-matt-pocock-skills/**/*
-    excludePaths: []
-    legalPaths: []
-    newRootPath: skills/engineering/setup-matt-pocock-skills
 - path: skills/tdd
   contents:
   - path: .

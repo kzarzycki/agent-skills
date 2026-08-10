@@ -89,6 +89,18 @@ run = "uv run python -m tools.capability_pack.cli update engineering"
 [tasks.vendor-engineering-check]
 run = "uv run python -m tools.capability_pack.cli check engineering"
 
+[tasks.refresh-engineering]
+run = "uv run python -m tools.capability_pack.cli refresh engineering --artifacts artifacts/engineering-refresh"
+
+[tasks.test-engineering-refresh-smoke]
+run = "uv run pytest -q tests/capability_pack tests/automation/test_workflows.py && uv run python -m tools.capability_pack.cli smoke-result --artifacts artifacts/engineering-refresh"
+
+[tasks.engineering-refresh-smoke-result]
+run = "uv run python -m tools.capability_pack.cli smoke-result --artifacts artifacts/engineering-refresh --marker engineering/.upstream-refresh-smoke"
+
+[tasks.assert-engineering-codex-inventory]
+run = "uv run python -m tools.capability_pack.cli assert-codex-inventory ."
+
 [tasks.probe-renovate-vendir]
 run = "uv run python tests/adoption/run_renovate_probe.py"
 

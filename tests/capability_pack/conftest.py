@@ -67,6 +67,24 @@ def write_package(package: Path, upstream: Path) -> None:
     shutil.copy2(upstream / "LICENSE", licenses / "LICENSE")
     (package / "patches").mkdir()
     (package / "patches" / "series").write_text("")
+    (package / "upstream.yml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "repository": "https://github.com/mattpocock/skills.git",
+                "tracked_ref": "origin/main",
+                "stable_tag_pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+                "removal_policy": "block",
+                "exclusions": [],
+                "aliases": {
+                    "grilling": "skills/productivity/grilling",
+                },
+                "owned_skills": list(OWNED_SKILLS),
+                "owned_overlays": [],
+            },
+            sort_keys=False,
+        )
+    )
 
     destinations = [
         ("skills/alpha", "skills/engineering/alpha"),
@@ -231,7 +249,13 @@ if "--locked" not in sys.argv:
     reconcile = qualify_module._reconcile_inventory
     validate_source_policy = qualify_module._validate_source_policy
 
-    def reconcile_fixture(stage: Path, config: dict, owned: tuple[str, ...]):
+    def reconcile_fixture(
+        stage: Path,
+        config: dict,
+        owned: tuple[str, ...],
+        candidate_commit: str | None = None,
+        exclusions: tuple[str, ...] = (),
+    ):
         urls = {
             content["git"]["url"]
             for directory in config["directories"]
@@ -239,10 +263,10 @@ if "--locked" not in sys.argv:
             if "git" in content
         }
         if urls == {"https://github.com/mattpocock/skills.git"}:
-            return config, None
-        return reconcile(stage, config, owned)
+            return config, candidate_commit
+        return reconcile(stage, config, owned, candidate_commit, exclusions)
 
-    def validate_fixture_source_policy(package: Path, config: dict) -> None:
+    def validate_fixture_source_policy(package: Path, config: dict, policy: dict) -> None:
         urls = {
             content["git"]["url"]
             for directory in config["directories"]
@@ -251,7 +275,7 @@ if "--locked" not in sys.argv:
         }
         if urls and all(Path(url).is_dir() for url in urls):
             return
-        validate_source_policy(package, config)
+        validate_source_policy(package, config, policy)
 
     monkeypatch.setattr(qualify_module, "_reconcile_inventory", reconcile_fixture)
     monkeypatch.setattr(qualify_module, "_validate_source_policy", validate_fixture_source_policy)

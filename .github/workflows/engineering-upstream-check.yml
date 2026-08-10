@@ -1,46 +1,256 @@
-name: Engineering upstream check
+name: Engineering upstream refresh
 
 on:
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Qualification or explicitly authorized publication mode
+        required: true
+        default: qualify
+        type: choice
+        options: [qualify, smoke-fixture, publish-smoke, publish]
+      confirm_publish_smoke:
+        description: Type PUBLISH-SMOKE for the canary mode
+        required: false
+        type: string
+
+concurrency:
+  group: engineering-upstream-refresh
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  update:
+  qualify:
+    if: github.event_name != 'schedule' || vars.ENGINEERING_UPDATER_SCHEDULE_ENABLED == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
+    timeout-minutes: 20
+    outputs:
+      outcome: ${{ steps.result.outputs.outcome }}
+      mode: ${{ steps.mode.outputs.value }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14
         with:
           install: false
       - run: mise install
       - run: uv sync --frozen
-      - run: mise run vendor-engineering -- --summary /tmp/engineering-update.md
-      - run: mise run vendor-engineering-check
-      - run: mise run test
-      - run: mise run test-engineering-package
-      - id: changes
+      - id: mode
+        env:
+          REQUESTED_MODE: ${{ inputs.mode }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if git diff --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+          mode="$REQUESTED_MODE"
+          if [ "$EVENT_NAME" = schedule ]; then mode=publish; fi
+          echo "value=$mode" >> "$GITHUB_OUTPUT"
+      - name: Run synthetic smoke matrix
+        if: steps.mode.outputs.value == 'smoke-fixture'
+        run: mise run test-engineering-refresh-smoke
+      - name: Qualify stable upstream release
+        if: steps.mode.outputs.value != 'smoke-fixture' && steps.mode.outputs.value != 'publish-smoke'
+        run: |
+          set +e
+          mise run refresh-engineering
+          status=$?
+          exit "$status"
+        continue-on-error: true
+      - name: Prepare publishing canary
+        if: steps.mode.outputs.value == 'publish-smoke'
+        env:
+          SMOKE_CONFIRMATION: ${{ inputs.confirm_publish_smoke }}
+        run: mise run engineering-refresh-smoke-result -- --confirmation "$SMOKE_CONFIRMATION"
+        continue-on-error: true
+      - name: Ensure fallback evidence exists
+        if: always()
+        run: |
+          mkdir -p artifacts/engineering-refresh
+          if [ ! -f artifacts/engineering-refresh/result.json ]; then
+            printf '%s\n' '{"schema_version":1,"pipeline":"engineering-upstream-refresh","outcome":"internal_error","code":"bootstrap_failure","phase":"resolve","source_tag":null,"source_commit":null,"previous_commit":null,"inventory_delta":{"added":[],"removed":[],"changed":[]},"proposed_version":null,"gates":[],"diagnostics":[{"code":"bootstrap_failure"}],"publication":{"state":"not_requested","branch":null,"pull_request":null,"attempts":[]},"reporting":{"issue":"not_needed","issue_number":null}}' > artifacts/engineering-refresh/result.json
+            printf '%s\n' '# Engineering upstream refresh: internal_error' '' 'Bootstrap failed; inspect the workflow log.' > artifacts/engineering-refresh/summary.md
           fi
-      - if: steps.changes.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+      - id: result
+        if: always()
+        run: echo "outcome=$(jq -r .outcome artifacts/engineering-refresh/result.json)" >> "$GITHUB_OUTPUT"
+      - name: Build nonempty candidate transfer
+        if: steps.result.outputs.outcome == 'qualified' && (steps.mode.outputs.value == 'publish' || steps.mode.outputs.value == 'publish-smoke')
+        env:
+          REFRESH_MODE: ${{ steps.mode.outputs.value }}
+        run: |
+          if [ "$REFRESH_MODE" = publish-smoke ]; then
+            git add -N engineering/.upstream-refresh-smoke
+            git diff --binary -- engineering/.upstream-refresh-smoke > artifacts/engineering-refresh/candidate.patch
+          else
+            git add -N engineering
+            git diff --binary -- engineering > artifacts/engineering-refresh/candidate.patch
+          fi
+          test -s artifacts/engineering-refresh/candidate.patch
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: automation/engineering-upstream
-          commit-message: "chore(engineering): refresh upstream skills"
-          title: "chore(engineering): refresh upstream skills"
-          body-path: /tmp/engineering-update.md
-          draft: always-true
+          name: engineering-refresh-qualified
+          path: artifacts/engineering-refresh
+          retention-days: 30
+
+  publish:
+    needs: qualify
+    if: always() && needs.qualify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ (needs.qualify.outputs.mode == 'publish' || needs.qualify.outputs.mode == 'publish-smoke') && 'engineering-updater-publish' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: engineering-refresh-qualified
+          path: artifacts/engineering-refresh
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14
+        with:
+          install: false
+      - run: mise install && uv sync --frozen
+      - id: candidate
+        name: Apply qualified candidate
+        if: needs.qualify.outputs.outcome == 'qualified' && (needs.qualify.outputs.mode == 'publish' || needs.qualify.outputs.mode == 'publish-smoke')
+        run: |
+          test -s artifacts/engineering-refresh/candidate.patch
+          git apply --check artifacts/engineering-refresh/candidate.patch
+          git apply --index artifacts/engineering-refresh/candidate.patch
+        continue-on-error: true
+      - id: publication-config
+        name: Validate publication configuration
+        if: needs.qualify.outputs.outcome == 'qualified' && (needs.qualify.outputs.mode == 'publish' || needs.qualify.outputs.mode == 'publish-smoke')
+        env:
+          APP_CONFIGURED: ${{ vars.ENGINEERING_UPDATER_APP_CONFIGURED }}
+        run: test "$APP_CONFIGURED" = true
+        continue-on-error: true
+      - id: app-token
+        if: steps.candidate.outcome == 'success' && steps.publication-config.outcome == 'success'
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b
+        continue-on-error: true
+        with:
+          app-id: ${{ secrets.UPDATER_APP_ID }}
+          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
+      - id: proposal
+        if: steps.app-token.outcome == 'success' && steps.app-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REFRESH_MODE: ${{ needs.qualify.outputs.mode }}
+        run: |
+          branch=automation/engineering-upstream
+          if [ "$REFRESH_MODE" = publish-smoke ]; then branch=automation/engineering-upstream-smoke; fi
+          uv run python -m tools.capability_pack.cli reconcile-draft-pr . \
+            --branch "$branch" \
+            --title "chore(engineering): refresh qualified upstream release" \
+            --body-file artifacts/engineering-refresh/summary.md \
+            --commit-message "chore(engineering): refresh qualified upstream release" \
+            --result artifacts/engineering-refresh/result.json
+        continue-on-error: true
+      - name: Finalize publication outcome
+        if: always()
+        env:
+          REFRESH_MODE: ${{ needs.qualify.outputs.mode }}
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          CONFIG_OUTCOME: ${{ steps.publication-config.outcome }}
+          TOKEN_OUTCOME: ${{ steps.app-token.outcome }}
+          TOKEN_PRESENT: ${{ steps.app-token.outputs.token != '' }}
+          PROPOSAL_OUTCOME: ${{ steps.proposal.outcome }}
+        run: |
+          token_outcome="$TOKEN_OUTCOME"
+          if [ "$CONFIG_OUTCOME" != success ]; then token_outcome=missing; fi
+          args=(artifacts/engineering-refresh/result.json --mode "$REFRESH_MODE" --candidate-outcome "$CANDIDATE_OUTCOME" --token-outcome "$token_outcome" --proposal-outcome "$PROPOSAL_OUTCOME")
+          if [ "$TOKEN_PRESENT" = true ]; then args+=(--token-present); fi
+          uv run python -m tools.capability_pack.cli finalize-publication "${args[@]}"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: engineering-refresh-publication
+          path: artifacts/engineering-refresh
+          retention-days: 30
+
+  report:
+    needs: [qualify, publish]
+    if: always() && needs.qualify.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - id: publication-artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
+        with:
+          name: engineering-refresh-publication
+          path: artifacts/publication
+      - name: Fall back to qualified evidence
+        if: steps.publication-artifact.outcome != 'success'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        continue-on-error: true
+        with:
+          name: engineering-refresh-qualified
+          path: artifacts/qualified
+      - id: evidence
+        name: Select reporting evidence
+        if: always()
+        run: |
+          mkdir -p artifacts/engineering-refresh
+          if [ -f artifacts/publication/result.json ]; then
+            cp artifacts/publication/result.json artifacts/engineering-refresh/result.json
+            cp artifacts/publication/summary.md artifacts/engineering-refresh/summary.md
+          elif [ -f artifacts/qualified/result.json ]; then
+            cp artifacts/qualified/result.json artifacts/engineering-refresh/result.json
+            cp artifacts/qualified/summary.md artifacts/engineering-refresh/summary.md
+          else
+            exit 1
+          fi
+        continue-on-error: true
+      - id: toolchain
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14
+        continue-on-error: true
+        with:
+          install: false
+      - id: bootstrap
+        if: steps.toolchain.outcome == 'success'
+        run: mise install && uv sync --frozen
+        continue-on-error: true
+      - name: Finalize reporting bootstrap failure without dependencies
+        if: steps.evidence.outcome != 'success' || steps.toolchain.outcome != 'success' || steps.bootstrap.outcome != 'success'
+        run: python3 tools/capability_pack/fallback_finalize.py artifacts/engineering-refresh/result.json artifacts/engineering-refresh/summary.md
+      - name: Normalize incomplete publication
+        if: steps.evidence.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.bootstrap.outcome == 'success'
+        env:
+          REFRESH_MODE: ${{ needs.qualify.outputs.mode }}
+        run: uv run python -m tools.capability_pack.cli normalize-publication artifacts/engineering-refresh/result.json --mode "$REFRESH_MODE"
+      - name: Reconcile blocked intake issue
+        if: steps.evidence.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.bootstrap.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACT_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts
+        run: uv run python -m tools.capability_pack.cli report artifacts/engineering-refresh/result.json --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL"
+        continue-on-error: true
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: engineering-refresh-result
+          path: artifacts/engineering-refresh
+          retention-days: 30
+      - name: Fail blocked intake
+        if: always() && steps.toolchain.outcome == 'success' && steps.bootstrap.outcome == 'success'
+        env:
+          REFRESH_MODE: ${{ needs.qualify.outputs.mode }}
+        run: uv run python -m tools.capability_pack.cli final-status artifacts/engineering-refresh/result.json --mode "$REFRESH_MODE"
+      - name: Fail reporting bootstrap
+        if: always() && (steps.toolchain.outcome != 'success' || steps.bootstrap.outcome != 'success' || steps.evidence.outcome != 'success')
+        run: python3 tools/capability_pack/fallback_finalize.py artifacts/engineering-refresh/result.json artifacts/engineering-refresh/summary.md --check

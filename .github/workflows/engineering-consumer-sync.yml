@@ -1,0 +1,87 @@
+name: Engineering consumer sync
+
+on:
+  workflow_call:
+    inputs:
+      source_tag: {required: true, type: string}
+      source_commit: {required: true, type: string}
+    secrets:
+      UPDATER_APP_ID: {required: false}
+      UPDATER_APP_PRIVATE_KEY: {required: false}
+
+permissions:
+  contents: read
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: engineering-updater-publish
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch exact release tag
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: git fetch --force origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14
+        with:
+          install: false
+      - run: mise install && uv sync --frozen
+      - name: Validate and prepare exact consumer update
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: uv run python -m tools.capability_pack.cli prepare-consumer . "$SOURCE_TAG" "$SOURCE_COMMIT"
+      - run: mise run agent-sync --refresh
+      - run: mise run agent-sync --frozen
+      - name: Assert released Codex inventory
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: mise run assert-engineering-codex-inventory -- "$SOURCE_TAG" "$SOURCE_COMMIT"
+      - id: publication-config
+        name: Validate publication configuration
+        env:
+          APP_CONFIGURED: ${{ vars.ENGINEERING_UPDATER_APP_CONFIGURED }}
+        run: test "$APP_CONFIGURED" = true
+        continue-on-error: true
+      - id: app-token
+        if: steps.publication-config.outcome == 'success'
+        uses: actions/create-github-app-token@a8d616148505b5069dccd32f177bb87d7f39123b
+        continue-on-error: true
+        with:
+          app-id: ${{ secrets.UPDATER_APP_ID }}
+          private-key: ${{ secrets.UPDATER_APP_PRIVATE_KEY }}
+      - name: Stop safely without App credentials
+        if: steps.publication-config.outcome != 'success' || steps.app-token.outcome != 'success' || steps.app-token.outputs.token == ''
+        run: |
+          echo 'Updater App credentials are required; no branch or PR was written.' >&2
+          exit 1
+      - name: Write consumer proposal body
+        if: steps.app-token.outputs.token != ''
+        env:
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          printf '%s\n' \
+            "Adopt \`$SOURCE_TAG\` at \`$SOURCE_COMMIT\` exactly." \
+            '' \
+            '- [ ] Tag workflow passed' \
+            '- [ ] After merge, run `mise run agent-sync --refresh` locally' \
+            "- [ ] Resolve PACKAGE_COMMIT from \`$SOURCE_TAG^{commit}\` and run the Codex inventory assertion locally" \
+            > /tmp/engineering-consumer-pr-body.md
+      - name: Reconcile exact consumer draft
+        if: steps.app-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+        run: |
+          uv run python -m tools.capability_pack.cli reconcile-draft-pr . \
+            --branch automation/engineering-consumer-sync \
+            --title "chore: adopt $SOURCE_TAG" \
+            --body-file /tmp/engineering-consumer-pr-body.md \
+            --commit-message "chore: adopt $SOURCE_TAG"

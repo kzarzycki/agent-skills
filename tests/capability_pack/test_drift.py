@@ -9,12 +9,40 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tools.capability_pack.model import Provenance
 from tools.capability_pack.qualify import (
     BreakingDriftError,
     ConfigurationError,
+    LicenseDriftError,
     QualificationError,
+    _version_magnitude,
     qualify,
 )
+
+
+def _versioned_provenance(*, source_tag=None, stable_baseline_tag=None) -> Provenance:
+    return Provenance(
+        "1" * 40,
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        (),
+        source_tag=source_tag,
+        stable_baseline_tag=stable_baseline_tag,
+    )
+
+
+def test_upstream_major_takes_precedence_over_added_skills() -> None:
+    previous = _versioned_provenance(stable_baseline_tag="v1.2.3")
+    assert _version_magnitude(previous, "v2.0.0", ("new-skill",)) == "major"
+
+
+def test_version_proposal_fails_closed_without_stable_baseline() -> None:
+    with pytest.raises(QualificationError, match="baseline is unavailable"):
+        _version_magnitude(_versioned_provenance(), "v1.2.4", ())
 
 
 def _add_leaf(package: Path, destination: str, source: str) -> None:
@@ -186,6 +214,16 @@ def test_missing_recorded_legal_file_fails_qualification(package: Path, fake_ven
 
     with pytest.raises(QualificationError, match="legal file"):
         qualify(package, "locked")
+
+
+def test_changed_upstream_license_blocks_update_atomically(
+    package: Path, upstream: Path, fake_vendir: Path
+) -> None:
+    before = _package_bytes(package)
+    (upstream / "LICENSE").write_text("changed legal terms\n")
+    with pytest.raises(LicenseDriftError, match="license files changed"):
+        qualify(package, "update")
+    assert _package_bytes(package) == before
 
 
 def test_undeclared_owned_sibling_collision_blocks_update(

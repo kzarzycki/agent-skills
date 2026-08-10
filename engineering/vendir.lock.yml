@@ -103,14 +103,6 @@ directories:
       tags:
       - v1.2.3-2-g84fdeff
     path: .
-  path: skills/setup-engineering-workflow-for-apm
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
-      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
-      tags:
-      - v1.2.3-2-g84fdeff
-    path: .
   path: skills/tdd
 - contents:
   - git:

@@ -68,6 +68,26 @@ def _write_package(package: Path) -> None:
         )
     )
     (package / "patches").mkdir()
+    (package / "upstream.yml").write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "repository": "https://github.com/mattpocock/skills.git",
+                "tracked_ref": "origin/main",
+                "stable_tag_pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+                "removal_policy": "block",
+                "exclusions": [],
+                "aliases": {},
+                "owned_skills": [
+                    "audit-third-party-software",
+                    "context-extractor",
+                    "operating-omnigent",
+                ],
+                "owned_overlays": [],
+            },
+            sort_keys=False,
+        )
+    )
 
 
 def _install_noop_vendir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,7 +101,7 @@ def _install_noop_vendir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(
         qualify_module,
         "_reconcile_inventory",
-        lambda _stage, config, _owned: (config, None),
+        lambda _stage, config, _owned, _candidate=None, _exclusions=(): (config, _candidate),
     )
 
 

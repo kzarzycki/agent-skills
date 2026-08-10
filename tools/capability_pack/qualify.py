@@ -25,12 +25,6 @@ from tools.capability_pack.summary import render_summary
 VENDIR_MANIFEST = "vendir.yml"
 VENDIR_LOCK = "vendir.lock.yml"
 ENGINEERING_SOURCE_URL = "https://github.com/mattpocock/skills.git"
-ENGINEERING_TRACKED_REF = "origin/main"
-ENGINEERING_OWNED_SKILLS = (
-    "audit-third-party-software",
-    "context-extractor",
-    "operating-omnigent",
-)
 
 
 class QualificationError(RuntimeError):
@@ -43,6 +37,72 @@ class ConfigurationError(QualificationError):
 
 class BreakingDriftError(QualificationError):
     """An imported skill disappeared or was renamed upstream."""
+
+
+class PatchError(QualificationError):
+    def __init__(self, patch: str, detail: str) -> None:
+        super().__init__(f"patch failed: {patch}: {detail}")
+        self.patch = patch
+        self.detail = detail
+
+
+class LicenseDriftError(BreakingDriftError):
+    """The upstream legal payload changed and requires explicit review."""
+
+
+def _load_upstream_policy(package: Path) -> dict:
+    path = package / "upstream.yml"
+    if not path.exists():
+        return {}
+    try:
+        return _mapping(yaml.safe_load(path.read_text()), "upstream.yml")
+    except yaml.YAMLError as error:
+        raise ConfigurationError(f"invalid upstream policy: {error}") from error
+
+
+def _overlay_entries(package: Path, policy: dict) -> tuple[tuple[Path, Path], ...]:
+    entries = []
+    for index, raw in enumerate(_sequence(policy.get("owned_overlays", []), "owned_overlays")):
+        item = _mapping(raw, f"owned overlay {index}")
+        source = _validate_relative_path(str(item.get("source", "")), label="overlay source")
+        destination = _validate_relative_path(
+            str(item.get("destination", "")), label="overlay destination"
+        )
+        entries.append((package.joinpath(*source.parts), package.joinpath(*destination.parts)))
+    return tuple(entries)
+
+
+def _apply_overlays(stage: Path, package: Path, policy: dict) -> tuple[FileHash, ...]:
+    canonical_files: list[Path] = []
+    for source, destination in _overlay_entries(package, policy):
+        if not (source / "SKILL.md").is_file():
+            raise ConfigurationError(
+                f"owned overlay has no SKILL.md: {source.relative_to(package)}"
+            )
+        staged_destination = stage / destination.relative_to(package)
+        shutil.rmtree(staged_destination, ignore_errors=True)
+        shutil.copytree(source, staged_destination)
+        canonical_files.extend(_manifest_files(source))
+    return hash_files(package, canonical_files)
+
+
+def _validate_overlay_reproduction(package: Path, policy: dict) -> None:
+    for source, destination in _overlay_entries(package, policy):
+        source_state = {
+            path.relative_to(source).as_posix(): (path.read_bytes(), path.stat().st_mode & 0o111)
+            for path in _manifest_files(source)
+        }
+        destination_state = {
+            path.relative_to(destination).as_posix(): (
+                path.read_bytes(),
+                path.stat().st_mode & 0o111,
+            )
+            for path in _manifest_files(destination)
+        }
+        if source_state != destination_state:
+            raise QualificationError(
+                f"owned overlay destination differs from canonical source: {destination.relative_to(package)}"
+            )
 
 
 def validate_release_candidate(package_root: Path, tag: str) -> None:
@@ -126,7 +186,7 @@ def _load_manifest(path: Path) -> dict:
         raise ConfigurationError(f"invalid vendir manifest {path.name}: {error}") from error
 
 
-def _validate_source_policy(package: Path, config: dict) -> None:
+def _validate_source_policy(package: Path, config: dict, policy: dict) -> None:
     if package.name != "engineering":
         return
     sources = [
@@ -138,11 +198,31 @@ def _validate_source_policy(package: Path, config: dict) -> None:
         raise ConfigurationError("engineering source policy requires Git sources only")
     urls = {source.get("url") for source in sources}
     refs = {source.get("ref") for source in sources}
-    if urls != {ENGINEERING_SOURCE_URL} or refs != {ENGINEERING_TRACKED_REF}:
+    tracked_ref = policy.get("tracked_ref")
+    valid_refs = all(
+        ref == tracked_ref or bool(re.fullmatch(r"[0-9a-f]{40}", str(ref))) for ref in refs
+    )
+    repository = policy.get("repository")
+    if repository != ENGINEERING_SOURCE_URL:
+        raise ConfigurationError("engineering upstream policy has an unsupported repository")
+    if urls != {repository} or not valid_refs:
         raise ConfigurationError(
             "engineering source policy requires "
-            f"{ENGINEERING_SOURCE_URL} at {ENGINEERING_TRACKED_REF}"
+            f"{ENGINEERING_SOURCE_URL} at {tracked_ref} or an exact commit"
         )
+    if policy.get("removal_policy") != "block":
+        raise ConfigurationError("engineering removal_policy must be block")
+    declared_aliases = policy.get("aliases", {})
+    if not isinstance(declared_aliases, dict):
+        raise ConfigurationError("engineering aliases must be a mapping")
+    mapped_sources = {
+        PurePosixPath(directory["path"]).name: content.get("newRootPath")
+        for directory in config["directories"]
+        for content in directory["contents"]
+        if directory["path"].startswith("skills/")
+    }
+    if any(mapped_sources.get(name) != source for name, source in declared_aliases.items()):
+        raise ConfigurationError("engineering alias policy differs from vendir mappings")
     managed = set(_managed_skills(config))
     source_leaves = {
         PurePosixPath(content.get("newRootPath", "")).name
@@ -150,11 +230,12 @@ def _validate_source_policy(package: Path, config: dict) -> None:
         for content in directory["contents"]
         if content.get("newRootPath")
     }
-    claimed = sorted(set(ENGINEERING_OWNED_SKILLS) & (managed | source_leaves))
+    owned = tuple(policy.get("owned_skills", ()))
+    if not owned or any(not isinstance(name, str) for name in owned):
+        raise ConfigurationError("engineering upstream policy requires owned_skills")
+    claimed = sorted(set(owned) & (managed | source_leaves))
     missing = sorted(
-        name
-        for name in ENGINEERING_OWNED_SKILLS
-        if not (package / "skills" / name / "SKILL.md").is_file()
+        name for name in owned if not (package / "skills" / name / "SKILL.md").is_file()
     )
     if claimed or missing:
         details = []
@@ -256,6 +337,8 @@ def _apply_patches(stage: Path, repository_root: Path) -> None:
                 cwd=stage,
                 env=environment,
                 check=True,
+                capture_output=True,
+                text=True,
                 timeout=30,
             )
             subprocess.run(
@@ -263,10 +346,68 @@ def _apply_patches(stage: Path, repository_root: Path) -> None:
                 cwd=stage,
                 env=environment,
                 check=True,
+                capture_output=True,
+                text=True,
                 timeout=30,
             )
-        except (OSError, subprocess.SubprocessError) as error:
-            raise QualificationError(f"patch failed: {value}: {error}") from error
+        except subprocess.CalledProcessError as error:
+            detail = (error.stderr or error.stdout or str(error)).strip()
+            raise PatchError(value, detail) from error
+        except OSError as error:
+            raise PatchError(value, str(error)) from error
+
+
+def _next_version(version: str, magnitude: str) -> str:
+    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version)
+    if not match:
+        raise ConfigurationError(f"package version is not SemVer: {version}")
+    major, minor, patch = (int(value) for value in match.groups())
+    if magnitude == "major":
+        return f"{major + 1}.0.0"
+    if magnitude == "minor":
+        return f"{major}.{minor + 1}.0"
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def _version_magnitude(previous: Provenance, source_tag: str | None, added: tuple[str, ...]) -> str:
+    pattern = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+    old = pattern.fullmatch(previous.source_tag or previous.stable_baseline_tag or "")
+    new = pattern.fullmatch(source_tag or "")
+    if not old or not new:
+        raise QualificationError("stable upstream version baseline is unavailable")
+    old_version = tuple(int(value) for value in old.groups())
+    new_version = tuple(int(value) for value in new.groups())
+    if new_version <= old_version:
+        raise QualificationError("candidate stable version is not newer than the baseline")
+    if new_version[0] > old_version[0]:
+        return "major"
+    if added or new_version[1] > old_version[1]:
+        return "minor"
+    return "patch"
+
+
+def _update_package_version(stage: Path, magnitude: str) -> str | None:
+    apm_path = stage / "apm.yml"
+    plugin_path = stage / ".claude-plugin" / "plugin.json"
+    if not apm_path.exists() and not plugin_path.exists():
+        return None
+    apm = _mapping(yaml.safe_load(apm_path.read_text()), "apm.yml")
+    plugin = _mapping(json.loads(plugin_path.read_text()), "plugin.json")
+    if apm.get("version") != plugin.get("version"):
+        raise ConfigurationError("package manifest versions disagree")
+    proposed = _next_version(str(apm["version"]), magnitude)
+    apm["version"] = proposed
+    plugin["version"] = proposed
+    apm_path.write_text(yaml.safe_dump(apm, sort_keys=False))
+    plugin_path.write_text(json.dumps(plugin, indent=2) + "\n")
+    consumer = stage / "tests" / "consumer" / "apm.yml"
+    if consumer.exists():
+        data = _mapping(yaml.safe_load(consumer.read_text()), "consumer apm.yml")
+        for dependency in data.get("dependencies", {}).get("apm", []):
+            if dependency.get("git") == "kzarzycki/agent-skills/engineering":
+                dependency["ref"] = f"^{proposed}"
+        consumer.write_text(yaml.safe_dump(data, sort_keys=False))
+    return proposed
 
 
 def _manifest_files(root: Path) -> list[Path]:
@@ -316,6 +457,8 @@ def _reconcile_inventory(
     stage: Path,
     config: dict,
     owned: tuple[str, ...],
+    candidate_commit: str | None = None,
+    exclusions: tuple[str, ...] = (),
 ) -> tuple[dict, str | None]:
     git_sources = {
         (git.get("url"), git.get("ref"))
@@ -335,7 +478,7 @@ def _reconcile_inventory(
     checkout = temporary / "upstream"
     try:
         _git_output(["init", "--quiet", str(checkout)])
-        fetch_ref = ref.removeprefix("origin/")
+        fetch_ref = candidate_commit or ref.removeprefix("origin/")
         _git_output(
             [
                 "fetch",
@@ -349,6 +492,8 @@ def _reconcile_inventory(
             cwd=checkout,
         )
         candidate = _git_output(["rev-parse", "FETCH_HEAD^{commit}"], cwd=checkout)
+        if candidate_commit is not None and candidate != candidate_commit:
+            raise QualificationError("resolved candidate differs from requested release commit")
         upstream_names = set(
             _git_output(
                 ["ls-tree", "-d", "--name-only", f"{candidate}:skills/engineering"],
@@ -376,6 +521,15 @@ def _reconcile_inventory(
     finally:
         shutil.rmtree(temporary)
 
+    config = copy.deepcopy(config)
+    config["directories"] = [
+        directory
+        for directory in config["directories"]
+        if not any(
+            PurePosixPath(content.get("newRootPath", "")).name in exclusions
+            for content in directory["contents"]
+        )
+    ]
     configured: dict[str, str] = {}
     template: dict | None = None
     for directory in config["directories"]:
@@ -402,7 +556,7 @@ def _reconcile_inventory(
             "upstream leaf collides with repository-owned skill(s) "
             f"{', '.join(collisions)} at candidate {candidate}"
         )
-    additions = sorted(upstream_names - set(configured) - set(owned))
+    additions = sorted(upstream_names - set(configured) - set(owned) - set(exclusions))
     if additions and template is None:
         raise ConfigurationError("no ordinary engineering leaf available as inventory template")
 
@@ -632,6 +786,9 @@ def qualify(
     package_root: Path,
     mode: Literal["update", "locked"],
     summary_path: Path | None = None,
+    *,
+    source_tag: str | None = None,
+    candidate_commit: str | None = None,
 ) -> QualificationResult:
     package = package_root.resolve()
     if mode not in {"update", "locked"}:
@@ -641,10 +798,26 @@ def qualify(
     if summary_path and _is_below(summary_path.resolve(strict=False), package):
         raise ConfigurationError("summary path must be outside the package root")
     config = _load_manifest(package / VENDIR_MANIFEST)
-    _validate_source_policy(package, config)
+    policy = _load_upstream_policy(package)
+    if mode == "locked":
+        _validate_overlay_reproduction(package, policy)
+    _validate_source_policy(package, config, policy)
     _source_commit(package)
     original_managed = _managed_skills(config)
-    owned = _owned_skills(package, original_managed)
+    overlay_names = tuple(destination.name for _, destination in _overlay_entries(package, policy))
+    owned = _owned_skills(package, tuple(sorted(set(original_managed) | set(overlay_names))))
+    declared_owned = tuple(sorted(policy.get("owned_skills", ())))
+    if policy and owned != declared_owned:
+        undeclared = sorted(set(owned) - set(declared_owned))
+        missing = sorted(set(declared_owned) - set(owned))
+        details = []
+        if undeclared:
+            details.append(f"undeclared: {', '.join(undeclared)}")
+        if missing:
+            details.append(f"missing: {', '.join(missing)}")
+        raise ConfigurationError(
+            "engineering repository-owned skill policy violated: " + "; ".join(details)
+        )
     original_owned = _owned_manifest(package, owned)
 
     temporary = Path(tempfile.mkdtemp(prefix=f".{package.name}-stage-", dir=package.parent))
@@ -659,17 +832,40 @@ def qualify(
             raise QualificationError(f"invalid provenance: {error}") from error
         committed_config = config
         if mode == "update":
-            committed_config, _ = _reconcile_inventory(staged, config, owned)
+            committed_config, _ = _reconcile_inventory(
+                staged,
+                config,
+                owned,
+                candidate_commit,
+                tuple(policy.get("exclusions", [])),
+            )
         managed = _managed_skills(committed_config)
         _sync_manifest(staged, mode)
         if mode == "update":
             (staged / VENDIR_MANIFEST).write_text(yaml.safe_dump(committed_config, sort_keys=False))
         _validate_symlinks(staged)
+        overlay_files = _apply_overlays(staged, package, policy)
+        if (
+            mode == "update"
+            and candidate_commit is not None
+            and previous
+            and previous.owned_overlays
+            and previous.owned_overlays != overlay_files
+        ):
+            raise QualificationError(
+                "owned overlay changed during upstream intake; review it separately"
+            )
         if _owned_manifest(staged, owned) != original_owned:
             raise QualificationError("vendir changed a repository-owned skill")
         inventory = _inventory(staged, managed)
         source_files = _output_manifest(staged, inventory)
-        removed = tuple(sorted(set(previous.included_skills if previous else ()) - set(inventory)))
+        removed = tuple(
+            sorted(
+                set(previous.included_skills if previous else ())
+                - set(inventory)
+                - set(overlay_names)
+            )
+        )
         if removed:
             old_commit = previous.source_commit if previous else "unknown"
             raise BreakingDriftError(
@@ -678,6 +874,8 @@ def qualify(
         source_commit = _source_commit(staged)
         source_mappings = _source_mappings(committed_config, source_commit, inventory)
         license_files = _license_manifest(staged, previous, (committed_config,))
+        if mode == "update" and previous and previous.license_files != license_files:
+            raise LicenseDriftError("upstream license files changed; explicit review is required")
         patch_files: tuple[FileHash, ...] = ()
         try:
             patch_files = _patch_manifest(staged)
@@ -686,8 +884,18 @@ def qualify(
             if summary_path:
                 partial = Provenance(
                     source_commit=source_commit,
+                    source_tag=source_tag or (previous.source_tag if previous else None),
+                    stable_baseline_tag=(
+                        source_tag or (previous.stable_baseline_tag if previous else None)
+                    ),
                     included_skills=inventory,
-                    excluded_skills=_excluded_skills(committed_config),
+                    excluded_skills=tuple(
+                        sorted(
+                            set(_excluded_skills(committed_config))
+                            | set(policy.get("exclusions", []))
+                        )
+                    ),
+                    owned_overlays=overlay_files,
                     source_mappings=source_mappings,
                     source_files=source_files,
                     patch_files=patch_files,
@@ -709,13 +917,21 @@ def qualify(
                         test_command="python -m pytest -q -m 'not live_agent' tests",
                         test_result="NOT RUN",
                         setup_contract_changed=False,
+                        transitioned_to_owned=overlay_names,
                     )
                 )
             raise
         proposed = Provenance(
             source_commit=source_commit,
+            source_tag=source_tag or (previous.source_tag if previous else None),
+            stable_baseline_tag=(
+                source_tag or (previous.stable_baseline_tag if previous else None)
+            ),
             included_skills=inventory,
-            excluded_skills=_excluded_skills(committed_config),
+            excluded_skills=tuple(
+                sorted(set(_excluded_skills(committed_config)) | set(policy.get("exclusions", [])))
+            ),
+            owned_overlays=overlay_files,
             source_mappings=source_mappings,
             source_files=source_files,
             patch_files=patch_files,
@@ -723,8 +939,22 @@ def qualify(
             output_files=_output_manifest(staged, inventory),
         )
         added = tuple(sorted(set(inventory) - set(previous.included_skills if previous else ())))
-        changed_skills = _changed_skills(previous, proposed)
+        changed_skills = tuple(
+            name for name in _changed_skills(previous, proposed) if name not in overlay_names
+        )
         write_provenance(staged / "provenance.yml", proposed)
+        proposed_version = None
+        content_changed = bool(
+            previous
+            and (previous.source_commit != proposed.source_commit or added or changed_skills)
+        )
+        has_versioned_metadata = (staged / "apm.yml").exists() or (
+            staged / ".claude-plugin" / "plugin.json"
+        ).exists()
+        if mode == "update" and content_changed and has_versioned_metadata:
+            proposed_version = _update_package_version(
+                staged, _version_magnitude(previous, source_tag, added)
+            )
         test_command, test_result = _run_package_tests(staged)
         summary = render_summary(
             previous,
@@ -733,7 +963,11 @@ def qualify(
             patch_failures=(),
             test_command=test_command,
             test_result=test_result,
-            setup_contract_changed=_setup_contract_changed(previous, proposed),
+            setup_contract_changed=(
+                "setup-engineering-workflow-for-apm" not in overlay_names
+                and _setup_contract_changed(previous, proposed)
+            ),
+            transitioned_to_owned=overlay_names,
         )
         if mode == "update":
             if summary_path:
@@ -753,6 +987,8 @@ def qualify(
             added_skills=added,
             removed_skills=removed,
             summary=summary,
+            proposed_version=proposed_version,
+            changed_skills=changed_skills,
         )
     finally:
         if temporary.exists():
