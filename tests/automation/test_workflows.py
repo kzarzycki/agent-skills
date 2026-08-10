@@ -152,9 +152,26 @@ def test_consumer_sync_is_exact_app_authenticated_and_draft_only() -> None:
         step for step in _steps(workflow) if step.get("name") == "Reconcile exact consumer draft"
     )
     assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["on"]["workflow_dispatch"]["inputs"] == {
+        "source_tag": {
+            "description": "Exact released engineering-vX.Y.Z tag to recover",
+            "required": "true",
+            "type": "string",
+        },
+        "source_commit": {
+            "description": "Commit peeled from the exact release tag",
+            "required": "true",
+            "type": "string",
+        },
+    }
     assert "prepare-consumer" in commands
     assert "agent-sync --refresh" in commands
     assert "agent-sync --frozen" in commands
+    refresh_index = commands.index("agent-sync --refresh")
+    commit_index = commands.index("git commit -m")
+    frozen_index = commands.index("agent-sync --frozen")
+    assert refresh_index < commit_index < frozen_index
+    assert "git add --all" in commands
     assert "assert-engineering-codex-inventory" in commands
     assert all("${{" not in step.get("run", "") for step in _steps(workflow))
     assert "resolved_tag" in (ROOT / "tools" / "capability_pack" / "consumer.py").read_text()
