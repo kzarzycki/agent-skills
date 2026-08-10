@@ -2,18 +2,14 @@ name: agent-skills
 version: 0.1.0
 description: Development agent configuration for the agent-skills repository.
 author: kzarzycki
-# Which agent platforms to deploy to.
-# Resolution order: --target flag > this field > auto-detect from filesystem.
-# Accepted values: vscode, agents, copilot, claude, cursor, opencode, codex,
-# gemini, antigravity, windsurf, kiro, agent-skills, all
 targets:
-  - claude
-  - codex
+- claude
+- codex
 dependencies:
   apm:
-    - git: kzarzycki/agent-skills/engineering
-      ref: ^0.2.0
+  - git: kzarzycki/agent-skills/engineering
+    ref: engineering-v0.3.0
   mcp: []
 includes:
-  - .apm/instructions/**/*.md
+- .apm/instructions/**/*.md
 scripts: {}
