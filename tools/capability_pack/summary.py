@@ -20,12 +20,13 @@ def render_summary(
     test_command: str,
     test_result: str,
     setup_contract_changed: bool,
+    transitioned_to_owned: tuple[str, ...] = (),
 ) -> str:
     previous_commit = previous.source_commit if previous else "none"
     old_skills = set(previous.included_skills if previous else ())
     new_skills = set(proposed.included_skills)
     added = tuple(sorted(new_skills - old_skills))
-    removed = tuple(sorted(old_skills - new_skills))
+    removed = tuple(sorted(old_skills - new_skills - set(transitioned_to_owned)))
     if removed or setup_contract_changed or patch_failures:
         version = "BLOCKED"
     elif added:

@@ -58,8 +58,11 @@ def load_provenance(path: Path) -> Provenance:
         raise TypeError("provenance must be a mapping")
     return Provenance(
         source_commit=data["source_commit"],
+        source_tag=data.get("source_tag"),
+        stable_baseline_tag=data.get("stable_baseline_tag"),
         included_skills=tuple(data.get("included_skills", ())),
         excluded_skills=tuple(data.get("excluded_skills", ())),
+        owned_overlays=_file_hashes(data.get("owned_overlays", [])),
         source_mappings=_source_mappings(data.get("source_mappings", [])),
         source_files=_file_hashes(data.get("source_files", [])),
         patch_files=_file_hashes(data.get("patch_files", [])),
@@ -74,8 +77,11 @@ def write_provenance(path: Path, provenance: Provenance) -> None:
 
     data = {
         "source_commit": provenance.source_commit,
+        "source_tag": provenance.source_tag,
+        "stable_baseline_tag": provenance.stable_baseline_tag,
         "included_skills": list(provenance.included_skills),
         "excluded_skills": list(provenance.excluded_skills),
+        "owned_overlays": manifest(provenance.owned_overlays),
         "source_mappings": [
             {
                 "source_repository": item.source_repository,

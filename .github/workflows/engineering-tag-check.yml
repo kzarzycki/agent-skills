@@ -24,3 +24,10 @@ jobs:
       - run: mise run vendor-engineering-check
       - run: mise run test
       - run: mise run test-engineering-package
+  consumer-sync:
+    needs: qualify
+    uses: ./.github/workflows/engineering-consumer-sync.yml
+    with:
+      source_tag: ${{ github.ref_name }}
+      source_commit: ${{ github.sha }}
+    secrets: inherit

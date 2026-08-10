@@ -11,11 +11,6 @@ import yaml
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 PACKAGE = REPOSITORY / "engineering"
-OWNED_SKILLS = {
-    "audit-third-party-software",
-    "context-extractor",
-    "operating-omnigent",
-}
 
 
 def _run(
@@ -62,7 +57,9 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
 
 def _expected_skills() -> set[str]:
     provenance = yaml.safe_load((PACKAGE / "provenance.yml").read_text())
-    return set(provenance["included_skills"]) | OWNED_SKILLS
+    policy = yaml.safe_load((PACKAGE / "upstream.yml").read_text())
+    overlays = {Path(item["destination"]).name for item in policy["owned_overlays"]}
+    return set(provenance["included_skills"]) | set(policy["owned_skills"]) | overlays
 
 
 def _file_manifest(root: Path) -> dict[str, str]:
@@ -142,7 +139,9 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
     _run(["git", "init", "-q"], cwd=source, env=env)
     _run(["git", "add", "."], cwd=source, env=env)
     _run(["git", "commit", "-q", "-m", "fixture"], cwd=source, env=env)
-    _run(["git", "tag", "engineering-v0.2.0"], cwd=source, env=env)
+    version = yaml.safe_load((PACKAGE / "apm.yml").read_text())["version"]
+    tag = f"engineering-v{version}"
+    _run(["git", "tag", tag], cwd=source, env=env)
 
     origin = tmp_path / "agent-skills.git"
     _run(["git", "clone", "-q", "--bare", str(source), str(origin)], cwd=tmp_path, env=env)
@@ -164,7 +163,7 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
     dependency = fixture["dependencies"]["apm"][0]
     assert dependency == {
         "git": "kzarzycki/agent-skills/engineering",
-        "ref": "^0.2.0",
+        "ref": f"^{version}",
     }
 
     _run(["apm", "install"], cwd=consumer, env=env)
@@ -175,5 +174,5 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
 
     lockfile = yaml.safe_load((consumer / "apm.lock.yaml").read_text())
     serialized_lock = json.dumps(lockfile, sort_keys=True)
-    assert "^0.2.0" in serialized_lock
-    assert "engineering-v0.2.0" in serialized_lock
+    assert f"^{version}" in serialized_lock
+    assert tag in serialized_lock

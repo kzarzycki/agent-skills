@@ -9,6 +9,7 @@ import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
 SKILL = PACKAGE / "skills" / "setup-engineering-workflow-for-apm"
+OVERLAY = PACKAGE / "overlays" / "skills" / "setup-engineering-workflow-for-apm"
 PROTOCOL_PATTERN = re.compile(
     r"<!-- setup-fixture-protocol\n(?P<protocol>.*?)\n-->",
     re.DOTALL,
@@ -212,6 +213,15 @@ def test_setup_leaf_contains_only_the_active_workflow_payload() -> None:
         "agents/openai.yaml",
         "templates/issue-tracker-github.md",
         "templates/project-guidance.md",
+    }
+    assert {
+        path.relative_to(OVERLAY).as_posix(): path.read_bytes()
+        for path in OVERLAY.rglob("*")
+        if path.is_file()
+    } == {
+        path.relative_to(SKILL).as_posix(): path.read_bytes()
+        for path in SKILL.rglob("*")
+        if path.is_file()
     }
 
 

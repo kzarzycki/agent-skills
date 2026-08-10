@@ -33,7 +33,6 @@ def test_apm_targets_receive_complete_canonical_inventory(tmp_path: Path) -> Non
     fixture = install_fixture(tmp_path)
     source = file_manifest(PACKAGE / "skills")
 
-    assert len(source) == 59
     assert_catalog_matches(source, fixture.catalog(CLAUDE))
     assert_catalog_matches(source, fixture.catalog(CODEX))
     assert fixture.catalog(CLAUDE).skill_names == fixture.expected_skills

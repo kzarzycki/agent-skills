@@ -28,6 +28,9 @@ class Provenance:
     patch_files: tuple[FileHash, ...]
     license_files: tuple[FileHash, ...]
     output_files: tuple[FileHash, ...]
+    source_tag: str | None = None
+    stable_baseline_tag: str | None = None
+    owned_overlays: tuple[FileHash, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -37,3 +40,5 @@ class QualificationResult:
     added_skills: tuple[str, ...]
     removed_skills: tuple[str, ...]
     summary: str
+    proposed_version: str | None = None
+    changed_skills: tuple[str, ...] = ()

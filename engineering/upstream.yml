@@ -1,0 +1,16 @@
+schema_version: 1
+repository: https://github.com/mattpocock/skills.git
+tracked_ref: origin/main
+stable_tag_pattern: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+removal_policy: block
+exclusions:
+  - setup-matt-pocock-skills
+owned_skills:
+  - audit-third-party-software
+  - context-extractor
+  - operating-omnigent
+owned_overlays:
+  - source: overlays/skills/setup-engineering-workflow-for-apm
+    destination: skills/setup-engineering-workflow-for-apm
+aliases:
+  grilling: skills/productivity/grilling

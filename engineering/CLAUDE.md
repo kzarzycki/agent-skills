@@ -12,15 +12,17 @@ The repository owns these skill directories:
 - `skills/audit-third-party-software/`
 - `skills/context-extractor/`
 - `skills/operating-omnigent/`
+- `overlays/skills/setup-engineering-workflow-for-apm/` (canonical source,
+  reproduced at `skills/setup-engineering-workflow-for-apm/`)
 
-`skills/setup-engineering-workflow-for-apm/` is imported from Matt Pocock's
-engineering collection and modified by the patches listed in
-`patches/series`. All other imported skill paths are generated from
+`skills/setup-engineering-workflow-for-apm/` is generated from the owned
+overlay. All imported skill paths are generated from `upstream.yml`,
 `vendir.yml`, `vendir.lock.yml`, the patch series, and `provenance.yml`.
 
-Edit owned skills directly. Change imported skills through vendoring policy or
-patches, then run `mise run vendor-engineering`. Never hand-edit a generated
-imported path.
+Edit owned skills and overlays at their canonical source. Change imported
+skills through vendoring policy or patches, then run `mise run
+vendor-engineering`. Never hand-edit a generated imported path or overlay
+destination.
 
 Before every commit that changes this package, run
 `mise run vendor-engineering-check`. Also run

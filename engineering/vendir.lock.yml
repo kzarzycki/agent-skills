@@ -2,154 +2,154 @@ apiVersion: vendir.k14s.io/v1alpha1
 directories:
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
     path: .
   path: skills/ask-matt
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
     path: .
   path: skills/code-review
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
     path: .
   path: skills/codebase-design
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
     path: .
   path: skills/diagnosing-bugs
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
     path: .
   path: skills/domain-modeling
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
     path: .
   path: skills/grill-with-docs
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/implement
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/improve-codebase-architecture
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/prototype
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/research
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/resolving-merge-conflicts
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/setup-engineering-workflow-for-apm
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/tdd
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/to-spec
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/to-tickets
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/triage
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
-    path: .
-  path: skills/wayfinder
-- contents:
-  - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
-      tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
     path: .
   path: skills/grilling
 - contents:
   - git:
-      commitTitle: 'Merge pull request #681 from mattpocock/docs/install-instructions-split...'
-      sha: 2ab958093e83e0ec752e6c1c5932da465bf23e0c
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
       tags:
-      - v1.1.0-42-g2ab9580
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/implement
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/improve-codebase-architecture
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/prototype
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/research
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/resolving-merge-conflicts
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/tdd
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/to-spec
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/to-tickets
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/triage
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/wayfinder
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
+    path: .
+  path: skills/wizard
+- contents:
+  - git:
+      commitTitle: 'Merge pull request #788 from mattpocock/grill-me-align...'
+      sha: 84fdeffd12f2ee307994d1eb6feb48173b6e0502
+      tags:
+      - v1.2.3-2-g84fdeff
     path: .
   path: LICENSES/mattpocock-skills
 kind: LockConfig

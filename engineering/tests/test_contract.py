@@ -5,85 +5,81 @@ from pathlib import Path
 import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
-PINNED_COMMIT = "2ab958093e83e0ec752e6c1c5932da465bf23e0c"
-OWNED_SKILLS = {
-    "audit-third-party-software",
-    "context-extractor",
-    "operating-omnigent",
-}
-IMPORTED_SKILLS = {
-    "ask-matt",
-    "code-review",
-    "codebase-design",
-    "diagnosing-bugs",
-    "domain-modeling",
-    "grill-with-docs",
-    "grilling",
-    "implement",
-    "improve-codebase-architecture",
-    "prototype",
-    "research",
-    "resolving-merge-conflicts",
-    "setup-engineering-workflow-for-apm",
-    "tdd",
-    "to-spec",
-    "to-tickets",
-    "triage",
-    "wayfinder",
-}
+
+
+def _data() -> tuple[dict, dict, dict]:
+    return (
+        yaml.safe_load((PACKAGE / "upstream.yml").read_text()),
+        yaml.safe_load((PACKAGE / "provenance.yml").read_text()),
+        yaml.safe_load((PACKAGE / "vendir.lock.yml").read_text()),
+    )
 
 
 def _skill_inventory() -> set[str]:
-    return {path.parent.name for path in (PACKAGE / "skills").glob("*/SKILL.md") if path.is_file()}
+    return {path.parent.name for path in (PACKAGE / "skills").glob("*/SKILL.md")}
 
 
-def test_package_contains_the_pinned_upstream_inventory_and_owned_skills() -> None:
-    assert _skill_inventory() == IMPORTED_SKILLS | OWNED_SKILLS
+def test_inventory_is_derived_from_provenance_and_policy() -> None:
+    policy, provenance, _ = _data()
+    assert set(policy) == {
+        "schema_version",
+        "repository",
+        "tracked_ref",
+        "stable_tag_pattern",
+        "removal_policy",
+        "exclusions",
+        "aliases",
+        "owned_skills",
+        "owned_overlays",
+    }
+    overlays = {Path(item["destination"]).name for item in policy["owned_overlays"]}
+    expected = set(provenance["included_skills"]) | set(policy["owned_skills"]) | overlays
+    assert _skill_inventory() == expected
+    assert not (set(policy["exclusions"]) & _skill_inventory())
 
 
-def test_provenance_records_the_pinned_import_boundary() -> None:
-    provenance = yaml.safe_load((PACKAGE / "provenance.yml").read_text())
-    manifest = yaml.safe_load((PACKAGE / "vendir.yml").read_text())
-    expected_mappings = {
-        (
-            content["git"]["url"],
-            PINNED_COMMIT,
-            content["newRootPath"],
-            directory["path"],
-        )
-        for directory in manifest["directories"]
-        if directory["path"].startswith("skills/")
+def test_lock_provenance_and_mappings_share_one_source_identity() -> None:
+    _, provenance, lock = _data()
+    commits = {
+        content["git"]["sha"]
+        for directory in lock["directories"]
         for content in directory["contents"]
+        if "git" in content
     }
-    actual_mappings = {
-        (
-            item["source_repository"],
-            item["source_commit"],
-            item["source_path"],
-            item["destination_path"],
-        )
-        for item in provenance["source_mappings"]
-    }
+    mapping_commits = {item["source_commit"] for item in provenance["source_mappings"]}
+    destinations = {Path(item["destination_path"]).name for item in provenance["source_mappings"]}
+    assert commits == mapping_commits == {provenance["source_commit"]}
+    assert destinations == set(provenance["included_skills"])
+    assert len(provenance["source_mappings"]) == len(
+        {(item["source_repository"], item["source_path"]) for item in provenance["source_mappings"]}
+    )
 
-    assert provenance["source_commit"] == PINNED_COMMIT
-    assert set(provenance["included_skills"]) == IMPORTED_SKILLS
-    assert provenance["excluded_skills"] == ["setup-matt-pocock-skills"]
-    assert actual_mappings == expected_mappings
-    assert (
-        "skills/engineering/setup-matt-pocock-skills",
-        "skills/setup-engineering-workflow-for-apm",
-    ) in {(source, destination) for _, _, source, destination in actual_mappings}
-    assert ("skills/productivity/grilling", "skills/grilling") in {
-        (source, destination) for _, _, source, destination in actual_mappings
-    }
+
+def test_owned_overlay_is_canonical_and_reproduced() -> None:
+    policy, provenance, _ = _data()
+    assert provenance["excluded_skills"] == policy["exclusions"]
+    for overlay in policy["owned_overlays"]:
+        source = PACKAGE / overlay["source"]
+        destination = PACKAGE / overlay["destination"]
+        source_files = {
+            path.relative_to(source): path.read_bytes()
+            for path in source.rglob("*")
+            if path.is_file()
+        }
+        destination_files = {
+            path.relative_to(destination): path.read_bytes()
+            for path in destination.rglob("*")
+            if path.is_file()
+        }
+        assert destination_files == source_files
 
 
 def test_imported_text_uses_the_owned_setup_command() -> None:
+    _, provenance, _ = _data()
     offenders = [
         path.relative_to(PACKAGE).as_posix()
-        for skill in sorted(IMPORTED_SKILLS)
+        for skill in provenance["included_skills"]
         for path in (PACKAGE / "skills" / skill).rglob("*")
         if path.is_file() and "/setup-matt-pocock-skills" in path.read_text()
     ]
-
     assert offenders == []

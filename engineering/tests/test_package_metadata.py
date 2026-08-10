@@ -9,7 +9,6 @@ import yaml
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 PACKAGE = REPOSITORY / "engineering"
-EXPECTED_VERSION = "0.2.0"
 QUALIFICATION_STAGE_ROOT = "CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT"
 
 
@@ -18,11 +17,11 @@ def test_apm_and_claude_metadata_publish_the_same_independent_package() -> None:
     plugin_manifest = json.loads((PACKAGE / ".claude-plugin" / "plugin.json").read_text())
 
     assert apm_manifest["name"] == "engineering"
-    assert apm_manifest["version"] == EXPECTED_VERSION
+    assert isinstance(apm_manifest["version"], str)
     assert apm_manifest["targets"] == ["claude", "codex"]
     assert apm_manifest["dependencies"] == {"apm": [], "mcp": []}
     assert plugin_manifest["name"] == "engineering"
-    assert plugin_manifest["version"] == EXPECTED_VERSION
+    assert plugin_manifest["version"] == apm_manifest["version"]
 
 
 def test_claude_marketplace_exposes_only_the_owned_engineering_package() -> None:
@@ -43,13 +42,14 @@ def test_claude_marketplace_exposes_only_the_owned_engineering_package() -> None
 
 def test_consumer_contract_uses_one_versioned_virtual_subdirectory_dependency() -> None:
     consumer = yaml.safe_load((PACKAGE / "tests" / "consumer" / "apm.yml").read_text())
+    version = yaml.safe_load((PACKAGE / "apm.yml").read_text())["version"]
 
     assert consumer["targets"] == ["claude", "codex"]
     assert consumer["dependencies"] == {
         "apm": [
             {
                 "git": "kzarzycki/agent-skills/engineering",
-                "ref": "^0.2.0",
+                "ref": f"^{version}",
             }
         ],
         "mcp": [],
