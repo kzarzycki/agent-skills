@@ -56,6 +56,36 @@ def _git_outputs(monkeypatch, source_commit: str = "2" * 40) -> None:
     monkeypatch.setattr(consumer, "_output", output)
 
 
+def test_active_target_names_accepts_apm_026_shape() -> None:
+    assert consumer._active_target_names(
+        [
+            {"target": "claude", "status": "active"},
+            {"target": "codex", "status": "active"},
+            {"target": "cursor", "status": "inactive"},
+        ]
+    ) == {"claude", "codex"}
+
+
+def test_lock_identity_accepts_apm_026_without_resolved_tag() -> None:
+    dependency = {
+        "resolved_ref": "engineering-v0.3.0",
+        "resolved_commit": "2" * 40,
+        "version": "0.3.0",
+    }
+    consumer._validate_lock_identity(dependency, "engineering-v0.3.0", "2" * 40)
+
+
+def test_lock_identity_rejects_inconsistent_optional_resolved_tag() -> None:
+    dependency = {
+        "resolved_ref": "engineering-v0.3.0",
+        "resolved_tag": "engineering-v0.2.0",
+        "resolved_commit": "2" * 40,
+        "version": "0.3.0",
+    }
+    with pytest.raises(ConsumerSyncError, match="resolved_tag"):
+        consumer._validate_lock_identity(dependency, "engineering-v0.3.0", "2" * 40)
+
+
 def test_consumer_update_requires_forward_version_and_both_ancestry_guards(
     tmp_path, monkeypatch
 ) -> None:

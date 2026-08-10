@@ -40,6 +40,39 @@ def _output(*arguments: str, cwd: Path | None = None) -> str:
     ).stdout.strip()
 
 
+def _active_target_names(payload: object) -> set[str]:
+    entries = (
+        payload
+        if isinstance(payload, list)
+        else payload.get("targets", [])
+        if isinstance(payload, dict)
+        else []
+    )
+    names: set[str] = set()
+    for item in entries:
+        if isinstance(item, str):
+            names.add(item)
+        elif isinstance(item, dict) and item.get("status", "active") == "active":
+            name = item.get("name") or item.get("target")
+            if isinstance(name, str):
+                names.add(name)
+    return names
+
+
+def _validate_lock_identity(dependency: dict, source_tag: str, source_commit: str) -> None:
+    required = {
+        "resolved_ref": source_tag,
+        "resolved_commit": source_commit,
+        "version": source_tag.removeprefix("engineering-v"),
+    }
+    for field, value in required.items():
+        if dependency.get(field) != value:
+            raise ConsumerSyncError(f"engineering lock {field} does not equal {value}")
+    resolved_tag = dependency.get("resolved_tag")
+    if resolved_tag is not None and resolved_tag != source_tag:
+        raise ConsumerSyncError(f"engineering lock resolved_tag does not equal {source_tag}")
+
+
 def prepare_consumer(repository: Path, source_tag: str, source_commit: str) -> str:
     match = TAG.fullmatch(source_tag)
     if not match:
@@ -80,10 +113,7 @@ def prepare_consumer(repository: Path, source_tag: str, source_commit: str) -> s
 
 def assert_codex_inventory(repository: Path, source_tag: str, source_commit: str) -> None:
     targets = json.loads(_output("apm", "targets", "--json", cwd=repository))
-    names = {
-        item if isinstance(item, str) else item.get("name")
-        for item in (targets if isinstance(targets, list) else targets.get("targets", []))
-    }
+    names = _active_target_names(targets)
     if "codex" not in names:
         raise ConsumerSyncError("Codex is not an active APM target")
     provenance = yaml.safe_load(
@@ -99,15 +129,7 @@ def assert_codex_inventory(repository: Path, source_tag: str, source_commit: str
     if len(matches) != 1:
         raise ConsumerSyncError("APM lock must contain exactly one engineering dependency")
     dependency = matches[0]
-    required = {
-        "resolved_ref": source_tag,
-        "resolved_tag": source_tag,
-        "resolved_commit": source_commit,
-        "version": source_tag.removeprefix("engineering-v"),
-    }
-    for field, value in required.items():
-        if dependency.get(field) != value:
-            raise ConsumerSyncError(f"engineering lock {field} does not equal {value}")
+    _validate_lock_identity(dependency, source_tag, source_commit)
     actual = {
         match.group(1)
         for path in dependency.get("deployed_files", [])
