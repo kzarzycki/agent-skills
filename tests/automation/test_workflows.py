@@ -194,3 +194,10 @@ def test_all_actions_are_pinned_to_full_commit_shas() -> None:
 
     assert uses
     assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)
+
+
+def test_consumer_generated_state_triggers_qualification() -> None:
+    workflow = _workflow("engineering-ci.yml")
+    required = {".agents/**", ".claude/**", "apm.yml", "apm.lock.yaml"}
+    assert required <= set(workflow["on"]["pull_request"]["paths"])
+    assert required <= set(workflow["on"]["push"]["paths"])
