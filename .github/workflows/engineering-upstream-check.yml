@@ -91,7 +91,7 @@ jobs:
           fi
           test -s artifacts/engineering-refresh/candidate.patch
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: engineering-refresh-qualified
           path: artifacts/engineering-refresh
@@ -108,7 +108,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: engineering-refresh-qualified
           path: artifacts/engineering-refresh
@@ -169,7 +169,7 @@ jobs:
           if [ "$TOKEN_PRESENT" = true ]; then args+=(--token-present); fi
           uv run python -m tools.capability_pack.cli finalize-publication "${args[@]}"
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: engineering-refresh-publication
           path: artifacts/engineering-refresh
@@ -188,14 +188,14 @@ jobs:
         with:
           persist-credentials: false
       - id: publication-artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         continue-on-error: true
         with:
           name: engineering-refresh-publication
           path: artifacts/publication
       - name: Fall back to qualified evidence
         if: steps.publication-artifact.outcome != 'success'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         continue-on-error: true
         with:
           name: engineering-refresh-qualified
@@ -241,7 +241,7 @@ jobs:
         run: uv run python -m tools.capability_pack.cli report artifacts/engineering-refresh/result.json --run-url "$RUN_URL" --artifact-url "$ARTIFACT_URL"
         continue-on-error: true
       - if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: engineering-refresh-result
           path: artifacts/engineering-refresh
