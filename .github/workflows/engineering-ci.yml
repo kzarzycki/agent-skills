@@ -10,6 +10,13 @@ on:
       - apm.yml
       - apm.lock.yaml
       - engineering/**
+      - content/**
+      - experimental/**
+      - research/**
+      - workflow/**
+      - omp-workflow/**
+      - playwright/**
+      - utilities/**
       - tools/capability_pack/**
       - tests/capability_pack/**
       - tests/automation/**
@@ -30,6 +37,13 @@ on:
       - apm.yml
       - apm.lock.yaml
       - engineering/**
+      - content/**
+      - experimental/**
+      - research/**
+      - workflow/**
+      - omp-workflow/**
+      - playwright/**
+      - utilities/**
       - tools/capability_pack/**
       - tests/capability_pack/**
       - tests/automation/**
