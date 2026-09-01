@@ -17,6 +17,15 @@ directories:
       tags:
       - v1.2.3-39-g6654f6b
     path: .
+  path: skills/claude-handoff
+- contents:
+  - git:
+      commitTitle: 'feat: add ''Information access'' category to retrospective skill
+        for improved agent insights'
+      sha: 6654f6b60cd9d5be8b54c6fafe44346dabeb3b76
+      tags:
+      - v1.2.3-39-g6654f6b
+    path: .
   path: skills/code-review
 - contents:
   - git:
@@ -80,7 +89,25 @@ directories:
       tags:
       - v1.2.3-39-g6654f6b
     path: .
+  path: skills/implement-spec
+- contents:
+  - git:
+      commitTitle: 'feat: add ''Information access'' category to retrospective skill
+        for improved agent insights'
+      sha: 6654f6b60cd9d5be8b54c6fafe44346dabeb3b76
+      tags:
+      - v1.2.3-39-g6654f6b
+    path: .
   path: skills/improve-codebase-architecture
+- contents:
+  - git:
+      commitTitle: 'feat: add ''Information access'' category to retrospective skill
+        for improved agent insights'
+      sha: 6654f6b60cd9d5be8b54c6fafe44346dabeb3b76
+      tags:
+      - v1.2.3-39-g6654f6b
+    path: .
+  path: skills/loop-me
 - contents:
   - git:
       commitTitle: 'feat: add ''Information access'' category to retrospective skill
@@ -108,6 +135,15 @@ directories:
       - v1.2.3-39-g6654f6b
     path: .
   path: skills/resolving-merge-conflicts
+- contents:
+  - git:
+      commitTitle: 'feat: add ''Information access'' category to retrospective skill
+        for improved agent insights'
+      sha: 6654f6b60cd9d5be8b54c6fafe44346dabeb3b76
+      tags:
+      - v1.2.3-39-g6654f6b
+    path: .
+  path: skills/retro
 - contents:
   - git:
       commitTitle: 'feat: add ''Information access'' category to retrospective skill

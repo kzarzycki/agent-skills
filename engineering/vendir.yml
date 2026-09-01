@@ -13,6 +13,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/ask-matt
+- path: skills/claude-handoff
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/in-progress/claude-handoff/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/in-progress/claude-handoff
 - path: skills/code-review
   contents:
   - path: .
@@ -76,6 +87,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/implement
+- path: skills/implement-spec
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/in-progress/implement-spec/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/in-progress/implement-spec
 - path: skills/improve-codebase-architecture
   contents:
   - path: .
@@ -85,6 +107,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/improve-codebase-architecture
+- path: skills/loop-me
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/in-progress/loop-me/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/in-progress/loop-me
 - path: skills/prototype
   contents:
   - path: .
@@ -112,6 +145,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/resolving-merge-conflicts
+- path: skills/retro
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/in-progress/retro/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/in-progress/retro
 - path: skills/tdd
   contents:
   - path: .

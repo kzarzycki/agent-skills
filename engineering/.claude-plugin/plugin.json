@@ -1,6 +1,6 @@
 {
   "name": "engineering",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Project-scoped engineering workflows for design, implementation, testing, review, and maintenance.",
   "author": {
     "name": "Krzysztof Zarzycki"

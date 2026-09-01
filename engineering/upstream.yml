@@ -20,3 +20,7 @@ owned_overlays:
     destination: skills/setup-engineering-workflow-for-apm
 aliases:
   grilling: skills/productivity/grilling
+  claude-handoff: skills/in-progress/claude-handoff
+  implement-spec: skills/in-progress/implement-spec
+  loop-me: skills/in-progress/loop-me
+  retro: skills/in-progress/retro
