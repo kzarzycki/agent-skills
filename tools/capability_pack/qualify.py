@@ -372,9 +372,13 @@ def _next_version(version: str, magnitude: str) -> str:
 def _version_magnitude(previous: Provenance, source_tag: str | None, added: tuple[str, ...]) -> str:
     pattern = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
     old = pattern.fullmatch(previous.source_tag or previous.stable_baseline_tag or "")
-    new = pattern.fullmatch(source_tag or "")
-    if not old or not new:
+    if not old:
         raise QualificationError("stable upstream version baseline is unavailable")
+    new = pattern.fullmatch(source_tag or "")
+    if not new:
+        # Untagged upstream snapshot: the candidate carries no release to compare
+        # against, so the inventory delta sets the magnitude.
+        return "minor" if added else "patch"
     old_version = tuple(int(value) for value in old.groups())
     new_version = tuple(int(value) for value in new.groups())
     if new_version <= old_version:

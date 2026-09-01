@@ -1,10 +1,10 @@
 name: engineering
-version: 0.3.0
+version: 0.3.1
 description: Project-scoped engineering workflows for coding agents
 author: Krzysztof Zarzycki
 targets:
-  - claude
-  - codex
+- claude
+- codex
 dependencies:
   apm: []
   mcp: []

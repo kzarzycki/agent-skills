@@ -1,10 +1,10 @@
 name: engineering-consumer
 version: 1.0.0
 targets:
-  - claude
-  - codex
+- claude
+- codex
 dependencies:
   apm:
-    - git: kzarzycki/agent-skills/engineering
-      ref: ^0.3.0
+  - git: kzarzycki/agent-skills/engineering
+    ref: ^0.3.1
   mcp: []

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 - 2026-09-01
+
+- Refreshed the reviewed Matt Pocock skill inventory from
+  `84fdeffd12f2ee307994d1eb6feb48173b6e0502` to
+  `6654f6b60cd9d5be8b54c6fafe44346dabeb3b76` (`v1.2.3-39-g6654f6b`).
+- Adopted an untagged upstream snapshot: upstream has published no stable tag
+  since `v1.2.3`, so `stable_baseline_tag` stays `v1.2.3` and the package
+  version magnitude comes from the inventory delta (no skills added or
+  removed, so a patch bump).
+- Rebased both downstream patches onto the upstream rewording (repo-wide
+  em-dash removal and the "tell the user to run" setup phrasing).
+- No inventory change: the same eighteen imported skills, all seventeen
+  changed in content.
+
 ## 0.3.0 — 2026-08-09
 
 - Refreshed the reviewed Matt Pocock skill inventory from
