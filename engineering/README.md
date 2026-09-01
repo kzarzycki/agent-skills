@@ -45,7 +45,8 @@ own release instead of installing the upstream `main` branch directly.
 
 Imported skill directories under `engineering/skills/` are generated from
 `upstream.yml`, `vendir.yml`, the locked source in `vendir.lock.yml`, the
-ordered patches under `patches/`, and `provenance.yml`. Refresh them with:
+substitution rules and ordered patches applied in that order, and
+`provenance.yml`. Refresh them with:
 
 ```sh
 mise run vendor-engineering
@@ -57,6 +58,16 @@ The owned sibling directories are:
 - `skills/context-extractor/`
 - `skills/operating-omnigent/`
 - `overlays/skills/setup-engineering-workflow-for-apm/`
+
+### Substitutions before patches
+
+`upstream.yml` carries `substitutions`: literal find/replace rules applied
+across the imported inventory before the ordered patches run. Use one for a
+rename that upstream rewording would otherwise keep breaking; a context diff
+fails on any edit near its anchor, a literal rule does not. A rule that matches
+nothing fails the refresh, so a literal disappearing upstream stays visible.
+Owned skills and the overlay are out of scope. Keep `patches/` for changes that
+alter meaning rather than a name.
 
 The setup overlay is canonical and is reproduced into
 `skills/setup-engineering-workflow-for-apm/`; the destination is generated.

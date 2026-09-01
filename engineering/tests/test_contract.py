@@ -27,6 +27,7 @@ def test_inventory_is_derived_from_provenance_and_policy() -> None:
         "tracked_ref",
         "stable_tag_pattern",
         "removal_policy",
+        "substitutions",
         "exclusions",
         "aliases",
         "owned_skills",
@@ -36,6 +37,19 @@ def test_inventory_is_derived_from_provenance_and_policy() -> None:
     expected = set(provenance["included_skills"]) | set(policy["owned_skills"]) | overlays
     assert _skill_inventory() == expected
     assert not (set(policy["exclusions"]) & _skill_inventory())
+
+
+def test_substitution_rules_leave_no_upstream_literal_behind() -> None:
+    policy, provenance, _ = _data()
+    shipped = "\n".join(
+        path.read_text()
+        for name in provenance["included_skills"]
+        for path in sorted((PACKAGE / "skills" / name).rglob("*"))
+        if path.is_file()
+    )
+    for rule in policy["substitutions"]:
+        assert rule["find"] not in shipped
+        assert rule["replace"] in shipped
 
 
 def test_lock_provenance_and_mappings_share_one_source_identity() -> None:

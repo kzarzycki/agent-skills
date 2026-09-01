@@ -260,9 +260,6 @@ source_files:
   sha256: 33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153
   mode: '100644'
 patch_files:
-- path: patches/mattpocock-skills/0001-use-apm-setup-skill.patch
-  sha256: 41bc5b4efc0dfd7086670ffe88d03d94e16e7413dca524e768192425173fd45d
-  mode: '100644'
 - path: patches/mattpocock-skills/0002-github-issue-batch.patch
   sha256: 29282c220308ba6b37678dba870b9e4ac4f188742bdbd6f67710e38485d60f21
   mode: '100644'

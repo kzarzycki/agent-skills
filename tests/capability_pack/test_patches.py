@@ -9,7 +9,13 @@ import pytest
 import yaml
 
 from tools.capability_pack import cli
-from tools.capability_pack.qualify import QualificationError, qualify
+from tools.capability_pack.qualify import (
+    ConfigurationError,
+    QualificationError,
+    _apply_substitutions,
+    _substitution_rules,
+    qualify,
+)
 
 
 def _write_package(package: Path) -> None:
@@ -309,3 +315,38 @@ def test_invalid_utf8_patch_series_writes_stable_blocked_summary(
 
     assert cli.main(["update", str(package), "--summary", str(summary)]) == 4
     assert summary.read_bytes() == first
+
+
+def _imported_skill(root: Path, body: str) -> Path:
+    skill = root / "skills" / "wayfinder"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(body)
+    return skill
+
+
+def test_substitution_rewrites_only_the_files_that_match(tmp_path: Path) -> None:
+    skill = _imported_skill(tmp_path, "run `/old-name` twice: `/old-name`\n")
+    (skill / "NOTES.md").write_text("no reference here\n")
+    _apply_substitutions(tmp_path, ("wayfinder",), (("/old-name", "/new-name"),))
+    assert (skill / "SKILL.md").read_text() == "run `/new-name` twice: `/new-name`\n"
+    assert (skill / "NOTES.md").read_text() == "no reference here\n"
+
+
+def test_substitution_leaves_skills_outside_the_inventory_alone(tmp_path: Path) -> None:
+    _imported_skill(tmp_path, "run `/old-name`\n")
+    owned = tmp_path / "skills" / "context-extractor"
+    owned.mkdir(parents=True)
+    (owned / "SKILL.md").write_text("run `/old-name`\n")
+    _apply_substitutions(tmp_path, ("wayfinder",), (("/old-name", "/new-name"),))
+    assert (owned / "SKILL.md").read_text() == "run `/old-name`\n"
+
+
+def test_substitution_that_matches_nothing_fails_closed(tmp_path: Path) -> None:
+    _imported_skill(tmp_path, "upstream dropped the reference\n")
+    with pytest.raises(QualificationError, match="no longer contains"):
+        _apply_substitutions(tmp_path, ("wayfinder",), (("/old-name", "/new-name"),))
+
+
+def test_substitution_rules_reject_a_malformed_entry() -> None:
+    with pytest.raises(ConfigurationError, match="non-empty find"):
+        _substitution_rules({"substitutions": [{"find": "", "replace": "/new-name"}]})
