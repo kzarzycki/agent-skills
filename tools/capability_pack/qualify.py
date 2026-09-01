@@ -311,6 +311,45 @@ def _header_paths(patch: Path) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def _substitution_rules(policy: dict) -> tuple[tuple[str, str], ...]:
+    rules = []
+    for index, raw in enumerate(_sequence(policy.get("substitutions", []), "substitutions")):
+        item = _mapping(raw, f"substitution {index}")
+        find, replace = item.get("find"), item.get("replace")
+        if not isinstance(find, str) or not find or not isinstance(replace, str):
+            raise ConfigurationError(
+                f"substitution {index} requires a non-empty find and a replace string"
+            )
+        rules.append((find, replace))
+    return tuple(rules)
+
+
+def _apply_substitutions(
+    stage: Path, inventory: tuple[str, ...], rules: tuple[tuple[str, str], ...]
+) -> None:
+    """Rewrite literals across the imported inventory, before the ordered patches.
+
+    A rule that matches nothing fails closed: the literal it renames has gone
+    from upstream, which is the drift a maintainer has to look at.
+    """
+    for find, replace in rules:
+        matched = False
+        for name in inventory:
+            for path in _manifest_files(stage / "skills" / name):
+                try:
+                    content = path.read_text()
+                except UnicodeDecodeError, OSError:
+                    continue
+                if find not in content:
+                    continue
+                path.write_text(content.replace(find, replace))
+                matched = True
+        if not matched:
+            raise QualificationError(
+                f"substitution matched no imported file: upstream no longer contains {find!r}"
+            )
+
+
 def _apply_patches(stage: Path, repository_root: Path) -> None:
     series = stage / "patches" / "series"
     if not series.exists():
@@ -883,6 +922,7 @@ def qualify(
         patch_files: tuple[FileHash, ...] = ()
         try:
             patch_files = _patch_manifest(staged)
+            _apply_substitutions(staged, inventory, _substitution_rules(policy))
             _apply_patches(staged, package.parent)
         except QualificationError as error:
             if summary_path:

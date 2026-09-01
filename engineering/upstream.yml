@@ -3,6 +3,12 @@ repository: https://github.com/mattpocock/skills.git
 tracked_ref: origin/main
 stable_tag_pattern: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 removal_policy: block
+substitutions:
+  # The downstream setup skill replaces the upstream one; renaming every
+  # reference by literal survives upstream rewording, which a context diff
+  # did not.
+  - find: /setup-matt-pocock-skills
+    replace: /setup-engineering-workflow-for-apm
 exclusions:
   - setup-matt-pocock-skills
 owned_skills:
