@@ -27,7 +27,7 @@ The Claude adapter writes skills to `.claude/skills/`. The Codex adapter writes
 the same inventory to `.agents/skills/`. Those paths are generated; edit the
 package sources under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.3.1`. APM resolves
+The independently versioned release tag is `engineering-v0.4.0`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 
@@ -58,6 +58,14 @@ The owned sibling directories are:
 - `skills/context-extractor/`
 - `skills/operating-omnigent/`
 - `overlays/skills/setup-engineering-workflow-for-apm/`
+
+### Upstream beta skills
+
+`claude-handoff`, `implement-spec`, `loop-me`, and `retro` come from upstream's
+`in-progress` bucket rather than `engineering`. Upstream excludes that bucket
+from its own plugin and reserves the right to change or delete those skills
+without warning, so treat them as beta. A deletion upstream fails the next
+refresh instead of silently dropping the skill.
 
 ### Substitutions before patches
 

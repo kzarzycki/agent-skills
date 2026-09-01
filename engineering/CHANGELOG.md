@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0 - 2026-09-01
+
+- Imported four skills from the upstream `in-progress` bucket at
+  `6654f6b60cd9d5be8b54c6fafe44346dabeb3b76`: `claude-handoff`,
+  `implement-spec`, `loop-me`, and `retro`.
+- These are upstream beta: that bucket is excluded from the upstream plugin and
+  its skills may change or disappear without warning. A disappearance fails the
+  refresh rather than silently dropping a skill, because the removal check
+  compares the committed inventory against what vendir produced.
+- No change to the eighteen previously imported skills or to the source commit.
+- Replaced the `/setup-matt-pocock-skills` rename patch with a literal
+  substitution rule in `upstream.yml`, applied before the ordered patches. The
+  shipped output is unchanged; the rule survives upstream rewording that a
+  context diff did not.
+
 ## 0.3.1 - 2026-09-01
 
 - Refreshed the reviewed Matt Pocock skill inventory from
