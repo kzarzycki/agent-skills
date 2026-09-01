@@ -27,7 +27,7 @@ The Claude adapter writes skills to `.claude/skills/`. The Codex adapter writes
 the same inventory to `.agents/skills/`. Those paths are generated; edit the
 package sources under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.3.0`. APM resolves
+The independently versioned release tag is `engineering-v0.3.1`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 

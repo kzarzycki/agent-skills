@@ -45,6 +45,12 @@ def test_version_proposal_fails_closed_without_stable_baseline() -> None:
         _version_magnitude(_versioned_provenance(), "v1.2.4", ())
 
 
+def test_untagged_candidate_takes_magnitude_from_the_inventory_delta() -> None:
+    previous = _versioned_provenance(stable_baseline_tag="v1.2.3")
+    assert _version_magnitude(previous, None, ()) == "patch"
+    assert _version_magnitude(previous, None, ("new-skill",)) == "minor"
+
+
 def _add_leaf(package: Path, destination: str, source: str) -> None:
     manifest = package / "vendir.yml"
     config = yaml.safe_load(manifest.read_text())
