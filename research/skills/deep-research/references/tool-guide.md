@@ -10,8 +10,6 @@ of what makes `/deep-research` deep.
 
 | Tool | What it does |
 |------|-------------|
-| `perplexity_research` | In-depth multi-source investigation. Iterates internally across many sources. |
-| `perplexity_reason` | Step-by-step logical analysis with web grounding and reasoning. |
 | `tavily_research` | Multi-step research. Iterates internally, produces thorough findings. |
 
 ### Browser-based Deep Research Skills
@@ -28,12 +26,6 @@ of what makes `/deep-research` deep.
 
 These are lighter tools for specific tasks — finding URLs, reading pages, checking facts,
 brainstorming angles. Use alongside deep research channels, not instead of them.
-
-### Perplexity MCP
-| Tool | What it does |
-|------|-------------|
-| `perplexity_search` | Web search returning titles, URLs, snippets, dates |
-| `perplexity_ask` | AI-answered questions with citations |
 
 ### Tavily MCP
 | Tool | What it does |

@@ -1,6 +1,6 @@
 ---
 name: deep-research
-description: "Multi-round multi-source research (Perplexity, Tavily, Exa, Gemini, WebSearch) producing a cited report with confidence scores and gaps."
+description: "Multi-round multi-source research (Tavily, Exa, Gemini, WebSearch) producing a cited report with confidence scores and gaps."
 when_to_use: "Any nontrivial research request ('research X', 'what's the latest on', 'look into'), or when a decision/report needs verified multi-source evidence."
 ---
 
@@ -17,7 +17,7 @@ A single search returns surface-level results. Deep research decomposes question
 searches across independent sources, identifies what's missing, searches again with refined
 queries, and synthesizes findings only when coverage is sufficient. This skill replicates
 the pattern used by commercial deep research products (Claude Research, Gemini Deep Research,
-Perplexity Deep Research) using Claude Code's agent system and MCP integrations.
+ChatGPT Deep Research) using Claude Code's agent system and MCP integrations.
 
 ## Two-Phase Design
 
@@ -47,8 +47,6 @@ Build an inventory:
 
 | Channel | Tool / Skill | How it works |
 |---------|-------------|-------------|
-| Perplexity Deep Research | `perplexity_research` | Multi-source investigation via API. Does its own iterative search+read+synthesize loop internally. |
-| Perplexity Reasoning | `perplexity_reason` | Step-by-step logical analysis with web grounding. |
 | Tavily Deep Research | `tavily_research` | Multi-step research via API. Iterates internally across sources. |
 | Gemini Deep Research | `browser-researcher` agent + gemini skill | Browser automation at gemini.google.com. Browses hundreds of sites. Plan review: gated. |
 | ChatGPT Deep Research | `browser-researcher` agent + chatgpt skill | Browser automation at chatgpt.com. Uses o3/o4-mini reasoning. Plan review: gated. |
@@ -62,7 +60,6 @@ research channels, not as fallbacks.
 
 | Channel | Tools |
 |---------|-------|
-| Perplexity | `perplexity_search`, `perplexity_ask` |
 | Tavily | `tavily_search`, `tavily_extract`, `tavily_crawl` |
 | Exa | `web_search_exa`, `crawling` |
 | Gemini | `ask-gemini`, `brainstorm` |
@@ -137,7 +134,7 @@ Include varied query patterns:
 
 Give each agent access to all available MCP tools and native WebSearch/WebFetch. Agents
 decide which tools to use based on what they find. **Prefer deep research tools**
-(`perplexity_research`, `tavily_research`, `perplexity_reason`) — these do multi-step
+(`tavily_research`, plus the browser-based deep research channels) — these do multi-step
 research internally and produce richer results than simple search queries.
 
 See `references/tool-guide.md` for what each tool can do.
@@ -152,8 +149,8 @@ Spawn all available deep research channels simultaneously as background agents. 
 gets the core research question (or a specific angle if the topic is broad enough to
 split across them). They all do their own internal multi-round research independently.
 
-- **Perplexity/Tavily deep research**: Agents using `perplexity_research`, `tavily_research`,
-  `perplexity_reason` as their primary tools. Each agent focuses on a research angle.
+- **Tavily deep research**: Agents using `tavily_research` as their primary tool. Each agent
+  focuses on a research angle.
 - **Gemini Deep Research**: Spawn `browser-researcher` agent with Gemini skill:
   ```
   Agent(name="gemini", subagent_type="browser-researcher",
@@ -199,8 +196,8 @@ underrepresented angle.
 ### Dispatching supplementary agents (for specific angles)
 
 For research angles that need targeted searches, specific source reading, or gap-filling,
-spawn additional agents with supplementary tools (`perplexity_search`, `tavily_search`,
-`web_search_exa`, `WebSearch`, `WebFetch`, etc.). These handle:
+spawn additional agents with supplementary tools (`tavily_search`, `web_search_exa`,
+`crawling`, `WebSearch`, `WebFetch`, etc.). These handle:
 
 1. **Specific angles** not covered by the deep research channels
 2. **Targeted queries** for niche sub-topics
@@ -326,7 +323,7 @@ findings may not apply to current tools.
 **How to enforce recency:**
 - Tavily: use `start_date` parameter (format: YYYY-MM-DD)
 - Tavily: use `time_range` parameter (day/week/month/year)
-- Perplexity: include year in search queries ("2026", "March 2026")
+- WebSearch: include year in search queries ("2026", "March 2026")
 - Exa: include temporal terms in queries
 - All agents: instruct them to verify publication dates and flag outdated sources
 

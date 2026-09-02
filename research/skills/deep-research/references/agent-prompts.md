@@ -141,14 +141,6 @@ For follow-up rounds targeting specific gaps, modify the template:
 
 ## Tool-Specific Instructions to Include
 
-When an agent has **Perplexity** tools:
-```
-For perplexity_research: Use this for your most complex question — it does
-multi-step research internally. Formulate one focused, detailed question.
-For perplexity_search: Use for finding specific URLs and recent results.
-For perplexity_ask: Use for quick factual verification of claims.
-```
-
 When an agent has **Tavily** tools:
 ```
 For tavily_search: Use start_date/end_date params to enforce recency.
