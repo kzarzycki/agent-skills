@@ -428,6 +428,23 @@ return { ok: true, clicked: (dr.innerText || '').trim() };
 """
 
 
+JS_EXPAND_MORE_TOOLS = r"""
+// Step 2b: Gemini (verified Sept 2026) nests "Deep research" behind a
+// "More tools" expander inside the "Upload & tools" menu. Click it so the
+// Deep research item is rendered, then step 2 can be retried.
+const items = Array.from(document.querySelectorAll(
+  'button, [role="button"], [role="menuitem"], [role="option"], li, div[tabindex]'
+)).filter(e => e.offsetParent);
+const more = items.find(el =>
+  /more tools/i.test(accName(el)) ||
+  /^more tools$/i.test((el.innerText || '').replace(/\s+/g, ' ').trim())
+);
+if (!more) return { ok: false, reason: 'no_more_tools' };
+more.click();
+return { ok: true, clicked: accName(more) || (more.innerText || '').trim() };
+"""
+
+
 JS_CLICK_MODEL_PICKER = r"""
 // Step 3: Click the model picker button (shows current model name).
 // Look for "Open mode picker" or a button showing the model name.
@@ -780,6 +797,14 @@ def _activate_research_mode(pw: Pw) -> None:
 
     # Step 2: click Deep Research in the dropdown
     r = _run_js(pw, JS_CLICK_DEEP_RESEARCH)
+    if not r or not r.get("ok"):
+        # Newer Gemini builds hide Deep research behind a "More tools" expander.
+        exp = _run_js(pw, JS_EXPAND_MORE_TOOLS)
+        if exp and exp.get("ok"):
+            time.sleep(1.0)
+            r = _run_js(pw, JS_CLICK_DEEP_RESEARCH)
+        else:
+            print(f"(More tools expander not found: {exp})", file=sys.stderr)
     if not r or not r.get("ok"):
         raise DomMismatch(f"Deep Research menu item not found: {r}")
     time.sleep(0.5)
