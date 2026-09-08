@@ -1,6 +1,6 @@
 lockfile_version: '1'
-generated_at: '2026-09-01T10:50:58.492981+00:00'
-apm_version: 0.26.0
+generated_at: '2026-09-08T12:59:14.206597+00:00'
+apm_version: 0.30.0
 dependencies:
 - repo_url: kzarzycki/agent-skills
   name: engineering
@@ -349,7 +349,7 @@ dependencies:
     .claude/skills/wizard/SKILL.md: sha256:bdf31d48211ea559878f95a4f344aeabf8d85897488ba564382bab0b000daac1
     .claude/skills/wizard/agents/openai.yaml: sha256:98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
     .claude/skills/wizard/template.sh: sha256:33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153
-  content_hash: sha256:dd45c117a37ef6b762f6c1e6625b02b41aed9fb98de680ca2de9add688896ea8
+  content_hash: sha256:3927bc4afa78532673e1df897d0636b903e970f7cd0f2548fbf316344854de89
 deployments:
 - kind: project-relative
   target: claude
