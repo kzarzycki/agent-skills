@@ -39,6 +39,7 @@ jobs:
         run: git fetch --force origin "refs/tags/$SOURCE_TAG:refs/tags/$SOURCE_TAG"
       - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14
         with:
+          version: 2026.9.2
           install: false
       - run: mise install && uv sync --frozen
       - name: Validate and prepare exact consumer update
