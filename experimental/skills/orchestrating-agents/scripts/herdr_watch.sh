@@ -11,7 +11,7 @@ while true; do
   if [ -z "$st" ]; then miss=$((miss+1)); [ $miss -ge 3 ] && { echo "$name: GONE (3 consecutive lookups failed)"; exit 0; }; sleep $poll; continue; fi; miss=0
   pane=$(herdr agent read "$name" --source visible --lines 80 2>/dev/null)
   sub=$(printf '%s' "$pane" | grep -cE '^\s*[◯◐◑◒◓◔◕●] \S.*[0-9]+s · ↓' )
-  spin=$(printf '%s' "$pane" | grep -cE '^[✢✳✶✻✽·⠂⠄⠆⠇⠧⠷⠿] [A-Z][a-z]+… \(' )
+  spin=$(printf '%s' "$pane" | grep -cE '^[✢✳✶✻✽·⠂⠄⠆⠇⠧⠷⠿] \S+… \(' )
   # background shells/monitors show in the status line as '· 1 shell, 1 monitor ·'
   bg=$(printf '%s' "$pane" | grep -cE '· [0-9]+ (shell|monitor|task)s?' )
   # usage-limit pause auto-resumes; the prompt box looks idle meanwhile
