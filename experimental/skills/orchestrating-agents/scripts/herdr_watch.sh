@@ -14,8 +14,10 @@ while true; do
   spin=$(printf '%s' "$pane" | grep -cE '^[✢✳✶✻✽·⠂⠄⠆⠇⠧⠷⠿] [A-Z][a-z]+… \(' )
   # background shells/monitors show in the status line as '· 1 shell, 1 monitor ·'
   bg=$(printf '%s' "$pane" | grep -cE '· [0-9]+ (shell|monitor|task)s?' )
+  # usage-limit pause auto-resumes; the prompt box looks idle meanwhile
+  paused=$(printf '%s' "$pane" | grep -cE 'Usage limit reached|hit your session limit|Continuing shortly|continuing automatically' )
   if [ "$st" = blocked ]; then cur=BLOCKED
-  elif [ "$st" = working ] || [ "$sub" -gt 0 ] || [ "$spin" -gt 0 ] || [ "$bg" -gt 0 ]; then cur="WORKING(main=$st subagents=$sub bgtasks=$bg)"
+  elif [ "$st" = working ] || [ "$sub" -gt 0 ] || [ "$spin" -gt 0 ] || [ "$bg" -gt 0 ] || [ "$paused" -gt 0 ]; then cur="WORKING(main=$st subagents=$sub bgtasks=$bg paused=$paused)"
   else cur=IDLE; fi
   # emit on category change only (WORKING/IDLE/BLOCKED); sub-state flips (bg task start/stop) are noise
   [ "${cur%%\(*}" != "${prev%%\(*}" ] && echo "$name: $cur"

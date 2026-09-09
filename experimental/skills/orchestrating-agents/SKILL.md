@@ -39,6 +39,7 @@ Herdr's `agent_status` classifies the **main prompt box only**. A Claude session
 - a running-subagent row under `⏺ main`: `◯ Explore  Grepping docs…  54s · ↓ 64.5k tokens`
 - the turn spinner: `✶ Zigzagging… (4m 57s · ↓ 15.6k tokens)`
 - the status-line segment for background tasks: `· 1 shell, 1 monitor ·`
+- a usage-limit pause: `⚠ Usage limit reached · continuing shortly` -- the session auto-resumes, so it is waiting, not done (every worker in a fleet hits this at the same minute)
 
 Declare DONE only after two consecutive polls with none of them, plus herdr `idle`/`done`. `scripts/herdr_watch.sh <name> [poll_s]` implements this and emits one line per transition (WORKING/IDLE/DONE/BLOCKED/GONE) -- arm it with the Monitor tool (persistent) instead of sleeping in the main loop. Two traps it already avoids: run polls from `/tmp`, not a project dir (a broken `mise.toml` there kills the shimmed `python3` and an empty status looks like a vanished agent), and require three failed lookups before GONE.
 
