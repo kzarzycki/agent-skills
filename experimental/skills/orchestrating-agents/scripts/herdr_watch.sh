@@ -18,7 +18,7 @@ while true; do
   elif [ "$st" = working ] || [ "$sub" -gt 0 ] || [ "$spin" -gt 0 ] || [ "$bg" -gt 0 ]; then cur="WORKING(main=$st subagents=$sub bgtasks=$bg)"
   else cur=IDLE; fi
   # emit on category change only (WORKING/IDLE/BLOCKED); sub-state flips (bg task start/stop) are noise
-  [ "${cur%%(*}" != "${prev%%(*}" ] && echo "$name: $cur"
+  [ "${cur%%\(*}" != "${prev%%\(*}" ] && echo "$name: $cur"
   prev=$cur
   case $cur in
     BLOCKED) echo "$name: needs input — check pane"; exit 0;;
