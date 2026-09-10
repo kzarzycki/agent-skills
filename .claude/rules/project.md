@@ -20,4 +20,5 @@ A marketplace of Claude Code plugins. Each local plugin is a top-level directory
 
 - A plugin's own `CLAUDE.md` (e.g. `workflow/CLAUDE.md`) is authoritative for that plugin — read it before working there.
 - Marketplace descriptions stay plugin-level; individual skills self-describe once a plugin is installed.
+- Skills teach **methods** (how a tool behaves, a pattern that holds anywhere); **policies** (when to ask, branch/worktree layout, gates, effort rules) belong to the consuming project's own instructions. A skill may say "put the project's rule here", never state the rule.
 - Durable, human-gated work (Spec → Tech Design, with format + reviewer gates) runs through the `workflow` plugin into `.workflow/<yyyy-mm-dd>-<slug>/`. There is no repo-wide workspace to initialize.

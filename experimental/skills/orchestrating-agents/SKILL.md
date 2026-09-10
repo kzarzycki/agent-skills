@@ -29,8 +29,8 @@ Herdr to **spawn/place/supervise**; SendMessage as the **wire between agents and
 
 - One tab per worker: `herdr tab create --workspace $HERDR_WORKSPACE_ID --cwd "$PWD" --label <slug> --no-focus`, read `.result.root_pane.pane_id`, wait ~3 s for the shell prompt, then `herdr agent start <slug> --kind claude --pane <id>`. `agent_pane_busy` right after `tab create` means the shell has not reached its prompt yet -- retry, do not recreate.
 - Briefs go in files, prompts stay one line: write each brief to a scratch `.md` (task, scope, constraints, ground rules) and prompt `Read the brief at <path> and execute it end to end.` Long text through the pane is fragile; a path is not.
-- Tell workers when to stop and ask: "AskUserQuestion only at a fork that changes what gets built or before anything hard to undo; the owner will visit your pane." Herdr then reports the pane as `blocked`.
-- Coordinating concurrent workers on one repo: each in its own sibling worktree; when master moves under a long-running worker, `herdr agent prompt <name> "<one-line note>"` -- Claude queues typed input while working, so a nudge lands without waiting for idle.
+- Put the project's stop-and-ask rule in the brief (when a worker may block on a question, who comes to answer it). A worker that asks renders as `blocked` in Herdr -- that is the signal the watcher keys on.
+- Concurrent workers on one repo: one isolated checkout per worker (worktree layout is the project's rule). When the base moves under a long-running worker, `herdr agent prompt <name> "<one-line note>"` -- Claude queues typed input while working, so a nudge lands without waiting for idle.
 
 ## Knowing when a worker is really done
 
