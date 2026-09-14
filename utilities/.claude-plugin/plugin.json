@@ -1,7 +1,7 @@
 {
   "name": "utilities",
-  "version": "0.1.0",
-  "description": "Standalone utility skills for Claude Code, independent of any one workflow — e.g. searching past Claude Code sessions by topic.",
+  "version": "0.2.0",
+  "description": "Standalone utility skills independent of any one workflow: searching past Claude Code sessions by topic; running a GitHub Projects v2 board as the single home for a repo's milestones, epics and stories, with ticket templates.",
   "author": {
     "name": "Krzysztof Zarzycki"
   }
