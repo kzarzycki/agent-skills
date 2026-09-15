@@ -22,10 +22,10 @@
     },
     {
       "name": "utilities",
-      "description": "Standalone utility skills for Claude Code, independent of any one workflow — e.g. searching past Claude Code sessions by topic.",
+      "description": "Standalone utility skills independent of any one workflow: searching past Claude Code sessions by topic; running a GitHub Projects v2 board as the single home for a repo's milestones, epics and stories, with ticket templates.",
       "source": "./utilities",
       "category": "productivity",
-      "tags": ["utilities", "sessions", "search", "conversations"]
+      "tags": ["utilities", "sessions", "search", "conversations", "github-projects", "issues", "tickets"]
     },
     {
       "name": "research",
