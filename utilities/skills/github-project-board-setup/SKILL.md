@@ -46,13 +46,13 @@ add_to_board() {   # $1=issue number  $2=Kind option name  $3=Status option name
 
 ```bash
 N=$(gh issue create --title "E07-03 · <imperative summary>" --label type:story \
-      --milestone M2 --body-file /tmp/story.md | grep -o '[0-9]*$')
+      --milestone M2 --body-file /tmp/story.md | grep -o '[0-9]*$') && [ -n "$N" ] || { echo "create failed"; exit 1; }
 gh api repos/$OWNER/$REPO/issues/$EPIC/sub_issues \
   -F sub_issue_id="$(gh api repos/$OWNER/$REPO/issues/$N -q .id)" -q .number
 add_to_board "$N" Story Backlog
 ```
 
-Sub-issue linking takes the **REST numeric id** with `-F`, not the issue number with `-f`.
+Sub-issue linking takes the **REST numeric id** with `-F`, not the issue number with `-f`. `gh issue create` prints the new URL on stdout and errors on stderr. Without the `[ -n "$N" ]` gate a failed create leaves `$N` empty and the next steps run against nothing. Before retrying, check whether the issue exists — `gh issue list --search` lags a few seconds behind creation, so use `gh issue list --limit 5` and read the titles.
 
 Body follows the **Story** template in `references/templates.md` (Problem / Change / Acceptance / Proof / For the implementer). No acceptance list you can write → the story isn't ready; say so rather than filing a vague one.
 
@@ -60,7 +60,7 @@ Body follows the **Story** template in `references/templates.md` (Problem / Chan
 
 ```bash
 N=$(gh issue create --title "E18 — <scope> (M3)" --label type:epic \
-      --milestone M3 --body-file /tmp/epic.md | grep -o '[0-9]*$')
+      --milestone M3 --body-file /tmp/epic.md | grep -o '[0-9]*$') && [ -n "$N" ] || { echo "create failed"; exit 1; }
 gh issue edit "$N" --add-blocked-by "$PREREQ_EPIC"
 add_to_board "$N" Epic Backlog
 ```
