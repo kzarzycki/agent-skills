@@ -59,3 +59,21 @@ Paths, symbols, related issues, and what not to touch here. Open questions toget
 ## Milestone description
 
 Theme in one sentence; the outcome a user sees; the epics in it; exit criteria as a checklist; one sentence on why it sits at this point in the order.
+
+## Pull request
+
+A PR body describes the branch as it will be merged. Re-read it after every push that changes scope; a body that still describes a deleted file is a bug.
+
+```
+## Why
+Link to the story or epic. One or two sentences on the problem, in plain words.
+
+## What changed
+Bullets by behaviour, not by file.
+
+## Proof
+What was run and what it showed: gates, unit tests, and live evidence (log, screenshot, recording) where the change depends on the real host.
+
+## Not in this PR
+What a reviewer might expect here but is deliberately elsewhere, and where.
+```

@@ -92,6 +92,7 @@ Close-out: closing the issue moves it to Done via the built-in workflow — don'
 
 - **One home.** Never mirror a story list into markdown. Design docs describe the target; the board holds the work.
 - **Dependencies are `blocked by` links**, not sentences.
+- **PR bodies follow the Pull request template** in `references/templates.md` and describe the branch at merge time.
 - **Batch via script** past ~3 items; re-read `field-list` after any field mutation (option ids change).
 - **Don't bulk-close or re-milestone** existing items unless asked.
 - Labels, field names and option names are the project's — take them from its `AGENTS.md` or discover them; the recipes here use the `type:*` / `loop:needs-human` vocabulary as an example.
