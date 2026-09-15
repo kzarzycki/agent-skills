@@ -13,7 +13,7 @@ Every path, symbol, command, load order or runtime behaviour written into a body
 ## Epic
 
 ```
-# Exx — <imperative summary> (<milestone>)
+Title field: Exx — <imperative summary> (<milestone>)   ← not repeated in the body
 
 ## Problem
 Where (component, file) and when (trigger), then what goes wrong. Bullets for known causes. Link to the evidence.
@@ -38,7 +38,7 @@ Paths, symbols, commands, environment facts, evidence format. Only what this epi
 ## Story, task, bug
 
 ```
-# Exx-yy · <imperative summary>
+Title field: Exx-yy · <imperative summary>   ← not repeated in the body
 
 ## Problem
 Where and when, then what goes wrong. For a bug: what happened, what was expected, how to reproduce.
