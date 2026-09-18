@@ -78,6 +78,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/productivity/grilling
+- path: skills/handoff
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/productivity/handoff/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/productivity/handoff
 - path: skills/implement
   contents:
   - path: .
@@ -118,6 +129,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/in-progress/loop-me
+- path: skills/pr
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/in-progress/pr/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/in-progress/pr
 - path: skills/prototype
   contents:
   - path: .
@@ -165,6 +187,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/tdd
+- path: skills/teach
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/productivity/teach/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/productivity/teach
 - path: skills/to-spec
   contents:
   - path: .
@@ -192,6 +225,17 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/triage
+- path: skills/wait-what
+  contents:
+  - path: .
+    git:
+      url: https://github.com/mattpocock/skills.git
+      ref: origin/main
+    includePaths:
+    - skills/productivity/wait-what/**/*
+    excludePaths: []
+    legalPaths: []
+    newRootPath: skills/productivity/wait-what
 - path: skills/wayfinder
   contents:
   - path: .
