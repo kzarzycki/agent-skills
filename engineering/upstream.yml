@@ -21,6 +21,10 @@ owned_overlays:
 aliases:
   grilling: skills/productivity/grilling
   claude-handoff: skills/in-progress/claude-handoff
+  handoff: skills/productivity/handoff
   implement-spec: skills/in-progress/implement-spec
   loop-me: skills/in-progress/loop-me
+  pr: skills/in-progress/pr
   retro: skills/in-progress/retro
+  teach: skills/productivity/teach
+  wait-what: skills/productivity/wait-what
