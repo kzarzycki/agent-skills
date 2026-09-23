@@ -12,8 +12,10 @@ from tools.capability_pack.provenance import load_provenance
 from tools.capability_pack.qualify import (
     LicenseDriftError,
     PatchError,
+    PortRequiredError,
     QualificationError,
     qualify,
+    upstream_deltas,
 )
 from tools.capability_pack.releases import ReleaseResolutionError, resolve_release
 
@@ -39,6 +41,28 @@ def _run_gate(repository: Path, command: tuple[str, ...]) -> subprocess.Complete
 def _restore_package(package: Path, backup: Path) -> None:
     shutil.rmtree(package)
     shutil.copytree(backup, package, symlinks=True)
+
+
+def write_deltas(directory: Path, error: PortRequiredError) -> list[dict]:
+    """Save each pending upstream delta for the porter; a fetch failure is evidence too."""
+    shutil.rmtree(directory / "deltas", ignore_errors=True)
+    diagnostics = [
+        {
+            "code": "port_required",
+            "path": f"skills/{name}",
+            "detail": f"{source} {error.old_commit}..{error.new_commit}",
+        }
+        for name, source in error.skills
+    ]
+    try:
+        deltas = upstream_deltas(error)
+    except QualificationError as fetch_error:
+        return [*diagnostics, {"code": "delta_unavailable", "detail": str(fetch_error)}]
+    folder = directory / "deltas"
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, diff in deltas.items():
+        (folder / f"{name}.diff").write_text(diff)
+    return diagnostics
 
 
 def refresh(
@@ -150,6 +174,9 @@ def refresh(
             phase="resolve",
         )
         attempt["diagnostics"].append({"code": error.code, "detail": str(error)})
+    except PortRequiredError as error:
+        attempt.update(outcome="blocked", code="port_required", phase="port")
+        attempt["diagnostics"].extend(write_deltas(artifact_directory, error))
     except PatchError as error:
         attempt.update(outcome="blocked", code="patch_rejected", phase="patch")
         attempt["diagnostics"].append(

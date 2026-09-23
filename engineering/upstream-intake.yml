@@ -1,0 +1,9 @@
+# Upstream changes reconciled into tuned skills (overlays/skills/<name>/).
+# One row per tuned skill per upstream commit the lock moved to while that
+# skill's upstream files changed:
+#   upstream: <40-hex commit>, skill: <name>, decision: ported | declined,
+#   note: <one line: what was taken over, or why not>
+- upstream: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+  skill: pr
+  decision: ported
+  note: Merge Danger splits Door and a one-word Blast Radius onto their own lines, each with an optional paragraph

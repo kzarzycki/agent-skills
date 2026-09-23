@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.3.0
+      ref: ^0.6.0
 ```
 
 Then run:
@@ -25,9 +25,10 @@ apm audit --ci --no-policy
 
 The Claude adapter writes skills to `.claude/skills/`. The Codex adapter writes
 the same inventory to `.agents/skills/`. Those paths are generated; edit the
-package sources under `engineering/skills/`.
+package sources: tuned skills under `engineering/overlays/skills/`, owned skills
+under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.4.0`. APM resolves
+The independently versioned release tag is `engineering-v0.6.0`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 
@@ -43,44 +44,55 @@ own release instead of installing the upstream `main` branch directly.
 
 ## Package maintenance
 
-Imported skill directories under `engineering/skills/` are generated from
-`upstream.yml`, `vendir.yml`, the locked source in `vendir.lock.yml`, the
-substitution rules and ordered patches applied in that order, and
-`provenance.yml`. Refresh them with:
+Three kinds of source ship under `engineering/skills/`:
+
+- Owned skills, edited in place: `audit-third-party-software`,
+  `context-extractor`, `operating-omnigent`.
+- Owned overlays under `overlays/skills/<name>/`, reproduced into
+  `skills/<name>/`: `setup-engineering-workflow-for-apm` and every imported
+  skill tuned for current models (listed under `owned_overlays` in
+  `upstream.yml`).
+- Imported skills not yet tuned, generated from the locked upstream source with
+  the `substitutions` in `upstream.yml` applied.
+
+Refresh with:
 
 ```sh
 mise run vendor-engineering
 ```
 
-The owned sibling directories are:
+### Tuned skills and upstream intake
 
-- `skills/audit-third-party-software/`
-- `skills/context-extractor/`
-- `skills/operating-omnigent/`
-- `overlays/skills/setup-engineering-workflow-for-apm/`
+A tuned skill keeps only what a strong model would not do unprompted, so its
+text diverges too far from upstream for a textual patch to survive. The
+refresh still syncs upstream and records its raw hashes in `provenance.yml`.
+When upstream changes a tuned skill, the refresh stops (exit 5 locally,
+`port_required` in the scheduled run) and saves each delta, commit subjects
+then diff, to `artifacts/engineering-deltas/deltas/<skill>.diff`. Port the
+intent into the overlay or decline it, record the decision in
+`upstream-intake.yml`, and rerun. A row counts only for the commit the lock
+moves to, so the next upstream change stops the refresh again. Port locally: the
+scheduled refresh rejects overlay edits and reports a stable-tag commit, while
+`mise run vendor-engineering` moves to upstream `main` and names the commit to
+record. An upstream
+deletion of a tuned skill still fails the refresh.
 
 ### Upstream beta skills
 
 `claude-handoff`, `implement-spec`, `loop-me`, and `retro` come from upstream's
 `in-progress` bucket rather than `engineering`. Upstream excludes that bucket
 from its own plugin and reserves the right to change or delete those skills
-without warning, so treat them as beta. A deletion upstream fails the next
-refresh instead of silently dropping the skill.
+without warning, so treat them as beta.
 
-### Substitutions before patches
+### Substitutions
 
 `upstream.yml` carries `substitutions`: literal find/replace rules applied
-across the imported inventory before the ordered patches run. Use one for a
-rename that upstream rewording would otherwise keep breaking; a context diff
-fails on any edit near its anchor, a literal rule does not. A rule that matches
-nothing fails the refresh, so a literal disappearing upstream stays visible.
-Owned skills and the overlay are out of scope. Keep `patches/` for changes that
-alter meaning rather than a name.
+across the imported inventory. Use one for a rename that upstream rewording
+would otherwise keep breaking. A rule that matches nothing fails the refresh,
+so a literal disappearing upstream stays visible.
 
-The setup overlay is canonical and is reproduced into
-`skills/setup-engineering-workflow-for-apm/`; the destination is generated.
-Do not edit generated imported files directly. Before committing package
-changes, reproduce the locked import and run its checks:
+Do not edit generated files directly. Before committing package changes,
+reproduce the locked import and run its checks:
 
 ```sh
 mise run vendor-engineering-check
@@ -91,7 +103,7 @@ mise run test-engineering-package
 
 `Engineering upstream refresh` selects the highest canonical stable upstream
 tag and accepts it only when its peeled commit is a forward move from the lock.
-Because the current lock is two commits beyond upstream `v1.2.3`, provenance
+The lock is an untagged upstream `main` snapshot past `v1.2.3`, so provenance
 records `v1.2.3` as the stable version baseline until the first tagged refresh.
 Every run uploads `result.json` and `summary.md`. Qualification and smoke modes
 are nonpublishing. A blocked run updates one issue identified by

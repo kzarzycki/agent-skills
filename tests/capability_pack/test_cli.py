@@ -5,9 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from tools.capability_pack import cli
+from tools.capability_pack import cli, refresh
 from tools.capability_pack.model import QualificationResult
-from tools.capability_pack.qualify import BreakingDriftError, QualificationError
+from tools.capability_pack.qualify import (
+    BreakingDriftError,
+    PortRequiredError,
+    QualificationError,
+)
 
 
 @pytest.mark.parametrize(
@@ -58,6 +62,25 @@ def test_cli_maps_qualification_failures_to_stable_exit_codes(
     monkeypatch.setattr(cli, "qualify", fail)
 
     assert cli.main(["check", str(package)]) == exit_code
+
+
+def test_cli_port_required_exits_five_and_saves_deltas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a pending port reading as an ordinary reproduction failure."""
+    package = tmp_path / "engineering"
+    package.mkdir()
+    error = PortRequiredError("upstream", "1" * 40, "2" * 40, (("alpha", "skills/alpha"),))
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cli, "qualify", fail)
+    monkeypatch.setattr(refresh, "upstream_deltas", lambda _: {"alpha": "+rule\n"})
+
+    assert cli.main(["update", str(package)]) == 5
+    delta = tmp_path / "artifacts" / "engineering-deltas" / "deltas" / "alpha.diff"
+    assert delta.read_text() == "+rule\n"
 
 
 def test_cli_returns_usage_exit_for_bad_syntax() -> None:

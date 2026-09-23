@@ -31,3 +31,4 @@ apm_modules/
 
 # Ephemeral upstream-refresh evidence (uploaded by CI, never committed)
 artifacts/engineering-refresh/
+artifacts/engineering-deltas/

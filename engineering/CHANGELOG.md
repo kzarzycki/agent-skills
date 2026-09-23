@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.0 - 2026-09-23
+
+- Tuned all 26 imported skills, the setup overlay and the owned skills
+  (`audit-third-party-software`, `context-extractor`, `operating-omnigent`)
+  for current models:
+  generic advice, pressure language and step choreography removed, delegation
+  left to judgment, harness- and tracker-neutral wording. Formats, gates and
+  cross-references are kept. Supporting files that only repeated their skill
+  were merged into it.
+- Tuned skills are now owned overlays. The GitHub issue-batch patch is folded
+  into `to-tickets` and `wayfinder`, and the patch series is gone.
+- Upstream intake is now semantic: an upstream change under a tuned skill stops
+  the refresh with its delta saved until a port or decline is recorded in
+  `upstream-intake.yml`. The first intake ports upstream `c55ee46` (Merge
+  Danger template in `pr`).
+- `upstream-intake.yml` is validated on every check, and the package-test
+  hang guard is 600 s (the APM install tests take about 110 s).
+- Refreshed upstream from `74ca5fe` to `c55ee46` (`v1.2.3-54-gc55ee46`).
+- Behaviour changes: `to-spec` publishes through the tracker document's issue-batch rules;
+  `code-review` diffs against the merge-base and includes uncommitted and
+  untracked files; `tdd` treats seams agreed in the spec as confirmed;
+  `context-extractor` proposes edits to the sources when agent files are
+  compiled (for example through APM); the third-party audit drafts the vendor issue and never files it.
+
 ## 0.4.0 - 2026-09-01
 
 - Imported four skills from the upstream `in-progress` bucket at

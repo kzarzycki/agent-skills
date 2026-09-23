@@ -7,7 +7,7 @@ from pathlib import Path
 from tools.capability_pack import refresh as refresh_module
 from tools.capability_pack.model import Provenance, QualificationResult
 from tools.capability_pack.provenance import write_provenance
-from tools.capability_pack.qualify import PatchError
+from tools.capability_pack.qualify import PatchError, PortRequiredError
 from tools.capability_pack.releases import ReleaseSelection
 
 
@@ -156,3 +156,27 @@ def test_gate_exception_restores_promoted_package_byte_for_byte(tmp_path, monkey
     assert (status, result["code"]) == (1, "gate_failed")
     assert [gate["status"] for gate in result["gates"]] == ["fail" for _ in refresh_module.GATES]
     assert after == before
+
+
+def test_port_required_blocks_and_replaces_stale_deltas(tmp_path, monkeypatch) -> None:
+    root = package(tmp_path)
+    artifacts = tmp_path / "artifacts"
+    (artifacts / "deltas").mkdir(parents=True)
+    (artifacts / "deltas" / "beta.diff").write_text("already ported\n")
+    before = (root / "provenance.yml").read_bytes()
+    monkeypatch.setattr(
+        refresh_module,
+        "resolve_release",
+        lambda *_: ReleaseSelection("candidate", "v1.2.4", "2" * 40, "1" * 40),
+    )
+    error = PortRequiredError("upstream", "1" * 40, "2" * 40, (("alpha", "skills/alpha"),))
+    monkeypatch.setattr(refresh_module, "qualify", lambda *_a, **_k: (_ for _ in ()).throw(error))
+    monkeypatch.setattr(refresh_module, "upstream_deltas", lambda _: {"alpha": "+rule\n"})
+
+    result, status = refresh_module.refresh(root, artifacts)
+
+    assert status == 1
+    assert (result["code"], result["phase"]) == ("port_required", "port")
+    assert result["diagnostics"][0]["path"] == "skills/alpha"
+    assert sorted(p.name for p in (artifacts / "deltas").iterdir()) == ["alpha.diff"]
+    assert (root / "provenance.yml").read_bytes() == before

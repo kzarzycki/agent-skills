@@ -19,11 +19,12 @@ from tools.capability_pack.outcome import new_attempt, write_result
 from tools.capability_pack.qualify import (
     BreakingDriftError,
     ConfigurationError,
+    PortRequiredError,
     QualificationError,
     qualify,
     validate_release_candidate,
 )
-from tools.capability_pack.refresh import refresh
+from tools.capability_pack.refresh import refresh, write_deltas
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -165,6 +166,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         mode = "update" if args.command == "update" else "locked"
         result = qualify(args.package, mode, args.summary)
+    except PortRequiredError as error:
+        print(error, file=sys.stderr)
+        directory = args.package.resolve().parent / "artifacts" / f"{args.package.name}-deltas"
+        for item in write_deltas(directory, error):
+            print(f"  {item.get('path', item['code'])}: {item['detail']}", file=sys.stderr)
+        print(f"deltas: {directory / 'deltas'}", file=sys.stderr)
+        return 5
     except ConfigurationError as error:
         print(error, file=sys.stderr)
         return 2
