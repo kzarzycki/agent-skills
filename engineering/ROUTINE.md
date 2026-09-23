@@ -16,9 +16,9 @@ In order, and start nothing new while any of these is open:
 - **Blocked:** an open `engineering-routine:blocked` issue means a person has to
   act. Stop; closing the issue resumes the routine.
 - **Unreleased version on main:** if `engineering/apm.yml` on `origin/main` is newer
-  than the newest `engineering-v*` tag, tag the commit that set it
-  (`git log -1 --format=%H -G'^version:' origin/main -- engineering/apm.yml`) as in
-  step 7.3, and stop.
+  than the newest `engineering-v*` tag, tag the main commit that set it as in step 7.3,
+  and stop. Find it with
+  `git log -1 --first-parent --format=%H -G'^version:' origin/main -- engineering/apm.yml`.
 - **Tag check:** the newest tag's `Engineering tag check` run
   (`gh run list --workflow engineering-tag-check.yml`) still running means stop until
   the next run; failed, or missing for a tag older than an hour, means blocked.
@@ -26,8 +26,8 @@ In order, and start nothing new while any of these is open:
   check's bump of this repository's own APM ref) is open, bring it up to date with
   main, wait for its checks, mark it ready and squash-merge it. Its checklist commands
   already ran in its CI.
-- **Open routine PR:** if a PR from an `engineering-upstream/*` branch is open, check it
-  out and carry it on from step 4.
+- **Open routine PR:** if a PR from an `engineering-upstream/*` branch is open, draft or
+  not, check it out and carry it on from step 4.
 
 ## 2. Intake
 
@@ -59,9 +59,10 @@ through this step again.
 ## 3. Branch
 
 Create the branch `engineering-upstream/<new upstream short sha>` (the name stays if
-the lock moves later), commit everything, new files included, and push it. From here
-on, every change is a commit that is pushed. A change to an overlay is followed by a
-rerun of `mise run vendor-engineering`, and the rerun's output is committed too.
+the lock moves later), commit everything, new files included, push it, and open a draft
+PR, so step 1 resumes an interrupted or blocked run. From here on, every change is a
+commit that is pushed. A change to an overlay is followed by a rerun of
+`mise run vendor-engineering`, and the rerun's output is committed too.
 
 ## 4. Gates
 
@@ -90,7 +91,7 @@ review again. If it still isn't PASS after two revisions, you're blocked.
 
 ## 6. Release or not
 
-Decide after the last rerun, from `git diff --quiet origin/main -- engineering/skills/`:
+Decide after the last rerun, from `git diff --quiet origin/main...HEAD -- engineering/skills/`:
 
 - **Skills changed:** a release. The tool already set the version, one bump past the
   newest `engineering-v*` tag (minor when a skill was added). Give that version a
@@ -105,14 +106,14 @@ Commit, push and rerun the gates.
 
 ## 7. Land and tag
 
-1. Open the PR. The body holds:
+1. Write the PR body and mark the PR ready. The body holds:
    - the upstream range;
    - each delta's commit subjects and the decision taken;
    - the reviewer's verdict;
    - the gate exit codes.
 2. When the required `qualify` check passes, run `gh pr merge --squash --delete-branch`.
-   If it fails, fix, commit and go back to step 4. If main moved, update the branch and
-   wait again. Never use `--admin`, and never push to main.
+   If it fails, fix, commit and go back to step 4; a third failure is blocked. If main
+   moved, update the branch and wait again. Never use `--admin`, and never push to main.
 3. For a release, tag the merge commit and push the tag:
    `git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.
    The tag check re-qualifies the release and opens the consumer-sync PR, which step 1
