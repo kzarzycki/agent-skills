@@ -25,6 +25,7 @@ from tools.capability_pack.summary import render_summary
 VENDIR_MANIFEST = "vendir.yml"
 VENDIR_LOCK = "vendir.lock.yml"
 ENGINEERING_SOURCE_URL = "https://github.com/mattpocock/skills.git"
+INTAKE_LEDGER = "upstream-intake.yml"
 
 
 class QualificationError(RuntimeError):
@@ -50,6 +51,23 @@ class LicenseDriftError(BreakingDriftError):
     """The upstream legal payload changed and requires explicit review."""
 
 
+class PortRequiredError(QualificationError):
+    """Upstream changed under a tuned skill and the intake ledger has no decision for it."""
+
+    def __init__(
+        self, repository: str, old_commit: str, new_commit: str, skills: tuple[tuple[str, str], ...]
+    ) -> None:
+        names = ", ".join(name for name, _ in skills)
+        super().__init__(
+            f"upstream changed under tuned skill(s) {names} ({old_commit}..{new_commit}): "
+            f"port or decline each delta and record it in {INTAKE_LEDGER}"
+        )
+        self.repository = repository
+        self.old_commit = old_commit
+        self.new_commit = new_commit
+        self.skills = skills
+
+
 def _load_upstream_policy(package: Path) -> dict:
     path = package / "upstream.yml"
     if not path.exists():
@@ -72,18 +90,113 @@ def _overlay_entries(package: Path, policy: dict) -> tuple[tuple[Path, Path], ..
     return tuple(entries)
 
 
-def _apply_overlays(stage: Path, package: Path, policy: dict) -> tuple[FileHash, ...]:
+def _overlay_hashes(package: Path, policy: dict) -> tuple[FileHash, ...]:
     canonical_files: list[Path] = []
-    for source, destination in _overlay_entries(package, policy):
+    for source, _ in _overlay_entries(package, policy):
         if not (source / "SKILL.md").is_file():
             raise ConfigurationError(
                 f"owned overlay has no SKILL.md: {source.relative_to(package)}"
             )
+        canonical_files.extend(_manifest_files(source))
+    return hash_files(package, canonical_files)
+
+
+def _apply_overlays(stage: Path, package: Path, policy: dict) -> None:
+    for source, destination in _overlay_entries(package, policy):
         staged_destination = stage / destination.relative_to(package)
         shutil.rmtree(staged_destination, ignore_errors=True)
         shutil.copytree(source, staged_destination)
-        canonical_files.extend(_manifest_files(source))
-    return hash_files(package, canonical_files)
+
+
+def _ledger_decisions(package: Path) -> set[tuple[str, str]]:
+    path = package / INTAKE_LEDGER
+    if not path.exists():
+        return set()
+    try:
+        entries = _sequence(yaml.safe_load(path.read_text()) or [], INTAKE_LEDGER)
+    except yaml.YAMLError as error:
+        raise ConfigurationError(f"invalid {INTAKE_LEDGER}: {error}") from error
+    decisions = set()
+    for index, raw in enumerate(entries):
+        entry = _mapping(raw, f"{INTAKE_LEDGER} entry {index}")
+        upstream, skill = entry.get("upstream"), entry.get("skill")
+        if (
+            not re.fullmatch(r"[0-9a-f]{40}", str(upstream))
+            or not isinstance(skill, str)
+            or entry.get("decision") not in {"ported", "declined"}
+            or not str(entry.get("note") or "").strip()
+        ):
+            raise ConfigurationError(
+                f"{INTAKE_LEDGER} entry {index} needs a 40-hex upstream, a skill, "
+                "decision ported|declined and a note"
+            )
+        decisions.add((upstream, skill))
+    return decisions
+
+
+def _require_ported(
+    package: Path,
+    previous: Provenance,
+    source_files: tuple[FileHash, ...],
+    source_commit: str,
+    tuned: tuple[str, ...],
+    mappings: tuple[SourceMapping, ...],
+) -> None:
+    """Stop an intake that would move the baseline under a tuned skill unreviewed.
+
+    A tuned skill ships owned text, so an upstream change under it no longer reaches
+    consumers by itself: someone has to port its meaning or decline it, and the
+    ledger records which, per upstream commit.
+    """
+    if previous.source_commit == source_commit:
+        return
+
+    def files(manifest: tuple[FileHash, ...], name: str) -> set[FileHash]:
+        return {item for item in manifest if item.path.startswith(f"skills/{name}/")}
+
+    decided = _ledger_decisions(package)
+    sources = {PurePosixPath(item.destination_path).name: item for item in mappings}
+    pending = tuple(
+        (name, sources[name].source_path)
+        for name in tuned
+        if files(previous.source_files, name) != files(source_files, name)
+        and (source_commit, name) not in decided
+    )
+    if pending:
+        raise PortRequiredError(
+            sources[pending[0][0]].source_repository,
+            previous.source_commit,
+            source_commit,
+            pending,
+        )
+
+
+def upstream_deltas(error: PortRequiredError) -> dict[str, str]:
+    """Return each pending tuned skill's upstream diff between the two commits."""
+    temporary = Path(tempfile.mkdtemp(prefix=".engineering-deltas-"))
+    try:
+        _git_output(["init", "--quiet", str(temporary)])
+        _git_output(
+            [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                error.repository,
+                error.old_commit,
+                error.new_commit,
+            ],
+            cwd=temporary,
+        )
+        span = f"{error.old_commit}..{error.new_commit}"
+        return {
+            name: _git_output(["log", "--format=# %h %s", span, "--", path], cwd=temporary)
+            + "\n\n"
+            + _git_output(["diff", error.old_commit, error.new_commit, "--", path], cwd=temporary)
+            + "\n"
+            for name, path in error.skills
+        }
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
 
 
 def _validate_overlay_reproduction(package: Path, policy: dict) -> None:
@@ -396,11 +509,16 @@ def _apply_patches(stage: Path, repository_root: Path) -> None:
             raise PatchError(value, str(error)) from error
 
 
-def _next_version(version: str, magnitude: str) -> str:
+def _semver(version: str) -> tuple[int, int, int]:
     match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version)
     if not match:
         raise ConfigurationError(f"package version is not SemVer: {version}")
     major, minor, patch = (int(value) for value in match.groups())
+    return major, minor, patch
+
+
+def _next_version(version: str, magnitude: str) -> str:
+    major, minor, patch = _semver(version)
     if magnitude == "major":
         return f"{major + 1}.0.0"
     if magnitude == "minor":
@@ -429,7 +547,25 @@ def _version_magnitude(previous: Provenance, source_tag: str | None, added: tupl
     return "patch"
 
 
-def _update_package_version(stage: Path, magnitude: str) -> str | None:
+def _released_version(package: Path) -> str | None:
+    """The newest `<package>-vX.Y.Z` tag in the repository, if any."""
+    try:
+        tags = subprocess.run(
+            ["git", "tag", "--list", f"{package.name}-v*"],
+            cwd=package,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        ).stdout.split()
+    except OSError, subprocess.SubprocessError:
+        return None
+    pattern = re.compile(rf"{re.escape(package.name)}-v(\d+)\.(\d+)\.(\d+)")
+    versions = [tuple(map(int, m.groups())) for tag in tags if (m := pattern.fullmatch(tag))]
+    return ".".join(map(str, max(versions))) if versions else None
+
+
+def _update_package_version(stage: Path, magnitude: str, released: str | None) -> str | None:
     apm_path = stage / "apm.yml"
     plugin_path = stage / ".claude-plugin" / "plugin.json"
     if not apm_path.exists() and not plugin_path.exists():
@@ -438,7 +574,12 @@ def _update_package_version(stage: Path, magnitude: str) -> str | None:
     plugin = _mapping(json.loads(plugin_path.read_text()), "plugin.json")
     if apm.get("version") != plugin.get("version"):
         raise ConfigurationError("package manifest versions disagree")
-    proposed = _next_version(str(apm["version"]), magnitude)
+    # Bump from the last release, not the working tree, so reruns before a release
+    # (port, review, rerun) bump once; keep a version already bumped further.
+    current = str(apm["version"])
+    proposed = _next_version(released or current, magnitude)
+    if released and _semver(current) > _semver(proposed):
+        proposed = current
     apm["version"] = proposed
     plugin["version"] = proposed
     apm_path.write_text(yaml.safe_dump(apm, sort_keys=False))
@@ -806,7 +947,7 @@ def _run_package_tests(stage: Path) -> tuple[str, str]:
             cwd=stage,
             env=env,
             check=True,
-            timeout=120,
+            timeout=300,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise QualificationError(f"non-live package tests failed: {error}") from error
@@ -842,6 +983,7 @@ def qualify(
         raise ConfigurationError("summary path must be outside the package root")
     config = _load_manifest(package / VENDIR_MANIFEST)
     policy = _load_upstream_policy(package)
+    _ledger_decisions(package)
     if mode == "locked":
         _validate_overlay_reproduction(package, policy)
     _validate_source_policy(package, config, policy)
@@ -887,7 +1029,7 @@ def qualify(
         if mode == "update":
             (staged / VENDIR_MANIFEST).write_text(yaml.safe_dump(committed_config, sort_keys=False))
         _validate_symlinks(staged)
-        overlay_files = _apply_overlays(staged, package, policy)
+        overlay_files = _overlay_hashes(package, policy)
         if (
             mode == "update"
             and candidate_commit is not None
@@ -906,7 +1048,7 @@ def qualify(
             sorted(
                 set(previous.included_skills if previous else ())
                 - set(inventory)
-                - set(overlay_names)
+                - (set(overlay_names) - set(managed))
             )
         )
         if removed:
@@ -919,11 +1061,15 @@ def qualify(
         license_files = _license_manifest(staged, previous, (committed_config,))
         if mode == "update" and previous and previous.license_files != license_files:
             raise LicenseDriftError("upstream license files changed; explicit review is required")
+        tuned = tuple(sorted(set(overlay_names) & set(managed)))
+        if mode == "update" and previous:
+            _require_ported(package, previous, source_files, source_commit, tuned, source_mappings)
         patch_files: tuple[FileHash, ...] = ()
         try:
             patch_files = _patch_manifest(staged)
             _apply_substitutions(staged, inventory, _substitution_rules(policy))
             _apply_patches(staged, package.parent)
+            _apply_overlays(staged, package, policy)
         except QualificationError as error:
             if summary_path:
                 partial = Provenance(
@@ -984,7 +1130,9 @@ def qualify(
         )
         added = tuple(sorted(set(inventory) - set(previous.included_skills if previous else ())))
         changed_skills = tuple(
-            name for name in _changed_skills(previous, proposed) if name not in overlay_names
+            name
+            for name in _changed_skills(previous, proposed)
+            if name not in set(overlay_names) - set(tuned)
         )
         write_provenance(staged / "provenance.yml", proposed)
         proposed_version = None
@@ -997,7 +1145,7 @@ def qualify(
         ).exists()
         if mode == "update" and content_changed and has_versioned_metadata:
             proposed_version = _update_package_version(
-                staged, _version_magnitude(previous, source_tag, added)
+                staged, _version_magnitude(previous, source_tag, added), _released_version(package)
             )
         test_command, test_result = _run_package_tests(staged)
         summary = render_summary(

@@ -18,6 +18,58 @@ owned_skills:
 owned_overlays:
   - source: overlays/skills/setup-engineering-workflow-for-apm
     destination: skills/setup-engineering-workflow-for-apm
+  - source: overlays/skills/ask-matt
+    destination: skills/ask-matt
+  - source: overlays/skills/claude-handoff
+    destination: skills/claude-handoff
+  - source: overlays/skills/code-review
+    destination: skills/code-review
+  - source: overlays/skills/codebase-design
+    destination: skills/codebase-design
+  - source: overlays/skills/diagnosing-bugs
+    destination: skills/diagnosing-bugs
+  - source: overlays/skills/domain-modeling
+    destination: skills/domain-modeling
+  - source: overlays/skills/grill-with-docs
+    destination: skills/grill-with-docs
+  - source: overlays/skills/grilling
+    destination: skills/grilling
+  - source: overlays/skills/handoff
+    destination: skills/handoff
+  - source: overlays/skills/implement
+    destination: skills/implement
+  - source: overlays/skills/implement-spec
+    destination: skills/implement-spec
+  - source: overlays/skills/improve-codebase-architecture
+    destination: skills/improve-codebase-architecture
+  - source: overlays/skills/loop-me
+    destination: skills/loop-me
+  - source: overlays/skills/pr
+    destination: skills/pr
+  - source: overlays/skills/prototype
+    destination: skills/prototype
+  - source: overlays/skills/research
+    destination: skills/research
+  - source: overlays/skills/resolving-merge-conflicts
+    destination: skills/resolving-merge-conflicts
+  - source: overlays/skills/retro
+    destination: skills/retro
+  - source: overlays/skills/tdd
+    destination: skills/tdd
+  - source: overlays/skills/teach
+    destination: skills/teach
+  - source: overlays/skills/to-spec
+    destination: skills/to-spec
+  - source: overlays/skills/to-tickets
+    destination: skills/to-tickets
+  - source: overlays/skills/triage
+    destination: skills/triage
+  - source: overlays/skills/wait-what
+    destination: skills/wait-what
+  - source: overlays/skills/wayfinder
+    destination: skills/wayfinder
+  - source: overlays/skills/wizard
+    destination: skills/wizard
 aliases:
   grilling: skills/productivity/grilling
   claude-handoff: skills/in-progress/claude-handoff

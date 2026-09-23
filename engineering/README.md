@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.3.0
+      ref: ^0.6.0
 ```
 
 Then run:
@@ -25,9 +25,10 @@ apm audit --ci --no-policy
 
 The Claude adapter writes skills to `.claude/skills/`. The Codex adapter writes
 the same inventory to `.agents/skills/`. Those paths are generated; edit the
-package sources under `engineering/skills/`.
+package sources: tuned skills under `engineering/overlays/skills/`, owned skills
+under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.4.0`. APM resolves
+The independently versioned release tag is `engineering-v0.6.0`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 
@@ -43,83 +44,89 @@ own release instead of installing the upstream `main` branch directly.
 
 ## Package maintenance
 
-Imported skill directories under `engineering/skills/` are generated from
-`upstream.yml`, `vendir.yml`, the locked source in `vendir.lock.yml`, the
-substitution rules and ordered patches applied in that order, and
-`provenance.yml`. Refresh them with:
+Three kinds of source ship under `engineering/skills/`:
+
+- Owned skills, edited in place: `audit-third-party-software`,
+  `context-extractor`, `operating-omnigent`.
+- Owned overlays under `overlays/skills/<name>/`, reproduced into
+  `skills/<name>/`: `setup-engineering-workflow-for-apm` and every imported
+  skill tuned for current models (listed under `owned_overlays` in
+  `upstream.yml`).
+- Imported skills not yet tuned, generated from the locked upstream source with
+  the `substitutions` in `upstream.yml` applied.
+
+Refresh with:
 
 ```sh
 mise run vendor-engineering
 ```
 
-The owned sibling directories are:
+### Tuned skills and upstream intake
 
-- `skills/audit-third-party-software/`
-- `skills/context-extractor/`
-- `skills/operating-omnigent/`
-- `overlays/skills/setup-engineering-workflow-for-apm/`
+A tuned skill keeps only what a strong model would not do unprompted (the
+contract is in `CLAUDE.md`), so its text drifts too far from upstream for a
+textual patch to survive. The intake still syncs upstream and records its raw
+hashes in `provenance.yml`. When upstream changes a tuned skill,
+`mise run vendor-engineering` stops with exit 5 and saves each delta, commit
+subjects then diff, to `artifacts/engineering-deltas/deltas/<skill>.diff`. The
+maintenance routine ports the intent or declines it and records the decision in
+`upstream-intake.yml`. A row counts only for the commit the lock moves to, so the
+next upstream change to a tuned skill stops the intake again. An upstream
+deletion of a tuned skill fails the intake outright.
 
 ### Upstream beta skills
 
 `claude-handoff`, `implement-spec`, `loop-me`, and `retro` come from upstream's
 `in-progress` bucket rather than `engineering`. Upstream excludes that bucket
 from its own plugin and reserves the right to change or delete those skills
-without warning, so treat them as beta. A deletion upstream fails the next
-refresh instead of silently dropping the skill.
+without warning, so treat them as beta.
 
-### Substitutions before patches
+### Substitutions
 
 `upstream.yml` carries `substitutions`: literal find/replace rules applied
-across the imported inventory before the ordered patches run. Use one for a
-rename that upstream rewording would otherwise keep breaking; a context diff
-fails on any edit near its anchor, a literal rule does not. A rule that matches
-nothing fails the refresh, so a literal disappearing upstream stays visible.
-Owned skills and the overlay are out of scope. Keep `patches/` for changes that
-alter meaning rather than a name.
+across the imported inventory. Use one for a rename that upstream rewording
+would otherwise keep breaking. A rule that matches nothing fails the intake,
+so a literal disappearing upstream stays visible.
 
-The setup overlay is canonical and is reproduced into
-`skills/setup-engineering-workflow-for-apm/`; the destination is generated.
-Do not edit generated imported files directly. Before committing package
-changes, reproduce the locked import and run its checks:
+Do not edit generated files directly. Before committing package changes,
+reproduce the locked import and run its checks:
 
 ```sh
 mise run vendor-engineering-check
 mise run test-engineering-package
 ```
 
-## Autonomous upstream intake
+## Maintenance routine
 
-`Engineering upstream refresh` selects the highest canonical stable upstream
-tag and accepts it only when its peeled commit is a forward move from the lock.
-Because the current lock is two commits beyond upstream `v1.2.3`, provenance
-records `v1.2.3` as the stable version baseline until the first tagged refresh.
-Every run uploads `result.json` and `summary.md`. Qualification and smoke modes
-are nonpublishing. A blocked run updates one issue identified by
-`engineering-upstream-refresh:blocked`.
+[ROUTINE.md](ROUTINE.md) keeps the package current when an agent host runs it on a
+schedule. No schedule is configured yet. Each run:
 
-Publishing uses only the GitHub App credentials in the protected
-`engineering-updater-publish` environment. Configure `UPDATER_APP_ID` and
-`UPDATER_APP_PRIVATE_KEY` for an App installed only on this repository with
-metadata read, contents write, and pull requests write. Missing credentials
-produce a blocked result; the workflow never falls back to `GITHUB_TOKEN` or a
-PAT for branch or PR writes.
+- It pulls upstream `main`, ports or declines each change to a tuned skill, and
+  tunes any new upstream skill.
+- A reviewer with a fresh context checks every port before anything lands.
+- It merges its own PR once the required `qualify` check passes and, when a shipped
+  skill changed, tags `engineering-vX.Y.Z`. The tag check re-qualifies the release, and the
+  consumer-sync workflow opens a PR bumping this repository's own APM ref, which
+  the next run merges.
+- It stops and opens an `engineering-routine:blocked` issue instead of landing
+  when upstream removes a skill, the upstream licence changes, the gates fail, or
+  the reviewer still objects after two revisions. Later runs stop until a person
+  closes that issue.
 
-Rollout order:
+To schedule it, point an agent host at this repository with the prompt "Run the
+maintenance routine in `engineering/ROUTINE.md`." The host needs:
 
-1. Leave `ENGINEERING_UPDATER_SCHEDULE_ENABLED` unset or `false`.
-2. Run `smoke-fixture`, then the default `qualify` dispatch and retain their
-   artifacts.
-3. Protect `main`, disable Actions review approval, install the scoped App, and
-   run `publish-smoke` with confirmation `PUBLISH-SMOKE`.
-4. Verify its draft triggers normal CI and cannot merge or push `main`; close
-   the canary manually.
-5. Run `publish`, then set the schedule variable to `true`.
+- `mise`, with network access to the tools it installs (Python, Node, uv, `vendir`,
+  `apm`) and to PyPI;
+- `git` and `gh` credentials that can push branches and tags, merge PRs and open
+  issues here.
 
-Rollback starts by setting that variable to `false`, then removing the publish
-environment secrets and revoking the App installation. Qualification and
-evidence reporting remain usable.
+A tag pushed with GitHub Actions' own `GITHUB_TOKEN` starts no workflow, so the tag
+check needs a user or App credential. A claude.ai cloud session's GitHub proxy may
+allow pushes only to the session's working branch, which would refuse the tag push.
+One manual run that pushes a throwaway tag settles it.
 
-After a human creates an `engineering-vX.Y.Z` tag and its checks pass, the tag
-workflow proposes an exact root APM ref, runs refresh/frozen convergence, and
-checks Codex inventory. The consumer PR retains the final local checklist;
-automation never tags, merges, approves, or changes a maintainer workstation.
+Consumer sync uses the GitHub App credentials in the
+`engineering-updater-publish` environment (`UPDATER_APP_ID`,
+`UPDATER_APP_PRIVATE_KEY`). The App is installed only on this repository, with
+metadata read, contents write and pull requests write.

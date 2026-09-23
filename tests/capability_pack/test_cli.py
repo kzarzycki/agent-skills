@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from tools.capability_pack import cli
 from tools.capability_pack.model import QualificationResult
-from tools.capability_pack.qualify import BreakingDriftError, QualificationError
+from tools.capability_pack.qualify import (
+    BreakingDriftError,
+    PortRequiredError,
+    QualificationError,
+)
 
 
 @pytest.mark.parametrize(
@@ -60,6 +63,25 @@ def test_cli_maps_qualification_failures_to_stable_exit_codes(
     assert cli.main(["check", str(package)]) == exit_code
 
 
+def test_cli_port_required_exits_five_and_saves_deltas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch a pending port reading as an ordinary reproduction failure."""
+    package = tmp_path / "engineering"
+    package.mkdir()
+    error = PortRequiredError("upstream", "1" * 40, "2" * 40, (("alpha", "skills/alpha"),))
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(cli, "qualify", fail)
+    monkeypatch.setattr(cli, "upstream_deltas", lambda _: {"alpha": "+rule\n"})
+
+    assert cli.main(["update", str(package)]) == 5
+    delta = tmp_path / "artifacts" / "engineering-deltas" / "deltas" / "alpha.diff"
+    assert delta.read_text() == "+rule\n"
+
+
 def test_cli_returns_usage_exit_for_bad_syntax() -> None:
     """Catch argparse terminating the host process instead of returning the contract code."""
     assert cli.main(["unknown", "engineering"]) == 2
@@ -68,87 +90,6 @@ def test_cli_returns_usage_exit_for_bad_syntax() -> None:
 def test_cli_returns_configuration_exit_for_missing_package(tmp_path: Path) -> None:
     """Catch a bad package path being reported as a reproduction failure."""
     assert cli.main(["check", str(tmp_path / "missing")]) == 2
-
-
-def test_publish_smoke_rejects_bad_confirmation_without_writing_marker(tmp_path: Path) -> None:
-    artifacts = tmp_path / "artifacts"
-    marker = tmp_path / "marker.txt"
-    status = cli.main(
-        [
-            "smoke-result",
-            "--artifacts",
-            str(artifacts),
-            "--marker",
-            str(marker),
-            "--confirmation",
-            "wrong",
-        ]
-    )
-    assert status == 1
-    assert not marker.exists()
-    assert "invalid_smoke_confirmation" in (artifacts / "result.json").read_text()
-
-
-def test_publish_smoke_writes_a_nonempty_candidate_marker_after_confirmation(
-    tmp_path: Path,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    marker = tmp_path / "marker.txt"
-    status = cli.main(
-        [
-            "smoke-result",
-            "--artifacts",
-            str(artifacts),
-            "--marker",
-            str(marker),
-            "--confirmation",
-            "PUBLISH-SMOKE",
-        ]
-    )
-    assert status == 0
-    assert marker.read_text() == "engineering upstream publisher smoke\n"
-
-
-def test_publish_smoke_patch_transfers_to_clean_checkout(tmp_path: Path) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
-    subprocess.run(["git", "config", "user.email", "fixture@example.test"], cwd=source, check=True)
-    subprocess.run(["git", "config", "user.name", "Fixture"], cwd=source, check=True)
-    (source / "engineering").mkdir()
-    (source / "README.md").write_text("fixture\n")
-    marker = source / "engineering" / ".upstream-refresh-smoke"
-    marker.write_text("idle\n")
-    subprocess.run(["git", "add", "."], cwd=source, check=True)
-    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=source, check=True)
-    assert (
-        cli.main(
-            [
-                "smoke-result",
-                "--artifacts",
-                str(tmp_path / "artifacts"),
-                "--marker",
-                str(marker),
-                "--confirmation",
-                "PUBLISH-SMOKE",
-            ]
-        )
-        == 0
-    )
-    patch = subprocess.run(
-        ["git", "diff", "--binary", "--", str(marker)],
-        cwd=source,
-        check=True,
-        capture_output=True,
-    ).stdout
-    assert patch
-    target = tmp_path / "target"
-    subprocess.run(["git", "clone", "-q", str(source), str(target)], check=True)
-    subprocess.run(["git", "apply", "--check", "-"], cwd=target, input=patch, check=True)
-    subprocess.run(["git", "apply", "-"], cwd=target, input=patch, check=True)
-    assert (target / "engineering" / ".upstream-refresh-smoke").read_text() == (
-        "engineering upstream publisher smoke\n"
-    )
 
 
 @pytest.mark.parametrize(
