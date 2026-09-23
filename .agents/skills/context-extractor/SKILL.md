@@ -1,85 +1,47 @@
 ---
 name: context-extractor
-description: Analyze a project and extract conventions, patterns, and context into a CLAUDE.md file. Works for any project type — code repos, presentation collections, research corpora, documentation projects. Trigger on "extract conventions", "analyze project patterns", "generate CLAUDE.md", "what are the conventions", or /conventions.
+description: Draft or extend a project's CLAUDE.md or AGENTS.md with the commands, conventions and gotchas an agent cannot infer, for any project type. Use on "extract conventions", "analyze project patterns", "generate CLAUDE.md", "what are the conventions", or /conventions.
 ---
 
 # Context Extractor
 
-Analyze the current project and draft a CLAUDE.md capturing its conventions, patterns, and context. Works for ANY project type, not just code.
+Draft the project's agent instruction file: the one the repo already uses (`CLAUDE.md`
+or `AGENTS.md`; when one symlinks to the other, edit the target), else `CLAUDE.md`. When
+the repo compiles its agent files from sources, for example `.apm/instructions/` through
+`mise run agent-sync`, propose the change to the source instead.
 
-## Workflow
+Survey whatever the project type offers (build, CI and lint config, sampled source and
+tests, commit history, templates and branding, citation and frontmatter style, notebook
+and data layout) and keep only what an agent would get wrong without being told.
 
-### Step 1: Detect Project Type
+## Content
 
-Scan the project root to determine what kind of project this is:
+- Imperative voice: "Run X before committing", not "The team prefers X".
+- Commands (build, test, lint, run) come first and are mandatory for code projects.
+- Conventions only where they differ from the language or framework default.
+- Architecture only when the layout is not self-explanatory.
+- Gotchas are the highest-value section: surprises, workarounds, things that look wrong
+  but are intentional.
+- 20–60 lines for most projects, up to 100 for complex ones.
 
-| Signals | Project Type |
-|---------|-------------|
-| package.json, Cargo.toml, pyproject.toml, go.mod, pubspec.yaml | Code repository |
-| .github/workflows/, Jenkinsfile, .gitlab-ci.yml | CI/CD pipeline |
-| *.pptx, *.key, slides/ | Presentation collection |
-| *.md collection, docs/, wiki/ | Documentation project |
-| data/, notebooks/, *.ipynb | Data/research project |
-| Mixed or unclear | General project |
+Use these sections, dropping any that would be empty:
 
-A project may be multiple types. Identify the primary and secondary types.
+```markdown
+## Project Overview
+<!-- 1-2 sentences: what the project is and its primary purpose -->
 
-### Step 2: Scan for Conventions
+## Commands
 
-Based on detected type(s), scan using the appropriate checklist:
+## Conventions
 
-**For all project types:**
-- File/directory organization and naming patterns
-- Existing README.md, CONTRIBUTING.md, CLAUDE.md content
-- Git commit message style (last 20 commits)
-- Any .editorconfig, .prettierrc, or formatting configs
+## Architecture
 
-**For code repositories (add to above):**
-- Build system and commands (from package.json scripts, Makefile, etc.)
-- Language conventions: naming style, import patterns, error handling (sample 5-10 source files)
-- Test framework, test file naming, test patterns
-- CI/CD quality gates
-- Linting/formatting configuration
-- Non-obvious: .env.example, docker-compose, special scripts, gotchas
+## Gotchas
+```
 
-**For presentation projects:**
-- Slide structure patterns (title slides, section dividers, etc.)
-- Branding: colors, fonts, logos used
-- Template files
-- Naming conventions for slide decks
+## Approval
 
-**For documentation projects:**
-- Document structure (headings, sections)
-- Citation/reference style
-- Metadata/frontmatter patterns
-- File naming conventions
-
-**For data/research projects:**
-- Notebook structure patterns
-- Data pipeline conventions
-- Naming for datasets, experiments
-- Environment setup
-
-### Step 3: Draft CLAUDE.md
-
-Use the template at [references/templates/claude-md-template.md](references/templates/claude-md-template.md) as a starting point. Fill in discovered conventions.
-
-**Rules:**
-- Keep it concise — only include what Claude can't infer from reading the code/files
-- Use imperative style ("Run X before committing", not "The team prefers to run X")
-- Focus on non-obvious things that would cause mistakes
-- Include build/test/run commands prominently
-
-### Step 4: Present to User
-
-- If CLAUDE.md already exists: present proposed additions as a diff. NEVER remove existing user content.
-- If no CLAUDE.md exists: present the full draft.
-- **NEVER apply without explicit user approval.**
-
-### Update Mode
-
-When called on a project that already has a good CLAUDE.md:
-1. Run the analysis
-2. Compare findings against existing CLAUDE.md
-3. Propose ADDITIONS only (new conventions not yet documented)
-4. Present as individual proposals the user can accept/reject
+- No file yet: present the full draft.
+- A file exists: propose additions only, each as its own diff the user can accept or
+  reject. Never remove or rewrite existing content.
+- Write nothing until the user approves.

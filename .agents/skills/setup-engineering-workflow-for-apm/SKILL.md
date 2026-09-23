@@ -6,91 +6,61 @@ disable-model-invocation: true
 
 # Setup Engineering Workflow for APM
 
-Configure the repository-owned source files consumed by APM. This skill writes
-only below `.apm/instructions/` and `docs/agents/`, then delegates all compiled
-agent-file changes to `mise run agent-sync`.
+Write only the two repository-owned sources below and let `mise run agent-sync` compile
+them. Never write `AGENTS.md`, `CLAUDE.md` or another compiled target; the compiler owns
+them.
 
-Never write `AGENTS.md`, `CLAUDE.md`, or another compiled target directly.
+| Source | Template |
+|---|---|
+| `.apm/instructions/engineering-workflow.md` | [templates/project-guidance.md](./templates/project-guidance.md) |
+| `docs/agents/issue-tracker.md` | [templates/issue-tracker-github.md](./templates/issue-tracker-github.md) |
 
-## Process
+The tracker defaults to GitHub Issues. When repository evidence (remotes, tracker
+references) or the user points to another tracker, adapt the marked section of
+`docs/agents/issue-tracker.md` to that tracker's real commands and conventions. Read the
+existing sources, the domain docs (`CONTEXT.md`, `CONTEXT-MAP.md`, `docs/adr/`), and the
+root agent files as compiled output only.
 
-### 1. Inspect the repository
+## Marked sections
 
-Read enough of the repository to understand its existing conventions:
-
-- Top-level directories and build/task configuration.
-- Git remotes and issue-tracker references.
-- Existing files below `.apm/instructions/` and `docs/agents/`.
-- Root `AGENTS.md` and `CLAUDE.md`, when present, as compiled-output context
-  only.
-- Domain documentation such as `CONTEXT.md`, `CONTEXT-MAP.md`, and
-  `docs/adr/`.
-
-Identify prior output from this skill by the markers:
+The skill owns only the text between these markers:
 
 ```markdown
 <!-- engineering-workflow:start -->
 <!-- engineering-workflow:end -->
 ```
 
-If a file contains only one marker or contains either marker more than once,
-report the malformed file and stop before writing.
+- A file with only one marker, or with either marker more than once, is malformed:
+  report it and stop before writing anything.
+- Markers present: replace only the content between them.
+- Markers absent: append one marked section without trimming or reformatting the
+  existing content.
+- File absent: create it with one marked section.
 
-### 2. Prepare the two source files
+Every byte outside the markers is preserved.
 
-Prepare these exact source paths:
+## Proposal and approval
 
-- `.apm/instructions/engineering-workflow.md`, starting from
-  [templates/project-guidance.md](./templates/project-guidance.md).
-- `docs/agents/issue-tracker.md`, starting from
-  [templates/issue-tracker-github.md](./templates/issue-tracker-github.md).
+Before writing, show every proposed source path, a unified diff for each (new files
+included), and a note that approval writes exactly these changes and then runs
+`mise run agent-sync`. Ask the user to approve or edit. A rejection or an edit request
+writes nothing and runs nothing.
 
-Default the issue tracker to GitHub Issues. When repository evidence or the user
-selects another tracker, adapt the marked section in
-`docs/agents/issue-tracker.md` to the repository's actual commands and
-conventions.
-
-Wrap skill-owned content in the start and end markers. On a later run, replace
-only the content between those markers. Preserve every byte outside the marked
-section. If the markers are absent, append one marked section without trimming
-or reformatting the existing content; if the file is absent, create it with one
-marked section.
-
-### 3. Show the proposal
-
-Before writing, show:
-
-1. Every proposed source path.
-2. A unified diff for each path, including new files.
-3. A note that approval will write the displayed source changes and then run
-   `mise run agent-sync`.
-
-Ask the user to approve or edit the proposal. A rejection or requested edit
-causes no writes and no sync command.
-
-### 4. Write and compile
-
-After approval, write exactly the displayed marked-section changes. Do not
-change any other path.
-
-Then invoke exactly:
+After approval, write exactly the displayed marked-section changes, touch no other
+path, and run exactly this, never an underlying APM command or a second compile step:
 
 ```sh
 mise run agent-sync
 ```
 
-Do not substitute an underlying APM command or add another compile command.
+If compilation or its audit fails, report the output and leave the sources for the user
+to inspect; don't repair, replace or delete compiled targets. If it succeeds, report the
+two source paths and the compiler result.
 
-If compilation or its audit fails, report the command output and leave the
-repository-owned source files for the user to inspect. Do not repair, replace,
-or delete compiled targets directly. If it succeeds, report the two source
-paths and the compiler result.
-
-A second run with the same choices must propose no source diff. When there is
-no source diff, stop and ask for a fresh explicit confirmation before scheduling
-`mise run agent-sync` to recheck compiled output. Approval from a prior run or
-from the source-change proposal does not carry into this no-diff flow. Do not
-rewrite the source files.
+A second run with the same choices proposes no diff and rewrites nothing. It runs
+`mise run agent-sync` to recheck compiled output only after a fresh, explicit
+confirmation for that recheck; approval from a prior run or from a source-change
+proposal does not carry over.
 
 <!-- setup-fixture-protocol
 version: 1

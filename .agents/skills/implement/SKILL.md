@@ -1,15 +1,12 @@
 ---
 name: implement
-description: "Implement a piece of work based on a spec or set of tickets."
+description: "Implement a piece of work from a spec or tickets, test-first, then review and commit it."
 disable-model-invocation: true
 ---
 
-Implement the work described by the user in the spec or tickets.
+Implement the work the user points to in the spec or tickets.
 
-Use /tdd where possible, at pre-agreed seams.
-
-Run typechecking regularly, single test files regularly, and the full test suite once at the end.
-
-Once done, use /code-review to review the work.
-
-Commit your work to the current branch.
+- Build test-first with the `tdd` skill wherever it fits, at the seams the spec agreed.
+- Typecheck and run the affected test files as you go; run the full suite once, at the end.
+- Review the result with the `code-review` skill against the commit you started from, and address its findings.
+- Commit to the current branch.

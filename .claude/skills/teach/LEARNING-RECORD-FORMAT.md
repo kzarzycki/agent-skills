@@ -1,46 +1,24 @@
 # Learning Record Format
 
-Learning records live in `./learning-records/` and use sequential numbering: `0001-slug.md`, `0002-slug.md`, etc. Create the directory lazily: only when the first record is written.
-
-They are the teaching equivalent of ADRs: they capture non-obvious lessons, key insights, and stated prior knowledge that will steer future sessions. They are used to calculate the zone of proximal development.
-
-## Template
+Learning records are the teaching equivalent of ADRs: decision-grade insights that steer future sessions and place the zone of proximal development. They live in `learning-records/` as `0001-<slug>.md`, `0002-<slug>.md`, and so on; create the directory with the first record.
 
 ```md
 # {Short title of what was learned or established}
 
-{1-3 sentences: what was learned (or what prior knowledge was established), and why it matters for future sessions.}
+{1-3 sentences: what is now known, and why it changes what to teach next.}
 ```
 
-That is the whole format. A learning record can be a single paragraph. The value is recording _that_ this is now known and _why_ it changes what to teach next, not in filling out sections.
+A single paragraph is usually enough. Add these only when they carry weight:
 
-## Optional sections
+- `Status: active | superseded by LR-NNNN`, when a later record replaces this one. Supersede rather than delete; how understanding evolved is signal.
+- **Evidence**: how the user showed the understanding, when the claim may be revisited.
+- **Implications**: what this unlocks or rules out, when not obvious.
 
-Only include these when they add genuine value. Most records won't need them.
+Write one when:
 
-- **Status** frontmatter (`active | superseded by LR-NNNN`): useful when an earlier understanding turns out to be wrong and is replaced.
-- **Evidence**: how the user demonstrated the understanding (a question answered, an exercise completed, prior experience cited). Useful when the claim might be revisited.
-- **Implications**: what this unlocks or rules out for future sessions. Worth recording when non-obvious.
+- the user demonstrated real understanding of something non-trivial, which raises the floor for what to teach next;
+- the user disclosed prior knowledge, with the depth claimed;
+- a misconception was corrected, which predicts stumbles on related topics;
+- the mission shifted; update `MISSION.md` too.
 
-## Numbering
-
-Scan `./learning-records/` for the highest existing number and increment by one.
-
-## When to write a learning record
-
-Write one when any of these is true:
-
-1. **The user demonstrated genuine understanding of something non-trivial**: not just exposure, but evidence they can use the concept correctly. This sets a new floor for what to teach next.
-2. **The user disclosed prior knowledge**: "I already know X." Record it so future sessions don't re-teach it. Also record the _depth_ claimed.
-3. **A misconception was corrected**: the user previously believed something wrong and now sees why. These are high-value: they predict future stumbling blocks for related topics.
-4. **The mission shifted in response to learning**: the user discovered they cared about something different than they thought. Cross-link to [[MISSION.md]] and update it.
-
-### What does _not_ qualify
-
-- Material that was merely covered. Coverage is not learning. Wait for evidence.
-- Anything already captured tersely in [[GLOSSARY.md]] as a term definition. Don't duplicate.
-- Session-by-session activity logs. Learning records are not a journal: they are decision-grade insights.
-
-## Supersession
-
-When a later record contradicts an earlier one (the user's understanding deepened or corrected), mark the old record `Status: superseded by LR-NNNN` rather than deleting it. The history of how understanding evolved is itself useful signal.
+Not for material that was merely covered, terms already in `GLOSSARY.md`, or a session log.

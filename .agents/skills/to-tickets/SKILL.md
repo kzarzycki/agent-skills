@@ -1,106 +1,54 @@
 ---
 name: to-tickets
-description: Break a plan, spec, or the current conversation into a set of tracer-bullet tickets, each declaring its blocking edges, published to the configured tracker (edges as text in one file per ticket locally, or native blocking links on a real tracker).
+description: Break a plan, spec, or the current conversation into tracer-bullet tickets that declare their blocking edges, and publish them to the configured tracker.
 disable-model-invocation: true
 ---
 
 # To Tickets
 
-Break a plan, spec, or conversation into a set of **tickets**: tracer-bullet vertical slices, each declaring the tickets that **block** it.
+Break a plan, spec, or conversation into **tickets**: tracer-bullet vertical slices, each naming the tickets that **block** it.
 
-GitHub Issues is the default real tracker. The issue tracker and triage label
-vocabulary should have been provided to you. If `docs/agents/issue-tracker.md`
-is missing, tell the user to run `/setup-engineering-workflow-for-apm`.
+GitHub Issues is the default tracker; `docs/agents/issue-tracker.md` configures it, and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to run `/setup-engineering-workflow-for-apm`.
 
-## Process
+## Draft
 
-### 1. Gather context
+Work from the conversation. If the user passes a reference (spec path, issue number or URL), read its full body and comments. Explore the code as far as the slicing needs, use the `CONTEXT.md` vocabulary, and respect the ADRs in the area. Look for prefactoring that makes the change easy; it goes first.
 
-Work from whatever is already in the conversation context. If the user passes a reference (a spec path, an issue number or URL) as an argument, fetch it and read its full body and comments.
+- Each slice cuts a narrow but complete path through every layer (schema, API, UI, tests), never one layer on its own.
+- A finished slice is demoable or verifiable on its own.
+- Each slice fits one fresh context window.
+- A ticket's blockers are only the tickets that genuinely gate it; a ticket with none can start immediately.
 
-### 2. Explore the codebase (optional)
+A **wide refactor** is the exception: one mechanical change (rename a column, retype a shared symbol) whose blast radius breaks call sites across the codebase at once, so no vertical slice lands green. Sequence it expand–contract:
 
-If you have not already explored the codebase, do so to understand the current state of the code. Ticket titles and descriptions should use the project's domain glossary vocabulary, and respect ADRs in the area you're touching.
+1. An expand ticket adds the new form beside the old.
+2. Migrate tickets, each blocked by the expand and sized by blast radius (per package or directory), move the call sites over while the old form keeps CI green.
+3. A contract ticket, blocked by every migrate ticket, deletes the old form.
 
-Look for opportunities to prefactor the code to make the implementation easier. "Make the change easy, then make the easy change."
+If even the migrate batches can't stay green alone, they share an integration branch and all block a final integrate-and-verify ticket, the only one that promises green.
 
-### 3. Draft vertical slices
+## Approve
 
-Break the work into **tracer bullet** tickets.
+Present the breakdown as a numbered list: title, blocked by, and the end-to-end behaviour each ticket delivers. Ask whether the granularity is right, whether each edge is a real gate, and what to merge or split. Iterate until the user approves.
 
-<vertical-slice-rules>
+## Publish
 
-- Each slice cuts a narrow but COMPLETE path through every layer (schema, API, UI, tests): vertical, NOT a horizontal slice of one layer
-- A completed slice is demoable or verifiable on its own
-- Each slice is sized to fit in a single fresh context window
-- Any prefactoring should be done first
+Render the approved tickets as one complete batch, every ticket's title, body, labels and blockers in dependency order (blockers first), and have the user review it before any issue is created. Publish it following `docs/agents/issue-tracker.md` for approval, markers, resume, creation and relationship wiring rather than improvising tracker commands. Don't close or edit a parent issue; linking the tickets to it is the only change it gets.
 
-</vertical-slice-rules>
+- **Real tracker** (GitHub, Linear, …): one issue per ticket in the issue template, linked by the platform's native blocking and sub-issue relationships where it has them, otherwise by the "Blocked by" section. Label each `ready-for-agent` unless told otherwise; the tickets are agent-grabbable by construction.
+- **Local files**, when the repo configures them instead: one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order, in the local template; never one combined file.
 
-Give each ticket its **blocking edges**: the other tickets that must complete before it can start. A ticket with no blockers can start immediately.
-
-**Wide refactors are the exception to vertical slicing.** A **wide refactor** is one mechanical change (rename a column, retype a shared symbol) whose **blast radius** fans across the whole codebase, so a single edit breaks thousands of call sites at once and no vertical slice can land green. Don't force it into a tracer bullet; sequence it as **expand–contract**. First expand: add the new form beside the old so nothing breaks. Then migrate the call sites over in batches sized by blast radius (per package, per directory), each batch its own ticket blocked by the expand, keeping CI green batch to batch because the old form still exists. Finally contract: delete the old form once no caller remains, in a ticket blocked by every migrate batch. When even the batches can't stay green alone, keep the sequence but let them share an integration branch that all block a final integrate-and-verify ticket; green is promised only there.
-
-### 4. Quiz the user
-
-Present the proposed breakdown as a numbered list. For each ticket, show:
-
-- **Title**: short descriptive name
-- **Blocked by**: which other tickets (if any) must complete first
-- **What it delivers**: the end-to-end behaviour this ticket makes work
-
-Ask the user:
-
-- Does the granularity feel right? (too coarse / too fine)
-- Are the blocking edges correct: does each ticket only depend on tickets that genuinely gate it?
-- Should any tickets be merged or split further?
-
-Iterate until the user approves the breakdown.
-
-### 5. Publish the tickets to the configured tracker
-
-Render one complete publication batch containing every approved ticket's title,
-body, labels, blockers, and dependency order. Review this batch before issue
-creation.
-
-Publish the approved tickets. GitHub Issues is the default real tracker.
-`docs/agents/issue-tracker.md` defines its approval boundary, deterministic
-markers, resume search, creation commands, confirmed-URL recording, and
-relationship wiring. Follow that contract rather than improvising tracker
-commands. A repository-configured alternative tracker may replace it; the
-tickets stay the same and only the tracker operations change:
-
-- **Local files** → write one file per ticket under `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order (blockers first). Each file's "Blocked by" lists the numbers/titles it depends on. Use the per-ticket file template below: one ticket per file, never a single combined file.
-- **A real issue tracker (GitHub, Linear, …)** → publish one issue per ticket in dependency order (blockers first) so each ticket's blocking edges can reference real identifiers. Use the platform's native blocking / sub-issue relationship where it has one; otherwise set each ticket's "Blocked by" to the blocking issues. Apply the `ready-for-agent` triage label unless instructed otherwise; the tickets are agent-grabbable by construction.
-
-Work the **frontier**: any ticket whose blockers are all done. For a purely linear chain that means top to bottom.
-
-Do NOT close or modify any parent issue.
-
-<local-ticket-template>
-
-# <NN>: <Ticket title>
-
-**What to build:** the end-to-end behaviour this ticket makes work, from the user's perspective, not a layer-by-layer implementation list.
-
-**Blocked by:** the numbers/titles of the tickets that gate this one, or "None (can start immediately)".
-
-**Status:** ready-for-agent
-
-- [ ] Acceptance criterion 1
-- [ ] Acceptance criterion 2
-
-</local-ticket-template>
+Leave file paths and code snippets out of tickets; they go stale. The exception is a prototype snippet (state machine, reducer, schema, type shape) that states a decision more precisely than prose: inline only its decision-rich part and say it came from a prototype.
 
 <issue-template>
 
 ## Parent
 
-A reference to the parent issue on the tracker (if the source was an existing issue, otherwise omit this section).
+A reference to the parent issue, when the source was one; otherwise omit this section.
 
 ## What to build
 
-The end-to-end behaviour this ticket makes work, from the user's perspective, not layer-by-layer implementation.
+The end-to-end behaviour this ticket makes work, from the user's perspective, not a layer-by-layer implementation list.
 
 ## Acceptance criteria
 
@@ -113,4 +61,17 @@ The end-to-end behaviour this ticket makes work, from the user's perspective, no
 
 </issue-template>
 
-In either form, avoid specific file paths or code snippets: they go stale fast. Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it and note briefly that it came from a prototype. Trim to the decision-rich parts, not a working demo, just the important bits.
+<local-ticket-template>
+
+# <NN>: <Ticket title>
+
+**What to build:** the end-to-end behaviour this ticket makes work, from the user's perspective.
+
+**Blocked by:** the numbers and titles of the gating tickets, or "None (can start immediately)".
+
+**Status:** ready-for-agent
+
+- [ ] Acceptance criterion 1
+- [ ] Acceptance criterion 2
+
+</local-ticket-template>
