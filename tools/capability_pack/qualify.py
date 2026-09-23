@@ -59,7 +59,7 @@ class PortRequiredError(QualificationError):
     ) -> None:
         names = ", ".join(name for name, _ in skills)
         super().__init__(
-            f"upstream changed under tuned skill(s) {names} ({old_commit[:12]}..{new_commit[:12]}): "
+            f"upstream changed under tuned skill(s) {names} ({old_commit}..{new_commit}): "
             f"port or decline each delta and record it in {INTAKE_LEDGER}"
         )
         self.repository = repository

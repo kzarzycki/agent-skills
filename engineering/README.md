@@ -65,14 +65,14 @@ mise run vendor-engineering
 
 A tuned skill keeps only what a strong model would not do unprompted (the
 contract is in `CLAUDE.md`), so its text drifts too far from upstream for a
-textual patch to survive. The refresh still syncs upstream and records its raw
+textual patch to survive. The intake still syncs upstream and records its raw
 hashes in `provenance.yml`. When upstream changes a tuned skill,
 `mise run vendor-engineering` stops with exit 5 and saves each delta, commit
 subjects then diff, to `artifacts/engineering-deltas/deltas/<skill>.diff`. The
 maintenance routine ports the intent or declines it and records the decision in
 `upstream-intake.yml`. A row counts only for the commit the lock moves to, so the
-next upstream change to a tuned skill stops the refresh again. An upstream
-deletion of a tuned skill fails the refresh outright.
+next upstream change to a tuned skill stops the intake again. An upstream
+deletion of a tuned skill fails the intake outright.
 
 ### Upstream beta skills
 
@@ -85,7 +85,7 @@ without warning, so treat them as beta.
 
 `upstream.yml` carries `substitutions`: literal find/replace rules applied
 across the imported inventory. Use one for a rename that upstream rewording
-would otherwise keep breaking. A rule that matches nothing fails the refresh,
+would otherwise keep breaking. A rule that matches nothing fails the intake,
 so a literal disappearing upstream stays visible.
 
 Do not edit generated files directly. Before committing package changes,
@@ -98,7 +98,7 @@ mise run test-engineering-package
 
 ## Maintenance routine
 
-An agent keeps the package current, following [ROUTINE.md](ROUTINE.md) on a
+An agent keeps the package current by running [ROUTINE.md](ROUTINE.md) on a
 schedule:
 
 - It pulls upstream `main`, ports or declines each change to a tuned skill, and
@@ -113,13 +113,20 @@ schedule:
   the reviewer still objects after two revisions. The licence case always needs
   a person.
 
-Any agent host can run it. Point it at this repository with the prompt "Run the
-maintenance routine in `engineering/ROUTINE.md`." It needs `mise`, plus `git` and
-`gh` credentials that can push branches and tags and merge PRs here. A tag pushed
-with GitHub Actions' own `GITHUB_TOKEN` starts no workflow, so the tag check needs
-a user or App credential.
+To schedule it, point an agent host at this repository with the prompt "Run the
+maintenance routine in `engineering/ROUTINE.md`." The host needs:
 
-Consumer sync uses the GitHub App credentials in the protected
+- `mise`, with network access to the GitHub release assets it installs (`vendir`,
+  `apm`);
+- `git` and `gh` credentials that can push branches and tags, merge PRs and open
+  issues here.
+
+A tag pushed with GitHub Actions' own `GITHUB_TOKEN` starts no workflow, so the tag
+check needs a user or App credential. A claude.ai cloud routine's GitHub proxy is
+documented as allowing pushes only to the session's working branch, so a tag push
+may be refused there. One manual run that pushes a throwaway tag settles it.
+
+Consumer sync uses the GitHub App credentials in the
 `engineering-updater-publish` environment (`UPDATER_APP_ID`,
 `UPDATER_APP_PRIVATE_KEY`). The App is installed only on this repository, with
 metadata read, contents write and pull requests write.

@@ -43,8 +43,8 @@ raw upstream hashes, so an upstream change under a tuned skill stays visible
 though its text no longer ships. When one changes, `mise run vendor-engineering`
 exits 5 and saves each delta to `artifacts/engineering-deltas/deltas/<skill>.diff`.
 Port or decline it and record the decision in `upstream-intake.yml` against the
-commit the lock moves to. [ROUTINE.md](ROUTINE.md) is the full procedure; a
-scheduled agent runs it, and a manual intake follows it too.
+commit the lock moves to. [ROUTINE.md](ROUTINE.md) is the full procedure, meant to
+run on a schedule; a manual intake follows it too.
 
 ## Checks
 
