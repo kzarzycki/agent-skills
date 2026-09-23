@@ -29,6 +29,5 @@ workflow/workflow
 # APM dependencies
 apm_modules/
 
-# Ephemeral upstream-refresh evidence (uploaded by CI, never committed)
-artifacts/engineering-refresh/
+# Upstream deltas the capability-pack CLI saves when a port is required (never committed)
 artifacts/engineering-deltas/

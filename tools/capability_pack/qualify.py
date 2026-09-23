@@ -509,11 +509,16 @@ def _apply_patches(stage: Path, repository_root: Path) -> None:
             raise PatchError(value, str(error)) from error
 
 
-def _next_version(version: str, magnitude: str) -> str:
+def _semver(version: str) -> tuple[int, int, int]:
     match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version)
     if not match:
         raise ConfigurationError(f"package version is not SemVer: {version}")
     major, minor, patch = (int(value) for value in match.groups())
+    return major, minor, patch
+
+
+def _next_version(version: str, magnitude: str) -> str:
+    major, minor, patch = _semver(version)
     if magnitude == "major":
         return f"{major + 1}.0.0"
     if magnitude == "minor":
@@ -542,7 +547,25 @@ def _version_magnitude(previous: Provenance, source_tag: str | None, added: tupl
     return "patch"
 
 
-def _update_package_version(stage: Path, magnitude: str) -> str | None:
+def _released_version(package: Path) -> str | None:
+    """The newest `<package>-vX.Y.Z` tag in the repository, if any."""
+    try:
+        tags = subprocess.run(
+            ["git", "tag", "--list", f"{package.name}-v*"],
+            cwd=package,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        ).stdout.split()
+    except OSError, subprocess.SubprocessError:
+        return None
+    pattern = re.compile(rf"{re.escape(package.name)}-v(\d+)\.(\d+)\.(\d+)")
+    versions = [tuple(map(int, m.groups())) for tag in tags if (m := pattern.fullmatch(tag))]
+    return ".".join(map(str, max(versions))) if versions else None
+
+
+def _update_package_version(stage: Path, magnitude: str, released: str | None) -> str | None:
     apm_path = stage / "apm.yml"
     plugin_path = stage / ".claude-plugin" / "plugin.json"
     if not apm_path.exists() and not plugin_path.exists():
@@ -551,7 +574,12 @@ def _update_package_version(stage: Path, magnitude: str) -> str | None:
     plugin = _mapping(json.loads(plugin_path.read_text()), "plugin.json")
     if apm.get("version") != plugin.get("version"):
         raise ConfigurationError("package manifest versions disagree")
-    proposed = _next_version(str(apm["version"]), magnitude)
+    # Bump from the last release, not the working tree, so reruns before a release
+    # (port, review, rerun) bump once; keep a version already bumped further.
+    current = str(apm["version"])
+    proposed = _next_version(released or current, magnitude)
+    if released and _semver(current) > _semver(proposed):
+        proposed = current
     apm["version"] = proposed
     plugin["version"] = proposed
     apm_path.write_text(yaml.safe_dump(apm, sort_keys=False))
@@ -1117,7 +1145,7 @@ def qualify(
         ).exists()
         if mode == "update" and content_changed and has_versioned_metadata:
             proposed_version = _update_package_version(
-                staged, _version_magnitude(previous, source_tag, added)
+                staged, _version_magnitude(previous, source_tag, added), _released_version(package)
             )
         test_command, test_result = _run_package_tests(staged)
         summary = render_summary(

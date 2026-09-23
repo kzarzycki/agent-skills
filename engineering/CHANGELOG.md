@@ -15,6 +15,13 @@
   the refresh with its delta saved until a port or decline is recorded in
   `upstream-intake.yml`. The first intake ports upstream `c55ee46` (Merge
   Danger template in `pr`).
+- An agent routine (`ROUTINE.md`) now maintains the package on a schedule:
+  it ports upstream, has a fresh-context reviewer check the ports, merges its
+  own PR and tags the release. It replaces the scheduled deterministic refresh,
+  which followed upstream stable tags (none since `v1.2.3`) and could not port;
+  that workflow and its publication tooling are deleted.
+- Version bumps count from the last `engineering-v*` tag, so a port, review and
+  rerun loop bumps once per release.
 - `upstream-intake.yml` is validated on every check, and the package-test
   hang guard is 300 s (the APM install tests take about 110 s).
 - Refreshed upstream from `74ca5fe` to `c55ee46` (`v1.2.3-54-gc55ee46`).

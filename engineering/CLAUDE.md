@@ -19,28 +19,32 @@ Never hand-edit a generated path. Change an overlay at its source, an untuned
 imported skill through a substitution or by tuning it, then run
 `mise run vendor-engineering`.
 
-## Tuned skills and upstream intake
+## Tuning contract
 
-Tuned skills are rewritten for current models: only what a strong model would
-not do unprompted, no pressure language, delegation left to judgment. vendir
-still syncs mattpocock/skills at the lock and `provenance.yml` keeps the raw
-upstream hashes, so an upstream change under a tuned skill stays visible even
-though its text no longer ships.
+A tuned skill carries only what a strong current model would not do unprompted.
 
-When the lock moves and upstream changed under a tuned skill, `mise run
-vendor-engineering` exits 5 and the scheduled refresh blocks with
-`port_required`. Each pending skill's delta (upstream commit subjects, then the
-diff) lands in `artifacts/engineering-deltas/deltas/<skill>.diff`, or in the
-refresh run's artifact. For each delta, port its intent into the overlay in the
-tuned style, or decline it when it restates what the model already does or
-contradicts a tuning decision. Then add a row to `upstream-intake.yml` keyed to the commit the lock moves to
-(the one the local stop message names) and rerun. Port locally: the scheduled
-refresh rejects overlay edits.
-Before the PR, a fresh reviewer checks every delta against the overlay diff and
-its ledger row.
+- Keep: output formats and templates, gates and stop conditions, safety rules
+  (what never gets published, sent or deleted, and what waits for the user),
+  exact commands and paths, cross-references to other skills, frontmatter
+  (`name`, `description`, `disable-model-invocation`, credits).
+- Cut: generic engineering advice, pressure language (CRITICAL, MUST, NEVER in
+  capitals), step-by-step choreography for things the model sequences well,
+  verification scaffolding, repetition.
+- Delegation (subagents, parallel work) is the model's judgment, not a
+  requirement.
+- Stay harness-neutral (no tool names of one agent) and tracker-neutral
+  (`docs/agents/issue-tracker.md` configures the tracker).
+- Give every "never" or "must" its reason in the same sentence.
 
-A new upstream skill ships as imported until someone tunes it: copy it to
-`overlays/skills/<name>/`, rewrite it, and add its `owned_overlays` entry.
+## Upstream intake
+
+vendir still syncs mattpocock/skills at the lock and `provenance.yml` keeps the
+raw upstream hashes, so an upstream change under a tuned skill stays visible
+though its text no longer ships. When one changes, `mise run vendor-engineering`
+exits 5 and saves each delta to `artifacts/engineering-deltas/deltas/<skill>.diff`.
+Port or decline it and record the decision in `upstream-intake.yml` against the
+commit the lock moves to. [ROUTINE.md](ROUTINE.md) is the full procedure; a
+scheduled agent runs it, and a manual intake follows it too.
 
 ## Checks
 

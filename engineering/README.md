@@ -63,19 +63,16 @@ mise run vendor-engineering
 
 ### Tuned skills and upstream intake
 
-A tuned skill keeps only what a strong model would not do unprompted, so its
-text diverges too far from upstream for a textual patch to survive. The
-refresh still syncs upstream and records its raw hashes in `provenance.yml`.
-When upstream changes a tuned skill, the refresh stops (exit 5 locally,
-`port_required` in the scheduled run) and saves each delta, commit subjects
-then diff, to `artifacts/engineering-deltas/deltas/<skill>.diff`. Port the
-intent into the overlay or decline it, record the decision in
-`upstream-intake.yml`, and rerun. A row counts only for the commit the lock
-moves to, so the next upstream change to a tuned skill stops the refresh again.
-Port locally: the scheduled refresh rejects overlay edits and reports a
-stable-tag commit, while `mise run vendor-engineering` moves to upstream `main`
-and names the commit to record. An upstream deletion of a tuned skill still
-fails the refresh.
+A tuned skill keeps only what a strong model would not do unprompted (the
+contract is in `CLAUDE.md`), so its text drifts too far from upstream for a
+textual patch to survive. The refresh still syncs upstream and records its raw
+hashes in `provenance.yml`. When upstream changes a tuned skill,
+`mise run vendor-engineering` stops with exit 5 and saves each delta, commit
+subjects then diff, to `artifacts/engineering-deltas/deltas/<skill>.diff`. The
+maintenance routine ports the intent or declines it and records the decision in
+`upstream-intake.yml`. A row counts only for the commit the lock moves to, so the
+next upstream change to a tuned skill stops the refresh again. An upstream
+deletion of a tuned skill fails the refresh outright.
 
 ### Upstream beta skills
 
@@ -99,39 +96,30 @@ mise run vendor-engineering-check
 mise run test-engineering-package
 ```
 
-## Autonomous upstream intake
+## Maintenance routine
 
-`Engineering upstream refresh` selects the highest canonical stable upstream
-tag and accepts it only when its peeled commit is a forward move from the lock.
-The lock is an untagged upstream `main` snapshot past `v1.2.3`, so provenance
-records `v1.2.3` as the stable version baseline until the first tagged refresh.
-Every run uploads `result.json` and `summary.md`. Qualification and smoke modes
-are nonpublishing. A blocked run updates one issue identified by
-`engineering-upstream-refresh:blocked`.
+An agent keeps the package current, following [ROUTINE.md](ROUTINE.md) on a
+schedule:
 
-Publishing uses only the GitHub App credentials in the protected
-`engineering-updater-publish` environment. Configure `UPDATER_APP_ID` and
-`UPDATER_APP_PRIVATE_KEY` for an App installed only on this repository with
-metadata read, contents write, and pull requests write. Missing credentials
-produce a blocked result; the workflow never falls back to `GITHUB_TOKEN` or a
-PAT for branch or PR writes.
+- It pulls upstream `main`, ports or declines each change to a tuned skill, and
+  tunes any new upstream skill.
+- A reviewer with a fresh context checks every port before anything lands.
+- It merges its own PR once the required `qualify` check passes, then tags
+  `engineering-vX.Y.Z`. The tag check re-qualifies the release, and the
+  consumer-sync workflow opens a PR bumping this repository's own APM ref, which
+  the next run merges.
+- It stops and opens an `engineering-routine:blocked` issue instead of landing
+  when upstream removes a skill, the upstream licence changes, the gates fail, or
+  the reviewer still objects after two revisions. The licence case always needs
+  a person.
 
-Rollout order:
+Any agent host can run it. Point it at this repository with the prompt "Run the
+maintenance routine in `engineering/ROUTINE.md`." It needs `mise`, plus `git` and
+`gh` credentials that can push branches and tags and merge PRs here. A tag pushed
+with GitHub Actions' own `GITHUB_TOKEN` starts no workflow, so the tag check needs
+a user or App credential.
 
-1. Leave `ENGINEERING_UPDATER_SCHEDULE_ENABLED` unset or `false`.
-2. Run `smoke-fixture`, then the default `qualify` dispatch and retain their
-   artifacts.
-3. Protect `main`, disable Actions review approval, install the scoped App, and
-   run `publish-smoke` with confirmation `PUBLISH-SMOKE`.
-4. Verify its draft triggers normal CI and cannot merge or push `main`; close
-   the canary manually.
-5. Run `publish`, then set the schedule variable to `true`.
-
-Rollback starts by setting that variable to `false`, then removing the publish
-environment secrets and revoking the App installation. Qualification and
-evidence reporting remain usable.
-
-After a human creates an `engineering-vX.Y.Z` tag and its checks pass, the tag
-workflow proposes an exact root APM ref, runs refresh/frozen convergence, and
-checks Codex inventory. The consumer PR retains the final local checklist;
-automation never tags, merges, approves, or changes a maintainer workstation.
+Consumer sync uses the GitHub App credentials in the protected
+`engineering-updater-publish` environment (`UPDATER_APP_ID`,
+`UPDATER_APP_PRIVATE_KEY`). The App is installed only on this repository, with
+metadata read, contents write and pull requests write.

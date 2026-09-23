@@ -15,6 +15,7 @@ from tools.capability_pack.qualify import (
     ConfigurationError,
     LicenseDriftError,
     QualificationError,
+    _update_package_version,
     _version_magnitude,
     qualify,
 )
@@ -49,6 +50,28 @@ def test_untagged_candidate_takes_magnitude_from_the_inventory_delta() -> None:
     previous = _versioned_provenance(stable_baseline_tag="v1.2.3")
     assert _version_magnitude(previous, None, ()) == "patch"
     assert _version_magnitude(previous, None, ("new-skill",)) == "minor"
+
+
+@pytest.mark.parametrize(
+    ("current", "released", "magnitude", "expected"),
+    [
+        ("0.5.0", "0.5.0", "patch", "0.5.1"),  # first bump after a release
+        ("0.5.1", "0.5.0", "patch", "0.5.1"),  # rerun before the release: no second bump
+        ("0.5.1", "0.5.0", "minor", "0.6.0"),  # a later rerun needing more still gets it
+        ("0.6.0", "0.5.0", "patch", "0.6.0"),  # never lowers a version already bumped further
+        ("0.5.0", None, "patch", "0.5.1"),  # no release tags: bump from the tree
+    ],
+)
+def test_version_bumps_once_per_release(
+    tmp_path: Path, current: str, released: str | None, magnitude: str, expected: str
+) -> None:
+    """Catch port-review-rerun loops skipping versions between releases."""
+    (tmp_path / ".claude-plugin").mkdir()
+    (tmp_path / "apm.yml").write_text(f"version: {current}\n")
+    (tmp_path / ".claude-plugin" / "plugin.json").write_text(f'{{"version": "{current}"}}')
+
+    assert _update_package_version(tmp_path, magnitude, released) == expected
+    assert yaml.safe_load((tmp_path / "apm.yml").read_text())["version"] == expected
 
 
 def _add_leaf(package: Path, destination: str, source: str) -> None:
