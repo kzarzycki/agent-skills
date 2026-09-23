@@ -98,33 +98,33 @@ mise run test-engineering-package
 
 ## Maintenance routine
 
-An agent keeps the package current by running [ROUTINE.md](ROUTINE.md) on a
-schedule:
+[ROUTINE.md](ROUTINE.md) keeps the package current when an agent host runs it on a
+schedule. No schedule is configured yet. Each run:
 
 - It pulls upstream `main`, ports or declines each change to a tuned skill, and
   tunes any new upstream skill.
 - A reviewer with a fresh context checks every port before anything lands.
-- It merges its own PR once the required `qualify` check passes, then tags
-  `engineering-vX.Y.Z`. The tag check re-qualifies the release, and the
+- It merges its own PR once the required `qualify` check passes and, when a shipped
+  skill changed, tags `engineering-vX.Y.Z`. The tag check re-qualifies the release, and the
   consumer-sync workflow opens a PR bumping this repository's own APM ref, which
   the next run merges.
 - It stops and opens an `engineering-routine:blocked` issue instead of landing
   when upstream removes a skill, the upstream licence changes, the gates fail, or
-  the reviewer still objects after two revisions. The licence case always needs
-  a person.
+  the reviewer still objects after two revisions. Later runs stop until a person
+  closes that issue.
 
 To schedule it, point an agent host at this repository with the prompt "Run the
 maintenance routine in `engineering/ROUTINE.md`." The host needs:
 
-- `mise`, with network access to the GitHub release assets it installs (`vendir`,
-  `apm`);
+- `mise`, with network access to the tools it installs (Python, Node, uv, `vendir`,
+  `apm`) and to PyPI;
 - `git` and `gh` credentials that can push branches and tags, merge PRs and open
   issues here.
 
 A tag pushed with GitHub Actions' own `GITHUB_TOKEN` starts no workflow, so the tag
-check needs a user or App credential. A claude.ai cloud routine's GitHub proxy is
-documented as allowing pushes only to the session's working branch, so a tag push
-may be refused there. One manual run that pushes a throwaway tag settles it.
+check needs a user or App credential. A claude.ai cloud session's GitHub proxy may
+allow pushes only to the session's working branch, which would refuse the tag push.
+One manual run that pushes a throwaway tag settles it.
 
 Consumer sync uses the GitHub App credentials in the
 `engineering-updater-publish` environment (`UPDATER_APP_ID`,

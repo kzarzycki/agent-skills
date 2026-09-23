@@ -13,18 +13,21 @@ merge its PRs and open issues. A tag pushed with GitHub Actions' own
 
 In order, and start nothing new while any of these is open:
 
+- **Blocked:** an open `engineering-routine:blocked` issue means a person has to
+  act. Stop; closing the issue resumes the routine.
 - **Unreleased version on main:** if `engineering/apm.yml` on `origin/main` is newer
-  than the newest `engineering-v*` tag, tag the commit that set it (step 7.3).
-- **Failed tag check:** if the newest tag's `Engineering tag check` run failed
-  (`gh run list --workflow engineering-tag-check.yml`), you're blocked.
+  than the newest `engineering-v*` tag, tag the commit that set it
+  (`git log -1 --format=%H -G'^version:' origin/main -- engineering/apm.yml`) as in
+  step 7.3, and stop.
+- **Tag check:** the newest tag's `Engineering tag check` run
+  (`gh run list --workflow engineering-tag-check.yml`) still running means stop until
+  the next run; failed, or missing for a tag older than an hour, means blocked.
 - **Open consumer sync:** if the `automation/engineering-consumer-sync` PR (the tag
   check's bump of this repository's own APM ref) is open, bring it up to date with
   main, wait for its checks, mark it ready and squash-merge it. Its checklist commands
   already ran in its CI.
-- **Open routine PR:** if a PR from an `engineering-upstream/*` branch is open, carry it
-  on from step 4 (fix it if its checks fail), then land it. To see its deltas again,
-  diff the old and new lock commits (`vendir.lock.yml` on main and on the branch) in a
-  clone of upstream, under each skill's source path.
+- **Open routine PR:** if a PR from an `engineering-upstream/*` branch is open, check it
+  out and carry it on from step 4.
 
 ## 2. Intake
 
@@ -38,8 +41,8 @@ exit code:
     `overlays/skills/<skill>/` in the tuned style.
   - Decline instead when the change only restates what the model already does, or
     contradicts a tuning decision.
-  - Record each decision in `upstream-intake.yml`: the full commit the stop message
-    names, and a one-line note on what you took or why not.
+  - Record each decision in `upstream-intake.yml`: the new commit (the second in the
+    stop message's `old..new`), and a one-line note on what you took or why not.
   - Rerun until it exits 0.
 - **An added skill in the summary** ships untuned. Tune it:
   - copy it to `overlays/skills/<name>/` and rewrite it;
@@ -55,21 +58,14 @@ through this step again.
 
 ## 3. Branch
 
-Create the branch `engineering-upstream/<new upstream short sha>` and commit
-everything, new files included. From here on, every fix is a commit, and every fix to
-an overlay is followed by a rerun of `mise run vendor-engineering`.
-
-If nothing under `engineering/skills/` changed against `origin/main` (every delta was
-declined, or upstream only touched files outside the package):
-
-- restore `engineering/apm.yml`, `engineering/.claude-plugin/plugin.json` and
-  `engineering/tests/consumer/apm.yml` from `origin/main`;
-- land the lock, provenance and ledger in step 7 without a version, CHANGELOG entry
-  or tag.
+Create the branch `engineering-upstream/<new upstream short sha>` (the name stays if
+the lock moves later), commit everything, new files included, and push it. From here
+on, every change is a commit that is pushed. A change to an overlay is followed by a
+rerun of `mise run vendor-engineering`, and the rerun's output is committed too.
 
 ## 4. Gates
 
-These all exit 0 on the committed branch: `mise run vendor-engineering-check`,
+With a clean `git status`, these all exit 0: `mise run vendor-engineering-check`,
 `mise run test`, `mise run test-engineering-package`, and
 `git diff --check origin/main...HEAD`.
 
@@ -78,7 +74,10 @@ These all exit 0 on the committed branch: `mise run vendor-engineering-check`,
 A reviewer with a fresh context that did not write the ports (a subagent or a
 separate session) gets:
 
-- the deltas;
+- the deltas for the whole range: in a clone of upstream, `git diff <old>..<new> --
+  <source_path>` for each tuned skill, with `old` and `new` the `source_commit` in
+  `engineering/provenance.yml` on main and on the branch, and `source_path` from its
+  `source_mappings`;
 - `git diff origin/main...HEAD -- engineering/`;
 - CLAUDE.md.
 
@@ -89,28 +88,31 @@ NEEDS REVISION, with file:line findings.
 For each fix: commit it, rerun the intake, rerun the gates, then have the reviewer
 review again. If it still isn't PASS after two revisions, you're blocked.
 
-## 6. Release notes
+## 6. Release or not
 
-Write these after the last rerun, so they describe the final range:
+Decide after the last rerun, from `git diff --quiet origin/main -- engineering/skills/`:
 
-- **Version:** the tool already set it, one bump past the newest `engineering-v*` tag
-  (minor when a skill was added).
-- **CHANGELOG:** give that version a `CHANGELOG.md` entry, or extend its entry if one
-  exists. Include:
-  - the upstream range;
-  - each ported or declined delta, in one line;
-  - any newly tuned skill.
+- **Skills changed:** a release. The tool already set the version, one bump past the
+  newest `engineering-v*` tag (minor when a skill was added). Give that version a
+  `CHANGELOG.md` entry, or extend its entry if one exists, with the upstream range,
+  each ported or declined delta in one line, and any newly tuned skill.
+- **Skills unchanged** (every delta declined, or upstream touched only files outside
+  the package): no release. Restore `engineering/apm.yml`,
+  `engineering/.claude-plugin/plugin.json` and `engineering/tests/consumer/apm.yml`
+  from `origin/main`.
+
+Commit, push and rerun the gates.
 
 ## 7. Land and tag
 
-1. Push the branch and open a PR. The body holds:
+1. Open the PR. The body holds:
    - the upstream range;
    - each delta's commit subjects and the decision taken;
    - the reviewer's verdict;
    - the gate exit codes.
 2. When the required `qualify` check passes, run `gh pr merge --squash --delete-branch`.
-   If main moved, update the branch and wait again. Never use `--admin`, and never
-   push to main.
+   If it fails, fix, commit and go back to step 4. If main moved, update the branch and
+   wait again. Never use `--admin`, and never push to main.
 3. For a release, tag the merge commit and push the tag:
    `git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.
    The tag check re-qualifies the release and opens the consumer-sync PR, which step 1
@@ -118,11 +120,11 @@ Write these after the last rerun, so they describe the final range:
 
 ## Blocked
 
-Open or update one issue labelled `engineering-routine:blocked`, creating the label
-if it's missing. Include:
+Push the branch if there is one, then open or update one issue labelled
+`engineering-routine:blocked`, creating the label if it's missing. Include:
 
 - what stopped the run;
 - the command output;
-- the upstream range.
+- the upstream range and the branch.
 
-Merge and tag nothing. The next run starts again at step 1.
+Merge and tag nothing. Every later run stops at step 1 until a person closes the issue.
