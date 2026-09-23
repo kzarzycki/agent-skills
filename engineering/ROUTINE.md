@@ -4,9 +4,10 @@ Unattended, on a schedule: bring upstream `mattpocock/skills` changes into the
 tuned package, release them as `engineering-vX.Y.Z`, and land everything without
 a human. The tuning contract is in [CLAUDE.md](CLAUDE.md); read it first.
 
-Setup: `git fetch origin --tags`, `mise install`, `uv sync --frozen`. The
-credentials must be able to push branches and tags to `kzarzycki/agent-skills`,
-merge its PRs and open issues. A tag pushed with GitHub Actions' own
+Setup: `git fetch origin --tags`, then `uv sync --frozen`. The tools in `mise.toml`
+must be on `PATH` at their pinned versions; run `mise install` only for those missing
+(a host setup script may provide them). The credentials must be able to push
+branches and tags to `kzarzycki/agent-skills`, merge its PRs and open issues. A tag pushed with GitHub Actions' own
 `GITHUB_TOKEN` starts no workflow, so push with a user or App credential.
 
 ## 1. Finish earlier work
