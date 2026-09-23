@@ -1,35 +1,18 @@
 ---
 name: implement-spec
-description: "Implement a specification in code."
+description: "Implement a spec and its tickets as one PR on a single branch, working the ticket graph's frontier concurrently."
 disable-model-invocation: true
 ---
 
-You have been provided a spec. This spec should have tickets associated with it, describing how to implement the spec.
+# Implement Spec
 
-The goal is a PR which implements the entire spec on a single branch.
+Deliver one PR, on one branch, that implements the whole spec. The spec's tickets are a **task graph** of blocking edges, not a list of steps: every ticket whose blockers are done is on the **frontier** and can start.
 
-The tickets are not a list of steps. They are a **task graph** with blocking relationships between them. This means there is always a **frontier** of tickets which are ready to be grabbed.
+1. Read the spec and enough of the tickets to see the graph.
+2. Create the branch and a draft PR that closes the spec issue and every ticket.
+3. Work the frontier. Hand tickets that can run in parallel, or would flood your context, to background implementers, each in its own worktree on its own branch; do a small ticket yourself when that is quicker. Exploration the tickets need (code or external docs) can go to a helper that writes markdown notes to a directory outside the repo, where every later implementer can read them.
+4. Merge each finished branch into the PR branch (conflicts per the `resolving-merge-conflicts` skill), then start whatever the merge put on the frontier.
+5. When every ticket is merged, run the `code-review` skill on the PR branch against its base and fix every finding, in one implementer pass or yourself.
+6. Mark the PR ready for review, with its body per the `pr` skill, and remove the implementer worktrees.
 
-Communication to and from subagents should be sparse. Communicate primarily through **context pointers**: to the spec, tickets, research notes, and previous commits. Don't duplicate information already available via pointers.
-
-**Implementer subagents** should be run in the background where possible for **maximum concurrency**.
-
-## Steps
-
-1. Read the spec and tickets. Read enough to understand the task graph.
-
-2. (optional) Use an **exploration subagent** to conduct any exploration required by the tickets - relevant codebase files or external documentation. Ensure the exploration subagent can save files - it should save its markdown notes in a directory outside the repo, accessible by all future subagents. This lets **implementer subagents** focus on implementation rather than exploration.
-
-3. Create a branch, and a draft PR. The PR should be marked as 'closing' the spec issue and tickets.
-
-4. Use **implementer subagents** to implement each ticket. Each implementer subagent should work in its own worktree, on its own branch.
-
-5. Once an **implementer subagent** completes, merge its work to the PR branch with a **merger subagent**.
-
-6. If this changes the **frontier** of available tickets, kick off more **implementer subagents** to work on the new tickets. This allows for maximum concurrency.
-
-7. Once all tickets are complete, run /code-review on the PR branch. Fix all issues raised by the code review in a single **implementer subagent**.
-
-8. Mark the PR as ready for review.
-
-9. Clean up all **implementer subagent** worktrees.
+Brief helpers with **context pointers** (the spec, the ticket, research notes, earlier commits) rather than copies of what those already say, and keep messages to and from them short.

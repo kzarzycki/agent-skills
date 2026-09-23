@@ -1,28 +1,26 @@
 ---
 name: grilling
-description: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.
+description: Interview the user in rounds of questions until every decision in a plan, design, or idea is settled. Use when the user wants to stress-test their thinking or uses a "grill" phrase such as "grill me".
 ---
 
-Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
+Interview the user until you share one understanding of every decision the idea contains. Treat it as a design tree: each decision branches into the decisions that hang off it.
 
-Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round: number each question and give your recommended answer. Then wait for the user's answers before the next round.
-
-Format a round like so:
+Work in rounds. Each round, ask the whole frontier (every question whose prerequisites are settled), numbered, each with your recommended answer:
 
 ```
-❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+❓ **Q1** - **<question title>**: <question body, possibly several paragraphs, with its options>
 
 ➡️ <your recommended answer>
 
 ---
 
-❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
+❓ **Q2** - **<question title>**: <question body>
 
 ➡️ <your recommended answer>
 ```
 
-Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
+Then wait for the answers, recompute the frontier, and ask the next round. A question that depends on another one still open this round waits for a later round.
 
-Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Don't block on it: a running exploration is an unsettled prerequisite, so only the questions downstream of it wait for the sub-agent to report; ask the rest of the frontier now. The _decisions_ are the user's: put each to them and wait.
+Facts are yours to find, never the user's; decisions are the user's. Look facts up in the code, docs and tools while you ask the rest of the frontier (hand a lookup to a background agent when it would flood your context), and hold back only the questions that depend on it.
 
-The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.
+The session ends when the frontier is empty and nothing is silently assumed. Act on it only after the user confirms the shared understanding.

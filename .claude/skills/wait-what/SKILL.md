@@ -1,6 +1,6 @@
 ---
 name: wait-what
-description: "Stop. That last message did not land: re-pitch it."
+description: "Re-pitch a message that did not land: add the missing context, in Simplified Technical English and the repo's CONTEXT.md vocabulary."
 disable-model-invocation: true
 ---
 

@@ -1,7 +1,7 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repository live in GitHub Issues. Run `gh` commands
-inside the repository so the CLI infers the remote.
+Issues and PRDs for this repository live in GitHub Issues. Run `gh` commands inside the
+repository so the CLI infers the remote.
 
 ## Operations
 
@@ -12,106 +12,80 @@ inside the repository so the CLI infers the remote.
 - Label: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`
 - Close: `gh issue close <number> --comment "..."`
 
+Pull requests are not a triage request surface unless this file says otherwise.
+
 ## Publish an issue batch
 
-Treat every set of issues produced by an engineering skill as one publication
-batch. Issue titles are unique identities inside the draft. Stop on duplicate
-titles, unknown blockers, or a dependency cycle.
+Every set of issues an engineering skill produces is one publication batch. It is
+fingerprinted and resumable so that an interrupted run neither duplicates nor loses an
+issue.
 
 ### Canonical batch
 
-Build one deterministic total order:
+- Titles are the issues' identities inside the batch. Stop on a duplicate title, an
+  unknown blocker or a dependency cycle.
+- Order: repeatedly take, among the tickets whose blockers are all already ordered, the
+  one with the smallest exact UTF-8 title bytes; number them from 1 as `order`.
+- Sort and deduplicate each issue's labels by exact UTF-8 bytes and its blockers by
+  their `order`. Preserve titles and bodies byte-for-byte.
+- Serialize the array of issues, in `order`, as UTF-8 JSON with only `title`, `body`,
+  `labels`, `blockers` and `order`: object keys sorted, Unicode characters emitted
+  directly, comma and colon separators without surrounding whitespace. The lowercase
+  hexadecimal SHA-256 of those bytes is `batch_sha256`.
+- Append each issue's marker to its body after a blank line:
+  `<!-- agent-skills-batch:{batch_sha256}:ticket:{ordinal} -->`
 
-1. Start with tickets whose blockers are absent from the remaining set.
-2. Select the ready ticket with the lexicographically smallest exact UTF-8
-   title bytes.
-3. Remove it and repeat.
-4. Assign one-based `order` values from that result.
+### Durable state
 
-Sort and deduplicate each issue's labels by exact UTF-8 bytes. Sort and
-deduplicate blockers by their final ticket order. Preserve titles and bodies
-byte-for-byte. Serialize an array of issues as UTF-8 JSON with only `title`,
-`body`, `labels`, `blockers`, and `order`; sort object keys, emit Unicode
-characters directly, use comma and colon separators without surrounding
-whitespace, and preserve the array order. The lowercase hexadecimal SHA-256 of
-those bytes is `batch_sha256`.
+Store the approved batch at
+`.scratch/agent-skills/github-issue-batches/{batch_sha256}.json` with `version`,
+`batch_sha256`, `approved`, the complete canonical issue array (each issue also holding
+its marker, marked body, and resolved URL or `null`), and a `relationships` array
+recording each edge's blocked order, blocker order, and `pending` or `confirmed` status.
 
-Append the corresponding stable marker to each body:
-
-```markdown
-<!-- agent-skills-batch:{batch_sha256}:ticket:{ordinal} -->
-```
-
-### Durable publication state
-
-Store the exact approved batch at:
-
-```text
-.scratch/agent-skills/github-issue-batches/{batch_sha256}.json
-```
-
-The JSON state contains `version`, `batch_sha256`, `approved`, and the complete
-canonical issue array. Each issue also records its marker, marked body, and
-resolved URL or `null`. A `relationships` array records the blocked order,
-blocker order, and `pending` or `confirmed` status for every edge.
-
-Write state atomically after every transition: create a sibling temporary file,
-flush and `fsync` it, replace the destination atomically, then `fsync` the
-parent directory. A partially written file is never valid resume state. Stop
-when an existing state file is malformed, its fingerprint differs, or its
-canonical batch differs from the current batch.
+Write state atomically after every transition: sibling temporary file, flush and
+`fsync`, atomic replace, `fsync` of the parent directory. A partially written file is
+never valid resume state. Stop when an existing state file is malformed, or its
+fingerprint or canonical batch differs from the current batch.
 
 ### First publication
 
-Before asking for approval:
-
 1. Search every marker across all issue states with
-   `gh issue list --state all --search "<marker>" --json url,body`.
-2. Confirm the exact marker in each returned body. Record one matching URL in
-   the proposed state. Stop before approval when multiple issues contain one
-   marker, and report every matching URL.
-3. Render one numbered review containing every issue's order, title, complete
-   marked body, labels, and blockers.
-4. Show the exact remaining write plan: each missing issue creation followed
-   by each pending relationship edit.
-
-When the remaining plan contains external writes, ask exactly: “Create these
-GitHub Issues now?” Rejection, an edit request, or absent approval creates no
-durable approval and performs no external write. A changed title, body, label,
-blocker, or derived order produces a different fingerprint and requires this
-complete reconciliation, preview, and approval flow.
-
-After approval, atomically persist the exact batch with `approved: true`.
-Proceed directly to the first mutating `gh` command; perform no intervening
-remote read. The local atomic approval-state write is the only operation
-between consent and the external-write boundary.
+   `gh issue list --state all --search "<marker>" --json url,body`, and count only
+   bodies that contain the exact marker. Record a single match's URL in the proposed
+   state. When several issues contain one marker, stop before approval and report every
+   matching URL.
+2. Render one numbered review with every issue's order, title, complete marked body,
+   labels and blockers, then the exact remaining write plan: each missing issue
+   creation followed by each pending relationship edit.
+3. When the plan contains external writes, ask exactly:
+   “Create these GitHub Issues now?”
+   Rejection, an edit request or no answer records no approval and writes nothing. A changed title, body, label, blocker or derived order is a new fingerprint
+   and starts this flow over.
+4. After approval, atomically persist the exact batch with `approved: true`, then run
+   the first mutating `gh` command with no remote read in between.
 
 ### Create and resume
 
-For an exact-batch resume, load its approved state and retain the recorded
-approval. Search every marker across all issue states before the next external
-write. Reconcile each unique match into state and atomically persist the
-result. This recovers an issue that GitHub created when the command response or
-the following state write was lost.
+A run on an exact, already approved batch keeps its recorded approval. Before the next
+external write, search every marker again, reconcile each unique match into state and
+persist it; this recovers an issue GitHub created when the command response or the
+following state write was lost.
 
-Create only issues whose reconciled URL remains `null`, in canonical order.
-Pass the approved title, marked body, and labels unchanged to
-`gh issue create`. Atomically record and immediately print each returned URL.
-On any command failure or interruption, stop with the current durable state;
-the next run repeats reconciliation and does not request approval for the same
-fingerprint.
+- Create only issues whose URL is still `null`, in canonical order, passing the
+  approved title, marked body and labels unchanged to `gh issue create`. Persist and
+  print each returned URL immediately.
+- On any command failure or interruption, stop with the current durable state; the next
+  run reconciles again and does not ask for approval of the same fingerprint.
+- Once every issue has a URL, add the native sub-issue and blocking relationships in
+  canonical edge order with an idempotent add, so replaying a pending edge yields the
+  same graph. Mark an edge `confirmed` only after its command succeeds. Where native
+  relationships are unavailable, make an idempotent body update with the confirmed
+  `Part of` and `Blocked by` URLs.
 
-After every issue has a URL, add native sub-issue and blocking relationships in
-canonical edge order. Use an idempotent add operation so replaying a pending
-edge has the same graph result. Atomically mark each edge `confirmed` only
-after the command succeeds. When native relationships are unavailable, use an
-idempotent body update with the confirmed `Part of` and `Blocked by` URLs.
-
-Approval authorizes only the displayed missing issue creations and relationship
-edits for this fingerprint. Closing, commenting on, relabeling, assigning, or
-editing unrelated issues requires separate authority.
-
-Pull requests are not a triage request surface unless this file says otherwise.
+Approval covers only the displayed missing issue creations and relationship edits for
+this fingerprint. Closing, commenting on, relabeling, assigning or editing unrelated
+issues needs separate authority.
 
 <!-- github-issue-batch-fixture-protocol
 version: 2
