@@ -919,7 +919,7 @@ def _run_package_tests(stage: Path) -> tuple[str, str]:
             cwd=stage,
             env=env,
             check=True,
-            timeout=600,
+            timeout=300,
         )
     except (OSError, subprocess.SubprocessError) as error:
         raise QualificationError(f"non-live package tests failed: {error}") from error

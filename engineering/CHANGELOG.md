@@ -16,7 +16,7 @@
   `upstream-intake.yml`. The first intake ports upstream `c55ee46` (Merge
   Danger template in `pr`).
 - `upstream-intake.yml` is validated on every check, and the package-test
-  hang guard is 600 s (the APM install tests take about 110 s).
+  hang guard is 300 s (the APM install tests take about 110 s).
 - Refreshed upstream from `74ca5fe` to `c55ee46` (`v1.2.3-54-gc55ee46`).
 - Behaviour changes: `to-spec` publishes through the tracker document's issue-batch rules;
   `code-review` diffs against the merge-base and includes uncommitted and

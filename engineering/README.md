@@ -71,11 +71,11 @@ When upstream changes a tuned skill, the refresh stops (exit 5 locally,
 then diff, to `artifacts/engineering-deltas/deltas/<skill>.diff`. Port the
 intent into the overlay or decline it, record the decision in
 `upstream-intake.yml`, and rerun. A row counts only for the commit the lock
-moves to, so the next upstream change stops the refresh again. Port locally: the
-scheduled refresh rejects overlay edits and reports a stable-tag commit, while
-`mise run vendor-engineering` moves to upstream `main` and names the commit to
-record. An upstream
-deletion of a tuned skill still fails the refresh.
+moves to, so the next upstream change to a tuned skill stops the refresh again.
+Port locally: the scheduled refresh rejects overlay edits and reports a
+stable-tag commit, while `mise run vendor-engineering` moves to upstream `main`
+and names the commit to record. An upstream deletion of a tuned skill still
+fails the refresh.
 
 ### Upstream beta skills
 

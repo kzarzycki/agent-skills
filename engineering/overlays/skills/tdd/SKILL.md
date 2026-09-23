@@ -9,7 +9,7 @@ Build in red-green cycles that leave tests worth keeping. Read `CONTEXT.md`, whe
 
 ## Seams
 
-A seam is the public boundary a test observes behaviour through. Before writing any test, list the seams under test and confirm them with the user; seams already agreed in the spec count. Write no test at an unconfirmed seam: agreeing them up front puts the testing effort on critical paths and complex logic instead of every edge case.
+A seam is where a module's interface lives, the place a test observes behaviour through. Before writing any test, list the seams under test and confirm them with the user; seams already agreed in the spec count. Write no test at an unconfirmed seam: agreeing them up front puts the testing effort on critical paths and complex logic instead of every edge case.
 
 When the shape of the interface is itself in question (how deep the module is, where the seam belongs, what it exposes), consult the `codebase-design` skill for its vocabulary; it is a reference, not a session to run.
 
