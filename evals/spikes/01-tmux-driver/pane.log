@@ -575,14 +575,10 @@
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ✢ Tomfoolering…
 
@@ -637,14 +633,10 @@
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ✢ Tomfoolering…
 
@@ -699,14 +691,10 @@
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ✻ Tomfoolering… (4s · ↓ 41 tokens)
 
@@ -761,14 +749,10 @@
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ☐ Color
 
@@ -823,14 +807,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
  ☐ Color
 
@@ -885,14 +865,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
@@ -947,14 +923,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
@@ -1009,14 +981,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
@@ -1071,14 +1039,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
@@ -1133,14 +1097,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
@@ -1195,14 +1155,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
@@ -1257,14 +1213,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
@@ -1319,14 +1271,10 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Use the AskUserQuestion tool to ask me exactly one question: which color do I prefer, options Red and Blue.
   After I answer, write only the chosen color to answer.txt in the current directory, then end your turn. Do
   nothing else.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which color do you prefer? → Blue
