@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 - 2026-09-29
+
+- `code-review` hands each reviewer this skill's path and its section instead
+  of a paraphrased brief, which had dropped the smell baseline and report rules.
+- The tuning contract says the same for any skill that prescribes a subagent's
+  brief.
+
 ## 0.6.0 - 2026-09-23
 
 - Tuned all 26 imported skills, the setup overlay and the owned skills

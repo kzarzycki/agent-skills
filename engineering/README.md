@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.6.0
+      ref: ^0.6.1
 ```
 
 Then run:
@@ -28,7 +28,7 @@ the same inventory to `.agents/skills/`. Those paths are generated; edit the
 package sources: tuned skills under `engineering/overlays/skills/`, owned skills
 under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.6.0`. APM resolves
+The independently versioned release tag is `engineering-v0.6.1`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 

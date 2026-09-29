@@ -31,7 +31,9 @@ A tuned skill carries only what a strong current model would not do unprompted.
   capitals), step-by-step choreography for things the model sequences well,
   verification scaffolding, repetition.
 - Delegation (subagents, parallel work) is the model's judgment, not a
-  requirement.
+  requirement. A skill that does prescribe a subagent's brief hands it the
+  skill's path and the sections to follow, since a paraphrase drops the
+  formats and gates.
 - Stay harness-neutral (no tool names of one agent) and tracker-neutral
   (`docs/agents/issue-tracker.md` configures the tracker).
 - Give every "never" or "must" its reason in the same sentence.
