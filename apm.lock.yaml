@@ -1,13 +1,13 @@
 lockfile_version: '1'
-generated_at: '2026-09-29T13:27:45.136609+00:00'
+generated_at: '2026-09-29T14:12:46.736237+00:00'
 apm_version: 0.30.0
 dependencies:
 - repo_url: kzarzycki/agent-skills
   name: engineering
   host: github.com
-  resolved_commit: f8294f877a01416deb1f986d5d45aa5b59e32fac
-  resolved_ref: engineering-v0.6.0
-  version: 0.6.0
+  resolved_commit: 2e08f1839c896d5ff41cda9eaac569f90470357a
+  resolved_ref: engineering-v0.6.1
+  version: 0.6.1
   virtual_path: engineering
   is_virtual: true
   package_type: marketplace_plugin
@@ -236,7 +236,7 @@ dependencies:
     .agents/skills/audit-third-party-software/scripts/extract_strings_urls.py: sha256:ea86c2ea8f28a8765c14ccb199ed29468abe457d5ebadb295f63b5d018cb553f
     .agents/skills/claude-handoff/SKILL.md: sha256:463b028e1e3c61b516d61773f00c6b7f32369b68740f8bbc4181e42e0e12d350
     .agents/skills/claude-handoff/agents/openai.yaml: sha256:2308a672978864633286fb9f0792b08657e501426b3f7883fc418d5d2eac5eb0
-    .agents/skills/code-review/SKILL.md: sha256:e3e8700dd4c0d16f8e2abd6d2d74ae940c18e76bce4066f097155695cb358763
+    .agents/skills/code-review/SKILL.md: sha256:b440a519902a91087693687cbaf3070f5225c50bd63f7bdf690d72a0dd455659
     .agents/skills/code-review/agents/openai.yaml: sha256:8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352
     .agents/skills/codebase-design/DESIGN-IT-TWICE.md: sha256:6a4d610ed59323eafe87e2f63a67a0597730ba9a03764b23343b81d5741882a2
     .agents/skills/codebase-design/SKILL.md: sha256:8a06080df412d4576f57d35f606d67fd3d82340d086e6a29d475ab45d8624e66
@@ -313,7 +313,7 @@ dependencies:
     .claude/skills/audit-third-party-software/scripts/extract_strings_urls.py: sha256:ea86c2ea8f28a8765c14ccb199ed29468abe457d5ebadb295f63b5d018cb553f
     .claude/skills/claude-handoff/SKILL.md: sha256:463b028e1e3c61b516d61773f00c6b7f32369b68740f8bbc4181e42e0e12d350
     .claude/skills/claude-handoff/agents/openai.yaml: sha256:2308a672978864633286fb9f0792b08657e501426b3f7883fc418d5d2eac5eb0
-    .claude/skills/code-review/SKILL.md: sha256:e3e8700dd4c0d16f8e2abd6d2d74ae940c18e76bce4066f097155695cb358763
+    .claude/skills/code-review/SKILL.md: sha256:b440a519902a91087693687cbaf3070f5225c50bd63f7bdf690d72a0dd455659
     .claude/skills/code-review/agents/openai.yaml: sha256:8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352
     .claude/skills/codebase-design/DESIGN-IT-TWICE.md: sha256:6a4d610ed59323eafe87e2f63a67a0597730ba9a03764b23343b81d5741882a2
     .claude/skills/codebase-design/SKILL.md: sha256:8a06080df412d4576f57d35f606d67fd3d82340d086e6a29d475ab45d8624e66
@@ -381,7 +381,7 @@ dependencies:
     .claude/skills/wizard/SKILL.md: sha256:c5ca7bf563b13697800b84b205d1ff14c4da6c3f8ea51d4cdc5e22b3cded0383
     .claude/skills/wizard/agents/openai.yaml: sha256:98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
     .claude/skills/wizard/template.sh: sha256:33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153
-  content_hash: sha256:5f4cec21ea6ed241d2aecc56abf5728d7fedeb0c58300ef62aabfa859133547f
+  content_hash: sha256:fd5eba03016cb7501d157f1d50655845cce6cd576223cf2cff06b4ca82c930e5
 deployments:
 - kind: project-relative
   target: claude
@@ -517,7 +517,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/engineering
   active_owner: kzarzycki/agent-skills/engineering
-  content_hash: sha256:e3e8700dd4c0d16f8e2abd6d2d74ae940c18e76bce4066f097155695cb358763
+  content_hash: sha256:b440a519902a91087693687cbaf3070f5225c50bd63f7bdf690d72a0dd455659
 - kind: project-relative
   target: claude
   value: .claude/skills/code-review/agents/openai.yaml
@@ -1480,7 +1480,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/engineering
   active_owner: kzarzycki/agent-skills/engineering
-  content_hash: sha256:e3e8700dd4c0d16f8e2abd6d2d74ae940c18e76bce4066f097155695cb358763
+  content_hash: sha256:b440a519902a91087693687cbaf3070f5225c50bd63f7bdf690d72a0dd455659
 - kind: project-relative
   target: codex
   value: .agents/skills/code-review/agents/openai.yaml
