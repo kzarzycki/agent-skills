@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2 - 2026-09-30
+
+- `to-spec` writes the spec into the issue the conversation started from, under
+  the original text quoted in full, instead of filing a second issue. The
+  project's `docs/agents/issue-tracker.md` can send it to a comment where an
+  issue's body is not the skill's to rewrite. With no issue it files one, as before.
+
 ## 0.6.1 - 2026-09-29
 
 - `code-review` hands each reviewer this skill's path and its section instead
