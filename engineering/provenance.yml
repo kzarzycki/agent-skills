@@ -197,7 +197,7 @@ owned_overlays:
   sha256: 5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f
   mode: '100644'
 - path: overlays/skills/to-spec/SKILL.md
-  sha256: 472929ae2274b63a3019d9632973ece05b55d06f7ffa5eb2938c38a96c273eb4
+  sha256: 539f139f8caa483a686199f8ae540b870b37a519bfb560d16da7d03932377d51
   mode: '100644'
 - path: overlays/skills/to-spec/agents/openai.yaml
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
@@ -720,7 +720,7 @@ output_files:
   sha256: 5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f
   mode: '100644'
 - path: skills/to-spec/SKILL.md
-  sha256: 472929ae2274b63a3019d9632973ece05b55d06f7ffa5eb2938c38a96c273eb4
+  sha256: 539f139f8caa483a686199f8ae540b870b37a519bfb560d16da7d03932377d51
   mode: '100644'
 - path: skills/to-spec/agents/openai.yaml
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
