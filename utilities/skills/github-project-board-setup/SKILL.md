@@ -40,6 +40,8 @@ move_on_board() {   # $1=issue number  $2=Status column name; adds the issue whe
 }
 ```
 
+When setting a field through `gh api graphql` instead, pass ids with `-f`: an option id can be all digits, and `-F` then sends a number that the API refuses (`Variable $option of type String! was provided invalid value`).
+
 `item-add` returns the existing item id when the issue is already on the board, so it is safe to call even with an auto-add workflow configured. Without that workflow it is required.
 
 ## Add a story to an epic
@@ -85,7 +87,7 @@ Move the ticket at the same step that changes its state label or opens its PR, s
 
 Park: the project's waiting-for-a-human label + its column for that, and state on the issue which decision you're waiting for.
 
-Close-out: closing the issue moves it to Done via the built-in workflow — don't hand-set Status. Epic sub-issue progress rolls up automatically. Record the outcome on the issue (what shipped, what's still unproven), not in a doc.
+Close-out: closing the issue moves it to `Done` only where the board's "Item closed" workflow is on (check `workflows{nodes{name enabled}}`; it is off on a board created through the API). Where it is off, set `Done` at the step that closes the issue. Epic sub-issue progress rolls up automatically. Record the outcome on the issue (what shipped, what's still unproven), not in a doc.
 
 ## Rules
 

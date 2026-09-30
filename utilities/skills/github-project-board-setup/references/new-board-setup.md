@@ -15,13 +15,14 @@ Read only when the repo has no board yet. Day-2 work (adding milestones, epics, 
 
 ```bash
 gh api -X PATCH repos/OWNER/REPO -F has_projects=true -q '.has_projects'   # must print true
-NUM=$(gh project create --owner OWNER --title REPO --format json | jq -r .number)
-gh project link "$NUM" --owner OWNER --repo OWNER/REPO
+gh api graphql -f query='mutation($o:ID!,$r:ID!){createProjectV2(input:{ownerId:$o,title:"REPO",repositoryId:$r}){projectV2{number id public}}}' \
+  -f o="$(gh api graphql -f query='{viewer{id}}' -q .data.viewer.id)" -f r="$(gh api repos/OWNER/REPO -q .node_id)" -q .data.createProjectV2.projectV2
 gh repo view OWNER/REPO --json projectsV2 -q '.projectsV2.Nodes[]|[.number,.title]|@tsv'   # must list it
-gh project edit "$NUM" --owner OWNER --visibility PRIVATE \   # the repo's visibility: a public board leaks a private repo's titles
-  --description "Engineering board: milestones, epics and stories for REPO" \
-  --readme "$(cat board-readme.md)"     # --readme takes a string; there is no --readme-file
+gh api graphql -f query='mutation($p:ID!,$d:String!){updateProjectV2(input:{projectId:$p,shortDescription:$d}){projectV2{public}}}' \
+  -f p="$PID" -f d="Engineering board: the tickets of REPO in their loop stage"
 ```
+
+`repositoryId` links the board to the repo in the same call, and a new board is private: keep it so for a private repo, because a public board shows its issue titles (`public:true` in `updateProjectV2` opens it). `gh project create` and `gh project edit` fail on gh 2.87.0 with `Variable $query is used by CreateProjectV2 but not declared`, hence the API calls; on a gh where they work, `gh project create --owner OWNER --title REPO`, `gh project link` and `gh project edit --visibility … --description … --readme "$(cat board-readme.md)"` do the same (`--readme` takes a string; there is no `--readme-file`). The token needs the `project` scope (`gh auth refresh -s project`); `read:project` lists boards and refuses every write with `INSUFFICIENT_SCOPES`.
 
 ### 2. Fields
 
@@ -40,7 +41,7 @@ gh api graphql -F query=@/tmp/q.graphql
 
 No other field is needed. A separate loop-position field (`Phase`) next to `Status` has to be updated in step with it and goes stale the first time one update is missed; a `Kind` field repeats the labels.
 
-Open question: whether the built-in "item closed → Done" workflow still points at `Done` after the options are replaced (the replace gives every option a new id). Close one test issue and check its column; if it did not move, re-select `Done` under Workflows in the web UI.
+A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off (`workflows{nodes{name enabled}}` on the project shows it; only "Auto-add sub-issues to project" is on), and the API cannot switch them on. Until someone enables "Item closed" in the web UI, nothing moves a closed issue to `Done`: the loop sets `Done` itself at the step that closes the issue.
 
 ### 3. Labels
 
@@ -108,7 +109,9 @@ Re-read `field-list` after any field mutation; option ids change.
 2. **Group table view by Parent issue** → hierarchy view with sub-issue progress bars.
 3. Optional **Roadmap view** with a date field.
 
-closed→Done is enabled by default.
+4. **Workflows → Item closed**, set Status to `Done`. It is on for a board created in the web UI and off for one created through the API.
+
+"Auto-add sub-issues to project" is on by default: adding a parent issue pulls in its sub-issues, closed ones included, with no Status. Give them a column in the same pass.
 
 ## Repo-side cleanup
 
