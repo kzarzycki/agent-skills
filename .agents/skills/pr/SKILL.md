@@ -9,7 +9,7 @@ metadata:
     url: "https://github.com/humanlayer/skills/blob/main/plugins/show-me/skills/show-me/SKILL.md"
 ---
 
-Write the PR body in this template, with no preamble, brief prose, and the domain language of `CONTEXT.md`:
+Write the PR body in this template, with no preamble, brief prose, and the domain language of `GLOSSARY.md`:
 
 ```markdown
 ## Summary

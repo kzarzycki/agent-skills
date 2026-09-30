@@ -10,7 +10,7 @@ Turn what the conversation and the codebase already establish into a spec. Don't
 
 `docs/agents/issue-tracker.md` configures the tracker, and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to run `/setup-engineering-workflow-for-apm`.
 
-1. Explore the code as far as the spec needs. Use the `CONTEXT.md` vocabulary and respect the ADRs in the area.
+1. Explore the code as far as the spec needs. Use the `GLOSSARY.md` vocabulary and respect the ADRs in the area.
 2. Choose the test seams: existing before new, as high as possible, as few as possible (one is ideal). Confirm them with the user.
 3. Write the spec in the template below and publish it to the tracker following `docs/agents/issue-tracker.md`, labelled `ready-for-agent`; it needs no further triage. When the conversation starts from an existing issue, the spec goes into that issue instead of a new one, so one piece of work stays one issue: its body becomes the spec under the original text quoted in full, unless `docs/agents/issue-tracker.md` says the body isn't yours to rewrite, in which case post the spec as a comment. With no existing issue, file a new one.
 

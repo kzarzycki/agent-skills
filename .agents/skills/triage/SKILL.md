@@ -44,10 +44,10 @@ When PRs are in scope, include external PRs (the tracker config defines external
 
 ## Triage one issue or PR
 
-1. **Gather.** Read the whole thing: body, comments, labels, author, dates, and the diff for a PR. If earlier triage notes exist, check which questions the reporter has since answered and never re-ask a resolved one. Explore the code in `CONTEXT.md` vocabulary, respecting the ADRs in the area, then check (a) redundancy: search for an existing implementation by domain concept, not the request's wording, and report where you looked; (b) prior rejection: read `.out-of-scope/*.md` and surface a match ([OUT-OF-SCOPE.md](OUT-OF-SCOPE.md)).
+1. **Gather.** Read the whole thing: body, comments, labels, author, dates, and the diff for a PR. If earlier triage notes exist, check which questions the reporter has since answered and never re-ask a resolved one. Explore the code in `GLOSSARY.md` vocabulary, respecting the ADRs in the area, then check (a) redundancy: search for an existing implementation by domain concept, not the request's wording, and report where you looked; (b) prior rejection: read `.out-of-scope/*.md` and surface a match ([OUT-OF-SCOPE.md](OUT-OF-SCOPE.md)).
 2. **Recommend** a category and state with your reasoning and a short summary of the relevant code, including whether it already exists. Wait for direction.
 3. **Verify the claim** before any grilling: reproduce a bug from the reporter's steps; check out a PR and run the relevant tests or commands. Report confirmed (with the code path), failed, or insufficient detail, which points to `needs-info`. A confirmed claim makes a much stronger brief.
-4. **Grill** only if the request needs fleshing out, with the `grilling` and `domain-modeling` skills, updating `CONTEXT.md` and ADRs as decisions land.
+4. **Grill** only if the request needs fleshing out, with the `grilling` and `domain-modeling` skills, updating `GLOSSARY.md` and ADRs as decisions land.
 5. **Apply the outcome.**
    - `ready-for-agent`: post an agent brief ([AGENT-BRIEF.md](AGENT-BRIEF.md)).
    - `ready-for-human`: the same brief structure, plus why it can't be delegated (judgment calls, external access, design decisions, manual testing).
