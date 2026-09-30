@@ -74,9 +74,13 @@ maintenance routine ports the intent or declines it and records the decision in
 next upstream change to a tuned skill stops the intake again. An upstream
 deletion of a tuned skill fails the intake outright.
 
+To retire a skill, remove its `vendir.yml` entry and, for a tuned one, its
+overlay directory and `owned_overlays` entry, then run the refresh: it prunes
+the generated leaf and proposes a minor version.
+
 ### Upstream beta skills
 
-`claude-handoff`, `implement-spec`, `loop-me`, and `retro` come from upstream's
+`claude-handoff` and `loop-me` come from upstream's
 `in-progress` bucket rather than `engineering`. Upstream excludes that bucket
 from its own plugin and reserves the right to change or delete those skills
 without warning, so treat them as beta.
