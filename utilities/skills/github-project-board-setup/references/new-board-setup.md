@@ -15,14 +15,17 @@ Read only when the repo has no board yet. Day-2 work (adding milestones, epics, 
 
 ```bash
 gh api -X PATCH repos/OWNER/REPO -F has_projects=true -q '.has_projects'   # must print true
-gh api graphql -f query='mutation($o:ID!,$r:ID!){createProjectV2(input:{ownerId:$o,title:"REPO",repositoryId:$r}){projectV2{number id public}}}' \
-  -f o="$(gh api graphql -f query='{viewer{id}}' -q .data.viewer.id)" -f r="$(gh api repos/OWNER/REPO -q .node_id)" -q .data.createProjectV2.projectV2
+OWNER_ID=$(gh api graphql -f query='query($l:String!){repositoryOwner(login:$l){id}}' -f l=OWNER -q .data.repositoryOwner.id)   # a user or an org
+REPO_ID=$(gh api repos/OWNER/REPO -q .node_id)
+read -r NUM PID < <(gh api graphql -f query='mutation($o:ID!,$r:ID!){createProjectV2(input:{ownerId:$o,title:"REPO",repositoryId:$r}){projectV2{number id}}}' \
+  -f o="$OWNER_ID" -f r="$REPO_ID" -q '.data.createProjectV2.projectV2|"\(.number) \(.id)"')
+[ -n "$PID" ] || { echo "create failed"; exit 1; }
 gh repo view OWNER/REPO --json projectsV2 -q '.projectsV2.Nodes[]|[.number,.title]|@tsv'   # must list it
-gh api graphql -f query='mutation($p:ID!,$d:String!){updateProjectV2(input:{projectId:$p,shortDescription:$d}){projectV2{public}}}' \
-  -f p="$PID" -f d="Engineering board: the tickets of REPO in their loop stage"
+gh api graphql -f query='mutation($p:ID!,$d:String!,$m:String!){updateProjectV2(input:{projectId:$p,shortDescription:$d,readme:$m}){projectV2{public}}}' \
+  -f p="$PID" -f d="Engineering board: the tickets of REPO in their loop stage" -f m="$(cat board-readme.md)"
 ```
 
-`repositoryId` links the board to the repo in the same call, and a new board is private: keep it so for a private repo, because a public board shows its issue titles (`public:true` in `updateProjectV2` opens it). `gh project create` and `gh project edit` fail on gh 2.87.0 with `Variable $query is used by CreateProjectV2 but not declared`, hence the API calls; on a gh where they work, `gh project create --owner OWNER --title REPO`, `gh project link` and `gh project edit --visibility … --description … --readme "$(cat board-readme.md)"` do the same (`--readme` takes a string; there is no `--readme-file`). The token needs the `project` scope (`gh auth refresh -s project`); `read:project` lists boards and refuses every write with `INSUFFICIENT_SCOPES`.
+`repositoryId` links the board to the repo in the same call. A new board is private; whether to open it (`public:true` in `updateProjectV2`) is the project's choice. Opening it does not expose a private repo's items: [GitHub's visibility docs](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-visibility-of-your-projects) keep each item visible only to people who can see its repo. `gh project create` and `gh project edit` fail on gh 2.87.0 with `Variable $query is used by CreateProjectV2 but not declared`, hence the API calls; on a gh where they work, `gh project create --owner OWNER --title REPO`, `gh project link` and `gh project edit --visibility … --description … --readme "$(cat board-readme.md)"` do the same (`--readme` takes a string; there is no `--readme-file`). The token needs the `project` scope (`gh auth refresh -s project`); `read:project` lists boards and refuses every write with `INSUFFICIENT_SCOPES`.
 
 ### 2. Fields
 
@@ -37,6 +40,9 @@ mutation{updateProjectV2Field(input:{fieldId:"$FID",singleSelectOptions:[
  {name:"Verify",color:ORANGE,description:""},{name:"Done",color:GREEN,description:""}]}){projectV2Field{... on ProjectV2SingleSelectField{options{id name}}}}}
 EOF
 gh api graphql -F query=@/tmp/q.graphql
+FIELDS=$(gh project field-list "$NUM" --owner OWNER --format json)   # re-read: the replace gave every option a new id
+STATUS_FIELD_ID=$(jq -r '.fields[]|select(.name=="Status").id' <<<"$FIELDS")
+FIRST_COLUMN_OPTION_ID=$(jq -r '.fields[]|select(.name=="Status").options[0].id' <<<"$FIELDS")
 ```
 
 No other field is needed. A separate loop-position field (`Phase`) next to `Status` has to be updated in step with it and goes stale the first time one update is missed; a `Kind` field repeats the labels.
@@ -87,7 +93,7 @@ gh api repos/OWNER/REPO/issues/125 -q .sub_issues_summary     # {"completed":0,"
 Dependencies from the roadmap's deps column:
 
 ```bash
-gh issue edit 135 --add-blocked-by 125
+gh api --method POST repos/OWNER/REPO/issues/135/dependencies/blocked_by -F issue_id="$(gh api repos/OWNER/REPO/issues/125 -q .id)"   # the blocker's REST id; gh 2.87.0 has no --add-blocked-by
 gh api repos/OWNER/REPO/issues/135/dependencies/blocked_by -q '.[]|.number'
 ```
 
@@ -95,7 +101,6 @@ gh api repos/OWNER/REPO/issues/135/dependencies/blocked_by -q '.[]|.number'
 
 ```bash
 ITEM=$(gh project item-add "$NUM" --owner OWNER --url https://github.com/OWNER/REPO/issues/125 --format json | jq -r .id)
-PID=$(gh project view "$NUM" --owner OWNER --format json | jq -r .id)
 gh project item-edit --project-id "$PID" --id "$ITEM" --field-id "$STATUS_FIELD_ID" --single-select-option-id "$FIRST_COLUMN_OPTION_ID"
 ```
 
@@ -103,7 +108,7 @@ Re-read `field-list` after any field mutation; option ids change.
 
 ### 7. Web-UI-only steps — report these, don't pretend they're done
 
-`gh` cannot configure Projects workflows or views:
+`gh` and the API cannot switch on a Projects workflow or set a view's grouping (`createProjectV2View` makes a view, not its grouping):
 
 1. **Workflows → Auto-add to project**, filter `is:issue is:open`. Without it only explicitly-added items appear.
 2. **Group table view by Parent issue** → hierarchy view with sub-issue progress bars.

@@ -63,7 +63,7 @@ Body follows the **Story** template in `references/templates.md` (Problem / Chan
 ```bash
 N=$(gh issue create --title "E18 — <scope> (M3)" --label type:epic \
       --milestone M3 --body-file /tmp/epic.md | grep -o '[0-9]*$') && [ -n "$N" ] || { echo "create failed"; exit 1; }
-gh issue edit "$N" --add-blocked-by "$PREREQ_EPIC"
+gh api --method POST repos/$OWNER/$REPO/issues/$N/dependencies/blocked_by -F issue_id="$(gh api repos/$OWNER/$REPO/issues/$PREREQ_EPIC -q .id)"
 move_on_board "$N" "$FIRST_COLUMN"
 ```
 
@@ -106,4 +106,4 @@ gh project view "$NUM" --owner "$OWNER" --format json | jq '.items.totalCount'
 gh api repos/$OWNER/$REPO/issues/$N/dependencies/blocked_by -q '.[]|.number'
 ```
 
-Projects **workflows and views are web-UI only** — auto-add, group-by-parent, roadmap view cannot be set from `gh`. Report them as manual steps; never claim they're configured.
+Projects **workflows and a view's grouping are web-UI only** — auto-add, item closed and group-by-parent cannot be set from `gh` or the API (`createProjectV2View` makes a view, not its grouping). Report them as manual steps; never claim they're configured.
