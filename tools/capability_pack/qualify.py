@@ -990,7 +990,24 @@ def qualify(
     _source_commit(package)
     original_managed = _managed_skills(config)
     overlay_names = tuple(destination.name for _, destination in _overlay_entries(package, policy))
-    owned = _owned_skills(package, tuple(sorted(set(original_managed) | set(overlay_names))))
+    try:
+        previous = load_provenance(package / "provenance.yml")
+    except FileNotFoundError:
+        previous = None
+    except (KeyError, TypeError, ValueError, yaml.YAMLError) as error:
+        raise QualificationError(f"invalid provenance: {error}") from error
+    # An imported skill whose vendir entry and overlay are both gone was retired by the
+    # maintainer: its leaf is pruned, where a configured leaf that vanishes is drift.
+    retired = tuple(
+        sorted(
+            set(previous.included_skills if previous else ())
+            - set(original_managed)
+            - set(overlay_names)
+        )
+    )
+    owned = _owned_skills(
+        package, tuple(sorted(set(original_managed) | set(overlay_names) | set(retired)))
+    )
     declared_owned = tuple(sorted(policy.get("owned_skills", ())))
     if policy and owned != declared_owned:
         undeclared = sorted(set(owned) - set(declared_owned))
@@ -1009,12 +1026,8 @@ def qualify(
     staged = temporary / package.name
     try:
         shutil.copytree(package, staged, symlinks=True)
-        try:
-            previous = load_provenance(package / "provenance.yml")
-        except FileNotFoundError:
-            previous = None
-        except (KeyError, TypeError, ValueError, yaml.YAMLError) as error:
-            raise QualificationError(f"invalid provenance: {error}") from error
+        for name in retired:
+            shutil.rmtree(staged / "skills" / name, ignore_errors=True)
         committed_config = config
         if mode == "update":
             committed_config, _ = _reconcile_inventory(
@@ -1049,6 +1062,7 @@ def qualify(
                 set(previous.included_skills if previous else ())
                 - set(inventory)
                 - (set(overlay_names) - set(managed))
+                - set(retired)
             )
         )
         if removed:
@@ -1145,7 +1159,9 @@ def qualify(
         ).exists()
         if mode == "update" and content_changed and has_versioned_metadata:
             proposed_version = _update_package_version(
-                staged, _version_magnitude(previous, source_tag, added), _released_version(package)
+                staged,
+                _version_magnitude(previous, source_tag, (*added, *retired)),
+                _released_version(package),
             )
         test_command, test_result = _run_package_tests(staged)
         summary = render_summary(
@@ -1160,6 +1176,7 @@ def qualify(
                 and _setup_contract_changed(previous, proposed)
             ),
             transitioned_to_owned=overlay_names,
+            retired=retired,
         )
         if mode == "update":
             if summary_path:
@@ -1177,7 +1194,7 @@ def qualify(
             changed=changed,
             source_commit=source_commit,
             added_skills=added,
-            removed_skills=removed,
+            removed_skills=retired,
             summary=summary,
             proposed_version=proposed_version,
             changed_skills=changed_skills,

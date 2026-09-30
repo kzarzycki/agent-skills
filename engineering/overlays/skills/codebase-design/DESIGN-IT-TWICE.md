@@ -1,6 +1,6 @@
 # Design It Twice
 
-The first interface idea is rarely the best (Ousterhout), so produce several radically different designs for the chosen candidate and compare them. Name things in the vocabulary of [SKILL.md](SKILL.md) and the project's `CONTEXT.md`.
+The first interface idea is rarely the best (Ousterhout), so produce several radically different designs for the chosen candidate and compare them. Name things in the vocabulary of [SKILL.md](SKILL.md) and the project's `GLOSSARY.md`.
 
 1. **Frame the problem** for the user: the constraints any new interface must meet, its dependencies and their category (SKILL.md, "Deepening a cluster"), and a rough code sketch that makes the constraints concrete, not a proposal. Show it and move straight on; the user reads while the designs are drafted.
 2. **Draft at least three designs**, each under a different constraint:

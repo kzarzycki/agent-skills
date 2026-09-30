@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.0 - 2026-09-30
+
+Upstream `mattpocock/skills` `c55ee46..d81f3a1` (release v1.3).
+
+- Removed `resolving-merge-conflicts`, as upstream did in `daa01d8`: nothing
+  replaces it, because the agent works through a merge or rebase conflict
+  without a dedicated skill. Drop any reference to `/resolving-merge-conflicts`
+  or the `resolving-merge-conflicts` skill from your own instructions.
+  `ask-matt` and `implement-spec` no longer name it.
+- The domain glossary is now `GLOSSARY.md`, and the multi-context map
+  `GLOSSARY-MAP.md`, in every skill that reads or writes it, and
+  `domain-modeling`'s format file is `GLOSSARY-FORMAT.md`. The skills no longer
+  look for `CONTEXT.md` or `CONTEXT-MAP.md`: `git mv` an existing one to the new name.
+- `implement-spec` (ported): the goal is one integration branch with every ticket
+  resolved the way the tracker closes work. A draft PR opens only when the
+  tracker closes work through PRs or the user asks, after the first merge. Each
+  implementer checks its worktree's base, builds with `tdd` and merges the
+  integration tip before reporting. Upstream's description wording is declined.
+- `ask-matt` (ported): `retro` closes the main flow, and `implement-spec` is
+  routed as landing on one integration branch.
+- `pr` (ported): the glossary rename. Upstream's reformatted component-tree
+  example and CREDITS rewording touch text the tuned skill had already condensed away.
+- `codebase-design`, `diagnosing-bugs`, `domain-modeling`,
+  `improve-codebase-architecture`, `tdd`, `triage`, `wait-what` (ported): the
+  glossary rename only. `grill-with-docs`, `to-spec`, `to-tickets` and the setup
+  skill take the same rename for consistency.
+- Upstream graduated `implement-spec`, `pr` and `retro` out of `in-progress/`;
+  the package now imports them from `skills/engineering/`.
+- A skill is retired by removing its `vendir.yml` entry and its overlay: the
+  refresh prunes the leaf and proposes a minor version. A configured leaf that
+  vanishes upstream still stops the refresh.
+
 ## 0.6.2 - 2026-09-30
 
 - `to-spec` writes the spec into the issue the conversation started from, under

@@ -50,8 +50,6 @@ owned_overlays:
     destination: skills/prototype
   - source: overlays/skills/research
     destination: skills/research
-  - source: overlays/skills/resolving-merge-conflicts
-    destination: skills/resolving-merge-conflicts
   - source: overlays/skills/retro
     destination: skills/retro
   - source: overlays/skills/tdd
@@ -74,9 +72,6 @@ aliases:
   grilling: skills/productivity/grilling
   claude-handoff: skills/in-progress/claude-handoff
   handoff: skills/productivity/handoff
-  implement-spec: skills/in-progress/implement-spec
   loop-me: skills/in-progress/loop-me
-  pr: skills/in-progress/pr
-  retro: skills/in-progress/retro
   teach: skills/productivity/teach
   wait-what: skills/productivity/wait-what

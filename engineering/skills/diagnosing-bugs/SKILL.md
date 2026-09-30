@@ -5,7 +5,7 @@ description: Diagnosis loop for hard bugs and performance regressions. Use when 
 
 # Diagnosing Bugs
 
-Work the phases in order; skip one only with a stated reason. Read `CONTEXT.md` and the ADRs for the area when they exist.
+Work the phases in order; skip one only with a stated reason. Read `GLOSSARY.md` and the ADRs for the area when they exist.
 
 Redact every secret in the commands, outputs and artifacts you show: write `<REDACTED>` in its place, pass credentials through environment variables so they never appear in the loop, and quote only the lines of a captured artifact that carry the signal, since artifacts carry auth headers. If the redacted output is not enough to diagnose, say so and ask the user.
 

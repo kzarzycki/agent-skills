@@ -177,6 +177,31 @@ def test_removed_upstream_skill_is_breaking_drift(
         qualify(package, "update")
 
 
+def test_leaf_dropped_from_the_manifest_is_retired(
+    package: Path, upstream: Path, fake_vendir: Path, tmp_path: Path
+) -> None:
+    """Catch a maintainer's retirement blocking as upstream drift or leaving its leaf behind."""
+    shutil.rmtree(upstream / "skills" / "engineering" / "alpha")
+    for name in ("vendir.yml", "vendir.lock.yml"):
+        config = yaml.safe_load((package / name).read_text())
+        config["directories"] = [
+            directory for directory in config["directories"] if directory["path"] != "skills/alpha"
+        ]
+        (package / name).write_text(yaml.safe_dump(config, sort_keys=False))
+    summary = tmp_path / "summary.md"
+
+    result = qualify(package, "update", summary)
+
+    assert result.removed_skills == ("alpha",)
+    assert not (package / "skills" / "alpha").exists()
+    assert (
+        "alpha" not in yaml.safe_load((package / "provenance.yml").read_text())["included_skills"]
+    )
+    assert "Retired skills: alpha" in summary.read_text()
+    assert "Proposed version: minor" in summary.read_text()
+    qualify(package, "locked")
+
+
 def test_refresh_reconciles_new_upstream_leaf_and_converges(
     package: Path,
     upstream: Path,

@@ -1,4 +1,4 @@
-# CONTEXT.md Format
+# GLOSSARY.md Format
 
 ```md
 # {Context Name}
@@ -21,17 +21,17 @@ _Avoid_: Client, buyer, account
 - Include only terms specific to this domain. General programming concepts (timeouts, error types, utility patterns) stay out even when the code uses them heavily.
 - Group terms under subheadings once natural clusters appear.
 
-## CONTEXT-MAP.md
+## GLOSSARY-MAP.md
 
 A multi-context repo has one at the root, listing the contexts, where they live, and how they relate:
 
 ```md
-# Context Map
+# Glossary Map
 
 ## Contexts
 
-- [Ordering](./src/ordering/CONTEXT.md): receives and tracks customer orders
-- [Billing](./src/billing/CONTEXT.md): generates invoices and processes payments
+- [Ordering](./src/ordering/GLOSSARY.md): receives and tracks customer orders
+- [Billing](./src/billing/GLOSSARY.md): generates invoices and processes payments
 
 ## Relationships
 
