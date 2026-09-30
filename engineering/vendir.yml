@@ -105,10 +105,10 @@ directories:
       url: https://github.com/mattpocock/skills.git
       ref: origin/main
     includePaths:
-    - skills/in-progress/implement-spec/**/*
+    - skills/engineering/implement-spec/**/*
     excludePaths: []
     legalPaths: []
-    newRootPath: skills/in-progress/implement-spec
+    newRootPath: skills/engineering/implement-spec
 - path: skills/improve-codebase-architecture
   contents:
   - path: .
@@ -136,10 +136,10 @@ directories:
       url: https://github.com/mattpocock/skills.git
       ref: origin/main
     includePaths:
-    - skills/in-progress/pr/**/*
+    - skills/engineering/pr/**/*
     excludePaths: []
     legalPaths: []
-    newRootPath: skills/in-progress/pr
+    newRootPath: skills/engineering/pr
 - path: skills/prototype
   contents:
   - path: .
@@ -158,15 +158,6 @@ directories:
     excludePaths: []
     legalPaths: []
     newRootPath: skills/engineering/research
-- path: skills/resolving-merge-conflicts
-  contents:
-  - path: .
-    git: *id001
-    includePaths:
-    - skills/engineering/resolving-merge-conflicts/**/*
-    excludePaths: []
-    legalPaths: []
-    newRootPath: skills/engineering/resolving-merge-conflicts
 - path: skills/retro
   contents:
   - path: .
@@ -174,10 +165,10 @@ directories:
       url: https://github.com/mattpocock/skills.git
       ref: origin/main
     includePaths:
-    - skills/in-progress/retro/**/*
+    - skills/engineering/retro/**/*
     excludePaths: []
     legalPaths: []
-    newRootPath: skills/in-progress/retro
+    newRootPath: skills/engineering/retro
 - path: skills/tdd
   contents:
   - path: .

@@ -7,3 +7,43 @@
   skill: pr
   decision: ported
   note: Merge Danger splits Door and a one-word Blast Radius onto their own lines, each with an optional paragraph
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: ask-matt
+  decision: ported
+  note: Routes implement-spec onto one integration branch, puts retro at the end of the main flow with its run-before-clearing note, drops resolving-merge-conflicts, and takes the GLOSSARY.md rename; the pr route was already there
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: codebase-design
+  decision: ported
+  note: CONTEXT.md is now GLOSSARY.md in the design-it-twice brief
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: diagnosing-bugs
+  decision: ported
+  note: CONTEXT.md is now GLOSSARY.md
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: domain-modeling
+  decision: ported
+  note: CONTEXT.md, CONTEXT-MAP.md and CONTEXT-FORMAT.md are now GLOSSARY.md, GLOSSARY-MAP.md and GLOSSARY-FORMAT.md
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: implement-spec
+  decision: ported
+  note: Goal is an integration branch resolved the way the tracker closes work, a draft PR only when the tracker or user wants one and after the first merge, the tracker pointer, and implementers that check their base, build with tdd and merge the integration tip before reporting; upstream's description wording is not taken, the tuned one says when to use it
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: improve-codebase-architecture
+  decision: ported
+  note: CONTEXT.md is now GLOSSARY.md
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: pr
+  decision: ported
+  note: CONTEXT.md is now GLOSSARY.md; the reformatted component-tree example and the CREDITS rewording touch text the tuned skill had already condensed away
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: tdd
+  decision: ported
+  note: CONTEXT.md is now GLOSSARY.md
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: triage
+  decision: ported
+  note: CONTEXT.md is now GLOSSARY.md
+- upstream: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
+  skill: wait-what
+  decision: ported
+  note: CONTEXT.md and CONTEXT-MAP.md are now GLOSSARY.md and GLOSSARY-MAP.md

@@ -11,13 +11,13 @@ Find architectural friction and propose deepening opportunities: refactors that 
 Speak two vocabularies exactly, in the report and in conversation:
 
 - Architecture terms come from the `codebase-design` skill: module, interface, implementation, depth, deep, shallow, seam, adapter, leverage, locality, and its principles (the deletion test, the interface as test surface, one adapter versus two). Never substitute component, service or unit for module; API or signature for interface; boundary for seam; layer or wrapper for module.
-- Domain names come from `CONTEXT.md`: if it defines "Order", write "the Order intake module", not "the FooBarHandler" or "the Order service".
+- Domain names come from `GLOSSARY.md`: if it defines "Order", write "the Order intake module", not "the FooBarHandler" or "the Order service".
 
 ADRs in `docs/adr/` record decisions not to re-litigate.
 
 ## 1. Explore
 
-Deepening pays off in future changes, so weight the parts of the codebase that change. Take the user's direction (a module, subsystem or pain point) if they gave one; otherwise walk back a good stretch of `git log` for the hot spots and look there first, widening the net only if the changes are scattered. Read `CONTEXT.md` and the area's ADRs before scanning. Hand the walk to a sub-agent when it would flood your context.
+Deepening pays off in future changes, so weight the parts of the codebase that change. Take the user's direction (a module, subsystem or pain point) if they gave one; otherwise walk back a good stretch of `git log` for the hot spots and look there first, widening the net only if the changes are scattered. Read `GLOSSARY.md` and the area's ADRs before scanning. Hand the walk to a sub-agent when it would flood your context.
 
 Look for friction rather than following a checklist: one concept that needs bouncing between many small modules, interfaces nearly as complex as their implementations, pure functions extracted for testability while the bugs hide in how they are called, coupling that leaks across seams, code that is untested or hard to test through its interface. Apply the deletion test to every suspect; a candidate is one where deleting would concentrate complexity, not just move it.
 
@@ -84,6 +84,6 @@ Style it editorial rather than dashboard: generous whitespace, optional `font-se
 
 Walk the chosen candidate's decision tree with the `grilling` skill: constraints, dependencies, the shape of the deepened module, what sits behind the seam, which tests survive. Keep the domain model current with the `domain-modeling` skill as decisions land:
 
-- A deepened module named after a concept missing from `CONTEXT.md`, or a fuzzy term sharpened in conversation: update `CONTEXT.md` there and then, creating it if needed.
+- A deepened module named after a concept missing from `GLOSSARY.md`, or a fuzzy term sharpened in conversation: update `GLOSSARY.md` there and then, creating it if needed.
 - The user rejects the candidate for a reason a future review would need: offer an ADR ("Want me to record this as an ADR so future architecture reviews don't re-suggest it?"). Skip ephemeral reasons ("not worth it right now") and self-evident ones.
 - Alternative interfaces for the deepened module: use the design-it-twice process in `codebase-design`.

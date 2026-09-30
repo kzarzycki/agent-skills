@@ -12,7 +12,7 @@ GitHub Issues is the default tracker; `docs/agents/issue-tracker.md` configures 
 
 ## Draft
 
-Work from the conversation. If the user passes a reference (spec path, issue number or URL), read its full body and comments. Explore the code as far as the slicing needs, use the `CONTEXT.md` vocabulary, and respect the ADRs in the area. Look for prefactoring that makes the change easy; it goes first.
+Work from the conversation. If the user passes a reference (spec path, issue number or URL), read its full body and comments. Explore the code as far as the slicing needs, use the `GLOSSARY.md` vocabulary, and respect the ADRs in the area. Look for prefactoring that makes the change easy; it goes first.
 
 - Each slice cuts a narrow but complete path through every layer (schema, API, UI, tests), never one layer on its own.
 - A finished slice is demoable or verifiable on its own.

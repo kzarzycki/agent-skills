@@ -2,218 +2,210 @@ apiVersion: vendir.k14s.io/v1alpha1
 directories:
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/ask-matt
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/claude-handoff
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/code-review
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/codebase-design
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/diagnosing-bugs
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/domain-modeling
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/grill-with-docs
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/grilling
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/handoff
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/implement
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/implement-spec
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/improve-codebase-architecture
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/loop-me
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/pr
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/prototype
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/research
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
-    path: .
-  path: skills/resolving-merge-conflicts
-- contents:
-  - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
-      tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/retro
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/tdd
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/teach
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/to-spec
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/to-tickets
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/triage
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/wait-what
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/wayfinder
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: skills/wizard
 - contents:
   - git:
-      commitTitle: Modified the PR body template to make it easier to scan
-      sha: c55ee46073ed923f86ce59a5eb3b6d895095d1b7
+      commitTitle: 'Merge pull request #1120 from mattpocock/release/v1.3...'
+      sha: d81f3a183412e71a5b1e84ca21bc1a35eea03a60
       tags:
-      - v1.2.3-54-gc55ee46
+      - v1.2.3-75-gd81f3a1
     path: .
   path: LICENSES/mattpocock-skills
 kind: LockConfig
