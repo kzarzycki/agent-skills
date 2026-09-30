@@ -18,7 +18,7 @@ them.
 The tracker defaults to GitHub Issues. When repository evidence (remotes, tracker
 references) or the user points to another tracker, adapt the marked section of
 `docs/agents/issue-tracker.md` to that tracker's real commands and conventions. Read the
-existing sources, the domain docs (`CONTEXT.md`, `CONTEXT-MAP.md`, `docs/adr/`), and the
+existing sources, the domain docs (`GLOSSARY.md`, `GLOSSARY-MAP.md`, `docs/adr/`), and the
 root agent files as compiled output only.
 
 ## Marked sections
