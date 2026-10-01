@@ -1,30 +1,9 @@
-# Issue tracker: GitHub
+# Tracker: GitHub
 
-<!-- A starting point for a project's docs/agents/issue-tracker.md: fill the first four
-sections and keep the rest. The engineering loop's issues.md holds the states,
-categories, sizes and board columns; this file adds only the project's facts. Its spec
-gate reads the first backticked name of each list item under Components (and Extra
-categories, when the project has any). -->
-
-## Repo
-
-Issues and specs for `<owner>/<repo>` live in GitHub Issues. Run `gh` commands inside
-the repository so the CLI infers the remote.
-
-## Components
-
-Every issue carries at least one: where the change lands.
-
-- **`<name>`**: <what it covers>.
-
-## Never on GitHub
-
-<What must not appear in an issue, comment, commit message or PR, and what to write
-instead.>
-
-## Extra labels
-
-<Labels beyond the loop's, and what each classifies; "none" when there are none.>
+How the loop's issue conventions ([issues.md](issues.md)) are done on GitHub. A project
+whose `docs/agents/issue-tracker.md` says `Tracker: GitHub (engineering-loop's github.md)`
+follows this file in place, never a copy, so a fix here reaches every project. Run `gh`
+inside the repository: it infers the repo from the remote.
 
 ## Operations
 
@@ -35,7 +14,15 @@ instead.>
 - Label: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`
 - Close: `gh issue close <number> --comment "..."`
 
-Pull requests are not a triage request surface unless this file says otherwise.
+Pull requests are not a triage request surface.
+
+## Board
+
+A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
+`utilities` plugin creates one). `python3 scripts/board.py <issue> <column>` adds the
+issue when it is missing and sets its column; it is the only thing that moves a ticket, so
+the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
+created through the API.
 
 ## Publish an issue batch
 

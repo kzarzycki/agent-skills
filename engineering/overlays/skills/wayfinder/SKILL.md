@@ -10,7 +10,7 @@ Wayfinder plans; it does not build. Each ticket resolves a decision, and the map
 
 ## Tracker
 
-The map, its child tickets, blocking and frontier queries live in the tracker `docs/agents/issue-tracker.md` describes. GitHub Issues is the default real tracker; a repository may configure another. If that file is missing, tell the user to create it: the project template writes one, and the `engineering-loop` skill's `issue-tracker-github.md` is a GitHub starting point. The tracker doc owns batch review, approval, creation, resume, and relationship wiring.
+The map, its child tickets, blocking and frontier queries live in the tracker whose realization file `docs/agents/issue-tracker.md` names (for GitHub, the `engineering-loop` skill's `github.md`). GitHub Issues is the default real tracker; a repository may configure another. If that file is missing, tell the user to create it: the project template writes one. The realization file owns batch review, approval, creation, resume, and relationship wiring.
 
 - **Claim**: assign the ticket to the dev driving the map, before any other work, so concurrent sessions skip it. An open, unassigned ticket is unclaimed.
 - **Blocking**: the tracker's native dependency relationship, so its own UI shows what is takeable without opening the map. Fall back to a body convention only when the tracker has none.
@@ -75,7 +75,7 @@ The user invokes with a loose idea.
 
 1. Settle the destination with the `grilling` and `domain-modeling` skills; it fixes the scope.
 2. Grill again, breadth-first across the whole space, for the open decisions and the first steps takeable now. If there is no fog and the whole journey fits one session, no map is needed: stop and ask the user how to proceed.
-3. Render the map and every ticket specifiable now as one ordered batch with complete titles, bodies, labels, blockers and order. Follow `docs/agents/issue-tracker.md` for approval, deterministic markers, creation, interruption-safe resume and confirmed URL recording.
+3. Render the map and every ticket specifiable now as one ordered batch with complete titles, bodies, labels, blockers and order. Follow the realization file for approval, deterministic markers, creation, interruption-safe resume and confirmed URL recording.
 4. Create the approved batch: the map, then its tickets in the reviewed order. Add child and blocking relationships in a second pass, once every issue exists.
 5. Start each new research ticket in its own background agent with the `research` skill, so they resolve in parallel after charting ends; findings go on a throwaway `research/<name>` branch linked from the ticket.
 6. Stop. Charting resolves nothing by hand.

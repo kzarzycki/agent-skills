@@ -20,9 +20,11 @@ The engineering loop ships as a method any project turns on. No upstream change.
   of the same family and the PR body says `verifier: same family`; the brief
   never says so.
 - The loop's issue conventions (states, categories, sizes, board columns) are
-  its `issues.md`; a project's `issue-tracker.md` adds only its own facts. Its
-  `issue-tracker-github.md` is the GitHub starting point for that file,
-  carrying the issue-batch protocol the setup skill used to write.
+  its `issues.md`, and its `github.md` does them on GitHub (`gh` operations,
+  board moves, the issue-batch protocol the setup skill used to write). Both
+  are read in place, never copied: a project's `issue-tracker.md` holds the
+  line `Tracker: GitHub (engineering-loop's github.md)`, its Components, what
+  is Never on GitHub, and optionally Extra labels and Extra categories.
 - Removed `setup-engineering-workflow-for-apm`: the project template writes
   `docs/agents/`, and two writers drift apart. `to-spec`, `triage`,
   `to-tickets`, `implement-spec`, `ask-matt`, `code-review` and `wayfinder`

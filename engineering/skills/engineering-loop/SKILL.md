@@ -31,12 +31,13 @@ question for the owner, not a guess:
 |---|---|---|
 | `mise run check` | the gate: lint, types, tests, e2e, leak checks; CI runs the same task | Gates, Land |
 | `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Landing exceptions; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin) and `OMP worker profile: <name>`. | Proof, Verify, Land, Accept, Clean up |
-| `docs/agents/issue-tracker.md` | Repo; Components; Never on GitHub; Extra labels; optionally Extra categories | Intent, Spec, Land |
+| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
-in [issues.md](issues.md), so every project's board looks the same. A
+in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
+does them on GitHub. A
 `scripts/` path is relative to this skill's folder; run it from the worktree with
 `python3` (standard library only).
 

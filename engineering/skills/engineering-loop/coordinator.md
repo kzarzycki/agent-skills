@@ -14,8 +14,8 @@ UI, and delegate the rest.
    session when they started it with this request (`grilling`, in rounds, each question
    with your recommendation); otherwise comment the questions, add `needs-owner`, and
    stop. On resuming a parked issue, remove `needs-owner`. Each state change here and
-   below also moves the ticket: `python3 scripts/board.py <issue> <column>`. A failed move
-   is reported, never blocking, because the labels are the state.
+   below also moves the ticket on the board (github.md, Board); a failed move is
+   reported, never blocking, because the labels are the state.
 2. **Spec.** Write the spec as the `to-spec` skill's `SKILL.md` says (read the file: the
    model cannot invoke that skill) into the intent's issue. Its template is the default
    shape: a small change keeps every section, one line each where that says it. Choose the

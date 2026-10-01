@@ -64,4 +64,4 @@ These are judgement calls; the value is asking them in order.
 
 ## Precondition
 
-**`docs/agents/issue-tracker.md`**: the issue tracker, triage labels and doc layout the other skills assume. The project template writes it; without one, start from the `engineering-loop` skill's `issue-tracker-github.md`. Custom trackers work too.
+**`docs/agents/issue-tracker.md`**: names the issue tracker's realization file the other skills follow (for GitHub, the `engineering-loop` skill's `github.md`), plus the project's components. The project template writes it. Custom trackers work too.

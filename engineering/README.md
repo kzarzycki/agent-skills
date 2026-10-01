@@ -38,8 +38,8 @@ in its `AGENTS.md`, for example "Every change that lands as a PR runs the
 - `mise run check`: the gate, which CI runs too;
 - `docs/agents/loop.md`: the owner, how to prove a change, acceptance
   references, landing exceptions, the worktree command, the ledger path;
-- `docs/agents/issue-tracker.md`: the repo, its components, what must never
-  reach the tracker (the skill's `issue-tracker-github.md` is a GitHub starting point);
+- `docs/agents/issue-tracker.md`: the line `Tracker: GitHub (engineering-loop's
+  github.md)`, its components, what must never reach the tracker;
 - `docs/agents/coding-standards.md`: the domain's facts.
 
 Each developer picks how agents run with one line in their personal

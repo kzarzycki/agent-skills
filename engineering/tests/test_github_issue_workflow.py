@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
-TEMPLATE = PACKAGE / "skills" / "engineering-loop" / "issue-tracker-github.md"
+TEMPLATE = PACKAGE / "skills" / "engineering-loop" / "github.md"
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake-gh"
 PROTOCOL_PATTERN = re.compile(
     r"<!-- github-issue-batch-fixture-protocol\n(?P<protocol>.*?)\n-->",

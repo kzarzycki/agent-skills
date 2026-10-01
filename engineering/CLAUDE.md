@@ -36,7 +36,7 @@ A tuned skill carries only what a strong current model would not do unprompted.
   A skill that does prescribe a subagent's brief hands it the skill's path and
   the sections to follow, since a paraphrase drops the formats and gates.
 - Stay harness-neutral (no tool names of one agent) and tracker-neutral
-  (`docs/agents/issue-tracker.md` configures the tracker).
+  (`docs/agents/issue-tracker.md` names the tracker's realization file).
 - `engineering-loop` names no project: a project's facts live in its
   `docs/agents/` files, and `tests/test_engineering_loop.py` fails on a
   project term.

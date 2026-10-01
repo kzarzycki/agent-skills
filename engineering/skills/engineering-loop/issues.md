@@ -1,10 +1,11 @@
 # Issues and the board
 
-The loop's issue conventions, the same in every project. The project's
-`docs/agents/issue-tracker.md` adds only its own facts: Repo, Components, Never on GitHub,
-Extra labels, and optionally Extra categories. [issue-tracker-github.md](issue-tracker-github.md)
-is a starting point for that file on GitHub, with the issue-batch protocol `to-tickets`
-and `wayfinder` publish through.
+The loop's issue conventions, the same in every project and on every tracker. How each
+is done on a tracker is its realization file, read in place: [github.md](github.md) for
+GitHub, with the issue-batch protocol `to-tickets` and `wayfinder` publish through. The
+project's `docs/agents/issue-tracker.md` names that file in one line,
+`Tracker: GitHub (engineering-loop's github.md)`, and adds only its own facts: Components,
+Never on GitHub, and optionally Extra labels and Extra categories.
 
 ## States
 
@@ -42,13 +43,8 @@ component or size: it resolves a decision, not a change.
 
 ## Board
 
-A GitHub Projects board linked to the repo shows every ticket in its loop stage (the
-`github-project-board-setup` skill of the `utilities` plugin creates one).
-`python3 scripts/board.py <issue> <column>` adds the issue when it is missing and sets
-its column. The labels stay the state: when a
-move fails, report it and carry on. Only this command moves a ticket: the board's own
-"Item closed" and "Auto-add" workflows stay off, as they are on a board created through
-the API.
+The board shows every ticket in its loop stage; the realization file says how a ticket
+moves. The labels stay the state: when a move fails, report it and carry on.
 
 | Column | The ticket is here when | Moved by |
 |---|---|---|

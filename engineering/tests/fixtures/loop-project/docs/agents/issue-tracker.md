@@ -1,8 +1,4 @@
-# Issue tracker: GitHub
-
-## Repo
-
-Issues, specs and PRs live on `example/shop`; use `gh`.
+Tracker: GitHub (engineering-loop's github.md)
 
 ## Components
 
