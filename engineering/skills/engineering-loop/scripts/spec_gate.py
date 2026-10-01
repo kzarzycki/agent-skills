@@ -38,7 +38,8 @@ QUERY = f"""query($owner: String!, $name: String!, $pr: Int!) {{
 }}"""
 # GitHub's closing keywords; ponytail: same-repo `#n` only, add owner/repo#n and issue URLs when a PR here uses one.
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+#(\d+)\b", re.IGNORECASE)
-QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)  # code and comments: an example, not a closing line
+# code and comments: an example, not a closing line
+QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
 
 
 def named(body: str) -> list[int]:
@@ -48,14 +49,24 @@ def named(body: str) -> list[int]:
 
 def listed(tracker: str, heading: str) -> set[str]:
     """The first backticked name of each list item under `## <heading>`, up to the next `## ` heading."""
-    section = re.search(rf"^## {re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)", tracker, re.DOTALL | re.MULTILINE)
-    return set(re.findall(r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`", section.group(1), re.MULTILINE)) if section else set()
+    section = re.search(
+        rf"^## {re.escape(heading)}[ \t]*\n(.*?)(?=^## |\Z)", tracker, re.DOTALL | re.MULTILINE
+    )
+    return (
+        set(re.findall(r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`", section.group(1), re.MULTILINE))
+        if section
+        else set()
+    )
 
 
-def problems(issues: list[dict[str, Any]], components: set[str], categories: set[str] = CATEGORIES) -> list[str]:
+def problems(
+    issues: list[dict[str, Any]], components: set[str], categories: set[str] = CATEGORIES
+) -> list[str]:
     """One line per reason the PR skipped the spec state; empty when it may land."""
     if not issues:
-        return ["the PR closes no issue: it needs a `Closes #<spec>` line for a ready-for-agent spec"]
+        return [
+            "the PR closes no issue: it needs a `Closes #<spec>` line for a ready-for-agent spec"
+        ]
     found = []
     for issue in issues:
         labels = {label["name"] for label in issue["labels"]["nodes"]}
@@ -65,16 +76,31 @@ def problems(issues: list[dict[str, Any]], components: set[str], categories: set
             continue  # a wayfinder ticket settles a decision: its wayfinder: label is its category, and it has no component or size
         for kind, names in (("category", categories), ("size", SIZES)):
             if len(labels & names) != 1:
-                found.append(f"#{issue['number']} needs exactly one {kind} label ({', '.join(sorted(names))}), has {len(labels & names)}")
+                found.append(
+                    f"#{issue['number']} needs exactly one {kind} label ({', '.join(sorted(names))}), has {len(labels & names)}"
+                )
         if not labels & components:
-            found.append(f"#{issue['number']} needs a component label ({', '.join(sorted(components)) or f'{TRACKER} lists none'})")
+            found.append(
+                f"#{issue['number']} needs a component label ({', '.join(sorted(components)) or f'{TRACKER} lists none'})"
+            )
     return found
 
 
 def _graphql(query: str, **fields: object) -> Any:
     args = [arg for key, value in fields.items() for arg in ("-F", f"{key}={value}")]
     out = subprocess.run(  # gh fills {owner} and {repo} from the current checkout
-        ["gh", "api", "graphql", "-f", f"query={query}", "-F", "owner={owner}", "-F", "name={repo}", *args],
+        [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            "owner={owner}",
+            "-F",
+            "name={repo}",
+            *args,
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -87,8 +113,13 @@ def closing_issues(pr: int) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
     unlinked = sorted(set(named(pull["body"])) - {issue["number"] for issue in issues})
     if unlinked:  # a `#n` that is a pull request comes back empty and is dropped
-        aliases = " ".join(f"i{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ {ISSUE} }} }}" for n in unlinked)
-        found = _graphql(f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}")
+        aliases = " ".join(
+            f"i{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ {ISSUE} }} }}"
+            for n in unlinked
+        )
+        found = _graphql(
+            f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
+        )
         issues = issues + [issue for issue in found.values() if issue]
     return issues
 
@@ -103,8 +134,13 @@ def main(argv: list[str]) -> int:
         print(f"{TRACKER}: {exc.strerror}: run from the repo root")
         return 1
     try:
-        found = problems(closing_issues(int(argv[0])), listed(tracker, "Components"), CATEGORIES | listed(tracker, "Extra categories"))
-    except subprocess.CalledProcessError as exc:  # gh's reason, e.g. a closing line that names a number with no issue
+        found = problems(
+            closing_issues(int(argv[0])),
+            listed(tracker, "Components"),
+            CATEGORIES | listed(tracker, "Extra categories"),
+        )
+    except subprocess.CalledProcessError as exc:
+        # gh's reason, e.g. a closing line that names a number with no issue
         print(exc.stderr.strip() or exc)
         return 1
     for line in found:

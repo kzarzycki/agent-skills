@@ -159,9 +159,7 @@ class Omnigent:
     def project_id(self, name: str) -> str | None:
         """The id of the project (a sidebar group) called ``name``, or None when there is none."""
         projects = self.call("GET", "/v1/projects")
-        for p in (
-            projects.get("data", projects) if isinstance(projects, dict) else projects
-        ):
+        for p in projects.get("data", projects) if isinstance(projects, dict) else projects:
             if p.get("name") == name:
                 return str(p["id"])
         return None
@@ -211,9 +209,7 @@ class Omnigent:
 
 
 def text_of(item: dict) -> str:
-    return "".join(
-        c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict)
-    )
+    return "".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict))
 
 
 def last_message(items: list[dict]) -> dict | None:
@@ -234,9 +230,7 @@ def delivered(
     deadline = time.monotonic() + seconds
     while True:
         if any(
-            i.get("type") == "message"
-            and i.get("role") == "user"
-            and brief.strip() in text_of(i)
+            i.get("type") == "message" and i.get("role") == "user" and brief.strip() in text_of(i)
             for i in og.items(sid)
             if str(i.get("id")) not in old
         ):
@@ -246,9 +240,7 @@ def delivered(
         time.sleep(POLL_SECONDS)
 
 
-def send(
-    og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: float
-) -> None:
+def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: float) -> None:
     """Send a follow-up (an answer) to a session whose runner is still up, and confirm it arrived."""
     if not og.info(sid).get("runner_online", True):
         raise Gone(f"session {sid} has no live runner; start a fresh run instead")
@@ -258,9 +250,7 @@ def send(
         raise Gone(
             f"session {sid}: message not in history after {confirm_seconds:.0f}s; start a fresh run instead"
         )
-    question_of(report).unlink(
-        missing_ok=True
-    )  # kept until the answer lands, for the fresh run
+    question_of(report).unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
 
 
 def start(
@@ -298,9 +288,7 @@ def start(
             print(f"abandoned session {sid} survives: {e}", file=sys.stderr)
 
     def failed(reason: str) -> Fail:
-        left = (
-            f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
-        )
+        left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
         return Fail(reason + left)
 
     for n in range(attempts):
@@ -358,22 +346,17 @@ def wait(
         # the session run, or the idle outlasted IDLE_GRACE_SECONDS.
         idle_since = (idle_since or time.monotonic()) if status not in RUNNING else None
         empty_turn = seen_running or (
-            idle_since is not None
-            and time.monotonic() - idle_since >= IDLE_GRACE_SECONDS
+            idle_since is not None and time.monotonic() - idle_since >= IDLE_GRACE_SECONDS
         )
         if status not in RUNNING and (
-            status == "failed"
-            or (last is not None and last.get("role") != "user")
-            or empty_turn
+            status == "failed" or (last is not None and last.get("role") != "user") or empty_turn
         ):
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
             if done():
                 break
             if question.exists():
                 raise Asked(str(question))
-            raise Fail(
-                f"session {sid} ended ({status}) without {missing}\nlast message: {said}"
-            )
+            raise Fail(f"session {sid} ended ({status}) without {missing}\nlast message: {said}")
         if time.monotonic() >= deadline:
             raise Fail(
                 f"session {sid} gave no {'verdict' if verdict else 'report'} after {timeout:.0f}s\nlast message: {said}"
@@ -425,9 +408,7 @@ def main(argv: list[str] | None = None) -> int:
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
         if p.prog.split()[-1] != "start":
-            p.add_argument(
-                "--timeout", type=float, default=3 * 3600, help="seconds (default 3h)"
-            )
+            p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
     args = ap.parse_args(argv)
     try:
         og = Omnigent()
@@ -438,18 +419,19 @@ def main(argv: list[str] | None = None) -> int:
         # The child's workspace is this directory; its Read of a file outside it raises an approval
         # prompt nobody answers, and it saves its repro files beside the report.
         if not report.is_relative_to(Path.cwd()):
-            raise Fail(f"{report} is outside the child's workspace {Path.cwd()}; use tmp/loop/ in the worktree")
+            raise Fail(
+                f"{report} is outside the child's workspace {Path.cwd()}; use tmp/loop/ in the worktree"
+            )
         if args.cmd == "send":
             send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
             print(wait(og, args.session, report, args.timeout, args.verdict))
             return 0
         brief = args.brief.read_text()
         verifier = bool(args.role and "verifier" in args.role)
-        if args.author == args.agent and verifier:
-            if not args.same_family:
-                raise Fail(
-                    f"{args.agent} would verify {args.author}-written code; pass --same-family to allow it"
-                )
+        if args.author == args.agent and verifier and not args.same_family:
+            raise Fail(
+                f"{args.agent} would verify {args.author}-written code; pass --same-family to allow it"
+            )
         if report.exists():
             raise Fail(f"{report} already exists; wait would return at once")
         report.parent.mkdir(parents=True, exist_ok=True)

@@ -36,26 +36,45 @@ def target(projects: list[dict[str, Any]], column: str) -> tuple[str, str, str]:
     if not projects:
         raise ValueError("no project board is linked to this repo")
     project = projects[0]
-    options = {option["name"]: option["id"] for option in (project["field"] or {}).get("options", [])}
+    options = {
+        option["name"]: option["id"] for option in (project["field"] or {}).get("options", [])
+    }
     if column not in options:
-        raise ValueError(f"no column {column!r}: the board has {', '.join(options) or 'no Status field'}")
+        raise ValueError(
+            f"no column {column!r}: the board has {', '.join(options) or 'no Status field'}"
+        )
     return project["id"], project["field"]["id"], options[column]
 
 
 def fields(**values: int | str) -> list[str]:
     """gh's field flags: -F for a number or a {placeholder} gh fills, -f for an id, which -F would turn into a number when it is all digits."""
-    return [arg for key, value in values.items() for arg in ("-F" if isinstance(value, int) or value.startswith("{") else "-f", f"{key}={value}")]
+    return [
+        arg
+        for key, value in values.items()
+        for arg in (
+            "-F" if isinstance(value, int) or value.startswith("{") else "-f",
+            f"{key}={value}",
+        )
+    ]
 
 
 def _graphql(query: str, **values: int | str) -> Any:
-    out = subprocess.run(["gh", "api", "graphql", "-f", f"query={query}", *fields(**values)], check=True, capture_output=True, text=True).stdout
+    out = subprocess.run(
+        ["gh", "api", "graphql", "-f", f"query={query}", *fields(**values)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
     return json.loads(out)["data"]
 
 
 def move(issue: int, column: str) -> None:
-    repo = _graphql(LOOKUP, owner="{owner}", name="{repo}", issue=issue)["repository"]  # gh fills both from the checkout
+    # gh fills owner and repo from the checkout
+    repo = _graphql(LOOKUP, owner="{owner}", name="{repo}", issue=issue)["repository"]
     project, field, option = target(repo["projectsV2"]["nodes"], column)
-    item = _graphql(ADD, project=project, issue=repo["issue"]["id"])["addProjectV2ItemById"]["item"]["id"]  # the existing item when already there
+    # the existing item when already there
+    added = _graphql(ADD, project=project, issue=repo["issue"]["id"])["addProjectV2ItemById"]
+    item = added["item"]["id"]
     _graphql(SET, project=project, item=item, field=field, option=option)
 
 
