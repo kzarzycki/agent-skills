@@ -51,6 +51,24 @@ The independently versioned release tag is `engineering-v0.8.0`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 
+## Changing a skill for one repo
+
+Take the first rung that holds:
+
+1. **Fill a fact** in the repo's `docs/agents/` files.
+2. **Extend:** a project skill under `.apm/skills/` with a different name that
+   says "follow `<skill>` with these differences". It keeps receiving pack fixes.
+3. **Fork:** copy the pack skill's whole folder to `.apm/skills/<same-name>/`,
+   add a `skills:` list to the pack dependency in `apm.yml` naming every other
+   pack skill the repo keeps, run `mise run agent-sync` twice and commit. The
+   first install after adding the list removes the local copy and the second
+   restores it (APM 0.30.0). Without the list the local copy still wins the
+   install, but `apm audit --ci`, which agent-sync runs, fails it as drift.
+   - `skills:` is an allow-list: a skill the pack adds later is not installed
+     until you list it.
+   - The fork no longer gets pack fixes.
+4. **Change the pack** upstream, here.
+
 ## Install from the Claude marketplace
 
 The native Claude plugin remains available as
