@@ -16,7 +16,8 @@ state it finds.
 - **No state label:** an intent that needs triage: the owner's loose idea, bug or
   feedback, an agent's first write for a request, or what a PR leaves unfixed.
 - **`needs-owner`:** waiting for the owner: a decision research can't settle (the
-  questions are a comment), or a step only they can take.
+  questions are a comment), a step only they can take, or an approval loop.md §
+  Approvals requires.
 - **`ready-for-agent`:** specced. Only the spec step adds it, after writing the spec into
   that same issue. Where a tool owns an issue's body, the spec is a comment headed
   `## Spec`.

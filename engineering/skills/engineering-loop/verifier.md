@@ -19,11 +19,12 @@ Check the tree first:
 
 ## Method
 
-Run the `code-review` skill with that base and spec. Its axis reviewers are your own
-harness's native subagents, never another harness's sessions: those may run the model
-family that wrote the diff. The standards axis reads [coding-standards.md](coding-standards.md)
-and the project's `docs/agents/coding-standards.md`. Without the skill, review
-`git diff <base>...HEAD` yourself, keeping standards and spec as separate axes.
+Run the Review skill (SKILL.md, Practice; `code-review` by default) with that base and
+spec. Its axis reviewers are your own harness's native subagents, never another harness's
+sessions: those may run the model family that wrote the diff. The standards axis reads
+[coding-standards.md](coding-standards.md) and the project's
+`docs/agents/coding-standards.md`. Without the skill, review `git diff <base>...HEAD`
+yourself, keeping standards and spec as separate axes.
 
 ## Steering
 
@@ -61,7 +62,7 @@ and the project's `docs/agents/coding-standards.md`. Without the skill, review
 
 Write Markdown to the report path:
 
-- Sections: code-review's Standards and Spec, then Correctness.
+- Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding: a title, severity (blocker|major|minor), file:line, the failing input or
   contradicted requirement, and the evidence (the command and its output).
 - End with `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`.

@@ -6,22 +6,28 @@ UI, and delegate the rest.
 
 1. **Intent.** File a request from the owner in their words, with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
-   given by its state ([issues.md](issues.md)): `ready-for-agent` goes to step 3,
-   `needs-owner` waits unless the owner is in the session, no state label is triaged
-   here. Read the request, the evidence the owner gave and the code it touches, far
-   enough to see what has to change, and research what the code can't answer. A decision
-   only the owner can make (a preference, a fork in what gets built) is asked in the
-   session when they started it with this request (`grilling`, in rounds, each question
-   with your recommendation); otherwise comment the questions, add `needs-owner`, and
-   stop. On resuming a parked issue, remove `needs-owner`. Each state change here and
-   below also moves the ticket on the board (github.md, Board); a failed move is
-   reported, never blocking, because the labels are the state.
-2. **Spec.** Write the spec as the `to-spec` skill's `SKILL.md` says (read the file: the
-   model cannot invoke that skill) into the intent's issue. Its template is the default
-   shape: a small change keeps every section, one line each where that says it. Choose the
-   test seams yourself and state them, with the acceptance examples for step 9 and the
-   reference each one checks against, in the order of loop.md § Acceptance references. Add `ready-for-agent` and the
-   size label (board: `Ready`) and carry on: the owner reads it when they like.
+   given by its state ([issues.md](issues.md)): `needs-owner` waits unless the owner is in
+   the session, `ready-for-agent` goes to step 3 (or to its plan, when one is due and
+   missing), no state label is triaged here. Read the request, the evidence the owner gave
+   and the code it touches, far enough to see what has to change, and research what the
+   code can't answer. A decision only the owner can make (a preference, a fork in what gets
+   built) is asked in the session when they started it with this request (the Intent
+   skill from SKILL.md's Practice, in rounds, each question with your recommendation);
+   otherwise comment the questions, add `needs-owner`, and stop. On resuming a parked
+   issue, remove `needs-owner`. Each state change here and below also moves the ticket on
+   the board (github.md, Board); a failed move is reported, never blocking, because the
+   labels are the state.
+2. **Spec.** Write the spec into the intent's issue with the Spec skill (SKILL.md,
+   Practice). The default, `to-spec`, you follow by reading its `SKILL.md`: the model
+   cannot invoke it, and its template keeps every section, one line each for a small
+   change. Choose the test seams yourself and state them, with the acceptance examples for
+   step 9 and the reference each one checks against, in the order of loop.md § Acceptance
+   references. Add `ready-for-agent` and the size label (board: `Ready`). When loop.md §
+   Practice names a plan skill, write the plan with it next, as a `## Plan` comment on
+   the issue. A matching `spec` or `plan` rule in loop.md § Approvals: after that
+   artifact, add `needs-owner` (board: `Needs owner`), comment what to approve, and stop;
+   a person approves by removing `needs-owner` or by saying so in the session. Otherwise
+   carry on: the owner reads it when they like.
 3. **Branch and notes.** Cut the PR branch and open a draft PR that closes the spec
    (board: `Build`). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
@@ -60,15 +66,21 @@ UI, and delegate the rest.
    the gates and show the diff in the PR body. A `size:XS` change may skip this step; its
    PR body says `verifier: skipped (size:XS)`.
 8. **Land** when the landing rule holds (SKILL.md):
-   - Write the PR body (`pr` skill), then run `gh pr ready` and
-     `gh pr merge <pr> --squash --delete-branch --match-head-commit <landing sha>`.
+   - Write the PR body with the Land skill (SKILL.md, Practice), then run
+     `gh pr ready` and `gh pr merge <pr> --squash --delete-branch --match-head-commit <landing sha>`.
    - If main moved, fetch, merge `origin/main` in and rerun the gates. A fresh verifier
      reviews the merge first (step 7) only when main's changes touch a file the PR changes
      (`git diff --name-only <old base> origin/main` against
      `git diff --name-only origin/main...HEAD`) or change the gate (the `check` task, a
      tool it runs, or the lint, type or test configuration). Otherwise the rerun gates are
      the review.
-   - Never use `--admin`, and never push to main.
+   - A `merge` rule in loop.md § Approvals that matches holds the merge for the owner's
+     go-ahead on the PR: an approving review, or a comment where GitHub forbids
+     approving one's own PR.
+   - When `gh pr merge` is refused for a missing review or check, request the reviewers
+     (`gh pr edit <pr> --add-reviewer <login>`), add `needs-owner` to the issue, and
+     stop. Never use `--admin`, which overrides the project's protection, and never push
+     to main.
    - A `Closes #n` line GitHub never linked leaves its issue open: close each issue the PR
      names that is still open (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`)
      and move it to `Done`.
@@ -94,5 +106,4 @@ new prompt. With nothing else to do, end your turn. Don't poll agent lists, logs
 or sleep: every check re-reads your whole context. Read the report file a reply names,
 not logs or scrollback.
 
-A core finding still open after pass 3, or a change loop.md § Landing exceptions names, goes to
-the owner and stops the landing.
+A core finding still open after pass 3 goes to the owner and stops the landing.

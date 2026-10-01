@@ -14,6 +14,11 @@ The engineering loop ships as a method any project turns on. No upstream change.
   `spec_gate.py` (a PR closes only specced, labelled issues; components come
   from `issue-tracker.md`) and `omnigent_agent.py` (its project defaults to the
   repo's name).
+- A project configures the loop rather than forking it: `loop.md § Practice`
+  names the skill that fills a stage (defaults: `grilling`, `to-spec`,
+  `code-review`, `pr`), and `§ Approvals` lists the spec, plan or merge points
+  that wait for a person. The loop keeps the state, the gate, the cross-family
+  verifier and the merge whatever the practice.
 - Orchestration backends: native subagents (the default), Omnigent and
   herdr-link, picked by `Orchestration backend: <name>` in personal
   instructions. Without the other model family, the verifier is a fresh session

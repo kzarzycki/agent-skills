@@ -30,7 +30,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | `mise run check` | the gate: lint, types, tests, e2e, leak checks; CI runs the same task | Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Landing exceptions; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin) and `OMP worker profile: <name>`. | Proof, Verify, Land, Accept, Clean up |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin) and `OMP worker profile: <name>`. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -40,6 +40,25 @@ in [issues.md](issues.md), so every project's board looks the same; [github.md](
 does them on GitHub. A
 `scripts/` path is relative to this skill's folder; run it from the worktree with
 `python3` (standard library only).
+
+### Practice
+
+loop.md § Practice names the skill that fills a stage, one line each, such as
+`Spec: brainstorming`; a stage it does not name runs its default. Either way the stage
+produces what this table says:
+
+| Stage | Must produce | Default skill |
+|---|---|---|
+| Intent | open questions settled, or asked in the issue | `grilling` |
+| Spec | the spec in the issue, or linked from it, with acceptance examples and the reference each checks against | `to-spec` |
+| Plan, only when loop.md § Practice names a plan skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
+| Build | commits on the branch, with the gate green | the worker role |
+| Review | findings with path, cost and repro, then the verdict lines | `code-review`, run by the verifier |
+| Land | the PR body | `pr` |
+
+Whatever the practice, the issue and the board hold the state, the gate runs, the
+verifier is from the other model family, and the loop merges. A practice skill's own
+merging or state-keeping is overridden, because two writers of one state drift apart.
 
 ## Roles
 
@@ -62,8 +81,8 @@ never as full harness sessions.
 
 - **The owner is on the loop, not in it.** They read specs, never code: gates, tests and
   the verifier are the review. Ask them only at a fork that changes what gets built,
-  before something hard to undo (deploy, publish, send, spend), or for a credential only
-  they hold. A technical fork they can't judge is your call. Run commands yourself; when
+  before something hard to undo (deploy, publish, send, spend), for a credential only
+  they hold, or at an approval loop.md § Approvals requires. A technical fork they can't judge is your call. Run commands yourself; when
   a guard blocks one, ask once for a scoped approval, then propose a narrow allow rule,
   never an interpreter-wide one. While they are away, make the reversible decisions, log
   each in one decision-log issue, wait out a usage limit and resume, and leave a handoff
@@ -112,9 +131,9 @@ never as full harness sessions.
   core finding is open, the ledger is updated, and `python3 scripts/spec_gate.py <pr>`
   exits 0 (every issue it closes is `ready-for-agent` with one category, a component and
   one size). The gate is CI when CI runs `mise run check` on the PR; otherwise run it on
-  that head and put its exit code in the PR body. Nothing else needs authorising, except
-  loop.md § Landing exceptions and an owner who asked to see the change first: then
-  hold the merge and give them the link and what to click.
+  that head and put its exit code in the PR body. Nothing else needs authorising, except a
+  `merge` rule in loop.md § Approvals and an owner who asked to see the change first:
+  then hold the merge and give them the link and what to click.
 
 ## Triage
 
