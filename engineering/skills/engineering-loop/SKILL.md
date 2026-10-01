@@ -30,7 +30,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | `mise run check` | the gate: lint, types, tests, e2e, leak checks; CI runs the same task | Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Landing exceptions; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. A line `Orchestration backend: <name>` pins the backend. | Proof, Verify, Land, Accept, Clean up |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Landing exceptions; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin) and `OMP worker profile: <name>`. | Proof, Verify, Land, Accept, Clean up |
 | `docs/agents/issue-tracker.md` | Repo; Components; Never on GitHub; Extra labels; optionally Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -101,11 +101,11 @@ never as full harness sessions.
   cheaper one for mechanical items, never the top tier for review. When one family is
   out of quota, continue on the other; revive a stuck or interrupted agent rather than
   restart it.
-- **Turns.** Every turn ends with `DONE`, `STILL WORKING` or `USER NEEDED`. A status reply
-  opens with a tl;dr: the loop step with links to the spec, the PR and the instance, what
-  is blocked, what the owner must do (or "nothing"), and each open question restated.
-  Past about 150K tokens of context, at a natural break, offer the owner a ready compact
-  command with the summary it should keep.
+- **Turns.** A turn the owner reads (not a child's path-only reply) ends with `DONE`,
+  `STILL WORKING` or `USER NEEDED`. A status reply opens with a tl;dr: the loop step with
+  links to the spec, the PR and the instance, what is blocked, what the owner must do (or
+  "nothing"), and each open question restated. Past about 150K tokens of context, at a
+  natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** A PR lands when the gate is green on the head that lands (the reviewed
   head, plus only what `coordinator.md` steps 7 and 8 exempt from a further pass), no
   core finding is open, the ledger is updated, and `python3 scripts/spec_gate.py <pr>`

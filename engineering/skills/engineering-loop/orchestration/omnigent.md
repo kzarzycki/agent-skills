@@ -1,7 +1,7 @@
 # Orchestrating with Omnigent
 
-Start every worker or verifier with one background command, and do nothing else until it
-exits:
+Start each worker or verifier with its own background command, whose exit wakes you; keep
+working meanwhile:
 
 ```bash
 python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> --role <role-file>

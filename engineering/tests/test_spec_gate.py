@@ -149,3 +149,17 @@ def test_run_outside_a_repo_with_a_tracker_file_fails_with_the_reason(
         1,
         "docs/agents/issue-tracker.md: No such file or directory: run from the repo root\n",
     )
+
+
+def test_main_reads_the_projects_own_components_and_categories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    tracker = tmp_path / "docs" / "agents" / "issue-tracker.md"
+    tracker.parent.mkdir(parents=True)
+    tracker.write_text(
+        "## Components\n\n- `billing`: invoices.\n\n## Extra categories\n\n- `research`\n"
+    )
+    closing = [issue(1, "ready-for-agent", "billing", "research", "size:S")]
+    monkeypatch.setattr(spec_gate, "closing_issues", lambda _pr: closing)
+    monkeypatch.chdir(tmp_path)
+    assert (spec_gate.main(["1"]), capsys.readouterr().out) == (0, "")
