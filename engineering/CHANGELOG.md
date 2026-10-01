@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.0 - 2026-10-01
+
+The engineering loop ships as a method any project turns on. No upstream change.
+
+- New owned skill `engineering-loop`: intent, spec, build, gates, proof,
+  verify, land, with coordinator, worker and verifier roles, triage, the
+  three-pass cap and the landing rule. It names no project: each step reads
+  `mise run check` or the project's `docs/agents/loop.md`, `issue-tracker.md`
+  or `coding-standards.md`, and a test fails on a project term. It carries
+  the generic coding standards, the owner-on-the-loop rules and status
+  conventions, and three stdlib scripts: `board.py` (move a ticket),
+  `spec_gate.py` (a PR closes only specced, labelled issues; components come
+  from `issue-tracker.md`) and `omnigent_agent.py` (its project defaults to the
+  repo's name).
+- Orchestration backends: native subagents (the default), Omnigent and
+  herdr-link, picked by `Orchestration backend: <name>` in personal
+  instructions. Without the other model family, the verifier is a fresh session
+  of the same family and the PR body says `verifier: same family`; the brief
+  never says so.
+- The loop's issue conventions (states, categories, sizes, board columns) are
+  its `issues.md`; a project's `issue-tracker.md` adds only its own facts. Its
+  `issue-tracker-github.md` is the GitHub starting point for that file,
+  carrying the issue-batch protocol the setup skill used to write.
+- Removed `setup-engineering-workflow-for-apm`: the project template writes
+  `docs/agents/`, and two writers drift apart. `to-spec`, `triage`,
+  `to-tickets`, `implement-spec`, `ask-matt`, `code-review` and `wayfinder`
+  send a user without `docs/agents/issue-tracker.md` to create it. Drop
+  `/setup-engineering-workflow-for-apm` from your own instructions.
+
 ## 0.7.0 - 2026-09-30
 
 Upstream `mattpocock/skills` `c55ee46..d81f3a1` (release v1.3).

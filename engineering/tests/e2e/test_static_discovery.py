@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -17,15 +16,13 @@ from engineering.tests.e2e.conformance import (
     local_reference_failures,
     pack_catalog,
 )
-from engineering.tests.e2e.live_contract import AgentHarness, run_agent
-from engineering.tests.test_setup_skill import _fixture_project, _run_fixture_protocol
+from engineering.tests.e2e.live_contract import run_agent
 
 WAYFINDER_SUPPORT = {
     "domain-modeling",
     "grilling",
     "prototype",
     "research",
-    "setup-engineering-workflow-for-apm",
 }
 
 
@@ -80,17 +77,6 @@ def test_deployed_relative_references_and_packaged_scripts_resolve(tmp_path: Pat
     assert_catalog_matches(source, fixture.catalog(CODEX))
 
 
-def test_setup_protocol_is_discoverable_in_both_catalogs(tmp_path: Path) -> None:
-    fixture = install_fixture(tmp_path)
-
-    for adapter in (CLAUDE, CODEX):
-        setup = fixture.catalog(adapter).skill_root("setup-engineering-workflow-for-apm")
-        skill = (setup / "SKILL.md").read_text()
-        assert "<!-- setup-fixture-protocol" in skill
-        assert (setup / "templates" / "project-guidance.md").is_file()
-        assert (setup / "templates" / "issue-tracker-github.md").is_file()
-
-
 @pytest.mark.parametrize("mutation", ["omit", "corrupt"])
 def test_neutral_catalog_adapter_detects_artifact_mutation(
     mutation: str,
@@ -121,38 +107,6 @@ def test_installation_does_not_leak_global_catalog_content(tmp_path: Path) -> No
     fixture = install_fixture(tmp_path)
 
     assert fixture.global_catalogs_before == fixture.global_catalogs_after
-
-
-@pytest.mark.parametrize("approved", [False, True])
-def test_setup_confirmation_controls_exact_sync_without_github_mutation(
-    approved: bool,
-    tmp_path: Path,
-) -> None:
-    project = _fixture_project(tmp_path)
-    harness = AgentHarness.create("claude", tmp_path / "harness")
-
-    result = _run_fixture_protocol(project, source_changes_approved=approved)
-    for command in result["sync_commands"]:
-        completed = subprocess.run(
-            command,
-            cwd=project,
-            env=harness.environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert completed.returncode == 0, completed.stderr
-
-    if approved:
-        assert harness.mise_calls == (("run", "agent-sync"),)
-        assert set(result["directly_written_files"]) == {
-            ".apm/instructions/engineering-workflow.md",
-            "docs/agents/issue-tracker.md",
-        }
-    else:
-        assert harness.mise_calls == ()
-        assert result["directly_written_files"] == []
-    assert harness.github_mutations == ()
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

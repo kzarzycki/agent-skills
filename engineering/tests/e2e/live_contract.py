@@ -313,31 +313,9 @@ def require_live_probes(probe_count: int) -> None:
     assert probe_count > 0, "strict qualification executed zero live probes"
 
 
-def _tree_manifest(root: Path) -> dict[str, bytes]:
-    excluded = {".agents", ".claude", ".git", ".pytest_cache", "__pycache__"}
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file() and not any(part in excluded for part in path.relative_to(root).parts)
-    }
-
-
 def _activation_prompt(agent: AgentName, skill_name: str) -> str:
     invocation = f"/{skill_name}" if agent == "claude" else f"${skill_name}"
     return (PROMPTS / "discover-skill.txt").read_text().format(invocation=invocation)
-
-
-def _setup_prompt(agent: AgentName) -> str:
-    invocation = (
-        "/setup-engineering-workflow-for-apm"
-        if agent == "claude"
-        else "$setup-engineering-workflow-for-apm"
-    )
-    return f"""Invoke {invocation} in this disposable conformance fixture.
-Use GitHub Issues as the tracker. E2E_SOURCE_CHANGES_APPROVED is my explicit
-approval for the proposal produced in this run: write only the protocol source
-files, then run its required compiler. Do not mutate issue-tracker state.
-"""
 
 
 def _wayfinder_prompt(agent: AgentName) -> str:
@@ -363,23 +341,6 @@ def exercise_live_agent(agent: AgentName) -> None:
             probe_count += 1
             assert result.exit_code == 0, result.stderr
             assert skill_name in result.activation_skills
-
-        before_setup = _tree_manifest(repo)
-        setup = run_agent(agent, _setup_prompt(agent), repo, harness=harness)
-        probe_count += 1
-        assert setup.exit_code == 0, setup.stderr
-        after_setup = _tree_manifest(repo)
-        changed = {
-            path
-            for path in before_setup.keys() | after_setup.keys()
-            if before_setup.get(path) != after_setup.get(path)
-        }
-        assert changed == {
-            ".apm/instructions/engineering-workflow.md",
-            "docs/agents/issue-tracker.md",
-        }
-        assert harness.mise_calls == (("run", "agent-sync"),)
-        assert harness.github_mutations == ()
 
         wayfinder = run_agent(agent, _wayfinder_prompt(agent), repo, harness=harness)
         probe_count += 1

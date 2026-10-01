@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Implement Spec
 
-Deliver the whole spec on one **integration branch**, with every ticket resolved the way the issue tracker closes work. `docs/agents/issue-tracker.md` configures the tracker; if that file is missing, tell the user to run `/setup-engineering-workflow-for-apm`. The spec's tickets are a **task graph** of blocking edges, not a list of steps: every ticket whose blockers are done is on the **frontier** and can start.
+Deliver the whole spec on one **integration branch**, with every ticket resolved the way the issue tracker closes work. `docs/agents/issue-tracker.md` configures the tracker; if that file is missing, tell the user to create it: the project template writes one, and the `engineering-loop` skill's `issue-tracker-github.md` is a GitHub starting point. The spec's tickets are a **task graph** of blocking edges, not a list of steps: every ticket whose blockers are done is on the **frontier** and can start.
 
 1. Read the spec and enough of the tickets to see the graph.
 2. Create the integration branch. If the tracker closes work through PRs, or the user asks for one, open a draft PR that closes the spec issue and every ticket after the first merge in step 4, because a branch with no commits ahead of its base cannot open one.

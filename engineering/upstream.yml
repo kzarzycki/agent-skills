@@ -3,21 +3,18 @@ repository: https://github.com/mattpocock/skills.git
 tracked_ref: origin/main
 stable_tag_pattern: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 removal_policy: block
-substitutions:
-  # The downstream setup skill replaces the upstream one; renaming every
-  # reference by literal survives upstream rewording, which a context diff
-  # did not.
-  - find: /setup-matt-pocock-skills
-    replace: /setup-engineering-workflow-for-apm
+# Every imported skill is tuned, so its overlay replaces upstream text whole;
+# a substitution is for an untuned one.
+substitutions: []
 exclusions:
+  # Projects get docs/agents/ from the project template, not a setup skill.
   - setup-matt-pocock-skills
 owned_skills:
   - audit-third-party-software
   - context-extractor
+  - engineering-loop
   - operating-omnigent
 owned_overlays:
-  - source: overlays/skills/setup-engineering-workflow-for-apm
-    destination: skills/setup-engineering-workflow-for-apm
   - source: overlays/skills/ask-matt
     destination: skills/ask-matt
   - source: overlays/skills/claude-handoff

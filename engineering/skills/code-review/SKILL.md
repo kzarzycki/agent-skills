@@ -12,7 +12,7 @@ Review the diff from a fixed point to the current work on two axes, each in its 
 
 A change can pass one and fail the other (the right thing built against convention, or the wrong thing built well), so the axes stay separate from review to report.
 
-The tracker comes from `docs/agents/issue-tracker.md`. If it is missing, tell the user to run `/setup-engineering-workflow-for-apm`.
+The tracker comes from `docs/agents/issue-tracker.md`. If it is missing, tell the user to create it: the project template writes one, and the `engineering-loop` skill's `issue-tracker-github.md` is a GitHub starting point.
 
 ## 1. Pin the diff
 

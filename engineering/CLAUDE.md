@@ -8,10 +8,11 @@ future coding-agent adapters.
 ## Source ownership
 
 - Owned skills, edited in place: `skills/audit-third-party-software/`,
-  `skills/context-extractor/`, `skills/operating-omnigent/`.
+  `skills/context-extractor/`, `skills/engineering-loop/`,
+  `skills/operating-omnigent/`.
 - Owned overlays, canonical under `overlays/skills/<name>/` and reproduced into
-  `skills/<name>/`: `setup-engineering-workflow-for-apm` and every tuned
-  imported skill (listed under `owned_overlays` in `upstream.yml`).
+  `skills/<name>/`: every tuned imported skill (listed under `owned_overlays` in
+  `upstream.yml`).
 - Everything else under `skills/` is generated from `upstream.yml`,
   `vendir.yml`, `vendir.lock.yml`, the substitutions and `provenance.yml`.
 
@@ -36,6 +37,9 @@ A tuned skill carries only what a strong current model would not do unprompted.
   formats and gates.
 - Stay harness-neutral (no tool names of one agent) and tracker-neutral
   (`docs/agents/issue-tracker.md` configures the tracker).
+- `engineering-loop` names no project: a project's facts live in its
+  `docs/agents/` files, and `tests/test_engineering_loop.py` fails on a
+  project term.
 - Give every "never" or "must" its reason in the same sentence.
 
 ## Upstream intake

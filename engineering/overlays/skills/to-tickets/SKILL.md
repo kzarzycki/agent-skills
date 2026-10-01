@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Break a plan, spec, or conversation into **tickets**: tracer-bullet vertical slices, each naming the tickets that **block** it.
 
-GitHub Issues is the default tracker; `docs/agents/issue-tracker.md` configures it, and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to run `/setup-engineering-workflow-for-apm`.
+GitHub Issues is the default tracker; `docs/agents/issue-tracker.md` configures it, and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to create it: the project template writes one, and the `engineering-loop` skill's `issue-tracker-github.md` is a GitHub starting point.
 
 ## Draft
 

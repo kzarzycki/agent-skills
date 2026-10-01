@@ -10,7 +10,7 @@ Wayfinder plans; it does not build. Each ticket resolves a decision, and the map
 
 ## Tracker
 
-The map, its child tickets, blocking and frontier queries live in the tracker `docs/agents/issue-tracker.md` describes. GitHub Issues is the default real tracker; a repository may configure another. If that file is missing, tell the user to run `/setup-engineering-workflow-for-apm`. The tracker doc owns batch review, approval, creation, resume, and relationship wiring.
+The map, its child tickets, blocking and frontier queries live in the tracker `docs/agents/issue-tracker.md` describes. GitHub Issues is the default real tracker; a repository may configure another. If that file is missing, tell the user to create it: the project template writes one, and the `engineering-loop` skill's `issue-tracker-github.md` is a GitHub starting point. The tracker doc owns batch review, approval, creation, resume, and relationship wiring.
 
 - **Claim**: assign the ticket to the dev driving the map, before any other work, so concurrent sessions skip it. An open, unassigned ticket is unclaimed.
 - **Blocking**: the tracker's native dependency relationship, so its own UI shows what is takeable without opening the map. Fall back to a body convention only when the tracker has none.

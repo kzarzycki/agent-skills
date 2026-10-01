@@ -1,7 +1,30 @@
 # Issue tracker: GitHub
 
-Issues and PRDs for this repository live in GitHub Issues. Run `gh` commands inside the
-repository so the CLI infers the remote.
+<!-- A starting point for a project's docs/agents/issue-tracker.md: fill the first four
+sections and keep the rest. The engineering loop's issues.md holds the states,
+categories, sizes and board columns; this file adds only the project's facts. Its spec
+gate reads the first backticked name of each list item under Components (and Extra
+categories, when the project has any). -->
+
+## Repo
+
+Issues and specs for `<owner>/<repo>` live in GitHub Issues. Run `gh` commands inside
+the repository so the CLI infers the remote.
+
+## Components
+
+Every issue carries at least one: where the change lands.
+
+- **`<name>`**: <what it covers>.
+
+## Never on GitHub
+
+<What must not appear in an issue, comment, commit message or PR, and what to write
+instead.>
+
+## Extra labels
+
+<Labels beyond the loop's, and what each classifies; "none" when there are none.>
 
 ## Operations
 

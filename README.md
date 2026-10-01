@@ -10,7 +10,7 @@ optional adapters.
 |---|---|
 | **workflow** | Persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, learning consolidation, and durable human-gated workflows. |
 | **research** | Deep-research orchestration — parallel multi-source web search producing cited reports, plus delegation to hosted research assistants. |
-| **engineering** | Safely vetting and adopting third-party code, and capturing a project's conventions. |
+| **engineering** | The engineering loop (spec, build, gates, proof, an independent verifier, landing), its issue conventions, and the design, testing and review skills it calls. |
 | **content** | Understanding and reproducing a person's writing voice for outreach, content, and proposals. |
 | **experimental** | Skills under active iteration. **Contract:** anything here may change, break, or be removed at any time — not held to the stability of the other plugins. |
 

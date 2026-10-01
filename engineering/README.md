@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.6.2
+      ref: ^0.8.0
 ```
 
 Then run:
@@ -28,7 +28,26 @@ the same inventory to `.agents/skills/`. Those paths are generated; edit the
 package sources: tuned skills under `engineering/overlays/skills/`, owned skills
 under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.6.2`. APM resolves
+## Turn on the engineering loop
+
+The `engineering-loop` skill runs every change as intent, spec, build, gates,
+proof, an independent verifier and landing. A project turns it on with one line
+in its `AGENTS.md`, for example "Every change that lands as a PR runs the
+`engineering-loop` skill", and states its own facts in files it owns:
+
+- `mise run check`: the gate, which CI runs too;
+- `docs/agents/loop.md`: the owner, how to prove a change, acceptance
+  references, landing exceptions, the worktree command, the ledger path;
+- `docs/agents/issue-tracker.md`: the repo, its components, what must never
+  reach the tracker (the skill's `issue-tracker-github.md` is a GitHub starting point);
+- `docs/agents/coding-standards.md`: the domain's facts.
+
+Each developer picks how agents run with one line in their personal
+instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
+means native subagents. The verifier comes from the other model family when its
+CLI is installed; otherwise the PR body says `verifier: same family`.
+
+The independently versioned release tag is `engineering-v0.8.0`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 
@@ -47,11 +66,10 @@ own release instead of installing the upstream `main` branch directly.
 Three kinds of source ship under `engineering/skills/`:
 
 - Owned skills, edited in place: `audit-third-party-software`,
-  `context-extractor`, `operating-omnigent`.
+  `context-extractor`, `engineering-loop`, `operating-omnigent`.
 - Owned overlays under `overlays/skills/<name>/`, reproduced into
-  `skills/<name>/`: `setup-engineering-workflow-for-apm` and every imported
-  skill tuned for current models (listed under `owned_overlays` in
-  `upstream.yml`).
+  `skills/<name>/`: every imported skill tuned for current models (listed
+  under `owned_overlays` in `upstream.yml`).
 - Imported skills not yet tuned, generated from the locked upstream source with
   the `substitutions` in `upstream.yml` applied.
 

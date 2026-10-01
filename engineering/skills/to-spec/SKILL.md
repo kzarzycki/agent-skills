@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Turn what the conversation and the codebase already establish into a spec. Don't interview the user; the one thing you check with them is the test seams.
 
-`docs/agents/issue-tracker.md` configures the tracker, and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to run `/setup-engineering-workflow-for-apm`.
+`docs/agents/issue-tracker.md` configures the tracker, and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to create it: the project template writes one, and the `engineering-loop` skill's `issue-tracker-github.md` is a GitHub starting point.
 
 1. Explore the code as far as the spec needs. Use the `GLOSSARY.md` vocabulary and respect the ADRs in the area.
 2. Choose the test seams: existing before new, as high as possible, as few as possible (one is ideal). Confirm them with the user.
