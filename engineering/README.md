@@ -58,15 +58,15 @@ Take the first rung that holds:
 1. **Fill a fact** in the repo's `docs/agents/` files.
 2. **Extend:** a project skill under `.apm/skills/` with a different name that
    says "follow `<skill>` with these differences". It keeps receiving pack fixes.
-3. **Fork:** copy the pack skill's whole folder to `.apm/skills/<same-name>/`,
-   add a `skills:` list to the pack dependency in `apm.yml` naming every other
-   pack skill the repo keeps, run `mise run agent-sync` twice and commit. The
-   first install after adding the list removes the local copy and the second
-   restores it (APM 0.30.0). Without the list the local copy still wins the
-   install, but `apm audit --ci`, which agent-sync runs, fails it as drift.
-   - `skills:` is an allow-list: a skill the pack adds later is not installed
-     until you list it.
-   - The fork no longer gets pack fixes.
+3. **Fork: not supported yet.** A same-name copy in `.apm/skills/` replaces
+   the pack's skill, but on APM 0.30.0 no setup passes `mise run agent-sync`
+   reliably. Without a `skills:` subset, `apm audit --ci` reports the copy as
+   drift. With a subset that leaves the skill out, the copy is removed and
+   restored on alternate syncs, so every other sync fails audit. A subset is
+   also an allow-list, so skills the pack adds later would not be installed
+   until listed. Declarative overrides are proposed upstream in
+   [microsoft/apm#2413](https://github.com/microsoft/apm/issues/2413); until
+   then, extend instead or change the pack.
 4. **Change the pack** upstream, here.
 
 ## Install from the Claude marketplace
