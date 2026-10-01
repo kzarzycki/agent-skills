@@ -34,8 +34,8 @@ answer.
 report: after an idle hour the cache is cold, so the report is cheaper than the old
 transcript, and a send to a reaped session answers `queued` and never arrives.
 
-**Model.** Codex children run on the model the script's `MODELS` pins, whatever Codex's
-configured default is; `--model` overrides it for an item that needs more.
+**Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
+`OMNIGENT_MODEL_CLAUDE`), else its harness's default.
 
 **Same-family verifier.** Pass `--author <claude|codex>` when starting a verifier. When
 it matches the verifier's family the script refuses unless `--same-family` is given; the

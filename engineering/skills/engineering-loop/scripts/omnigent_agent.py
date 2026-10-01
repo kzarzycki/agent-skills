@@ -36,8 +36,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
-# Pinned so a child stays on sol (not the pricier astra) whatever ~/.codex/config.toml says; --model overrides.
-MODELS = {"codex": "gpt-6.1-sol"}
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
 OMNIGENT_PYTHON = Path.home() / ".local/share/uv/tools/omnigent/bin/python"
 RUNNING = {"running", "launching", "queued", "starting"}
@@ -183,7 +181,7 @@ class Omnigent:
         # when not run from an Omnigent session.
         if parent := os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID"):
             body["parent_session_id"] = parent
-        if model := model or MODELS.get(agent):
+        if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
             body["model_override"] = model
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
@@ -399,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--confirm-seconds", type=float, default=60.0)
         p.add_argument(
             "--model",
-            help="model override (default: gpt-6.1-sol for codex, the session default for claude)",
+            help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CODEX, else the harness default)",
         )
         p.add_argument(
             "--author",

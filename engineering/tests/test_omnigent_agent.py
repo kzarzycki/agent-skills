@@ -378,6 +378,31 @@ def test_create_files_the_session_under_the_project(
     assert calls[-1][2] and "project_id" not in calls[-1][2]
 
 
+def test_the_model_is_the_flag_else_the_agents_environment_variable_else_the_harness_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        if body is not None:
+            bodies.append(body)
+        return {"/v1/agents": [{"name": "codex-native-ui", "id": "a1"}], "/v1/projects": []}.get(
+            path, {"id": "s1"}
+        )
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
+    omnigent_agent.Omnigent().create("codex", "t")
+    monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "from-env")
+    monkeypatch.setenv("OMNIGENT_MODEL_CLAUDE", "not-codex")
+    omnigent_agent.Omnigent().create("codex", "t")
+    omnigent_agent.Omnigent().create("codex", "t", "from-flag")
+    assert [body.get("model_override") for body in bodies] == [None, "from-env", "from-flag"]
+
+
 @pytest.mark.parametrize(
     ("origin", "name"),
     [
