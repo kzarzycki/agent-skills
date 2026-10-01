@@ -6,15 +6,16 @@ UI, and delegate the rest.
 
 1. **Intent.** File a request from the owner in their words, with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
-   given by its state ([issues.md](issues.md)): `needs-owner` waits unless the owner is in
-   the session, `ready-for-agent` goes to step 3 (or to its plan, when one is due and
-   missing), no state label is triaged here. Read the request, the evidence the owner gave
+   given by its state ([issues.md](issues.md)): `needs-owner` waits until the owner
+   answers or approves what it asks, in the session or by removing the label;
+   `ready-for-agent` goes to its open PR's step, else to its plan when one is due and
+   missing, else to step 3; no state label is triaged here. Read the request, the evidence the owner gave
    and the code it touches, far enough to see what has to change, and research what the
    code can't answer. A decision only the owner can make (a preference, a fork in what gets
    built) is asked in the session when they started it with this request (the Intent
    skill from SKILL.md's Practice, in rounds, each question with your recommendation);
-   otherwise comment the questions, add `needs-owner`, and stop. On resuming a parked
-   issue, remove `needs-owner`. Each state change here and below also moves the ticket on
+   otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   answered or approved, remove `needs-owner` if it is still there. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
 2. **Spec.** Write the spec into the intent's issue with the Spec skill (SKILL.md,

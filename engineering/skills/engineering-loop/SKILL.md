@@ -60,6 +60,15 @@ Whatever the practice, the issue and the board hold the state, the gate runs, th
 verifier is from the other model family, and the loop merges. A practice skill's own
 merging or state-keeping is overridden, because two writers of one state drift apart.
 
+### Approvals
+
+loop.md § Approvals holds one rule per line, `<point>: <condition>`, such as
+`spec: size:L or larger, or component billing`. The point is `spec`, `plan` or `merge`;
+the condition is judged on what the issue carries (size, component, category) or on the
+kind of change, and `always` matches every issue. A rule GitHub can enforce, such as a
+required review or a code owner, belongs in branch protection or `CODEOWNERS`, which the
+loop obeys and never overrides.
+
 ## Roles
 
 - **Coordinator** ([coordinator.md](coordinator.md)): takes a request to a merged PR and
