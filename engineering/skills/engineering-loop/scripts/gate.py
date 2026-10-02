@@ -139,6 +139,25 @@ def owner_needed(
     return any(matches(condition, labels, paths) for rule, condition in loop_rules if rule == point)
 
 
+def merge_paths(pull: dict[str, Any], loop_rules: list[tuple[str, str]]) -> list[str]:
+    """The PR's paths, read only when a merge rule has a path condition to judge."""
+    if not any(
+        found.group(5)
+        for point, condition in loop_rules
+        if point == "merge"
+        for found in CONDITION.finditer(condition)
+    ):
+        return []
+    files = pull["files"]
+    # ponytail: one page of files; page them when a PR with a path rule outgrows it.
+    if (files.get("totalCount") or 0) > len(files["nodes"]):
+        raise Refused(
+            f"PR #{pull['number']} has more than {len(files['nodes'])} changed files: "
+            "the gate reads one page to judge a path rule, so split the PR"
+        )
+    return [file["path"] for file in files["nodes"]]
+
+
 def fingerprint(text: str) -> str:
     return hashlib.sha256(text.replace("\r\n", "\n").strip().encode()).hexdigest()[:12]
 
@@ -243,15 +262,7 @@ def problems(
 
 def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop: str) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge)."""
-    loop_rules, paths = rules(loop), [file["path"] for file in pull["files"]["nodes"]]
-    # ponytail: one page of files and of checks; page them when a PR outgrows it.
-    found = [
-        f"PR #{pull['number']} has more than {len(nodes)} {what}: the gate reads one page, so split the PR"
-        for what, nodes, total in (
-            ("changed files", pull["files"]["nodes"], pull["files"].get("totalCount")),
-        )
-        if (total or 0) > len(nodes)
-    ]
+    loop_rules, found = rules(loop), []
     for issue in issues:
         labels = names(issue)
         if any(label.startswith("wayfinder:") for label in labels):
@@ -280,6 +291,7 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
     if os.environ.get("GITHUB_ACTIONS") != "true":
         found += ci(where, pull)
+    paths = merge_paths(pull, loop_rules)
     owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
     found += approvals(where, pull, "merge", "head", pull["headRefOid"], owner)
     return found
@@ -430,7 +442,7 @@ def approve(point: str, number: int, by: str, triage: str | None) -> int:
             for line in verdicts[-1].splitlines()
             if line.strip().startswith(("VERDICT:", "SATISFIED:"))
         )
-        issues, paths = closing_issues(pull), [file["path"] for file in pull["files"]["nodes"]]
+        issues, paths = closing_issues(pull), merge_paths(pull, loop_rules)
         node, targets, key, value = (
             pull,
             [issue["number"] for issue in issues],

@@ -324,14 +324,24 @@ def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
     ]
 
 
-def test_more_files_or_checks_than_one_page_is_refused() -> None:
+def test_more_checks_than_one_page_is_refused() -> None:
     big = pull(comments=MERGED, labels=("approved:merge",))
-    big["files"]["totalCount"] = 101
     big["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] = 101
     assert gate.proofs("merge", big, [approved(1, "web")], LOOP) == [
-        "PR #7 has more than 0 changed files: the gate reads one page, so split the PR",
         "PR #7 has more than 1 CI checks: the gate reads one page",
     ]
+
+
+def test_more_files_than_one_page_is_refused_only_where_a_merge_path_rule_needs_them() -> None:
+    big = pull(comments=MERGED, labels=("approved:merge",))
+    big["files"]["totalCount"] = 101
+    no_path_rule = "## Approvals\n\n- spec: size:L or larger\n"
+    assert (
+        gate.proofs("build", big, [approved(1, "web")], LOOP),
+        gate.proofs("merge", big, [approved(1, "web")], no_path_rule),
+    ) == ([], [])
+    with pytest.raises(gate.Refused, match="more than 0 changed files: the gate reads one page"):
+        gate.proofs("merge", big, [approved(1, "web")], LOOP)
 
 
 def test_more_comments_than_one_page_is_refused(
