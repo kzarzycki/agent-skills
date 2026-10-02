@@ -67,7 +67,7 @@ UI, and delegate the rest.
    review every turn. A note on a satisfied verdict is fixed in this PR too, never
    deferred; when that fix changes nothing an agent or tool reads, it needs no further
    pass: rerun the gates and show the diff in the PR body. Instructions are code: a skill,
-   a role file or brief, `AGENTS.md`, the project's `docs/agents/` files, a prompt, and
+   a role file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt, and
    anything a tool parses each need the pass. Only prose for people is exempt: a README,
    the changelog, a code comment.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
