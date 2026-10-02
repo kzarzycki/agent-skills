@@ -315,6 +315,29 @@ def test_inside_github_actions_the_other_checks_are_their_own_status(
     assert gate.proofs("merge", running, [approved(1, "web")], LOOP) == []
 
 
+def test_without_ci_the_merge_proof_is_the_recorded_local_check() -> None:
+    no_ci = LOOP + "\nCI: none\n"
+    unrun = pull(comments=MERGED, labels=("approved:merge",), checks=())
+    ran = pull(
+        comments=MERGED,
+        labels=("approved:merge",),
+        checks=(),
+        body="## Evidence\n\n- `mise run check`: exit 0.\n",
+    )
+    assert (
+        gate.proofs("merge", unrun, [approved(1, "web")], no_ci),
+        gate.proofs("merge", ran, [approved(1, "web")], no_ci),
+    ) == (
+        [
+            (
+                "PR #7: the project has no CI (loop.md `CI: none`), and `## Evidence` names no"
+                " `mise run check` with exit 0"
+            )
+        ],
+        [],
+    )
+
+
 def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
     headless = (VERDICT, record("merge", "coordinator", head=HEAD))
     assert gate.proofs(

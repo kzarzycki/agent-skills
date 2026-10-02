@@ -7,6 +7,9 @@
   build check refused such a PR, and the pre-push hook refused the very push that would shrink
   it, because the hook reads the PR as GitHub last saw it. `approve merge` now refuses the
   unread page too, instead of judging a path rule on a truncated list.
+- A project without CI says so with the line `CI: none` in `docs/agents/loop.md`. Its merge
+  proof is then the PR's Evidence naming `mise run check` with exit 0 on the head, in place of
+  green CI checks. Projects with CI keep the CI proof.
 
 ## 0.8.0 - 2026-10-01
 

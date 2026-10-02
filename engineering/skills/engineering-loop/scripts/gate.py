@@ -12,8 +12,9 @@ a pre-push hook and CI call that task.
 a component and exactly one size (a `wayfinder:` ticket needs only its state), and its approvals: `spec` always,
 `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.md § Practice).
 `check merge` adds the PR's: the `## Evidence` section of its body, a posted verifier verdict, every CI check on the
-head green (skipped inside GitHub Actions, where each other check is its own status and the gate job one of them),
-and a `merge` approval on the head commit, with its verdict.
+head green (skipped inside GitHub Actions, where each other check is its own status and the gate job one of them;
+with the line `CI: none` in loop.md, the Evidence names `mise run check` with exit 0 instead), and a `merge` approval
+on the head commit, with its verdict.
 
 An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
 
@@ -285,11 +286,18 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
-    if not section(pull["body"] or "", "Evidence").strip():
+    evidence = section(pull["body"] or "", "Evidence")
+    if not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
-    if os.environ.get("GITHUB_ACTIONS") != "true":
+    if re.search(r"^[ \t]*CI:[ \t]*none\b", loop, re.MULTILINE | re.IGNORECASE):
+        if not re.search(r"mise run check\b.*\bexit(?: code)?:? *0\b", evidence, re.IGNORECASE):
+            found.append(
+                f"{where}: the project has no CI (loop.md `CI: none`), and `## Evidence` names no"
+                " `mise run check` with exit 0"
+            )
+    elif os.environ.get("GITHUB_ACTIONS") != "true":
         found += ci(where, pull)
     paths = merge_paths(pull, loop_rules)
     owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
