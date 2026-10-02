@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.2 - 2026-10-02
+
+- Under `CI: none`, the merge proof is a record, not a sentence. `gate.py record-check <pr>` runs
+  `mise run check` on a clean checkout at the PR head and posts `Local check passed` with the
+  head commit. The merge gate needs that record on the current head. It no longer reads
+  `## Evidence` for `mise run check` and `exit 0`. That matching was brittle, and it was not
+  tied to the head, so a line written for an earlier commit still passed.
+
 ## 0.8.1 - 2026-10-02
 
 - `gate.py` reads a PR's changed files only when a merge rule has a path condition. A PR with
