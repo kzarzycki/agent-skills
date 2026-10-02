@@ -4,6 +4,7 @@
     python3 scripts/gate.py check <build|merge> [pr]      # one line per missing proof, exit 1; no PR yet: exit 0
     python3 scripts/gate.py approve <spec|plan|merge> <issue or pr> --by <coordinator|owner> [--triage <link>]
     python3 scripts/gate.py verdict <pr> <report>          # post the verifier's verdict lines on the PR
+    python3 scripts/gate.py record-check <pr>              # run `mise run check` on the PR head; record a pass
 
 Run from the repo root. The project's `mise run gate <point> [pr]` task runs `check`, then its own checks; the loop,
 a pre-push hook and CI call that task.
@@ -13,8 +14,9 @@ a component and exactly one size (a `wayfinder:` ticket needs only its state), a
 `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.md § Practice).
 `check merge` adds the PR's: the `## Evidence` section of its body, a posted verifier verdict, every CI check on the
 head green (skipped inside GitHub Actions, where each other check is its own status and the gate job one of them;
-with the line `CI: none` in loop.md, the Evidence names `mise run check` with exit 0 instead), and a `merge` approval
-on the head commit, with its verdict.
+with the line `CI: none` in loop.md, a `record-check` pass on the head instead), and a `merge` approval on the head
+commit, with its verdict. `record-check` runs only on a clean checkout at the PR head, and records nothing if the check
+fails or changes the tree.
 
 An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
 
@@ -71,8 +73,7 @@ CONDITION = re.compile(
 )
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
-# `mise run check`'s own exit code, right after it: only punctuation or "with" between them.
-CHECK_PASSED = r"mise run check`?[ \t:(),\-–—]*(?:with[ \t]+)?exit(?: code)?:?[ \t]*0\b"
+CHECKED = "Local check passed"
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
@@ -296,10 +297,14 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
     if not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
     if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
-        if not re.search(CHECK_PASSED, evidence, re.IGNORECASE):
+        if not any(
+            [line.strip() for line in body.strip().splitlines()[:2]]
+            == [CHECKED, f"Head: {pull['headRefOid']}"]
+            for body in bodies(pull)
+        ):
             found.append(
-                f"{where}: the project has no CI (loop.md `CI: none`), and `## Evidence` names no"
-                " `mise run check` with exit 0"
+                f"{where}: the project has no CI (loop.md `CI: none`), and no local check passed on"
+                " the head (gate.py record-check)"
             )
     elif os.environ.get("GITHUB_ACTIONS") != "true":
         found += ci(where, pull)
@@ -503,6 +508,43 @@ def verdict(pr: int, report: Path) -> int:
     return 0
 
 
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+
+
+def record_check(pr: int) -> int:
+    """Run `mise run check` on a clean checkout at the PR head; post a record only when it passes untouched."""
+    head = pull_request(pr)["headRefOid"]
+
+    def state() -> tuple[str, str]:
+        # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
+        status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+        # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
+        hidden = [
+            f"{line[2:]} (index flag hides its changes)\n"
+            for line in git("ls-files", "-v").splitlines()
+            if line[:1].islower() or line[:1] == "S"
+        ]
+        return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
+
+    before = state()
+    if before[0] != head:
+        raise Refused(
+            f"the checkout is at {before[0]}, PR #{pr}'s head is {head}: push, or check out the head"
+        )
+    if before[1]:
+        raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
+    code = subprocess.run(["mise", "run", "check"], check=False).returncode
+    if code:
+        raise Refused(f"mise run check exited {code}: nothing recorded")
+    if state() != before:
+        raise Refused(
+            f"mise run check changed the checkout, so it did not run on the head as pushed:\n{state()[1]}"
+        )
+    comment(pr, f"{CHECKED}\nHead: {head}\nCommand: mise run check\n")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -519,12 +561,16 @@ def main(argv: list[str]) -> int:
     posting = commands.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
+    recording = commands.add_parser("record-check")
+    recording.add_argument("pr", type=int)
     args = parser.parse_args(argv)
     try:
         if args.command == "check":
             return check(args.point, args.pr)
         if args.command == "approve":
             return approve(args.point, args.number, args.by, args.triage)
+        if args.command == "record-check":
+            return record_check(args.pr)
         return verdict(args.pr, args.report)
     except Refused as exc:
         print(exc)

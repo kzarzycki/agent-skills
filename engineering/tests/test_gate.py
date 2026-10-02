@@ -316,27 +316,27 @@ def test_inside_github_actions_the_other_checks_are_their_own_status(
     assert gate.proofs("merge", running, [approved(1, "web")], LOOP) == []
 
 
-def test_without_ci_the_merge_proof_is_the_recorded_local_check() -> None:
+def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
     no_ci = LOOP + "\nCI: none\n"
-    unrun = pull(comments=MERGED, labels=("approved:merge",), checks=())
-    ran = pull(
-        comments=MERGED,
-        labels=("approved:merge",),
-        checks=(),
-        body="## Evidence\n\n- `mise run check`: exit 0.\n",
-    )
+    missing = [
+        (
+            "PR #7: the project has no CI (loop.md `CI: none`), and no local check passed on"
+            " the head (gate.py record-check)"
+        )
+    ]
+
+    def proofs(*comments: str) -> list[str]:
+        merged = pull(comments=(*MERGED, *comments), labels=("approved:merge",), checks=())
+        return gate.proofs("merge", merged, [approved(1, "web")], no_ci)
+
     assert (
-        gate.proofs("merge", unrun, [approved(1, "web")], no_ci),
-        gate.proofs("merge", ran, [approved(1, "web")], no_ci),
-    ) == (
-        [
-            (
-                "PR #7: the project has no CI (loop.md `CI: none`), and `## Evidence` names no"
-                " `mise run check` with exit 0"
-            )
-        ],
-        [],
-    )
+        proofs(),
+        proofs(f"{gate.CHECKED}\nHead: {'b' * 40}\nCommand: mise run check\n"),
+        proofs("## Evidence\n\n- `mise run check`: exit 0\n"),
+        proofs(f"{gate.CHECKED}: no, not run\nHead: {HEAD}\n"),
+        proofs(f"> {gate.CHECKED}\n> Head: {HEAD}\n"),
+        proofs(f"{gate.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
+    ) == (missing, missing, missing, missing, missing, [])
 
 
 @pytest.mark.parametrize(
@@ -352,27 +352,6 @@ def test_without_ci_the_merge_proof_is_the_recorded_local_check() -> None:
 )
 def test_only_a_bare_ci_none_line_opts_out_of_ci(line: str, opted_out: bool) -> None:
     assert (re.search(gate.NO_CI, f"## Gates\n\n{line}\n", re.MULTILINE) is not None) == opted_out
-
-
-@pytest.mark.parametrize(
-    ("evidence", "passed"),
-    [
-        ("- `mise run check`: exit 0.", True),
-        ("mise run check exit code 0", True),
-        ("- `mise run check`: exit 1; `git diff --exit-code`: exit 0.", False),
-        ("- `mise run check`: exit 10", False),
-        ("- `git diff`: exit 0; `mise run check` was not run", False),
-        ("- `mise run check` (exit 0)", True),
-        ("- `mise run check` with exit 0", True),
-        ("- `mise run check` was not run; `git diff --stat`: exit 0.", False),
-        ("- `mise run check` failed; `git diff --stat`: exit 0.", False),
-        ("- mise run check failed, git diff exit 0", False),
-    ],
-)
-def test_the_check_evidence_is_the_first_exit_after_mise_run_check(
-    evidence: str, passed: bool
-) -> None:
-    assert (re.search(gate.CHECK_PASSED, evidence, re.IGNORECASE) is not None) == passed
 
 
 def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
@@ -626,3 +605,125 @@ def test_check_reads_the_projects_own_components_and_categories(
     monkeypatch.setattr(gate, "pull_request", lambda _pr: pr)
     monkeypatch.chdir(tmp_path)
     assert (gate.main(["check", "build", "7"]), capsys.readouterr().out) == (0, "")
+
+
+# --- record-check: the local check, run on the PR head ---
+
+
+@pytest.fixture
+def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A checkout at the PR head and clean; a test changes it, or what the check does to it."""
+    state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None}
+
+    def git(*args: str) -> str:
+        if args[0] == "rev-parse":
+            return state["head"] + "\n"
+        if args[0] == "ls-files":
+            return "H app.py\n"
+        assert args == (
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
+        return state["status"]
+
+    def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        assert (command, check) == (["mise", "run", "check"], False)
+        if state["after"]:
+            state["status"] = state["after"]
+        return subprocess.CompletedProcess(command, state["exit"])
+
+    monkeypatch.setattr(gate, "pull_request", lambda _n: pull())
+    monkeypatch.setattr(gate, "git", git)
+    monkeypatch.setattr(gate.subprocess, "run", run)
+    return state
+
+
+def test_a_passing_check_on_the_clean_head_is_recorded(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any]
+) -> None:
+    assert gate.main(["record-check", "7"]) == 0
+    assert github == [("comment", 7, f"{gate.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n")]
+
+
+@pytest.mark.parametrize(
+    ("change", "said"),
+    [
+        ({"head": "b" * 40}, f"the checkout is at {'b' * 40}, PR #7's head is {HEAD}"),
+        ({"status": " M app.py\n"}, "the tree has changes"),
+        ({"exit": 2}, "mise run check exited 2: nothing recorded"),
+        ({"after": " M uv.lock\n"}, "mise run check changed the checkout"),
+    ],
+)
+def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    change: dict[str, Any],
+    said: str,
+) -> None:
+    checkout.update(change)
+    assert gate.main(["record-check", "7"]) == 1
+    assert github == []
+    assert said in capsys.readouterr().out
+
+
+def git_in(where: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", "-C", str(where), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def committed(where: Path) -> str:
+    where.mkdir(exist_ok=True)
+    git_in(where, "init", "-q")
+    git_in(where, "config", "user.email", "loop@example.com")
+    git_in(where, "config", "user.name", "loop")
+    (where / "app.py").write_text("value = 1\n")
+    git_in(where, "add", "-A")
+    git_in(where, "commit", "-qm", "base")
+    return git_in(where, "rev-parse", "HEAD").strip()
+
+
+def hidden_untracked(repo: Path) -> None:
+    git_in(repo, "config", "status.showUntrackedFiles", "no")
+    (repo / "new.py").write_text("")
+
+
+def hidden_submodule_edit(repo: Path) -> None:
+    committed(repo.parent / "lib")
+    git_in(repo, "submodule", "add", "-q", str(repo.parent / "lib"), "lib")
+    git_in(repo, "commit", "-qm", "lib")
+    git_in(repo, "config", "submodule.lib.ignore", "all")
+    (repo / "lib" / "app.py").write_text("value = 2\n")
+
+
+def hidden_by_ignore_stat(repo: Path) -> None:
+    git_in(repo, "config", "core.ignoreStat", "true")
+    (repo / "lib.py").write_text("value = 1\n")
+    git_in(repo, "add", "lib.py")  # core.ignoreStat marks it assume-unchanged
+    git_in(repo, "commit", "-qm", "lib")
+    (repo / "lib.py").write_text("value = 2\n")
+
+
+@pytest.mark.parametrize("hide", [hidden_untracked, hidden_submodule_edit, hidden_by_ignore_stat])
+def test_a_change_the_status_config_hides_still_records_nothing(
+    github: list[tuple[Any, ...]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hide: Any,
+) -> None:
+    repo = tmp_path / "repo"
+    committed(repo)
+    hide(repo)
+    head = git_in(repo, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(gate, "pull_request", lambda _n: {**pull(), "headRefOid": head})
+    monkeypatch.chdir(repo)
+    assert gate.main(["record-check", "7"]) == 1
+    assert github == []
+    assert "the tree has changes" in capsys.readouterr().out
