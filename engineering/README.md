@@ -36,9 +36,11 @@ in its `AGENTS.md`, for example "Every change that lands as a PR runs the
 `engineering-loop` skill", and states its own facts in files it owns:
 
 - `mise run check`: the gate, which CI runs too;
+- `mise run gate <build|merge> [pr]`: the proof gate, `scripts/gate.py check`
+  plus the project's own checks, run by the loop, a pre-push hook and CI;
 - `docs/agents/loop.md`: the owner, how to prove a change, acceptance
-  references, the skill for each stage it changes, the approvals the loop waits
-  for, the worktree command, the ledger path;
+  references, the skill for each stage it changes, where a person must approve
+  too, the worktree command, the ledger path;
 - `docs/agents/issue-tracker.md`: the line `Tracker: GitHub (engineering-loop's
   github.md)`, its components, what must never reach the tracker;
 - `docs/agents/coding-standards.md`: the domain's facts.

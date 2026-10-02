@@ -11,14 +11,23 @@ The engineering loop ships as a method any project turns on. No upstream change.
   or `coding-standards.md`, and a test fails on a project term. It carries
   the generic coding standards, the owner-on-the-loop rules and status
   conventions, and three stdlib scripts: `board.py` (move a ticket),
-  `spec_gate.py` (a PR closes only specced, labelled issues; components come
-  from `issue-tracker.md`) and `omnigent_agent.py` (its project defaults to the
+  `gate.py` (the proof gate) and `omnigent_agent.py` (its project defaults to the
   repo's name).
 - A project configures the loop rather than forking it: `loop.md § Practice`
   names the skill that fills a stage (defaults: `grilling`, `to-spec`,
   `code-review`, `pr`), and `§ Approvals` lists the spec, plan or merge points
   that wait for a person. The loop keeps the state, the gate, the cross-family
   verifier and the merge whatever the practice.
+- Every step leaves proof on GitHub, and `scripts/gate.py check <build|merge>`
+  checks it: the issues the PR closes are specced and labelled (what
+  `spec_gate.py` did), each approval is recorded, and at merge the PR has its
+  `## Evidence`, a posted verifier verdict, green CI and a merge approval on its
+  head. The coordinator approves spec, plan and merge itself (`gate.py
+  approve`), the verifier only gives the verdict (`gate.py verdict`), and a
+  `§ Approvals` rule adds a person's approval, made by adding the
+  `approved:<point>` label. A project runs the gate as `mise run gate`, adding
+  its own checks; the loop, a pre-push hook and CI call it. A step is skipped
+  only when the owner asks: `size:XS` no longer skips the verifier.
 - Orchestration backends: native subagents (the default), Omnigent and
   herdr-link, picked by `Orchestration backend: <name>` in personal
   instructions. Without the other model family, the verifier is a fresh session

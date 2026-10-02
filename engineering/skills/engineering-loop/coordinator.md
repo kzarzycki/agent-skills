@@ -7,7 +7,8 @@ UI, and delegate the rest.
 1. **Intent.** File a request from the owner in their words, with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
    given by its state ([issues.md](issues.md)): `needs-owner` waits until the owner
-   answers or approves what it asks, in the session or by removing the label;
+   answers what it asks, or approves (the `approved:<point>` label, or their word in the
+   session);
    `ready-for-agent` goes to its open PR's step, else to its plan when one is due and
    missing, else to step 3; no state label is triaged here. Read the request, the evidence the owner gave
    and the code it touches, far enough to see what has to change, and research what the
@@ -15,7 +16,8 @@ UI, and delegate the rest.
    built) is asked in the session when they started it with this request (the Intent
    skill from SKILL.md's Practice, in rounds, each question with your recommendation);
    otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
-   answered or approved, remove `needs-owner` if it is still there. Each state change here and below also moves the ticket on
+   answered, remove `needs-owner`; once they have approved, `gate.py approve` with
+   `--by owner` records it and removes the label. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
 2. **Spec.** Write the spec into the intent's issue with the Spec skill (SKILL.md,
@@ -23,14 +25,13 @@ UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Add `ready-for-agent` and the size label (board: `Ready`). When loop.md §
-   Practice names a plan skill, write the plan with it next, as a `## Plan` comment on
-   the issue. A matching `spec` or `plan` rule in loop.md § Approvals: after that
-   artifact, add `needs-owner` (board: `Needs owner`), comment what to approve, and stop;
-   a person approves by removing `needs-owner` or by saying so in the session. Otherwise
-   carry on: the owner reads it when they like.
-3. **Branch and notes.** Cut the PR branch and open a draft PR that closes the spec
-   (board: `Build`). Keep one scratchpad markdown for the run: the work items and what
+   references. Add `ready-for-agent` and the size label (board: `Ready`), then approve
+   the spec (SKILL.md, Approvals and proof). When loop.md § Practice names a plan skill,
+   write the plan with it next, as a `## Plan` comment on the issue, and approve it too.
+   When `approve` says a person must approve as well, comment what to approve (board:
+   `Needs owner`) and stop. Otherwise carry on: the owner reads it when they like.
+3. **Branch and notes.** Cut the PR branch, open a draft PR that closes the spec (board:
+   `Build`), and run `mise run gate build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; what the PR leaves unfixed gets its own
@@ -57,27 +58,31 @@ UI, and delegate the rest.
    outside its workspace, and nobody answers. When the change has something to see, first
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
-   unfinished: never triage or land on it. Only a mixed PR's second verifier, running at
+   unfinished: never triage or land on it. Post each finished report's verdict with
+   `python3 scripts/gate.py verdict <pr> <report>`. Only a mixed PR's second verifier, running at
    the same time, gets a detached worktree at the same head, so the two gate runs don't
    collide. Triage every finding (SKILL.md), hand the fixes to a worker or make them
    yourself, and push. Each later pass gets a fresh verifier, started the same way, plus
    the previous report's path and head; reviving the old one re-reads its whole earlier
    review every turn. A note on a satisfied verdict is fixed in this PR too, never
    deferred; when that fix changes no executable line, it needs no further pass: rerun
-   the gates and show the diff in the PR body. A `size:XS` change may skip this step; its
-   PR body says `verifier: skipped (size:XS)`.
+   the gates and show the diff in the PR body.
 8. **Land** when the landing rule holds (SKILL.md):
-   - Write the PR body with the Land skill (SKILL.md, Practice), then run
-     `gh pr ready` and `gh pr merge <pr> --squash --delete-branch --match-head-commit <landing sha>`.
    - If main moved, fetch, merge `origin/main` in and rerun the gates. A fresh verifier
      reviews the merge first (step 7) only when main's changes touch a file the PR changes
      (`git diff --name-only <old base> origin/main` against
      `git diff --name-only origin/main...HEAD`) or change the gate (the `check` task, a
      tool it runs, or the lint, type or test configuration). Otherwise the rerun gates are
      the review.
-   - A `merge` rule in loop.md § Approvals that matches holds the merge for the owner's
-     go-ahead on the PR: an approving review, or a comment where GitHub forbids
-     approving one's own PR.
+   - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
+     `## Evidence`, then approve the merge on the head that lands:
+     `python3 scripts/gate.py approve merge <pr> --by coordinator --triage <link to the body's triage>`.
+     When it says a person must approve as well, give them the PR link and stop; once
+     they have added `approved:merge` or said so, approve again with `--by owner`.
+   - `gh pr ready` marks the head approved: CI runs the merge gate on a ready PR. A push
+     after it needs `gh pr ready --undo` first, then a new approval.
+   - Once CI is green, `mise run gate merge <pr>`, then
+     `gh pr merge <pr> --squash --delete-branch --match-head-commit <landing sha>`.
    - When `gh pr merge` is refused for a missing review or check, request the reviewers
      (`gh pr edit <pr> --add-reviewer <login>`), add `needs-owner` to the issue, and
      stop. Never use `--admin`, which overrides the project's protection, and never push

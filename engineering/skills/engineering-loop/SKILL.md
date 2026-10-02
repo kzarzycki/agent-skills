@@ -8,13 +8,14 @@ description: The engineering loop, run for every change that will land as a PR, 
 A project turns the loop on with one line in its `AGENTS.md`. From then on every change
 that lands as a PR runs it, from the owner's request to the merge: tooling, agent
 configuration and files under `~/` too, through the repo that owns them. Each step
-prevents a failure. Size changes who builds and how long the spec is, and one thing more:
-a `size:XS` change may skip the verifier, and its PR says so. Gates always run.
+prevents a failure, and leaves proof on GitHub that the gate checks. Size changes who
+builds and how long the spec is, never which steps run: a step is skipped only when the
+owner asks for that change, and the PR body says so.
 
 | Step | Prevents |
 |---|---|
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
-| **Spec.** Written into the intent's issue for the owner, then `ready-for-agent`; the PR closes it. | a decision the owner never saw |
+| **Spec.** Written into the intent's issue for the owner, then `ready-for-agent` and approved; the PR closes it. | a decision the owner never saw |
 | **Build.** Workers, or the coordinator when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
 | **Gates.** `mise run check`. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
@@ -30,6 +31,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | `mise run check` | the gate: lint, types, tests, e2e, leak checks; CI runs the same task | Gates, Land |
+| `mise run gate <build\|merge> [pr]` | the proof gate: `scripts/gate.py check`, then the project's own checks; a pre-push hook and CI run it too | Build, Land |
 | `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin) and `OMP worker profile: <name>`. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
@@ -60,14 +62,27 @@ Whatever the practice, the issue and the board hold the state, the gate runs, th
 verifier is from the other model family, and the loop merges. A practice skill's own
 merging or state-keeping is overridden, because two writers of one state drift apart.
 
-### Approvals
+### Approvals and proof
 
-loop.md § Approvals holds one rule per line, `<point>: <condition>`, such as
-`spec: size:L or larger, or component billing`. The point is `spec`, `plan` or `merge`;
-the condition is judged on what the issue carries (size, component, category) or on the
-kind of change, and `always` matches every issue. A rule GitHub can enforce, such as a
-required review or a code owner, belongs in branch protection or `CODEOWNERS`, which the
-loop obeys and never overrides.
+The coordinator approves each point itself with
+`python3 scripts/gate.py approve <spec|plan|merge> <issue or PR> --by coordinator`: the
+spec once it meets its contract, the plan once it covers the spec, the merge once the
+verifier's verdict is triaged with no core finding open and the gate is green. The
+verifier only gives the verdict, which `python3 scripts/gate.py verdict <pr> <report>`
+posts on the PR. Each approval is a comment the gate reads, tied to the spec's text or
+the head commit, so a later edit or push needs approving again, plus the
+`approved:<point>` label. `mise run gate build` before building and `mise run gate merge`
+before merging check every proof (`scripts/gate.py` lists them).
+
+loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
+line, `<point>: <condition>`, such as `spec: size:L or larger, or component billing`. The
+condition is judged on what the issue carries (size, component, category), the paths the
+PR touches, or the kind of change; `always` matches everything. When a rule matches,
+`approve` leaves the label off, adds `needs-owner`, and you stop: a person approves by
+adding `approved:<point>`, or by saying so in the session, and then you run `approve`
+with `--by owner`. A condition `gate.py` can't read is yours alone to judge. A rule GitHub
+can enforce, such as a required review or a code owner, belongs in branch protection or
+`CODEOWNERS`, which the loop obeys and never overrides.
 
 ## Roles
 
@@ -135,14 +150,11 @@ never as full harness sessions.
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
-- **Landing.** A PR lands when the gate is green on the head that lands (the reviewed
-  head, plus only what `coordinator.md` steps 7 and 8 exempt from a further pass), no
-  core finding is open, the ledger is updated, and `python3 scripts/spec_gate.py <pr>`
-  exits 0 (every issue it closes is `ready-for-agent` with one category, a component and
-  one size). The gate is CI when CI runs `mise run check` on the PR; otherwise run it on
-  that head and put its exit code in the PR body. Nothing else needs authorising, except a
-  `merge` rule in loop.md § Approvals and an owner who asked to see the change first:
-  then hold the merge and give them the link and what to click.
+- **Landing.** A PR lands when `mise run gate merge <pr>` exits 0 on the head that lands
+  (the reviewed head, plus only what `coordinator.md` steps 7 and 8 exempt from a further
+  pass), no core finding is open, and the ledger is updated. Nothing else needs
+  authorising, except an owner who asked to see the change first: then hold the merge
+  and give them the link and what to click.
 
 ## Triage
 
