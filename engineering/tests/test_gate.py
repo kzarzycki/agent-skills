@@ -25,6 +25,12 @@ CATEGORIES = gate.CATEGORIES | gate.listed(TRACKER, "Extra categories")
 HEAD = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def local(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run as on a developer's machine, even inside CI; a test sets GITHUB_ACTIONS itself."""
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
+
 def problems(issues: list[dict[str, Any]]) -> list[str]:
     return gate.problems(issues, COMPONENTS, CATEGORIES)
 
@@ -326,6 +332,20 @@ def test_more_files_or_checks_than_one_page_is_refused() -> None:
         "PR #7 has more than 0 changed files: the gate reads one page, so split the PR",
         "PR #7 has more than 1 CI checks: the gate reads one page",
     ]
+
+
+def test_more_comments_than_one_page_is_refused(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    crowded = pull(comments=MERGED, labels=("approved:merge",))
+    crowded["comments"]["totalCount"] = 101
+    crowded["closingIssuesReferences"]["nodes"] = [approved(1, "web")]
+    monkeypatch.setattr(gate, "pull_request", lambda _n: crowded)
+    monkeypatch.chdir(PROJECT)
+    assert (gate.main(["check", "merge", "7"]), capsys.readouterr().out) == (
+        1,
+        "#7 has more than 2 comments: the gate reads one page\n",
+    )
 
 
 def test_a_path_rule_on_the_spec_is_left_to_the_loop() -> None:

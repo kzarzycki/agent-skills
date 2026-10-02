@@ -24,7 +24,8 @@ An approval is a comment `approve` writes, which the gate reads, plus the `appro
 The coordinator approves every point. A rule in loop.md § Approvals, one `- <point>: <condition>` line each, adds a
 person's approval (`By: owner`). Its label goes on last: the coordinator's approval removes the label and adds
 `needs-owner`, so a person approves by adding the label, or by saying so in the session; then `approve --by owner`
-writes their record, adds the label and removes `needs-owner`. A condition the gate can read is `always`, `size:L`
+writes their record, adds the label and removes `needs-owner`. A person who already approved the current spec, plan
+or head keeps their label when the coordinator approves again on resuming. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` in backticks, joined by `or`;
 any other words make the rule the loop's alone, and so does a path on spec or plan, which come before the change. The spec is the issue body, or its last `## Spec` comment where a
 tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
@@ -52,8 +53,8 @@ SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
 POINTS = ("spec", "plan", "merge")
 VERDICT = "Verifier verdict"
-ISSUE = "number body labels(first: 50) { nodes { name } } comments(last: 100) { nodes { body } }"
-PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ nodes {{ body }} }}
+ISSUE = "number body labels(first: 50) { nodes { name } } comments(last: 100) { totalCount nodes { body } }"
+PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ body }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion }} ... on StatusContext {{ context state }} }} }} }} }} }} }}
@@ -147,7 +148,15 @@ def names(node: dict[str, Any]) -> set[str]:
 
 
 def bodies(node: dict[str, Any]) -> list[str]:
-    return [comment["body"] for comment in node["comments"]["nodes"]]
+    """Its comments; refused past one page, where an approval or a spec could be among those not read."""
+    comments = node["comments"]
+    # ponytail: one page of 100; page with `before:` cursors when a spec or PR outgrows it.
+    if (comments.get("totalCount") or 0) > len(comments["nodes"]):
+        where = f"#{node['number']}"
+        raise Refused(
+            f"{where} has more than {len(comments['nodes'])} comments: the gate reads one page"
+        )
+    return [comment["body"] for comment in comments["nodes"]]
 
 
 def headed(node: dict[str, Any], heading: str) -> str | None:
@@ -235,6 +244,7 @@ def problems(
 def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop: str) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge)."""
     loop_rules, paths = rules(loop), [file["path"] for file in pull["files"]["nodes"]]
+    # ponytail: one page of files and of checks; page them when a PR outgrows it.
     found = [
         f"PR #{pull['number']} has more than {len(nodes)} {what}: the gate reads one page, so split the PR"
         for what, nodes, total in (
