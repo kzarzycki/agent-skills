@@ -69,6 +69,10 @@ CONDITION = re.compile(
     r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*`([^`]+)`",
     re.IGNORECASE,
 )
+# loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
+NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
+# The first exit code after `mise run check` on the same line, not another command's.
+CHECK_PASSED = r"mise run check\b(?:(?!\bexit\b)[^\n])*\bexit(?: code)?:? *0\b"
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
@@ -291,8 +295,8 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
-    if re.search(r"^[ \t]*CI:[ \t]*none\b", loop, re.MULTILINE | re.IGNORECASE):
-        if not re.search(r"mise run check\b.*\bexit(?: code)?:? *0\b", evidence, re.IGNORECASE):
+    if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
+        if not re.search(CHECK_PASSED, evidence, re.IGNORECASE):
             found.append(
                 f"{where}: the project has no CI (loop.md `CI: none`), and `## Evidence` names no"
                 " `mise run check` with exit 0"

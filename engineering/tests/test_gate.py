@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -336,6 +337,37 @@ def test_without_ci_the_merge_proof_is_the_recorded_local_check() -> None:
         ],
         [],
     )
+
+
+@pytest.mark.parametrize(
+    ("line", "opted_out"),
+    [
+        ("CI: none", True),
+        ("- CI: none", True),
+        ("* `CI: none`", True),
+        ("CI: none (Actions is off for billing)", True),
+        ("CI: none of the checks may fail", False),
+        ("The CI: none here", False),
+    ],
+)
+def test_only_a_bare_ci_none_line_opts_out_of_ci(line: str, opted_out: bool) -> None:
+    assert (re.search(gate.NO_CI, f"## Gates\n\n{line}\n", re.MULTILINE) is not None) == opted_out
+
+
+@pytest.mark.parametrize(
+    ("evidence", "passed"),
+    [
+        ("- `mise run check`: exit 0.", True),
+        ("mise run check exit code 0", True),
+        ("- `mise run check`: exit 1; `git diff --exit-code`: exit 0.", False),
+        ("- `mise run check`: exit 10", False),
+        ("- `git diff`: exit 0; `mise run check` was not run", False),
+    ],
+)
+def test_the_check_evidence_is_the_first_exit_after_mise_run_check(
+    evidence: str, passed: bool
+) -> None:
+    assert (re.search(gate.CHECK_PASSED, evidence, re.IGNORECASE) is not None) == passed
 
 
 def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
