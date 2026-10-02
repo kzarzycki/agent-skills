@@ -110,7 +110,7 @@ Re-read `field-list` after any field mutation; option ids change.
 
 `gh` and the API cannot switch on a Projects workflow or set a view's grouping (`createProjectV2View` makes a view, not its grouping):
 
-1. **Workflows → Auto-add to project**, filter `is:issue is:open`. Without it only explicitly-added items appear.
+1. **Workflows → Auto-add to project**, filter `is:issue is:open`. Without it only explicitly-added items appear. Pair it with **Item added to project** → the first column, or auto-added issues land with no Status.
 2. **Group table view by Parent issue** → hierarchy view with sub-issue progress bars.
 3. Optional **Roadmap view** with a date field.
 
