@@ -618,6 +618,8 @@ def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> 
     def git(*args: str) -> str:
         if args[0] == "rev-parse":
             return state["head"] + "\n"
+        if args[0] == "ls-files":
+            return "H app.py\n"
         assert args == (
             "status",
             "--porcelain",
@@ -700,7 +702,15 @@ def hidden_submodule_edit(repo: Path) -> None:
     (repo / "lib" / "app.py").write_text("value = 2\n")
 
 
-@pytest.mark.parametrize("hide", [hidden_untracked, hidden_submodule_edit])
+def hidden_by_ignore_stat(repo: Path) -> None:
+    git_in(repo, "config", "core.ignoreStat", "true")
+    (repo / "lib.py").write_text("value = 1\n")
+    git_in(repo, "add", "lib.py")  # core.ignoreStat marks it assume-unchanged
+    git_in(repo, "commit", "-qm", "lib")
+    (repo / "lib.py").write_text("value = 2\n")
+
+
+@pytest.mark.parametrize("hide", [hidden_untracked, hidden_submodule_edit, hidden_by_ignore_stat])
 def test_a_change_the_status_config_hides_still_records_nothing(
     github: list[tuple[Any, ...]],
     tmp_path: Path,

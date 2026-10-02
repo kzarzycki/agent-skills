@@ -519,7 +519,13 @@ def record_check(pr: int) -> int:
     def state() -> tuple[str, str]:
         # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
         status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
-        return git("rev-parse", "HEAD").strip(), status
+        # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
+        hidden = [
+            f"{line[2:]} (index flag hides its changes)\n"
+            for line in git("ls-files", "-v").splitlines()
+            if line[:1].islower() or line[:1] == "S"
+        ]
+        return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
     before = state()
     if before[0] != head:
