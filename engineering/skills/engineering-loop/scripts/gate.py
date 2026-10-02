@@ -298,9 +298,9 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
     if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
         if not any(
-            body.strip().splitlines()[1:2] == [f"Head: {pull['headRefOid']}"]
+            [line.strip() for line in body.strip().splitlines()[:2]]
+            == [CHECKED, f"Head: {pull['headRefOid']}"]
             for body in bodies(pull)
-            if body.lstrip().startswith(CHECKED)
         ):
             found.append(
                 f"{where}: the project has no CI (loop.md `CI: none`), and no local check passed on"
@@ -517,7 +517,9 @@ def record_check(pr: int) -> int:
     head = pull_request(pr)["headRefOid"]
 
     def state() -> tuple[str, str]:
-        return git("rev-parse", "HEAD").strip(), git("status", "--porcelain")
+        # untracked files listed whatever status.showUntrackedFiles says
+        status = git("status", "--porcelain", "--untracked-files=all")
+        return git("rev-parse", "HEAD").strip(), status
 
     before = state()
     if before[0] != head:

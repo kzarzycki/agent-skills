@@ -333,8 +333,10 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
         proofs(),
         proofs(f"{gate.CHECKED}\nHead: {'b' * 40}\nCommand: mise run check\n"),
         proofs("## Evidence\n\n- `mise run check`: exit 0\n"),
+        proofs(f"{gate.CHECKED}: no, not run\nHead: {HEAD}\n"),
+        proofs(f"> {gate.CHECKED}\n> Head: {HEAD}\n"),
         proofs(f"{gate.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
-    ) == (missing, missing, missing, [])
+    ) == (missing, missing, missing, missing, missing, [])
 
 
 @pytest.mark.parametrize(
@@ -614,7 +616,10 @@ def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> 
     state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None}
 
     def git(*args: str) -> str:
-        return state["head"] + "\n" if args[0] == "rev-parse" else state["status"]
+        if args[0] == "rev-parse":
+            return state["head"] + "\n"
+        assert args == ("status", "--porcelain", "--untracked-files=all")
+        return state["status"]
 
     def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
         assert (command, check) == (["mise", "run", "check"], False)
@@ -655,3 +660,16 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     assert gate.main(["record-check", "7"]) == 1
     assert github == []
     assert said in capsys.readouterr().out
+
+
+def test_untracked_files_count_whatever_the_status_config_hides(
+    github: list[tuple[Any, ...]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def run(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    run("init", "-q")
+    run("config", "status.showUntrackedFiles", "no")
+    (tmp_path / "new.py").write_text("")
+    monkeypatch.chdir(tmp_path)
+    assert gate.git("status", "--porcelain", "--untracked-files=all") == "?? new.py\n"
