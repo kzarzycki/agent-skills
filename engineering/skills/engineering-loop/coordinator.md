@@ -65,8 +65,11 @@ UI, and delegate the rest.
    yourself, and push. Each later pass gets a fresh verifier, started the same way, plus
    the previous report's path and head; reviving the old one re-reads its whole earlier
    review every turn. A note on a satisfied verdict is fixed in this PR too, never
-   deferred; when that fix changes no executable line, it needs no further pass: rerun
-   the gates and show the diff in the PR body.
+   deferred; when that fix changes nothing an agent or tool reads, it needs no further
+   pass: rerun the gates and show the diff in the PR body. Instructions are code: a skill,
+   a role file or brief, `AGENTS.md`, the project's `docs/agents/` files, a prompt, and
+   anything a tool parses each need the pass. Only prose for people is exempt: a README,
+   the changelog, a code comment.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
    waits for the landing rule (SKILL.md):
    - If main moved, fetch, merge `origin/main` in and rerun the gates. A fresh verifier

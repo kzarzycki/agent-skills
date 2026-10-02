@@ -7,6 +7,9 @@
   head commit. The merge gate needs that record on the current head. It no longer reads
   `## Evidence` for `mise run check` and `exit 0`. That matching was brittle, and it was not
   tied to the head, so a line written for an earlier commit still passed.
+- Instructions are code for the further-pass rule (coordinator step 7). A fix after a satisfied
+  verdict skips another verifier pass only when it changes nothing an agent or tool reads. A
+  skill, role file, brief, `AGENTS.md`, `docs/agents/` file or prompt needs the pass.
 
 ## 0.8.1 - 2026-10-02
 
