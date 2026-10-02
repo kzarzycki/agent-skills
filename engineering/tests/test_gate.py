@@ -618,7 +618,12 @@ def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> 
     def git(*args: str) -> str:
         if args[0] == "rev-parse":
             return state["head"] + "\n"
-        assert args == ("status", "--porcelain", "--untracked-files=all")
+        assert args == (
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
         return state["status"]
 
     def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
@@ -662,14 +667,53 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     assert said in capsys.readouterr().out
 
 
-def test_untracked_files_count_whatever_the_status_config_hides(
-    github: list[tuple[Any, ...]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def run(*args: str) -> None:
-        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+def git_in(where: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", "-C", str(where), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
 
-    run("init", "-q")
-    run("config", "status.showUntrackedFiles", "no")
-    (tmp_path / "new.py").write_text("")
-    monkeypatch.chdir(tmp_path)
-    assert gate.git("status", "--porcelain", "--untracked-files=all") == "?? new.py\n"
+
+def committed(where: Path) -> str:
+    where.mkdir(exist_ok=True)
+    git_in(where, "init", "-q")
+    git_in(where, "config", "user.email", "loop@example.com")
+    git_in(where, "config", "user.name", "loop")
+    (where / "app.py").write_text("value = 1\n")
+    git_in(where, "add", "-A")
+    git_in(where, "commit", "-qm", "base")
+    return git_in(where, "rev-parse", "HEAD").strip()
+
+
+def hidden_untracked(repo: Path) -> None:
+    git_in(repo, "config", "status.showUntrackedFiles", "no")
+    (repo / "new.py").write_text("")
+
+
+def hidden_submodule_edit(repo: Path) -> None:
+    committed(repo.parent / "lib")
+    git_in(repo, "submodule", "add", "-q", str(repo.parent / "lib"), "lib")
+    git_in(repo, "commit", "-qm", "lib")
+    git_in(repo, "config", "submodule.lib.ignore", "all")
+    (repo / "lib" / "app.py").write_text("value = 2\n")
+
+
+@pytest.mark.parametrize("hide", [hidden_untracked, hidden_submodule_edit])
+def test_a_change_the_status_config_hides_still_records_nothing(
+    github: list[tuple[Any, ...]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hide: Any,
+) -> None:
+    repo = tmp_path / "repo"
+    committed(repo)
+    hide(repo)
+    head = git_in(repo, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(gate, "pull_request", lambda _n: {**pull(), "headRefOid": head})
+    monkeypatch.chdir(repo)
+    assert gate.main(["record-check", "7"]) == 1
+    assert github == []
+    assert "the tree has changes" in capsys.readouterr().out

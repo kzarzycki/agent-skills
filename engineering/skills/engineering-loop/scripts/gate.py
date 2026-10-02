@@ -517,8 +517,8 @@ def record_check(pr: int) -> int:
     head = pull_request(pr)["headRefOid"]
 
     def state() -> tuple[str, str]:
-        # untracked files listed whatever status.showUntrackedFiles says
-        status = git("status", "--porcelain", "--untracked-files=all")
+        # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
+        status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
         return git("rev-parse", "HEAD").strip(), status
 
     before = state()
