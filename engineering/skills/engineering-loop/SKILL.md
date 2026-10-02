@@ -69,9 +69,10 @@ The coordinator approves each point itself with
 spec once it meets its contract, the plan once it covers the spec, the merge once the
 verifier's verdict is triaged with no core finding open and the gate is green. The
 verifier only gives the verdict, which `python3 scripts/gate.py verdict <pr> <report>`
-posts on the PR. Each approval is a comment the gate reads, tied to the spec's text or
-the head commit, so a later edit or push needs approving again, plus the
-`approved:<point>` label. `mise run gate build` before building and `mise run gate merge`
+posts on the PR. Each approval is a comment the gate reads, tied to the spec's or plan's
+last edit as GitHub's edit history shows it, or to the head commit, so a later edit or push
+needs approving again, plus the `approved:<point>` label. A re-approval says what changed and
+minimizes the records it supersedes as outdated. `mise run gate build` before building and `mise run gate merge`
 before merging check every proof (`scripts/gate.py` lists them).
 
 loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per

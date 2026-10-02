@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import re
 import subprocess
 from pathlib import Path
@@ -24,6 +25,9 @@ LOOP = (PROJECT / "docs" / "agents" / "loop.md").read_text()
 COMPONENTS = gate.listed(TRACKER, "Components")
 CATEGORIES = gate.CATEGORIES | gate.listed(TRACKER, "Extra categories")
 HEAD = "a" * 40
+WRITTEN = "2026-10-01T09:00:00Z"
+AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
+IDS = itertools.count(1)
 
 
 @pytest.fixture(autouse=True)
@@ -36,12 +40,27 @@ def problems(issues: list[dict[str, Any]]) -> list[str]:
     return gate.problems(issues, COMPONENTS, CATEGORIES)
 
 
+def note(body: str, **fields: Any) -> dict[str, Any]:
+    """A comment as GitHub returns it, written by the account running gate.py unless a test says otherwise."""
+    return {
+        "id": f"IC_{next(IDS)}",
+        "body": body,
+        "createdAt": WRITTEN,
+        "lastEditedAt": None,
+        "isMinimized": False,
+        "viewerCanMinimize": True,
+        **fields,
+    }
+
+
 def node(
-    labels: tuple[str, ...] = (), comments: tuple[str, ...] = (), **fields: Any
+    labels: tuple[str, ...] = (), comments: tuple[str | dict[str, Any], ...] = (), **fields: Any
 ) -> dict[str, Any]:
     return {
         "labels": {"nodes": [{"name": name} for name in labels]},
-        "comments": {"nodes": [{"body": body} for body in comments]},
+        "comments": {
+            "nodes": [body if isinstance(body, dict) else note(body) for body in comments]
+        },
         **fields,
     }
 
@@ -49,7 +68,7 @@ def node(
 def issue(
     number: int, *labels: str, body: str = "the spec", comments: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    return node(labels, comments, number=number, body=body)
+    return node(labels, comments, number=number, body=body, createdAt=WRITTEN, lastEditedAt=None)
 
 
 def specced(number: int, *labels: str) -> dict[str, Any]:
@@ -70,9 +89,8 @@ def approved(
     number: int, *labels: str, owner: bool = False, body: str = "the spec"
 ) -> dict[str, Any]:
     """A specced issue whose spec the coordinator, and the owner when asked, approved."""
-    spec = gate.fingerprint(body)
-    comments = (record("spec", "coordinator", spec=spec),) + (
-        (record("spec", "owner", spec=spec),) if owner else ()
+    comments = (record("spec", "coordinator", spec=AS_WRITTEN),) + (
+        (record("spec", "owner", spec=AS_WRITTEN),) if owner else ()
     )
     return issue(
         number, "ready-for-agent", "size:S", "approved:spec", *labels, body=body, comments=comments
@@ -252,9 +270,15 @@ def test_a_spec_nobody_approved_is_named() -> None:
     ]
 
 
+def test_a_spec_is_named_by_its_last_edit_as_github_shows_it() -> None:
+    assert gate.version({"createdAt": WRITTEN, "lastEditedAt": None}) == AS_WRITTEN
+    edited = {"createdAt": WRITTEN, "lastEditedAt": "2026-10-02T14:35:27Z"}
+    assert gate.version(edited) == "as edited 2026-10-02 14:35:27 UTC"
+
+
 def test_a_spec_edited_after_its_approval_needs_approving_again() -> None:
     edited = approved(1, "web")
-    edited["body"] = "the spec, rewritten"
+    edited["lastEditedAt"] = "2026-10-02T14:35:27Z"
     assert gate.proofs("build", pull(), [edited], LOOP) == [
         "#1 has no `Approved: spec` record by the coordinator for its current spec: approve again"
     ]
@@ -270,7 +294,11 @@ def test_a_matching_rule_needs_the_owner_too() -> None:
 def test_a_spec_in_a_comment_is_the_one_approved() -> None:
     spec = "## Spec\n\nthe real spec"
     labels = ("ready-for-agent", "size:S", "web", "approved:spec")
-    comments = (spec, record("spec", "coordinator", spec=gate.fingerprint(spec)))
+    edited = "2026-10-02T11:00:00Z"
+    comments = (
+        note(spec, lastEditedAt=edited),
+        record("spec", "coordinator", spec="as edited 2026-10-02 11:00:00 UTC"),
+    )
     tool_owned = issue(1, *labels, body="a tool's body", comments=comments)
     assert gate.proofs("build", pull(), [tool_owned], LOOP) == []
 
@@ -284,7 +312,7 @@ def test_a_due_plan_needs_its_comment_and_approval() -> None:
         gate.proofs("build", pull(), [approved(1, "web")], "## Approvals\n\n- plan: always\n") == []
     )
     planned = approved(1, "web")
-    planned["comments"]["nodes"].append({"body": "## Plan\n\n1. slice"})
+    planned["comments"]["nodes"].append(note("## Plan\n\n1. slice"))
     assert gate.proofs("build", pull(), [planned], "") == [
         "#1 has no `Approved: plan` record by the coordinator",
         "#1 lacks the `approved:plan` label",
@@ -448,6 +476,7 @@ def github(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     monkeypatch.setattr(
         gate, "label", lambda number, name, add: calls.append(("label", number, name, add))
     )
+    monkeypatch.setattr(gate, "minimize", lambda comment_id: calls.append(("minimize", comment_id)))
     monkeypatch.chdir(PROJECT)
     return calls
 
@@ -458,7 +487,7 @@ def test_the_coordinator_approves_a_spec_no_rule_holds(
     monkeypatch.setattr(gate, "issue_node", lambda _n: specced(1, "bug"))
     assert gate.main(["approve", "spec", "1", "--by", "coordinator"]) == 0
     assert github == [
-        ("comment", 1, f"Approved: spec\nBy: coordinator\nSpec: {gate.fingerprint('the spec')}\n"),
+        ("comment", 1, f"Approved: spec\nBy: coordinator\nSpec: {AS_WRITTEN}\n"),
         ("label", 1, "approved:spec", True),
     ]
 
@@ -477,6 +506,63 @@ def test_a_rule_leaves_the_label_to_the_owner(
     github.clear()
     assert gate.main(["approve", "spec", "1", "--by", "owner"]) == 0
     assert github[1:] == [("label", 1, "approved:spec", True), ("label", 1, "needs-owner", False)]
+
+
+def test_a_re_approval_says_why_and_minimizes_what_it_supersedes(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = note(record("spec", "coordinator", spec=AS_WRITTEN))
+    owners = note(record("spec", "owner", spec=AS_WRITTEN))
+    edited = specced(1, "bug", "size:XL")
+    edited["comments"]["nodes"] = [stale, owners]
+    edited["lastEditedAt"] = "2026-10-02T14:35:27Z"
+    monkeypatch.setattr(gate, "issue_node", lambda _n: edited)
+    assert gate.main(["approve", "spec", "1", "--by", "coordinator"]) == 0
+    assert github[:3] == [
+        (
+            "comment",
+            1,
+            (
+                "Approved: spec\nBy: coordinator\nSpec: as edited 2026-10-02 14:35:27 UTC\n"
+                "The spec changed after the last approval, so it was checked again.\n"
+            ),
+        ),
+        ("minimize", stale["id"]),
+        ("minimize", owners["id"]),
+    ]
+
+
+def test_another_approvers_record_of_the_same_version_stays_open(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coordinators = note(record("spec", "coordinator", spec=AS_WRITTEN))
+    repeated = note(record("spec", "owner", spec=AS_WRITTEN))
+    done = specced(1, "bug", "size:XL")
+    done["comments"]["nodes"] = [coordinators, repeated]
+    monkeypatch.setattr(gate, "issue_node", lambda _n: done)
+    assert gate.main(["approve", "spec", "1", "--by", "owner"]) == 0
+    assert github[:2] == [
+        ("comment", 1, f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"),
+        ("minimize", repeated["id"]),
+    ]
+    assert ("minimize", coordinators["id"]) not in github
+
+
+def test_a_comment_gate_py_cannot_or_need_not_minimize_is_left_alone(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    theirs = note(
+        record("spec", "coordinator", spec="as written 2026-09-01 09:00:00 UTC"),
+        viewerCanMinimize=False,
+    )
+    hidden = note(
+        record("spec", "coordinator", spec="as written 2026-09-02 09:00:00 UTC"), isMinimized=True
+    )
+    old = specced(1, "bug")
+    old["comments"]["nodes"] = [theirs, hidden]
+    monkeypatch.setattr(gate, "issue_node", lambda _n: old)
+    assert gate.main(["approve", "spec", "1", "--by", "coordinator"]) == 0
+    assert [call for call in github if call[0] == "minimize"] == []
 
 
 def test_resuming_after_the_owner_approved_keeps_their_label(
