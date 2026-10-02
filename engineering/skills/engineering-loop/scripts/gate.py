@@ -71,8 +71,8 @@ CONDITION = re.compile(
 )
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
-# The first exit code after `mise run check` on the same line, not another command's.
-CHECK_PASSED = r"mise run check\b(?:(?!\bexit\b)[^\n])*\bexit(?: code)?:? *0\b"
+# `mise run check`'s own exit code, right after it: only punctuation or "with" between them.
+CHECK_PASSED = r"mise run check`?[ \t:(),\-–—]*(?:with[ \t]+)?exit(?: code)?:?[ \t]*0\b"
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 

@@ -362,6 +362,11 @@ def test_only_a_bare_ci_none_line_opts_out_of_ci(line: str, opted_out: bool) -> 
         ("- `mise run check`: exit 1; `git diff --exit-code`: exit 0.", False),
         ("- `mise run check`: exit 10", False),
         ("- `git diff`: exit 0; `mise run check` was not run", False),
+        ("- `mise run check` (exit 0)", True),
+        ("- `mise run check` with exit 0", True),
+        ("- `mise run check` was not run; `git diff --stat`: exit 0.", False),
+        ("- `mise run check` failed; `git diff --stat`: exit 0.", False),
+        ("- mise run check failed, git diff exit 0", False),
     ],
 )
 def test_the_check_evidence_is_the_first_exit_after_mise_run_check(
