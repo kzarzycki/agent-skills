@@ -67,7 +67,8 @@ UI, and delegate the rest.
    review every turn. A note on a satisfied verdict is fixed in this PR too, never
    deferred; when that fix changes no executable line, it needs no further pass: rerun
    the gates and show the diff in the PR body.
-8. **Land** when the landing rule holds (SKILL.md):
+8. **Land** once the last verdict is triaged with no core finding open; the merge itself
+   waits for the landing rule (SKILL.md):
    - If main moved, fetch, merge `origin/main` in and rerun the gates. A fresh verifier
      reviews the merge first (step 7) only when main's changes touch a file the PR changes
      (`git diff --name-only <old base> origin/main` against

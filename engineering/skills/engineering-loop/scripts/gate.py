@@ -10,9 +10,10 @@ a pre-push hook and CI call that task.
 
 `check build` needs every issue the PR closes to be `ready-for-agent`, not `needs-owner`, with exactly one category,
 a component and exactly one size (a `wayfinder:` ticket needs only its state), and its approvals: `spec` always,
-`plan` when one is due (a `## Plan` comment, a `Plan:` line in loop.md § Practice, or a matching `plan` rule).
+`plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.md § Practice).
 `check merge` adds the PR's: the `## Evidence` section of its body, a posted verifier verdict, every CI check on the
-head green but the `gate` job's own, and a `merge` approval on the head commit.
+head green (skipped inside GitHub Actions, where each other check is its own status and the gate job one of them),
+and a `merge` approval on the head commit, with its verdict.
 
 An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
 
@@ -25,7 +26,7 @@ person's approval (`By: owner`). Its label goes on last: the coordinator's appro
 `needs-owner`, so a person approves by adding the label, or by saying so in the session; then `approve --by owner`
 writes their record, adds the label and removes `needs-owner`. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` in backticks, joined by `or`;
-any other words make the rule the loop's alone. The spec is the issue body, or its last `## Spec` comment where a
+any other words make the rule the loop's alone, and so does a path on spec or plan, which come before the change. The spec is the issue body, or its last `## Spec` comment where a
 tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. Components and extra categories are the first backticked name of each list item under
 `## Components` and `## Extra categories` in docs/agents/issue-tracker.md. Reads and writes through `gh`. Stdlib only.
@@ -37,6 +38,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -52,8 +54,8 @@ POINTS = ("spec", "plan", "merge")
 VERDICT = "Verifier verdict"
 ISSUE = "number body labels(first: 50) { nodes { name } } comments(last: 100) { nodes { body } }"
 PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ nodes {{ body }} }}
-  files(first: 100) {{ nodes {{ path }} }}
-  commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ nodes {{
+  files(first: 100) {{ totalCount nodes {{ path }} }}
+  commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion }} ... on StatusContext {{ context state }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords; ponytail: same-repo `#n` only, add owner/repo#n and issue URLs when a PR here uses one.
@@ -105,10 +107,12 @@ def practice_plans(loop: str) -> bool:
     )
 
 
-def matches(condition: str, labels: set[str], paths: list[str]) -> bool | None:
-    """Whether a rule's condition holds; None when it has words the gate can't read (the loop judges it)."""
+def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool | None:
+    """Whether a rule's condition holds; None when it has words the gate can't read, or a path and no paths yet
+    (the loop judges it)."""
     if re.sub(r"[,;]|\bor\b|\s", "", CONDITION.sub("", condition), flags=re.IGNORECASE):
         return None
+    unread = False
     for found in CONDITION.finditer(condition):
         size, larger, kind, name, glob = found.groups()
         if size:
@@ -119,16 +123,17 @@ def matches(condition: str, labels: set[str], paths: list[str]) -> bool | None:
         elif kind:
             hit = name in labels
         elif glob:
-            hit = any(fnmatch.fnmatch(path, glob) for path in paths)
+            unread |= paths is None
+            hit = any(fnmatch.fnmatch(path, glob) for path in paths or [])
         else:
             hit = True  # always
         if hit:
             return True
-    return False
+    return None if unread else False
 
 
 def owner_needed(
-    point: str, loop_rules: list[tuple[str, str]], labels: set[str], paths: list[str]
+    point: str, loop_rules: list[tuple[str, str]], labels: set[str], paths: list[str] | None
 ) -> bool:
     return any(matches(condition, labels, paths) for rule, condition in loop_rules if rule == point)
 
@@ -170,6 +175,16 @@ def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
     return found
 
 
+def current(node: dict[str, Any], point: str, key: str, value: str, by: str) -> bool:
+    """Whether `by` approved `point` for this spec, plan or head; a merge record also carries its verdict."""
+    return any(
+        record.get("by") == by
+        and record.get(key) == value
+        and (point != "merge" or bool(record.get("verdict")))
+        for record in records(node, point)
+    )
+
+
 def approvals(
     where: str, node: dict[str, Any], point: str, key: str, value: str, owner: bool
 ) -> list[str]:
@@ -177,7 +192,7 @@ def approvals(
     found = []
     held = records(node, point)
     for by in ("coordinator", "owner") if owner else ("coordinator",):
-        if not any(record.get("by") == by and record.get(key) == value for record in held):
+        if not current(node, point, key, value, by):
             stale = any(record.get("by") == by for record in held)
             found.append(
                 f"{where} has no `Approved: {point}` record by the {by}"
@@ -220,7 +235,13 @@ def problems(
 def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop: str) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge)."""
     loop_rules, paths = rules(loop), [file["path"] for file in pull["files"]["nodes"]]
-    found = []
+    found = [
+        f"PR #{pull['number']} has more than {len(nodes)} {what}: the gate reads one page, so split the PR"
+        for what, nodes, total in (
+            ("changed files", pull["files"]["nodes"], pull["files"].get("totalCount")),
+        )
+        if (total or 0) > len(nodes)
+    ]
     for issue in issues:
         labels = names(issue)
         if any(label.startswith("wayfinder:") for label in labels):
@@ -232,12 +253,13 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
             "spec",
             "spec",
             fingerprint(spec_of(issue)),
-            owner_needed("spec", loop_rules, labels, paths),
+            owner_needed("spec", loop_rules, labels, None),
         )
-        plan, plan_owner = headed(issue, "## Plan"), owner_needed("plan", loop_rules, labels, paths)
+        plan = headed(issue, "## Plan")
         if plan is not None:
+            plan_owner = owner_needed("plan", loop_rules, labels, None)
             found += approvals(where, issue, "plan", "plan", fingerprint(plan), plan_owner)
-        elif plan_owner or practice_plans(loop):
+        elif practice_plans(loop):
             found.append(f"{where} has no `## Plan` comment, and one is due")
     if point != "merge":
         return found
@@ -246,26 +268,34 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        found += ci(where, pull)
+    owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
+    found += approvals(where, pull, "merge", "head", pull["headRefOid"], owner)
+    return found
+
+
+def ci(where: str, pull: dict[str, Any]) -> list[str]:
+    """One line per CI check on the head that is not green; one when there is none."""
     commits = pull["commits"]["nodes"]
-    rollup = commits[0]["commit"]["statusCheckRollup"] if commits else None
+    contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
+    nodes = contexts["contexts"]["nodes"] if contexts else []
+    if not nodes:
+        return [f"{where}: no CI check on the head commit"]
+    if (contexts["contexts"].get("totalCount") or 0) > len(nodes):
+        return [f"{where} has more than {len(nodes)} CI checks: the gate reads one page"]
     checks = [
         (
             node.get("name") or node.get("context"),
             node.get("conclusion") or node.get("state") or node.get("status"),
         )
-        for node in (rollup["contexts"]["nodes"] if rollup else [])
-        if (node.get("name") or node.get("context")) != "gate"
+        for node in nodes
     ]
-    if not checks:
-        found.append(f"{where}: no CI check on the head commit")
-    found += [
+    return [
         f"{where}: CI check `{name}` is {state} on the head commit"
         for name, state in checks
         if state not in GREEN
     ]
-    owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
-    found += approvals(where, pull, "merge", "head", pull["headRefOid"], owner)
-    return found
 
 
 def gh(*args: str, data: str | None = None) -> str:
@@ -391,7 +421,12 @@ def approve(point: str, number: int, by: str, triage: str | None) -> int:
             if line.strip().startswith(("VERDICT:", "SATISFIED:"))
         )
         issues, paths = closing_issues(pull), [file["path"] for file in pull["files"]["nodes"]]
-        targets = [issue["number"] for issue in issues]
+        node, targets, key, value = (
+            pull,
+            [issue["number"] for issue in issues],
+            "head",
+            pull["headRefOid"],
+        )
         owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
         record = f"Head: {pull['headRefOid']}\nVerdict: {verdict}\n" + (
             f"Triage: {triage}\n" if triage else ""
@@ -401,10 +436,14 @@ def approve(point: str, number: int, by: str, triage: str | None) -> int:
         text = spec_of(issue) if point == "spec" else headed(issue, "## Plan")
         if text is None:
             raise Refused(f"#{number} has no `## Plan` comment to approve")
-        targets, owner = [number], owner_needed(point, loop_rules, names(issue), [])
-        record = f"{point.capitalize()}: {fingerprint(text)}\n"
+        node, targets, key, value = issue, [number], point, fingerprint(text)
+        owner = owner_needed(point, loop_rules, names(issue), None)
+        record = f"{point.capitalize()}: {value}\n"
     comment(number, f"Approved: {point}\nBy: {by}\n{record}")
-    if by == "coordinator" and owner:  # the label goes on last: a person adds it to approve
+    # a person who already approved this spec, plan or head keeps their label when the loop resumes
+    if (
+        by == "coordinator" and owner and not current(node, point, key, value, "owner")
+    ):  # the label goes on last: a person adds it to approve
         label(number, f"approved:{point}", add=False)
         for target in targets:
             label(target, NEEDS_OWNER, add=True)

@@ -97,7 +97,10 @@ def pull(
 
 
 VERDICT = f"Verifier verdict\nHead: {HEAD}\nVERDICT: 0 blocker, 1 major, 0 minor\nSATISFIED: yes\n"
-MERGED = (VERDICT, record("merge", "coordinator", head=HEAD))
+MERGED = (
+    VERDICT,
+    record("merge", "coordinator", head=HEAD, verdict="VERDICT: 0 blocker; SATISFIED: yes"),
+)
 
 
 # --- labels and state ---
@@ -216,12 +219,14 @@ def test_loop_md_rules_and_practice_are_read_from_their_sections() -> None:
         ("category ops", {"bug"}, [], False),
         ("path `billing/**`", set(), ["billing/a/invoice.py"], True),
         ("path `billing/**`", set(), ["web/app.ts"], False),
+        ("path `billing/**`", set(), None, None),
+        ("size:L+ or path `billing/**`", {"size:XL"}, None, True),
         ("a change that can place live orders", {"size:XL"}, [], None),
         ("size:L or a schema change", {"size:L"}, [], None),
     ],
 )
 def test_a_condition_holds_or_is_left_to_the_loop(
-    condition: str, labels: set[str], paths: list[str], hit: bool | None
+    condition: str, labels: set[str], paths: list[str] | None, hit: bool | None
 ) -> None:
     assert gate.matches(condition, labels, paths) is hit
 
@@ -268,6 +273,9 @@ def test_a_due_plan_needs_its_comment_and_approval() -> None:
     assert gate.proofs("build", pull(), [approved(1, "web")], plans) == [
         "#1 has no `## Plan` comment, and one is due"
     ]
+    assert (
+        gate.proofs("build", pull(), [approved(1, "web")], "## Approvals\n\n- plan: always\n") == []
+    )
     planned = approved(1, "web")
     planned["comments"]["nodes"].append({"body": "## Plan\n\n1. slice"})
     assert gate.proofs("build", pull(), [planned], "") == [
@@ -280,9 +288,49 @@ def test_a_due_plan_needs_its_comment_and_approval() -> None:
 
 
 def test_a_pr_with_every_proof_passes_merge() -> None:
-    checks = (("build", "SUCCESS"), ("gate", "IN_PROGRESS"))
+    checks = (("build", "SUCCESS"), ("gate", "SUCCESS"))
     done = pull(comments=MERGED, labels=("approved:merge",), checks=checks)
     assert gate.proofs("merge", done, [approved(1, "web")], LOOP) == []
+
+
+def test_inside_github_actions_the_other_checks_are_their_own_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running = pull(
+        comments=MERGED,
+        labels=("approved:merge",),
+        checks=(("build", "IN_PROGRESS"), ("gate", "IN_PROGRESS")),
+    )
+    assert gate.proofs("merge", running, [approved(1, "web")], LOOP) == [
+        "PR #7: CI check `build` is IN_PROGRESS on the head commit",
+        "PR #7: CI check `gate` is IN_PROGRESS on the head commit",
+    ]
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert gate.proofs("merge", running, [approved(1, "web")], LOOP) == []
+
+
+def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
+    headless = (VERDICT, record("merge", "coordinator", head=HEAD))
+    assert gate.proofs(
+        "merge", pull(comments=headless, labels=("approved:merge",)), [approved(1, "web")], LOOP
+    ) == [
+        "PR #7 has no `Approved: merge` record by the coordinator for its current head: approve again"
+    ]
+
+
+def test_more_files_or_checks_than_one_page_is_refused() -> None:
+    big = pull(comments=MERGED, labels=("approved:merge",))
+    big["files"]["totalCount"] = 101
+    big["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] = 101
+    assert gate.proofs("merge", big, [approved(1, "web")], LOOP) == [
+        "PR #7 has more than 0 changed files: the gate reads one page, so split the PR",
+        "PR #7 has more than 1 CI checks: the gate reads one page",
+    ]
+
+
+def test_a_path_rule_on_the_spec_is_left_to_the_loop() -> None:
+    rule = "## Approvals\n\n- spec: path `billing/**`\n"
+    assert gate.proofs("build", pull(files=("billing/a.py",)), [approved(1, "web")], rule) == []
 
 
 def test_a_pr_without_its_proof_names_each_missing_one() -> None:
@@ -301,7 +349,7 @@ def test_a_pr_without_its_proof_names_each_missing_one() -> None:
 
 
 def test_a_push_after_the_merge_approval_needs_approving_again() -> None:
-    old = (VERDICT, record("merge", "coordinator", head="b" * 40))
+    old = (VERDICT, record("merge", "coordinator", head="b" * 40, verdict="VERDICT: 0 blocker"))
     assert gate.proofs(
         "merge", pull(comments=old, labels=("approved:merge",)), [approved(1, "web")], LOOP
     ) == [
@@ -360,6 +408,20 @@ def test_a_rule_leaves_the_label_to_the_owner(
     github.clear()
     assert gate.main(["approve", "spec", "1", "--by", "owner"]) == 0
     assert github[1:] == [("label", 1, "approved:spec", True), ("label", 1, "needs-owner", False)]
+
+
+def test_resuming_after_the_owner_approved_keeps_their_label(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owned = (
+        VERDICT,
+        record("merge", "owner", head=HEAD, verdict="VERDICT: 0 blocker; SATISFIED: yes"),
+    )
+    pr = pull(files=("billing/invoice.py",), comments=owned, labels=("approved:merge",))
+    pr["closingIssuesReferences"]["nodes"] = [specced(1, "bug")]
+    monkeypatch.setattr(gate, "pull_request", lambda _n: pr)
+    assert gate.main(["approve", "merge", "7", "--by", "coordinator"]) == 0
+    assert github[1:] == [("label", 7, "approved:merge", True)]
 
 
 def test_a_merge_approval_carries_the_head_and_the_verdict(

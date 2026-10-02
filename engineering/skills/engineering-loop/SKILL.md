@@ -77,7 +77,8 @@ before merging check every proof (`scripts/gate.py` lists them).
 loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
 line, `<point>: <condition>`, such as `spec: size:L or larger, or component billing`. The
 condition is judged on what the issue carries (size, component, category), the paths the
-PR touches, or the kind of change; `always` matches everything. When a rule matches,
+PR touches (merge only: a spec or plan comes before the change, so there the loop judges a
+path), or the kind of change; `always` matches everything. When a rule matches,
 `approve` leaves the label off, adds `needs-owner`, and you stop: a person approves by
 adding `approved:<point>`, or by saying so in the session, and then you run `approve`
 with `--by owner`. A condition `gate.py` can't read is yours alone to judge. A rule GitHub
@@ -150,11 +151,12 @@ never as full harness sessions.
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
-- **Landing.** A PR lands when `mise run gate merge <pr>` exits 0 on the head that lands
-  (the reviewed head, plus only what `coordinator.md` steps 7 and 8 exempt from a further
-  pass), no core finding is open, and the ledger is updated. Nothing else needs
-  authorising, except an owner who asked to see the change first: then hold the merge
-  and give them the link and what to click.
+- **Landing.** Land starts once the last verdict is triaged with no core finding open and
+  the ledger is updated; it writes the PR's evidence and the merge approval. The PR merges
+  when `mise run gate merge <pr>` then exits 0 on the head that lands (the reviewed head,
+  plus only what `coordinator.md` steps 7 and 8 exempt from a further pass). Nothing else
+  needs authorising, except an owner who asked to see the change first: then hold the
+  merge and give them the link and what to click.
 
 ## Triage
 
