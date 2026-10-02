@@ -82,7 +82,8 @@ UI, and delegate the rest.
      they have added `approved:merge` or said so, approve again with `--by owner`.
    - `gh pr ready` marks the head approved: CI runs the merge gate on a ready PR. A push
      after it needs `gh pr ready --undo` first, then a new approval.
-   - Once CI is green, `mise run gate merge <pr>`, then
+   - Once CI is green (with `CI: none`, once the Evidence holds `mise run check` exit 0 on
+     that head), `mise run gate merge <pr>`, then
      `gh pr merge <pr> --squash --delete-branch --match-head-commit <landing sha>`.
    - When `gh pr merge` is refused for a missing review or check, request the reviewers
      (`gh pr edit <pr> --add-reviewer <login>`), add `needs-owner` to the issue, and

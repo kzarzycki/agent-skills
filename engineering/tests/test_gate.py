@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -315,6 +316,65 @@ def test_inside_github_actions_the_other_checks_are_their_own_status(
     assert gate.proofs("merge", running, [approved(1, "web")], LOOP) == []
 
 
+def test_without_ci_the_merge_proof_is_the_recorded_local_check() -> None:
+    no_ci = LOOP + "\nCI: none\n"
+    unrun = pull(comments=MERGED, labels=("approved:merge",), checks=())
+    ran = pull(
+        comments=MERGED,
+        labels=("approved:merge",),
+        checks=(),
+        body="## Evidence\n\n- `mise run check`: exit 0.\n",
+    )
+    assert (
+        gate.proofs("merge", unrun, [approved(1, "web")], no_ci),
+        gate.proofs("merge", ran, [approved(1, "web")], no_ci),
+    ) == (
+        [
+            (
+                "PR #7: the project has no CI (loop.md `CI: none`), and `## Evidence` names no"
+                " `mise run check` with exit 0"
+            )
+        ],
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "opted_out"),
+    [
+        ("CI: none", True),
+        ("- CI: none", True),
+        ("* `CI: none`", True),
+        ("CI: none (Actions is off for billing)", True),
+        ("CI: none of the checks may fail", False),
+        ("The CI: none here", False),
+    ],
+)
+def test_only_a_bare_ci_none_line_opts_out_of_ci(line: str, opted_out: bool) -> None:
+    assert (re.search(gate.NO_CI, f"## Gates\n\n{line}\n", re.MULTILINE) is not None) == opted_out
+
+
+@pytest.mark.parametrize(
+    ("evidence", "passed"),
+    [
+        ("- `mise run check`: exit 0.", True),
+        ("mise run check exit code 0", True),
+        ("- `mise run check`: exit 1; `git diff --exit-code`: exit 0.", False),
+        ("- `mise run check`: exit 10", False),
+        ("- `git diff`: exit 0; `mise run check` was not run", False),
+        ("- `mise run check` (exit 0)", True),
+        ("- `mise run check` with exit 0", True),
+        ("- `mise run check` was not run; `git diff --stat`: exit 0.", False),
+        ("- `mise run check` failed; `git diff --stat`: exit 0.", False),
+        ("- mise run check failed, git diff exit 0", False),
+    ],
+)
+def test_the_check_evidence_is_the_first_exit_after_mise_run_check(
+    evidence: str, passed: bool
+) -> None:
+    assert (re.search(gate.CHECK_PASSED, evidence, re.IGNORECASE) is not None) == passed
+
+
 def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
     headless = (VERDICT, record("merge", "coordinator", head=HEAD))
     assert gate.proofs(
@@ -324,14 +384,24 @@ def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
     ]
 
 
-def test_more_files_or_checks_than_one_page_is_refused() -> None:
+def test_more_checks_than_one_page_is_refused() -> None:
     big = pull(comments=MERGED, labels=("approved:merge",))
-    big["files"]["totalCount"] = 101
     big["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] = 101
     assert gate.proofs("merge", big, [approved(1, "web")], LOOP) == [
-        "PR #7 has more than 0 changed files: the gate reads one page, so split the PR",
         "PR #7 has more than 1 CI checks: the gate reads one page",
     ]
+
+
+def test_more_files_than_one_page_is_refused_only_where_a_merge_path_rule_needs_them() -> None:
+    big = pull(comments=MERGED, labels=("approved:merge",))
+    big["files"]["totalCount"] = 101
+    no_path_rule = "## Approvals\n\n- spec: size:L or larger\n"
+    assert (
+        gate.proofs("build", big, [approved(1, "web")], LOOP),
+        gate.proofs("merge", big, [approved(1, "web")], no_path_rule),
+    ) == ([], [])
+    with pytest.raises(gate.Refused, match="more than 0 changed files: the gate reads one page"):
+        gate.proofs("merge", big, [approved(1, "web")], LOOP)
 
 
 def test_more_comments_than_one_page_is_refused(

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.1 - 2026-10-02
+
+- `gate.py` reads a PR's changed files only when a merge rule has a path condition. A PR with
+  more than one page of files is refused only then, and at the merge point. Before this, every
+  build check refused such a PR, and the pre-push hook refused the very push that would shrink
+  it, because the hook reads the PR as GitHub last saw it. `approve merge` now refuses the
+  unread page too, instead of judging a path rule on a truncated list.
+- A project without CI says so with the line `CI: none` in `docs/agents/loop.md`. Its merge
+  proof is then the PR's Evidence naming `mise run check` with exit 0 on the head, in place of
+  green CI checks. Projects with CI keep the CI proof.
+
 ## 0.8.0 - 2026-10-01
 
 The engineering loop ships as a method any project turns on. No upstream change.

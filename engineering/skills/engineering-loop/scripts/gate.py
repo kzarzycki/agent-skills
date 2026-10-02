@@ -12,8 +12,9 @@ a pre-push hook and CI call that task.
 a component and exactly one size (a `wayfinder:` ticket needs only its state), and its approvals: `spec` always,
 `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.md § Practice).
 `check merge` adds the PR's: the `## Evidence` section of its body, a posted verifier verdict, every CI check on the
-head green (skipped inside GitHub Actions, where each other check is its own status and the gate job one of them),
-and a `merge` approval on the head commit, with its verdict.
+head green (skipped inside GitHub Actions, where each other check is its own status and the gate job one of them;
+with the line `CI: none` in loop.md, the Evidence names `mise run check` with exit 0 instead), and a `merge` approval
+on the head commit, with its verdict.
 
 An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
 
@@ -68,6 +69,10 @@ CONDITION = re.compile(
     r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*`([^`]+)`",
     re.IGNORECASE,
 )
+# loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
+NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
+# `mise run check`'s own exit code, right after it: only punctuation or "with" between them.
+CHECK_PASSED = r"mise run check`?[ \t:(),\-–—]*(?:with[ \t]+)?exit(?: code)?:?[ \t]*0\b"
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
@@ -137,6 +142,25 @@ def owner_needed(
     point: str, loop_rules: list[tuple[str, str]], labels: set[str], paths: list[str] | None
 ) -> bool:
     return any(matches(condition, labels, paths) for rule, condition in loop_rules if rule == point)
+
+
+def merge_paths(pull: dict[str, Any], loop_rules: list[tuple[str, str]]) -> list[str]:
+    """The PR's paths, read only when a merge rule has a path condition to judge."""
+    if not any(
+        found.group(5)
+        for point, condition in loop_rules
+        if point == "merge"
+        for found in CONDITION.finditer(condition)
+    ):
+        return []
+    files = pull["files"]
+    # ponytail: one page of files; page them when a PR with a path rule outgrows it.
+    if (files.get("totalCount") or 0) > len(files["nodes"]):
+        raise Refused(
+            f"PR #{pull['number']} has more than {len(files['nodes'])} changed files: "
+            "the gate reads one page to judge a path rule, so split the PR"
+        )
+    return [file["path"] for file in files["nodes"]]
 
 
 def fingerprint(text: str) -> str:
@@ -243,15 +267,7 @@ def problems(
 
 def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop: str) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge)."""
-    loop_rules, paths = rules(loop), [file["path"] for file in pull["files"]["nodes"]]
-    # ponytail: one page of files and of checks; page them when a PR outgrows it.
-    found = [
-        f"PR #{pull['number']} has more than {len(nodes)} {what}: the gate reads one page, so split the PR"
-        for what, nodes, total in (
-            ("changed files", pull["files"]["nodes"], pull["files"].get("totalCount")),
-        )
-        if (total or 0) > len(nodes)
-    ]
+    loop_rules, found = rules(loop), []
     for issue in issues:
         labels = names(issue)
         if any(label.startswith("wayfinder:") for label in labels):
@@ -274,12 +290,20 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
-    if not section(pull["body"] or "", "Evidence").strip():
+    evidence = section(pull["body"] or "", "Evidence")
+    if not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
-    if os.environ.get("GITHUB_ACTIONS") != "true":
+    if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
+        if not re.search(CHECK_PASSED, evidence, re.IGNORECASE):
+            found.append(
+                f"{where}: the project has no CI (loop.md `CI: none`), and `## Evidence` names no"
+                " `mise run check` with exit 0"
+            )
+    elif os.environ.get("GITHUB_ACTIONS") != "true":
         found += ci(where, pull)
+    paths = merge_paths(pull, loop_rules)
     owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
     found += approvals(where, pull, "merge", "head", pull["headRefOid"], owner)
     return found
@@ -430,7 +454,7 @@ def approve(point: str, number: int, by: str, triage: str | None) -> int:
             for line in verdicts[-1].splitlines()
             if line.strip().startswith(("VERDICT:", "SATISFIED:"))
         )
-        issues, paths = closing_issues(pull), [file["path"] for file in pull["files"]["nodes"]]
+        issues, paths = closing_issues(pull), merge_paths(pull, loop_rules)
         node, targets, key, value = (
             pull,
             [issue["number"] for issue in issues],
