@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.6.2
+      ref: ^0.8.0
 ```
 
 Then run:
@@ -28,9 +28,49 @@ the same inventory to `.agents/skills/`. Those paths are generated; edit the
 package sources: tuned skills under `engineering/overlays/skills/`, owned skills
 under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.6.2`. APM resolves
+## Turn on the engineering loop
+
+The `engineering-loop` skill runs every change as intent, spec, build, gates,
+proof, an independent verifier and landing. A project turns it on with one line
+in its `AGENTS.md`, for example "Every change that lands as a PR runs the
+`engineering-loop` skill", and states its own facts in files it owns:
+
+- `mise run check`: the gate, which CI runs too;
+- `mise run gate <build|merge> [pr]`: the proof gate, `scripts/gate.py check`
+  plus the project's own checks, run by the loop, a pre-push hook and CI;
+- `docs/agents/loop.md`: the owner, how to prove a change, acceptance
+  references, the skill for each stage it changes, where a person must approve
+  too, the worktree command, the ledger path;
+- `docs/agents/issue-tracker.md`: the line `Tracker: GitHub (engineering-loop's
+  github.md)`, its components, what must never reach the tracker;
+- `docs/agents/coding-standards.md`: the domain's facts.
+
+Each developer picks how agents run with one line in their personal
+instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
+means native subagents. The verifier comes from the other model family when its
+CLI is installed; otherwise the PR body says `verifier: same family`.
+
+The independently versioned release tag is `engineering-v0.8.0`. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
+
+## Changing a skill for one repo
+
+Take the first rung that holds:
+
+1. **Fill a fact** in the repo's `docs/agents/` files.
+2. **Extend:** a project skill under `.apm/skills/` with a different name that
+   says "follow `<skill>` with these differences". It keeps receiving pack fixes.
+3. **Fork: not supported yet.** A same-name copy in `.apm/skills/` replaces
+   the pack's skill, but on APM 0.30.0 no setup passes `mise run agent-sync`
+   reliably. Without a `skills:` subset, `apm audit --ci` reports the copy as
+   drift. With a subset that leaves the skill out, the copy is removed and
+   restored on alternate syncs, so every other sync fails audit. A subset is
+   also an allow-list, so skills the pack adds later would not be installed
+   until listed. Declarative overrides are proposed upstream in
+   [microsoft/apm#2413](https://github.com/microsoft/apm/issues/2413); until
+   then, extend instead or change the pack.
+4. **Change the pack** upstream, here.
 
 ## Install from the Claude marketplace
 
@@ -47,11 +87,10 @@ own release instead of installing the upstream `main` branch directly.
 Three kinds of source ship under `engineering/skills/`:
 
 - Owned skills, edited in place: `audit-third-party-software`,
-  `context-extractor`, `operating-omnigent`.
+  `context-extractor`, `engineering-loop`, `operating-omnigent`.
 - Owned overlays under `overlays/skills/<name>/`, reproduced into
-  `skills/<name>/`: `setup-engineering-workflow-for-apm` and every imported
-  skill tuned for current models (listed under `owned_overlays` in
-  `upstream.yml`).
+  `skills/<name>/`: every imported skill tuned for current models (listed
+  under `owned_overlays` in `upstream.yml`).
 - Imported skills not yet tuned, generated from the locked upstream source with
   the `substitutions` in `upstream.yml` applied.
 

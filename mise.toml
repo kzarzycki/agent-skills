@@ -102,4 +102,4 @@ run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/tes
 run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e"
 
 [tasks.test]
-run = "uv run pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests && uv run ruff format --check tools tests engineering/tests"
+run = "uv run pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts"

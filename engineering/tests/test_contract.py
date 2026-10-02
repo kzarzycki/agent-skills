@@ -88,12 +88,14 @@ def test_owned_overlay_is_canonical_and_reproduced() -> None:
         assert destination_files == source_files
 
 
-def test_imported_text_uses_the_owned_setup_command() -> None:
-    _, provenance, _ = _data()
+def test_no_skill_sends_the_user_to_a_setup_skill() -> None:
     offenders = [
         path.relative_to(PACKAGE).as_posix()
-        for skill in provenance["included_skills"]
-        for path in (PACKAGE / "skills" / skill).rglob("*")
-        if path.is_file() and "/setup-matt-pocock-skills" in path.read_text()
+        for path in (PACKAGE / "skills").rglob("*")
+        if path.is_file()
+        and any(
+            name in path.read_text(errors="ignore")
+            for name in ("/setup-matt-pocock-skills", "setup-engineering-workflow-for-apm")
+        )
     ]
     assert offenders == []

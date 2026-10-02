@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.8.0 - 2026-10-01
+
+The engineering loop ships as a method any project turns on. No upstream change.
+
+- New owned skill `engineering-loop`: intent, spec, build, gates, proof,
+  verify, land, with coordinator, worker and verifier roles, triage, the
+  three-pass cap and the landing rule. It names no project: each step reads
+  `mise run check` or the project's `docs/agents/loop.md`, `issue-tracker.md`
+  or `coding-standards.md`, and a test fails on a project term. It carries
+  the generic coding standards, the owner-on-the-loop rules and status
+  conventions, and three stdlib scripts: `board.py` (move a ticket),
+  `gate.py` (the proof gate) and `omnigent_agent.py` (its project defaults to the
+  repo's name).
+- A project configures the loop rather than forking it: `loop.md § Practice`
+  names the skill that fills a stage (defaults: `grilling`, `to-spec`,
+  `code-review`, `pr`), and `§ Approvals` lists the spec, plan or merge points
+  that wait for a person. The loop keeps the state, the gate, the cross-family
+  verifier and the merge whatever the practice.
+- Every step leaves proof on GitHub, and `scripts/gate.py check <build|merge>`
+  checks it: the issues the PR closes are specced and labelled (what
+  `spec_gate.py` did), each approval is recorded, and at merge the PR has its
+  `## Evidence`, a posted verifier verdict, green CI and a merge approval on its
+  head. The coordinator approves spec, plan and merge itself (`gate.py
+  approve`), the verifier only gives the verdict (`gate.py verdict`), and a
+  `§ Approvals` rule adds a person's approval, made by adding the
+  `approved:<point>` label. A project runs the gate as `mise run gate`, adding
+  its own checks; the loop, a pre-push hook and CI call it. A step is skipped
+  only when the owner asks: `size:XS` no longer skips the verifier.
+- Orchestration backends: native subagents (the default), Omnigent and
+  herdr-link, picked by `Orchestration backend: <name>` in personal
+  instructions. Without the other model family, the verifier is a fresh session
+  of the same family and the PR body says `verifier: same family`; the brief
+  never says so.
+- The loop's issue conventions (states, categories, sizes, board columns) are
+  its `issues.md`, and its `github.md` does them on GitHub (`gh` operations,
+  board moves, the issue-batch protocol the setup skill used to write). Both
+  are read in place, never copied: a project's `issue-tracker.md` holds the
+  line `Tracker: GitHub (engineering-loop's github.md)`, its Components, what
+  is Never on GitHub, and optionally Extra labels and Extra categories.
+- Removed `setup-engineering-workflow-for-apm`: the project template writes
+  `docs/agents/`, and two writers drift apart. `to-spec`, `triage`,
+  `to-tickets`, `implement-spec`, `ask-matt`, `code-review` and `wayfinder`
+  send a user without `docs/agents/issue-tracker.md` to create it. Drop
+  `/setup-engineering-workflow-for-apm` from your own instructions.
+
 ## 0.7.0 - 2026-09-30
 
 Upstream `mattpocock/skills` `c55ee46..d81f3a1` (release v1.3).

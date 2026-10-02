@@ -64,4 +64,4 @@ These are judgement calls; the value is asking them in order.
 
 ## Precondition
 
-**`/setup-engineering-workflow-for-apm`**: run before the first engineering flow to configure the issue tracker, triage labels and doc layout the other skills assume. Custom trackers work too.
+**`docs/agents/issue-tracker.md`**: names the issue tracker's realization file the other skills follow (for GitHub, the `engineering-loop` skill's `github.md`), plus the project's components. The project template writes it. Custom trackers work too.
