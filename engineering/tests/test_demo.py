@@ -99,12 +99,20 @@ def test_refuses_uncommitted_changes(tmp_path: Path, video: str) -> None:
     result, calls = run(tmp_path, "the dry run", video, dirty=True)
 
     assert result.returncode == 3
+    assert "uncommitted changes" in result.stderr
     assert not any(call.startswith("pr comment") for call in calls)
+
+
+def test_refuses_a_pr_that_is_not_a_number(tmp_path: Path, video: str) -> None:
+    result, calls = run(tmp_path, "--pr", "feat/x", "caption", video)
+
+    assert result.returncode == 2
+    assert calls == []
 
 
 @pytest.mark.parametrize(
     "args",
-    [(), ("caption only",), ("caption", "missing.mp4"), ("--pr", "feat/x", "caption", "demo.mp4")],
+    [(), ("caption only",), ("caption", "missing.mp4")],
 )
 def test_refuses_bad_arguments(tmp_path: Path, args: tuple[str, ...]) -> None:
     result, calls = run(tmp_path, *args)

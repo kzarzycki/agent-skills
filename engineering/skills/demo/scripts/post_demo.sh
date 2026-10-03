@@ -26,8 +26,12 @@ done
 pr="${pr:-$(gh pr view --json number --jq .number)}"
 head="$(git rev-parse HEAD)"
 pr_head="$(gh pr view "$pr" --json headRefOid --jq .headRefOid)"
-if [ "$head" != "$pr_head" ] || ! git diff --quiet HEAD; then
+if [ "$head" != "$pr_head" ]; then
   echo "post_demo: this checkout is at ${head:0:7}, PR #$pr's head is ${pr_head:0:7}; record from a clean checkout of the head" >&2
+  exit 3
+fi
+if ! git diff --quiet HEAD; then
+  echo "post_demo: this checkout has uncommitted changes, so the video may not show PR #$pr's head; commit and push them, then record again" >&2
   exit 3
 fi
 
