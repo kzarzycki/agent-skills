@@ -101,7 +101,9 @@ def column_of(repo: dict[str, Any]) -> str:
 def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "column" and argv[1].isdigit():
         try:
-            repo = _graphql(COLUMN, owner="{owner}", name="{repo}", issue=int(argv[1]))["repository"]
+            repo = _graphql(COLUMN, owner="{owner}", name="{repo}", issue=int(argv[1]))[
+                "repository"
+            ]
         except subprocess.CalledProcessError as exc:
             print(exc.stderr.strip(), file=sys.stderr)
             return 1

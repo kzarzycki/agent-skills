@@ -54,10 +54,14 @@ def test_a_repo_without_a_board_or_a_status_field_is_refused() -> None:
 def _repo(boards: list[str], items: list[tuple[str, str | None]]) -> dict:
     return {
         "projectsV2": {"nodes": [{"id": b} for b in boards]},
-        "issue": {"projectItems": {"nodes": [
-            {"project": {"id": p}, "fieldValueByName": None if s is None else {"name": s}}
-            for p, s in items
-        ]}},
+        "issue": {
+            "projectItems": {
+                "nodes": [
+                    {"project": {"id": p}, "fieldValueByName": None if s is None else {"name": s}}
+                    for p, s in items
+                ]
+            }
+        },
     }
 
 
