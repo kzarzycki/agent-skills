@@ -115,7 +115,9 @@ class Omnigent:
         )
         base = server.group(1) if server else _logged_in_server()
         if not base or not host:
-            raise Fail(f"{CONFIG} lacks host.host_id, or no server: neither `server:` there nor one login in {AUTH_TOKENS}")
+            raise Fail(
+                f"{CONFIG} lacks host.host_id, or no server: neither `server:` there nor one login in {AUTH_TOKENS}"
+            )
         self.base, self.host_id = base.rstrip("/"), host.group(1)
         self._token = ""
 
