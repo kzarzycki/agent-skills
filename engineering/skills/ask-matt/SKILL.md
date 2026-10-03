@@ -47,6 +47,7 @@ Model-invoked references that other skills pull in. Call one directly when the w
 - **`/loop-me`**: grill out specs for recurring workflows to delegate.
 - **`/claude-handoff`**: hand the conversation to a fresh Claude Code background agent.
 - **`/audit-third-party-software`**: audit third-party code before installing it.
+- **`/demo`**: record a visible change running and post the video to its PR. `/pr` names it in the Evidence.
 - **`/context-extractor`**: extract a project's conventions into a `CLAUDE.md`.
 - **`/operating-omnigent`**: operate a local Omnigent install and drive its agents.
 

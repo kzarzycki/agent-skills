@@ -8,7 +8,7 @@ future coding-agent adapters.
 ## Source ownership
 
 - Owned skills, edited in place: `skills/audit-third-party-software/`,
-  `skills/context-extractor/`, `skills/engineering-loop/`,
+  `skills/context-extractor/`, `skills/demo/`, `skills/engineering-loop/`,
   `skills/operating-omnigent/`.
 - Owned overlays, canonical under `overlays/skills/<name>/` and reproduced into
   `skills/<name>/`: every tuned imported skill (listed under `owned_overlays` in

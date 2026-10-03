@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0 - 2026-10-03
+
+- New owned skill `demo`: record a change a user sees running at the PR's head and post the
+  video to the PR. `scripts/post_demo.sh` posts one `## Demo` comment with the videos attached
+  (`gh pr comment --attach`), refuses a checkout that is not the PR's head, and minimizes
+  earlier demo comments as outdated. One file per recorder, read only for the surface in play:
+  VHS for a CLI or TUI, Playwright for a web page, `simctl` for the iOS simulator,
+  `screenrecord` for Android. When to record is the project's rule, not the skill's.
+- `pr`: Evidence names the demo when one was recorded, or suggests one when the project's
+  instructions call for it. A repo PR template's headings win; the sections fit under them.
+- `ask-matt` routes `/demo`.
+
 ## 0.8.3 - 2026-10-02
 
 - An approval names the spec or plan by its last edit, as GitHub's edit history shows it
