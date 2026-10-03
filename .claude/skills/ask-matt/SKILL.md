@@ -47,6 +47,7 @@ Model-invoked references that other skills pull in. Call one directly when the w
 - **`/loop-me`**: grill out specs for recurring workflows to delegate.
 - **`/claude-handoff`**: hand the conversation to a fresh Claude Code background agent.
 - **`/audit-third-party-software`**: audit third-party code before installing it.
+- **`/demo`**: record a visible change running and post the video to its PR. `/pr` names it in the Evidence.
 - **`/context-extractor`**: extract a project's conventions into a `CLAUDE.md`.
 - **`/operating-omnigent`**: operate a local Omnigent install and drive its agents.
 
@@ -64,4 +65,4 @@ These are judgement calls; the value is asking them in order.
 
 ## Precondition
 
-**`/setup-engineering-workflow-for-apm`**: run before the first engineering flow to configure the issue tracker, triage labels and doc layout the other skills assume. Custom trackers work too.
+**`docs/agents/issue-tracker.md`**: names the issue tracker's realization file the other skills follow (for GitHub, the `engineering-loop` skill's `github.md`), plus the project's components. The project template writes it. Custom trackers work too.
