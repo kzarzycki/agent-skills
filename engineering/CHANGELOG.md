@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The merge gate counts only the newest run of each CI check on the head. A `gate` run
+  cancelled by a newer one (`cancel-in-progress`), or a run that was re-run, no longer blocks
+  the merge once its newest run is green. Checks are keyed by workflow and name, so one job
+  name in two workflows still counts twice.
+
 ## 0.9.0 - 2026-10-03
 
 - New owned skill `demo`: record a change a user sees running at the PR's head and post the

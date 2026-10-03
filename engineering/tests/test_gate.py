@@ -829,3 +829,45 @@ def test_a_change_the_status_config_hides_still_records_nothing(
     assert gate.main(["record-check", "7"]) == 1
     assert github == []
     assert "the tree has changes" in capsys.readouterr().out
+
+
+def run(name: str, conclusion: str, started: str, workflow: str = "Gate") -> dict[str, Any]:
+    suite = {"workflowRun": {"workflow": {"name": workflow}}}
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": "COMPLETED",
+        "conclusion": conclusion,
+        "startedAt": started,
+        "checkSuite": suite,
+    }
+
+
+def with_runs(*runs: dict[str, Any]) -> dict[str, Any]:
+    pr = pull()
+    pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"] = list(runs)
+    return pr
+
+
+def test_a_run_cancelled_by_a_newer_green_run_of_the_same_check_is_not_a_problem() -> None:
+    pr = with_runs(
+        run("gate", "CANCELLED", "2026-10-03T13:44:42Z"),
+        run("gate", "SUCCESS", "2026-10-03T13:44:49Z"),
+    )
+    assert gate.ci("PR #7", pr) == []
+
+
+def test_the_newest_run_of_a_check_counts_when_it_failed() -> None:
+    pr = with_runs(
+        run("gate", "SUCCESS", "2026-10-03T13:00:00Z"),
+        run("gate", "FAILURE", "2026-10-03T14:00:00Z"),
+    )
+    assert gate.ci("PR #7", pr) == ["PR #7: CI check `gate` is FAILURE on the head commit"]
+
+
+def test_one_job_name_in_two_workflows_is_two_checks() -> None:
+    pr = with_runs(
+        run("check", "SUCCESS", "2026-10-03T14:00:00Z", "CI"),
+        run("check", "FAILURE", "2026-10-03T13:00:00Z", "Nightly"),
+    )
+    assert gate.ci("PR #7", pr) == ["PR #7: CI check `check` is FAILURE on the head commit"]
