@@ -22,7 +22,12 @@ An approval is a comment `approve` writes, which the gate reads, plus the `appro
 
     Approved: spec
     By: coordinator
-    Spec: <12 hex of sha256 of the spec>          (plan: Plan:, merge: Head: <sha> and Verdict:)
+    Spec: as edited 2026-10-02 14:35:27 UTC      (plan: Plan:, merge: Head: <sha> and Verdict:)
+
+A spec or plan is named by its last edit as GitHub shows it in the edit history (`as written <time>` before any), so
+a person can open the version approved. Every approval is a new comment: a re-approval says the spec, plan or head
+changed, and `approve` minimizes as outdated each earlier record it supersedes, keeping another approver's record of
+the same version.
 
 The coordinator approves every point. A rule in loop.md § Approvals, one `- <point>: <condition>` line each, adds a
 person's approval (`By: owner`). Its label goes on last: the coordinator's approval removes the label and adds
@@ -40,7 +45,6 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
 import json
 import os
 import re
@@ -56,8 +60,9 @@ SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
 POINTS = ("spec", "plan", "merge")
 VERDICT = "Verifier verdict"
-ISSUE = "number body labels(first: 50) { nodes { name } } comments(last: 100) { totalCount nodes { body } }"
-PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ body }} }}
+NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
+ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
+PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion }} ... on StatusContext {{ context state }} }} }} }} }} }} }}
@@ -74,6 +79,11 @@ CONDITION = re.compile(
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 CHECKED = "Local check passed"
+CHANGED = {
+    "spec": "The spec changed after the last approval, so it was checked again.\n",
+    "plan": "The plan changed after the last approval, so it was checked again.\n",
+    "merge": "The head moved after the last approval, so it was checked again.\n",
+}
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
@@ -164,15 +174,18 @@ def merge_paths(pull: dict[str, Any], loop_rules: list[tuple[str, str]]) -> list
     return [file["path"] for file in files["nodes"]]
 
 
-def fingerprint(text: str) -> str:
-    return hashlib.sha256(text.replace("\r\n", "\n").strip().encode()).hexdigest()[:12]
+def version(holder: dict[str, Any]) -> str:
+    """The issue or comment holding a spec or plan, named by its last edit, as GitHub's edit history shows it."""
+    edited = holder.get("lastEditedAt")
+    when = (edited or holder["createdAt"]).replace("T", " ").replace("Z", " UTC")
+    return f"as edited {when}" if edited else f"as written {when}"
 
 
 def names(node: dict[str, Any]) -> set[str]:
     return {label["name"] for label in node["labels"]["nodes"]}
 
 
-def bodies(node: dict[str, Any]) -> list[str]:
+def notes(node: dict[str, Any]) -> list[dict[str, Any]]:
     """Its comments; refused past one page, where an approval or a spec could be among those not read."""
     comments = node["comments"]
     # ponytail: one page of 100; page with `before:` cursors when a spec or PR outgrows it.
@@ -181,32 +194,39 @@ def bodies(node: dict[str, Any]) -> list[str]:
         raise Refused(
             f"{where} has more than {len(comments['nodes'])} comments: the gate reads one page"
         )
-    return [comment["body"] for comment in comments["nodes"]]
+    found: list[dict[str, Any]] = comments["nodes"]
+    return found
 
 
-def headed(node: dict[str, Any], heading: str) -> str | None:
+def bodies(node: dict[str, Any]) -> list[str]:
+    return [note["body"] for note in notes(node)]
+
+
+def headed(node: dict[str, Any], heading: str) -> dict[str, Any] | None:
     """The last comment that starts with `heading`."""
-    found = [body for body in bodies(node) if body.lstrip().startswith(heading)]
+    found = [note for note in notes(node) if note["body"].lstrip().startswith(heading)]
     return found[-1] if found else None
 
 
-def spec_of(issue: dict[str, Any]) -> str:
-    return headed(issue, "## Spec") or issue["body"]
+def spec_holder(issue: dict[str, Any]) -> dict[str, Any]:
+    """The issue, or its last `## Spec` comment where a tool owns the body."""
+    return headed(issue, "## Spec") or issue
+
+
+def parsed(body: str, point: str) -> dict[str, str] | None:
+    """An `Approved: <point>` comment's lower-cased `Key: value` lines; None for any other comment."""
+    lines = body.strip().splitlines()
+    if not lines or lines[0].strip() != f"Approved: {point}":
+        return None
+    return {
+        key.strip().lower(): value.strip()
+        for key, _, value in (line.partition(":") for line in lines[1:])
+    }
 
 
 def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
-    """The approval records for `point` among a node's comments, each as its lower-cased `Key: value` lines."""
-    found = []
-    for body in bodies(node):
-        lines = body.strip().splitlines()
-        if lines and lines[0].strip() == f"Approved: {point}":
-            found.append(
-                {
-                    key.strip().lower(): value.strip()
-                    for key, _, value in (line.partition(":") for line in lines[1:])
-                }
-            )
-    return found
+    """The approval records for `point` among a node's comments."""
+    return [found for body in bodies(node) if (found := parsed(body, point)) is not None]
 
 
 def current(node: dict[str, Any], point: str, key: str, value: str, by: str) -> bool:
@@ -279,13 +299,13 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
             issue,
             "spec",
             "spec",
-            fingerprint(spec_of(issue)),
+            version(spec_holder(issue)),
             owner_needed("spec", loop_rules, labels, None),
         )
         plan = headed(issue, "## Plan")
         if plan is not None:
             plan_owner = owner_needed("plan", loop_rules, labels, None)
-            found += approvals(where, issue, "plan", "plan", fingerprint(plan), plan_owner)
+            found += approvals(where, issue, "plan", "plan", version(plan), plan_owner)
         elif practice_plans(loop):
             found.append(f"{where} has no `## Plan` comment, and one is due")
     if point != "merge":
@@ -411,6 +431,19 @@ def comment(number: int, body: str) -> None:
     )
 
 
+def minimize(comment_id: str) -> None:
+    """Collapse a comment on GitHub as outdated; it stays readable, and the gate still reads it."""
+    gh(
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
+        "-f",
+        f"id={comment_id}",
+        "--silent",
+    )
+
+
 def current_pr() -> int | None:
     try:
         return int(gh("pr", "view", "--json", "number", "--jq", ".number"))
@@ -472,13 +505,23 @@ def approve(point: str, number: int, by: str, triage: str | None) -> int:
         )
     else:
         issue = issue_node(number)
-        text = spec_of(issue) if point == "spec" else headed(issue, "## Plan")
-        if text is None:
+        holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
+        if holder is None:
             raise Refused(f"#{number} has no `## Plan` comment to approve")
-        node, targets, key, value = issue, [number], point, fingerprint(text)
+        node, targets, key, value = issue, [number], point, version(holder)
         owner = owner_needed(point, loop_rules, names(issue), None)
         record = f"{point.capitalize()}: {value}\n"
+    earlier = [
+        (note, found) for note in notes(node) if (found := parsed(note["body"], point)) is not None
+    ]
+    if any(found.get("by") == by and found.get(key) != value for _, found in earlier):
+        record += CHANGED[point]
     comment(number, f"Approved: {point}\nBy: {by}\n{record}")
+    # what this record supersedes: any earlier one but another approver's of the same version
+    for note, found in earlier:
+        superseded = found.get(key) != value or found.get("by") == by
+        if superseded and not note.get("isMinimized") and note.get("viewerCanMinimize"):
+            minimize(note["id"])
     # a person who already approved this spec, plan or head keeps their label when the loop resumes
     if (
         by == "coordinator" and owner and not current(node, point, key, value, "owner")

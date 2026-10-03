@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.3 - 2026-10-02
+
+- An approval names the spec or plan by its last edit, as GitHub's edit history shows it
+  (`Spec: as edited 2026-10-02 14:35:27 UTC`), instead of a 12-character hash a person could
+  not check against the text. Any edit still needs approving again. Records written with the
+  hash no longer count: an issue approved before this release needs one more approval.
+- A re-approval says why: `The spec changed after the last approval, so it was checked
+  again.` (the head moved, for a merge). `approve` then minimizes, as outdated, each earlier
+  record it supersedes, so the issue shows only the approvals that count. Another approver's
+  record of the same version stays open. Minimized comments stay readable, and the gate still
+  reads them.
+
 ## 0.8.2 - 2026-10-02
 
 - Under `CI: none`, the merge proof is a record, not a sentence. `gate.py record-check <pr>` runs
