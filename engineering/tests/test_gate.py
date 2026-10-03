@@ -399,15 +399,31 @@ def test_more_checks_than_one_page_is_refused() -> None:
     ]
 
 
-def test_more_files_than_one_page_is_refused_only_where_a_merge_path_rule_needs_them() -> None:
+def test_files_past_the_first_page_are_read_only_where_a_merge_path_rule_needs_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     big = pull(comments=MERGED, labels=("approved:merge",))
     big["files"]["totalCount"] = 101
+    read: list[int] = []
+    rest = [f"src/{n}.py" for n in range(100)] + ["billing/invoice.py"]
+    monkeypatch.setattr(gate, "pr_files", lambda number: read.append(number) or rest)
     no_path_rule = "## Approvals\n\n- spec: size:L or larger\n"
     assert (
         gate.proofs("build", big, [approved(1, "web")], LOOP),
         gate.proofs("merge", big, [approved(1, "web")], no_path_rule),
-    ) == ([], [])
-    with pytest.raises(gate.Refused, match="more than 0 changed files: the gate reads one page"):
+        read,
+    ) == ([], [], [])
+    assert gate.proofs("merge", big, [approved(1, "web")], LOOP) == [
+        "PR #7 has no `Approved: merge` record by the owner"
+    ]
+    assert read == [7]
+
+
+def test_more_files_than_github_lists_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    big = pull(comments=MERGED, labels=("approved:merge",))
+    big["files"]["totalCount"] = 3001
+    monkeypatch.setattr(gate, "pr_files", lambda _n: [f"src/{n}.py" for n in range(3000)])
+    with pytest.raises(gate.Refused, match="PR #7 changes 3001 files and GitHub lists 3000"):
         gate.proofs("merge", big, [approved(1, "web")], LOOP)
 
 

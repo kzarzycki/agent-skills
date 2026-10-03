@@ -164,14 +164,16 @@ def merge_paths(pull: dict[str, Any], loop_rules: list[tuple[str, str]]) -> list
         for found in CONDITION.finditer(condition)
     ):
         return []
-    files = pull["files"]
-    # ponytail: one page of files; page them when a PR with a path rule outgrows it.
-    if (files.get("totalCount") or 0) > len(files["nodes"]):
+    total = pull["files"].get("totalCount") or 0
+    paths = [file["path"] for file in pull["files"]["nodes"]]
+    if total > len(paths):  # past GraphQL's one page, e.g. a PR that commits synced agent files
+        paths = pr_files(pull["number"])
+    if total > len(paths):
         raise Refused(
-            f"PR #{pull['number']} has more than {len(files['nodes'])} changed files: "
-            "the gate reads one page to judge a path rule, so split the PR"
+            f"PR #{pull['number']} changes {total} files and GitHub lists {len(paths)}: "
+            "the gate can't judge a path rule on the rest, so split the PR"
         )
-    return [file["path"] for file in files["nodes"]]
+    return paths
 
 
 def version(holder: dict[str, Any]) -> str:
@@ -381,6 +383,17 @@ def pull_request(pr: int) -> dict[str, Any]:
         "pullRequest"
     ]
     return pull
+
+
+def pr_files(number: int) -> list[str]:
+    """Every path a PR changes, as GitHub's REST API pages them: up to 3000."""
+    return gh(
+        "api",
+        "--paginate",
+        f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
+        "--jq",
+        ".[].filename",
+    ).splitlines()
 
 
 def issue_node(number: int) -> dict[str, Any]:
