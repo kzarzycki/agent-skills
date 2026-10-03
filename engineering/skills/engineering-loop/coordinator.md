@@ -7,8 +7,8 @@ UI, and delegate the rest.
 1. **Intent.** File a request from the owner in their words, with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
    given by its state ([issues.md](issues.md)): `needs-owner` waits until the owner
-   answers what it asks, or approves (the `approved:<point>` label, or their word in the
-   session);
+   answers what it asks, or approves (the `approved:<point>` label, their word in the
+   session, or a spec's issue moved to `Ready`: SKILL.md, Approvals and proof);
    `ready-for-agent` goes to its open PR's step, else to its plan when one is due and
    missing, else to step 3; no state label is triaged here. Read the request, the evidence the owner gave
    and the code it touches, far enough to see what has to change, and research what the
