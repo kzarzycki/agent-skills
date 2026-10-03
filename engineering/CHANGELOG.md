@@ -11,6 +11,10 @@
   record it supersedes, so the issue shows only the approvals that count. Another approver's
   record of the same version stays open. Minimized comments stay readable, and the gate still
   reads them.
+- A merge path rule reads every file a PR changes, not just GraphQL's first 100. Past that page
+  the gate lists the files through the REST API, up to GitHub's 3000. Adopting the template
+  commits the synced agent files, so the adoption PR alone was refused as "more than 100
+  changed files".
 
 ## 0.8.2 - 2026-10-02
 
