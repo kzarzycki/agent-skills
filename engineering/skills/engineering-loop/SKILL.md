@@ -81,7 +81,9 @@ condition is judged on what the issue carries (size, component, category), the p
 PR touches (merge only: a spec or plan comes before the change, so there the loop judges a
 path), or the kind of change; `always` matches everything. When a rule matches,
 `approve` leaves the label off, adds `needs-owner`, and you stop: a person approves by
-adding `approved:<point>`, or by saying so in the session, and then you run `approve`
+adding `approved:<point>`, by saying so in the session, or, for a spec on a repo with a
+board, by moving the issue to `Ready` while it has `needs-owner` (`python3
+scripts/board.py column <issue>` prints `Ready`), and then you run `approve`
 with `--by owner`. A condition `gate.py` can't read is yours alone to judge. A rule GitHub
 can enforce, such as a required review or a code owner, belongs in branch protection or
 `CODEOWNERS`, which the loop obeys and never overrides.
