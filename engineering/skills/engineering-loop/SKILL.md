@@ -97,13 +97,16 @@ can enforce, such as a required review or a code owner, belongs in branch protec
 - **Verifier** ([verifier.md](verifier.md)): reviews the PR, drives its instance, and
   leaves the tree as it found it.
 
-Agents are started, messaged, listed and closed through one backend. The developer picks
-it with the line `Orchestration backend: <name>` in their personal instructions; a pin
-in loop.md wins, and no line means native: [orchestration/native.md](orchestration/native.md),
+Agents are started, messaged, listed and closed through one backend, the first that holds:
+a pin in loop.md; the line `Orchestration backend: <name>` in the developer's personal
+instructions; the session you run in, read from its environment (`OMNIGENT=1` is
+omnigent, `HERDR_ENV=1` is herdr); else native:
+[orchestration/native.md](orchestration/native.md),
 [orchestration/omnigent.md](orchestration/omnigent.md) or
-[orchestration/herdr-link.md](orchestration/herdr-link.md). Delegate through the backend
-you are actually in. Inside a worker or verifier, review angles run as native subagents,
-never as full harness sessions.
+[orchestration/herdr-link.md](orchestration/herdr-link.md). Only that line names a
+backend: an instruction about which CLI or model to use is not one, and never turns a
+child into a separate process outside the backend. Inside a worker or verifier, review
+angles run as native subagents, never as full harness sessions.
 
 ## Rules for every role
 
