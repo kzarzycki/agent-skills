@@ -65,7 +65,8 @@ ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name 
 PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion }} ... on StatusContext {{ context state }} }} }} }} }} }} }}
+    __typename ... on CheckRun {{ name status conclusion startedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
+    ... on StatusContext {{ context state createdAt }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords; ponytail: same-repo `#n` only, add owner/repo#n and issue URLs when a PR here uses one.
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+#(\d+)\b", re.IGNORECASE)
@@ -345,12 +346,23 @@ def ci(where: str, pull: dict[str, Any]) -> list[str]:
         return [f"{where}: no CI check on the head commit"]
     if (contexts["contexts"].get("totalCount") or 0) > len(nodes):
         return [f"{where} has more than {len(nodes)} CI checks: the gate reads one page"]
-    checks = [
-        (
+    # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of
+    # one check on the head; only the newest says whether it is green.
+    newest: dict[tuple[str, str], dict[str, Any]] = {}
+    for node in nodes:
+        suite = (node.get("checkSuite") or {}).get("workflowRun") or {}
+        key = (
+            (suite.get("workflow") or {}).get("name", ""),
             node.get("name") or node.get("context"),
-            node.get("conclusion") or node.get("state") or node.get("status"),
         )
-        for node in nodes
+        when = node.get("startedAt") or node.get("createdAt") or ""
+        if key not in newest or when >= (
+            newest[key].get("startedAt") or newest[key].get("createdAt") or ""
+        ):
+            newest[key] = node
+    checks = [
+        (name, node.get("conclusion") or node.get("state") or node.get("status"))
+        for (_, name), node in newest.items()
     ]
     return [
         f"{where}: CI check `{name}` is {state} on the head commit"
