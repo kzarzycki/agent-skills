@@ -533,3 +533,19 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og.fail.add("delete")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert titles == ["t", "t-r2"]
+
+
+def test_the_server_comes_from_the_one_login_when_config_names_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, tokens = tmp_path / "config.yaml", tmp_path / "auth_tokens.json"
+    config.write_text("host:\n  host_id: host_1\nlocal_server_port: 6767\n")
+    monkeypatch.setattr(omnigent_agent, "CONFIG", config)
+    monkeypatch.setattr(omnigent_agent, "AUTH_TOKENS", tokens)
+    tokens.write_text('{"https://omnigent.example/": {}}')
+    assert omnigent_agent.Omnigent().base == "https://omnigent.example"
+    tokens.write_text('{"https://a.example": {}, "https://b.example": {}}')  # a guess: refuse
+    with pytest.raises(omnigent_agent.Fail, match="no server"):
+        omnigent_agent.Omnigent()
+    config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
+    assert omnigent_agent.Omnigent().base == "https://named.example"

@@ -28,6 +28,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -37,7 +38,7 @@ from urllib.request import Request, urlopen
 
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
-OMNIGENT_PYTHON = Path.home() / ".local/share/uv/tools/omnigent/bin/python"
+AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
 RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
@@ -85,6 +86,26 @@ def question_of(report: Path) -> Path:
     return report.with_name(report.name + ".question")
 
 
+def _logged_in_server() -> str:
+    """The one server Omnigent holds a login for, when config.yaml names none (newer installs
+    keep it only there); empty when there are none or several, since then it is a guess."""
+    try:
+        servers = list(json.loads(AUTH_TOKENS.read_text()))
+    except (OSError, ValueError, TypeError):
+        return ""
+    return servers[0] if len(servers) == 1 else ""
+
+
+def _omnigent_python() -> str:
+    """The interpreter of the `omnigent` on PATH, whose `cli_auth` refreshes the token."""
+    cli = shutil.which("omnigent")
+    if cli:
+        first = Path(cli).read_text(errors="replace").splitlines()[:1]
+        if first and first[0].startswith("#!") and Path(first[0][2:].strip()).exists():
+            return first[0][2:].strip()
+    return str(Path.home() / ".local/share/uv/tools/omnigent/bin/python")
+
+
 class Omnigent:
     def __init__(self) -> None:
         text = CONFIG.read_text()
@@ -92,16 +113,19 @@ class Omnigent:
             re.search(r"^server:\s*(\S+)", text, re.MULTILINE),
             re.search(r"^\s+host_id:\s*(\S+)", text, re.MULTILINE),
         )
-        if not server or not host:
-            raise Fail(f"{CONFIG} lacks server or host.host_id")
-        self.base, self.host_id = server.group(1).rstrip("/"), host.group(1)
+        base = server.group(1) if server else _logged_in_server()
+        if not base or not host:
+            raise Fail(
+                f"{CONFIG} lacks host.host_id, or no server: neither `server:` there nor one login in {AUTH_TOKENS}"
+            )
+        self.base, self.host_id = base.rstrip("/"), host.group(1)
         self._token = ""
 
     def token(self) -> str:
         code = f"from omnigent.cli_auth import refresh_stored_token as r, load_token as l; print(r({self.base!r}) or l({self.base!r}) or '')"
         try:  # refresh takes a blocking lock on Omnigent's auth file
             out = subprocess.run(
-                [str(OMNIGENT_PYTHON), "-c", code],
+                [_omnigent_python(), "-c", code],
                 capture_output=True,
                 text=True,
                 check=False,
