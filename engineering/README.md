@@ -87,7 +87,7 @@ own release instead of installing the upstream `main` branch directly.
 Three kinds of source ship under `engineering/skills/`:
 
 - Owned skills, edited in place: `audit-third-party-software`,
-  `context-extractor`, `engineering-loop`, `operating-omnigent`.
+  `context-extractor`, `demo`, `engineering-loop`, `operating-omnigent`.
 - Owned overlays under `overlays/skills/<name>/`, reproduced into
   `skills/<name>/`: every imported skill tuned for current models (listed
   under `owned_overlays` in `upstream.yml`).

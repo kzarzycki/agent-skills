@@ -12,6 +12,7 @@ exclusions:
 owned_skills:
   - audit-third-party-software
   - context-extractor
+  - demo
   - engineering-loop
   - operating-omnigent
 owned_overlays:
