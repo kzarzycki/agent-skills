@@ -13,6 +13,4 @@ xcrun simctl status_bar booted clear
 
 - Stop the recording with `SIGINT` and wait for it: that writes the file's index, and
   any other stop leaves a video that does not play.
-- Install and launch the app before recording starts, so the video opens on the screen
-  the change touches.
 - The status bar override keeps the clock and battery from distracting or dating the video.

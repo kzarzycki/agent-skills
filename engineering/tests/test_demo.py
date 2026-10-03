@@ -9,23 +9,30 @@ import pytest
 SCRIPT = Path(__file__).parents[1] / "skills" / "demo" / "scripts" / "post_demo.sh"
 HEAD = "a" * 40
 
-# A fake gh: answers the PR lookups, lists two earlier demos, and logs every call.
+# A fake gh: answers the lookups, lists two earlier demos of the caller, and logs every call.
 FAKE_GH = """#!/usr/bin/env bash
 args="$*"; echo "${args//$'\\n'/ }" >> "$LOG"
 case "$*" in
   "pr view --json number --jq .number") echo 7 ;;
   "pr view "*" --json headRefOid --jq .headRefOid") echo "$PR_HEAD" ;;
+  "api user --jq .login") echo me ;;
   "api repos/{owner}/{repo}/issues/"*) printf 'IC_old1\\nIC_old2\\n' ;;
+esac
+"""
+FAKE_GIT = f"""#!/usr/bin/env bash
+case "$1" in
+  rev-parse) echo {HEAD} ;;
+  diff) exit "$DIRTY" ;;
 esac
 """
 
 
 def run(
-    tmp_path: Path, *args: str, pr_head: str = HEAD
+    tmp_path: Path, *args: str, pr_head: str = HEAD, dirty: bool = False
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    for name, body in (("gh", FAKE_GH), ("git", f"#!/usr/bin/env bash\necho {HEAD}\n")):
+    for name, body in (("gh", FAKE_GH), ("git", FAKE_GIT)):
         tool = bin_dir / name
         tool.write_text(body)
         tool.chmod(0o755)
@@ -35,6 +42,7 @@ def run(
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "LOG": str(log),
         "PR_HEAD": pr_head,
+        "DIRTY": str(int(dirty)),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), *args],
@@ -61,9 +69,11 @@ def test_posts_one_demo_and_minimizes_the_earlier_ones(tmp_path: Path, video: st
     comment = next(call for call in calls if call.startswith("pr comment 7"))
     assert "## Demo" in comment and "the dry run, on aaaaaaa." in comment
     assert comment.endswith(f"--attach {video}")
+    listing = next(call for call in calls if call.startswith("api repos/"))
+    assert '.user.login == "me"' in listing
     minimized = [call for call in calls if call.startswith("api graphql")]
     assert [call.split("id=")[-1] for call in minimized] == ["IC_old1", "IC_old2"]
-    assert calls.index(comment) > next(i for i, c in enumerate(calls) if c.startswith("api repos/"))
+    assert calls.index(comment) > calls.index(listing)
 
 
 def test_explicit_pr_and_several_videos(tmp_path: Path, video: str) -> None:
@@ -81,11 +91,21 @@ def test_refuses_a_checkout_that_is_not_the_pr_head(tmp_path: Path, video: str) 
     result, calls = run(tmp_path, "the dry run", video, pr_head="b" * 40)
 
     assert result.returncode == 3
-    assert "push or check out the head" in result.stderr
+    assert "record from a clean checkout of the head" in result.stderr
     assert not any(call.startswith("pr comment") for call in calls)
 
 
-@pytest.mark.parametrize("args", [(), ("caption only",), ("caption", "missing.mp4")])
+def test_refuses_uncommitted_changes(tmp_path: Path, video: str) -> None:
+    result, calls = run(tmp_path, "the dry run", video, dirty=True)
+
+    assert result.returncode == 3
+    assert not any(call.startswith("pr comment") for call in calls)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [(), ("caption only",), ("caption", "missing.mp4"), ("--pr", "feat/x", "caption", "demo.mp4")],
+)
 def test_refuses_bad_arguments(tmp_path: Path, args: tuple[str, ...]) -> None:
     result, calls = run(tmp_path, *args)
 

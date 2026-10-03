@@ -8,7 +8,7 @@ description: Record a short video of a change running and post it to its PR, so 
 A demo is the change running, recorded at the PR's head and posted on the PR, so a
 person can watch it work in a minute instead of checking out the branch. Whether a PR
 gets one is the project's call: its agent instructions say when to suggest a demo and
-when to record one.
+when to record one. Without such a rule, record only when asked.
 
 ## Record
 
@@ -25,11 +25,10 @@ it. Otherwise pick the recorder for the surface and read its file:
 A change that spans surfaces gets one short video per surface, posted together.
 
 - Record the real build at the PR's head, so the video proves the change rather than a
-  mock. `post_demo.sh` refuses a checkout whose HEAD is not the PR's head.
+  mock. `post_demo.sh` refuses to post from a checkout that is not the PR's head or has
+  uncommitted changes; it checks when posting, so record from that same checkout.
 - Drive it from a script (a tape, a test, a command list) next to the e2e scenario it
   shows, so a re-recording after a fix is one command and shows a path the tests check.
-- Hide setup and cleanup, cut the waits, and leave the result on screen for a moment.
-  Keep it under a minute where the change allows: reviewers watch the start.
 - Keep secrets off screen (tokens, passwords, `env` output, customer data): anyone who
   can read the PR can download the video, and secret scanning does not read video.
 - Produce MP4 with H.264, the one format every browser plays inline.
@@ -43,7 +42,7 @@ scripts/post_demo.sh [--pr <number>] "<what it shows>" <video.mp4>...
 ```
 
 `scripts/` is relative to this skill's folder. The script posts one `## Demo` comment
-with the videos attached, naming the head commit, and minimizes earlier `## Demo`
+with the videos attached, naming the head commit, and minimizes your earlier `## Demo`
 comments as outdated so only the current one is open. The PR defaults to the current
 branch's. Then name the demo in the PR body's Evidence.
 
