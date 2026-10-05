@@ -20,9 +20,19 @@ Pull requests are not a triage request surface.
 
 A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
 `utilities` plugin creates one). `python3 scripts/board.py <issue> <column>` adds the
-issue when it is missing and sets its column; it is the only thing that moves a ticket, so
-the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
-created through the API.
+issue when it is missing and sets its column. The board's workflows cover the moves no
+loop step makes: an issue filed in the web UI, and one GitHub closes when its PR merges.
+Switch these on in the web UI, since the API cannot:
+
+- **Auto-add to project**, filter `is:issue is:open`, and **Item added to project** →
+  `Intent`.
+- **Auto-add sub-issues to project**.
+- **Item closed** → `Done`.
+- **Pull request linked to issue** → `Build`.
+
+Leave **Auto-close issue** off: a card's column would then close the issue, and the
+labels, not the board, are its state. A workflow and `board.py` set the same column for
+the same event, so either order ends the same.
 
 ## Publish an issue batch
 
