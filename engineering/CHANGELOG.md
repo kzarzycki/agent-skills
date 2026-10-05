@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 - 2026-10-05
+
+- Upstream intake, mattpocock/skills `d81f3a1..24fe0ef` (v1.3.1).
+- `ask-matt` (ported): once `/diagnosing-bugs` has fixed a bug, run `/retro` in the same
+  session to ask what would have prevented it; a finding that no seam can lock the bug down
+  still goes to `/improve-codebase-architecture`.
+
 ## 0.9.0 - 2026-10-03
 
 - New owned skill `demo`: record a change a user sees running at the PR's head and post the
