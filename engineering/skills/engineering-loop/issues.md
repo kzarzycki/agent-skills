@@ -46,10 +46,21 @@ The `triage` skill's roles map as needs-triage = no state label, needs-info =
 A wayfinder map or ticket carries its `wayfinder:` label instead of a category, and no
 component or size: it resolves a decision, not a change.
 
+## Epics
+
+An epic is an issue whose goal is an outcome the owner tracks; its work items are its
+native sub-issues. It carries the `epic` label next to its category, so a board view can
+filter for epics, and it closes when its outcome holds, that is when its sub-issues are
+done. Prefer converting an existing issue whose spec already states the outcome over
+filing a new one. Two levels only: a sub-issue never has sub-issues of its own, since the
+board's Parent issue field names only the direct parent and a grandchild would not show
+under its epic.
+
 ## Board
 
-The board shows every ticket in its loop stage; the realization file says how a ticket
-moves. The labels stay the state: when a move fails, report it and carry on.
+The board shows every ticket in its loop stage, and every epic with its progress; the
+realization file says how a ticket moves. The labels stay the state: when a move fails,
+report it and carry on.
 
 | Column | The ticket is here when | Moved by |
 |---|---|---|

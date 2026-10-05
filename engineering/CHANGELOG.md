@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.2 - 2026-10-05
+
+- Epics (`issues.md`): an epic is an issue whose goal is an outcome the owner tracks, with
+  its work items as native sub-issues and the `epic` label. Two levels only, so every work
+  item shows under its epic on the board. Convert an issue whose spec already states the
+  outcome rather than file a new one; the epic closes when its sub-issues are done.
+- Triage places what a PR leaves unfixed by one test: would closing the issue without it be
+  dishonest? Within the issue's acceptance, the issue stays open and the PR says `Part of #n`.
+  Outside it, a new issue with a `Found while #n` line, attached as a sub-issue of the
+  originating issue's epic, so follow-ups no longer grow into loose chains.
+- A change to an approved spec's scope or acceptance removes `approved:spec` and parks the
+  issue with `needs-owner`; a wording fix keeps the label.
+- Landing: closing keywords fire only on a PR merged into the default branch, so a stacked
+  PR's issues are closed on the PR that reaches it, or by the coordinator. A replacement PR
+  carries `Closes` for every issue the replaced one closed.
+- `gate.py` reads `Part of #n` as naming the spec, like `Closes #n`, so a PR that leaves its
+  spec open still passes the gate.
+- `github.md`: setting a parent with `addSubIssue`, after reading the current one, since an
+  issue has at most one and a repeated add is refused.
+
 ## 0.9.1 - 2026-10-05
 
 - Upstream intake, mattpocock/skills `d81f3a1..24fe0ef` (v1.3.1).

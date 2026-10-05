@@ -27,7 +27,7 @@ gh api graphql -f query='mutation($p:ID!,$d:String!,$m:String!){updateProjectV2(
 
 `repositoryId` links the board to the repo in the same call. A new board is private; whether to open it (`public:true` in `updateProjectV2`) is the project's choice. Opening it does not expose a private repo's items: [GitHub's visibility docs](https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-your-project/managing-visibility-of-your-projects) keep each item visible only to people who can see its repo. `gh project create` and `gh project edit` fail on gh 2.87.0 with `Variable $query is used by CreateProjectV2 but not declared`, hence the API calls; on a gh where they work, `gh project create --owner OWNER --title REPO`, `gh project link` and `gh project edit --visibility … --description … --readme "$(cat board-readme.md)"` do the same (`--readme` takes a string; there is no `--readme-file`). The token needs the `project` scope (`gh auth refresh -s project`); `read:project` lists boards and refuses every write with `INSUFFICIENT_SCOPES`.
 
-### 2. Fields
+### 2. Fields and views
 
 `Status` already exists with `Todo|In Progress|Done`. Replace the option set with the stages of the project's engineering loop, in order, ending in `Done` (the names below are an example; take the real ones from the project's docs). `updateProjectV2Field` **replaces**, so list every option you want:
 
@@ -47,12 +47,25 @@ FIRST_COLUMN_OPTION_ID=$(jq -r '.fields[]|select(.name=="Status").options[0].id'
 
 No other field is needed. A separate loop-position field (`Phase`) next to `Status` has to be updated in step with it and goes stale the first time one update is missed; a `Kind` field repeats the labels.
 
+The built-in "Parent issue" and "Sub-issues progress" fields show where a ticket belongs and how far its epic is, but a view shows only the fields in its visible list. Show them on the first view, and add an Epics view filtered to `label:epic`. `visibleFieldIds` replaces the list, in order, so name every field the view should show:
+
+```bash
+P=$(gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{fields(first:50){nodes{... on ProjectV2FieldCommon{id name}}} views(first:1){nodes{id}}}}}' -q .data.node)
+SHOW=(); for n in Title Status Labels "Parent issue" "Sub-issues progress"; do
+  SHOW+=(-f "f[]=$(jq -r --arg n "$n" '.fields.nodes[]|select(.name==$n).id' <<<"$P")"); done
+EPICS=$(gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2View(input:{projectId:$p,name:"Epics",layout:TABLE_LAYOUT}){projectV2View{id}}}' -q .data.createProjectV2View.projectV2View.id)
+gh api graphql -f v="$(jq -r '.views.nodes[0].id' <<<"$P")" "${SHOW[@]}" -f query='mutation($v:ID!,$f:[ID!]){updateProjectV2View(input:{viewId:$v,configuration:{visibleFieldIds:$f}}){projectV2View{name}}}'
+gh api graphql -f v="$EPICS" "${SHOW[@]}" -f query='mutation($v:ID!,$f:[ID!]){updateProjectV2View(input:{viewId:$v,filter:"label:epic",configuration:{visibleFieldIds:$f}}){projectV2View{name filter}}}'
+```
+
+A view's name, layout, filter and visible fields are all the API sets (`UpdateProjectV2ViewInput`); grouping and sorting are web-UI only (step 7).
+
 A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off (`workflows{nodes{name enabled}}` on the project shows it; only "Auto-add sub-issues to project" is on), and the API cannot switch them on. Until someone enables "Item closed" in the web UI, nothing moves a closed issue to `Done`: the loop sets `Done` itself at the step that closes the issue.
 
 ### 3. Labels
 
 ```bash
-for l in "type:epic|8250DF|Epic: milestone-sized umbrella; stories are its sub-issues" \
+for l in "epic|8250DF|An outcome the owner tracks; its work items are sub-issues" \
          "type:story|1D76DB|Story: one engineering-loop iteration" \
          "type:task|0E8A16|Task: small, well-specified work item" \
          "type:bug|D73A4A|Bug: something is broken" \
@@ -79,7 +92,7 @@ gh api -X PATCH repos/OWNER/REPO/milestones/1 -F description=@m0.txt -q .title
 Script it over the roadmap table; never hand-type N `gh issue create` calls. Create epics first, collect the number map, then create stories referencing parents.
 
 ```bash
-gh issue create --title "E00 — Bridge foundation (M0)" --label type:epic --milestone M0 --body-file epic.md
+gh issue create --title "E00 — Bridge foundation (M0)" --label epic --milestone M0 --body-file epic.md
 ```
 
 Sub-issues take the **REST numeric id**, not the issue number, and `-F` (not `-f`) or the API rejects it as a string:
@@ -111,7 +124,7 @@ Re-read `field-list` after any field mutation; option ids change.
 `gh` and the API cannot switch on a Projects workflow or set a view's grouping (`createProjectV2View` makes a view, not its grouping):
 
 1. **Workflows → Auto-add to project**, filter `is:issue is:open`. Without it only explicitly-added items appear.
-2. **Group table view by Parent issue** → hierarchy view with sub-issue progress bars.
+2. **Group the first view by Parent issue** (the ▾ next to the view name, then Group, then Parent issue) → each epic with its sub-issues under it.
 3. Optional **Roadmap view** with a date field.
 
 4. **Workflows → Item closed**, set Status to `Done`. It is on for a board created in the web UI and off for one created through the API.
@@ -134,6 +147,7 @@ Two valid shapes; pick deliberately:
 ```bash
 gh project view "$NUM" --owner OWNER --format json | jq '{items:.items.totalCount,public,shortDescription}'
 gh repo view OWNER/REPO --json projectsV2 -q '.projectsV2.Nodes[]|.number'
+gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{views(first:10){nodes{name filter fields(first:20){nodes{... on ProjectV2FieldCommon{name}}}}}}}}' -q '.data.node.views.nodes[]|[.name,.filter,([.fields.nodes[].name]|join(","))]|@tsv'   # Epics view, label:epic, Parent issue + Sub-issues progress shown
 gh api repos/OWNER/REPO/milestones -q '.[]|[.title,(.description|length)]|@tsv'   # no zero-length descriptions
 gh api repos/OWNER/REPO/issues/EPIC -q .sub_issues_summary
 ```

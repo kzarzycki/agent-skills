@@ -13,13 +13,24 @@ inside the repository: it infers the repo from the remote.
 - Comment: `gh issue comment <number> --body "..."`
 - Label: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`
 - Close: `gh issue close <number> --comment "..."`
+- Parent: an issue has at most one, and `addSubIssue` refuses a pair that already exists,
+  so read the sub-issue's parent and both node ids first:
+  `gh api graphql -F owner='{owner}' -F name='{repo}' -F n=<sub-issue> -F p=<parent> -f query='query($owner:String!,$name:String!,$n:Int!,$p:Int!){repository(owner:$owner,name:$name){issue(number:$n){id parent{number}} parent:issue(number:$p){id}}}'`.
+  No parent yet:
+  `gh api graphql -f p=<parent id> -f s=<sub-issue id> -f query='mutation($p:ID!,$s:ID!){addSubIssue(input:{issueId:$p,subIssueId:$s}){subIssue{parent{number}}}}'`.
+  Already that parent: done. Another parent: it belongs to that epic; `replaceParent:true`
+  moves it only when that one is wrong.
+- Epic: `gh issue edit <number> --add-label epic`, after
+  `gh label create epic --color 8250DF --description "An outcome the owner tracks; its work items are sub-issues"`
+  when the repo has no such label.
 
 Pull requests are not a triage request surface.
 
 ## Board
 
 A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
-`utilities` plugin creates one). `python3 scripts/board.py <issue> <column>` adds the
+`utilities` plugin creates one, with an Epics view and the Parent issue and Sub-issues
+progress fields shown). `python3 scripts/board.py <issue> <column>` adds the
 issue when it is missing and sets its column; it is the only thing that moves a ticket, so
 the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
 created through the API.
