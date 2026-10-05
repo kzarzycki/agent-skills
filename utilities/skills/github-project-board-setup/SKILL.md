@@ -5,7 +5,7 @@ description: "Work a GitHub Projects v2 board that is the single home for a repo
 
 ## The shape
 
-**Milestone** (M0…Mn) → **epic issue** (`type:epic`) → **story/task sub-issues**. Order is real `blocked by` issue dependencies, not prose. Anything with a status lives on the board; repo docs hold only what stays true regardless of which story is in flight.
+**Milestone** (M0…Mn) → **epic issue** (`epic` label) → **story/task sub-issues**, never deeper: the board's Parent issue field names only the direct parent, so a grandchild would not show under its epic. Order is real `blocked by` issue dependencies, not prose. Anything with a status lives on the board; repo docs hold only what stays true regardless of which story is in flight.
 
 One board field carries the position: `Status`. Its columns are the stages of the project's own engineering loop, in order, ending in `Done` — the project's docs name them (e.g. Intent→Needs owner→Ready→Build→Verify→Done). A column no ticket ever enters is a lie about the loop, so there is no second `Phase` field to keep in step. What a ticket is (epic, story, bug, enhancement) is a label; the board's built-in Labels field shows it.
 
@@ -27,7 +27,7 @@ STATUS_FID=$(fid Status)
 FIRST_COLUMN=$(jq -r '.fields[]|select(.name=="Status").options[0].name' <<<"$FIELDS")
 
 gh api repos/$OWNER/$REPO/milestones -q '.[]|[.number,.title]|@tsv'
-gh issue list --label type:epic --state all --limit 50 --json number,title -q '.[]|[.number,.title]|@tsv'
+gh issue list --label epic --state all --limit 50 --json number,title -q '.[]|[.number,.title]|@tsv'
 ```
 
 Continue the existing id sequence (E18 after E17, E07-03 after E07-02). Never invent numbering.
@@ -61,11 +61,13 @@ Body follows the **Story** template in `references/templates.md` (Problem / Chan
 ## Add an epic
 
 ```bash
-N=$(gh issue create --title "E18 — <scope> (M3)" --label type:epic \
+N=$(gh issue create --title "E18 — <scope> (M3)" --label epic \
       --milestone M3 --body-file /tmp/epic.md | grep -o '[0-9]*$') && [ -n "$N" ] || { echo "create failed"; exit 1; }
 gh api --method POST repos/$OWNER/$REPO/issues/$N/dependencies/blocked_by -F issue_id="$(gh api repos/$OWNER/$REPO/issues/$PREREQ_EPIC -q .id)"
 move_on_board "$N" "$FIRST_COLUMN"
 ```
+
+An existing issue whose spec already states the outcome becomes the epic instead of a new one: `gh issue edit "$N" --add-label epic`.
 
 Body follows the **Epic** template in `references/templates.md` (Problem / Scope / Rules for stories / Done when / Not now / For the implementer). Write stories only when the epic is picked up. An unscoped epic is legitimate — say "not scoped yet" under Scope instead of inventing filler stories.
 
@@ -96,7 +98,7 @@ Close-out: closing the issue moves it to `Done` only where the board's "Item clo
 - **PR bodies follow the Pull request template** in `references/templates.md` and describe the branch at merge time.
 - **Batch via script** past ~3 items; re-read `field-list` after any field mutation (option ids change).
 - **Don't bulk-close or re-milestone** existing items unless asked.
-- Labels, field names and option names are the project's — take them from its `AGENTS.md` or discover them; the recipes here use the `type:*` labels and a `Build` column as examples.
+- Labels, field names and option names are the project's — take them from its `AGENTS.md` or discover them; the recipes here use the `epic` and `type:*` labels and a `Build` column as examples.
 
 ## Verify before claiming done
 

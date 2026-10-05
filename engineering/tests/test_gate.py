@@ -138,7 +138,7 @@ def test_the_tracker_file_lists_components_and_extra_categories_from_their_own_s
 
 def test_a_pr_that_closes_no_issue_skipped_the_spec() -> None:
     assert problems([]) == [
-        "the PR closes no issue: it needs a `Closes #<spec>` line for a ready-for-agent spec"
+        "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for a ready-for-agent spec"
     ]
 
 
@@ -212,6 +212,7 @@ def test_a_tracker_file_without_components_says_so() -> None:
         ),
         ("Use ``` inline.\nCloses #15\n```\ncode\n```\nRun `a` then\nFixes:\t#16\n`b`", [15, 16]),
         ("Fix #7\nfixed #8\nresolve #9\nresolves #10", [7, 8, 9, 10]),
+        ("Part of #11\npart of: #12; departs of #13, part #14", [11, 12]),
         ("", []),
         ("See #12; follows #13. Discloses #14, prefix #15, closes owner/repo#16, closes#17", []),
     ],
