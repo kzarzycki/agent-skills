@@ -67,8 +67,11 @@ PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comme
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion }} ... on StatusContext {{ context state }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
-# GitHub's closing keywords; ponytail: same-repo `#n` only, add owner/repo#n and issue URLs when a PR here uses one.
-CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?[ \t]+#(\d+)\b", re.IGNORECASE)
+# GitHub's closing keywords, plus `Part of` for a spec the PR builds on but leaves open; ponytail: same-repo `#n`
+# only, add owner/repo#n and issue URLs when a PR here uses one.
+CLOSING = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|part[ \t]+of):?[ \t]+#(\d+)\b", re.IGNORECASE
+)
 # code and comments: an example, not a closing line
 QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
 CONDITION = re.compile(
@@ -88,7 +91,7 @@ GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
 def named(body: str) -> list[int]:
-    """The issue numbers a PR body names after a closing keyword on the same line, in order, each once."""
+    """The issue numbers a PR body names after a closing keyword or `Part of` on the same line, in order, each once."""
     return list(dict.fromkeys(int(number) for number in CLOSING.findall(QUOTED.sub("", body))))
 
 
@@ -265,7 +268,7 @@ def problems(
     """One line per reason an issue the PR closes skipped the spec state or a label; empty when none did."""
     if not issues:
         return [
-            "the PR closes no issue: it needs a `Closes #<spec>` line for a ready-for-agent spec"
+            "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for a ready-for-agent spec"
         ]
     found = []
     for issue in issues:
@@ -404,8 +407,8 @@ def issue_node(number: int) -> dict[str, Any]:
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
-    """GitHub's closing references plus every `#n` after a closing keyword in the body: GitHub sometimes never
-    links such a line, and has no API to set the link."""
+    """GitHub's closing references plus every `#n` after a closing keyword or `Part of` in the body: GitHub sometimes
+    never links a closing line, and has no API to set the link."""
     issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
     unlinked = sorted(set(named(pull["body"] or "")) - {issue["number"] for issue in issues})
     if unlinked:  # a `#n` that is a pull request comes back empty and is dropped
