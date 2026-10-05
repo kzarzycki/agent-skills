@@ -75,7 +75,8 @@ needs approving again, plus the `approved:<point>` label. A re-approval says wha
 minimizes the records it supersedes as outdated. A change to an approved spec's scope or
 acceptance is a decision the owner never saw: remove `approved:spec`, add `needs-owner`
 with a one-line comment saying what changed, and stop until they approve. A wording fix
-keeps the label and needs only `approve` again. `mise run gate build` before building and `mise run gate merge`
+keeps the label and needs only `approve` again, which still asks the person a loop.md §
+Approvals rule names, since the gate can't tell wording from scope. `mise run gate build` before building and `mise run gate merge`
 before merging check every proof (`scripts/gate.py` lists them).
 
 loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
@@ -203,7 +204,8 @@ closing the spec's issue without it be dishonest?
   problem, cause, fix, acceptance and a `Found while #n …` line. It is a native sub-issue
   of the originating issue's epic, or of the originating issue itself when that issue's
   own goal contains it and it has no parent, which makes it an epic
-  ([issues.md](issues.md), Epics); otherwise it stands alone. Attached, it counts toward
+  ([issues.md](issues.md), Epics): the PR then says `Part of #n`, since an epic stays open
+  until its sub-issues are done. Otherwise it stands alone. Attached, it counts toward
   the epic's progress instead of starting a chain of follow-ups the board shows as a flat
   list.
 
