@@ -1,7 +1,9 @@
-# Issue tracker: GitHub
+# Tracker: GitHub
 
-Issues and PRDs for this repository live in GitHub Issues. Run `gh` commands inside the
-repository so the CLI infers the remote.
+How the loop's issue conventions ([issues.md](issues.md)) are done on GitHub. A project
+whose `docs/agents/issue-tracker.md` says `Tracker: GitHub (engineering-loop's github.md)`
+follows this file in place, never a copy, so a fix here reaches every project. Run `gh`
+inside the repository: it infers the repo from the remote.
 
 ## Operations
 
@@ -12,7 +14,15 @@ repository so the CLI infers the remote.
 - Label: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`
 - Close: `gh issue close <number> --comment "..."`
 
-Pull requests are not a triage request surface unless this file says otherwise.
+Pull requests are not a triage request surface.
+
+## Board
+
+A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
+`utilities` plugin creates one). `python3 scripts/board.py <issue> <column>` adds the
+issue when it is missing and sets its column; it is the only thing that moves a ticket, so
+the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
+created through the API.
 
 ## Publish an issue batch
 
