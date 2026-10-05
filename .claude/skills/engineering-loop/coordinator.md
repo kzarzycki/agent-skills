@@ -34,8 +34,9 @@ UI, and delegate the rest.
    `Build`), and run `mise run gate build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
-   The spec is the only issue for the work itself; what the PR leaves unfixed gets its own
-   issues (SKILL.md, Triage).
+   The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
+   leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
+   open.
 4. **Build.** Start every item nothing blocks. Hand an item to a worker when it can run in
    parallel or would flood your context. Build it yourself only when the cause is read
    and the fix and its test are a few lines in one area, following `worker.md` and saying
@@ -92,9 +93,15 @@ UI, and delegate the rest.
      (`gh pr edit <pr> --add-reviewer <login>`), add `needs-owner` to the issue, and
      stop. Never use `--admin`, which overrides the project's protection, and never push
      to main.
-   - A `Closes #n` line GitHub never linked leaves its issue open: close each issue the PR
-     names that is still open (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`)
-     and move it to `Done`.
+   - Closing keywords fire only on a PR merged into the default branch, and GitHub misses
+     some even there. List a stacked PR's issues with `Closes` on the PR that reaches the
+     default branch. Once the work is on the default branch, close each issue a PR on the
+     way names with `Closes` (never `Part of`) that is still open
+     (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
+     When that was an epic's last open sub-issue, close and move the epic the same way.
+   - A PR replaced by another: the replacement carries `Closes` for every issue the old
+     one closed, so none is left pointing only at a closed PR; close the old one with
+     `Replaced by #<n>` and delete its head branch (its PR page can restore it).
    - Fast-forward the main checkout (`git -C <main checkout> pull --ff-only`), and tell
      the live peers that main moved: the merge SHA, plus any setup step they must run.
 9. **Accept** on the owner's instance, through a worker whose report you read: bring the

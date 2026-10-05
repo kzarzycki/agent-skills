@@ -22,7 +22,7 @@ Keep steps 1 to 3 in one unbroken context window so the grilling, spec and ticke
 ## On-ramps
 
 - **Raw bugs and requests piling up** → **`/triage`** turns them into agent-ready issues for `/implement`. Only for issues that arrive from outside; `/to-tickets` output is already agent-ready.
-- **A bug that resists a first look** (an intermittent flake, a regression between two known-good states) → **`/diagnosing-bugs`**. It builds one command that goes red on this bug before theorising, then fixes with a regression test. When no correct seam exists for that test, take the finding to `/improve-codebase-architecture`.
+- **A bug that resists a first look** (an intermittent flake, a regression between two known-good states) → **`/diagnosing-bugs`**. It builds one command that goes red on this bug before theorising, then fixes with a regression test. Once the fix is in, run `/retro` in the same session to ask what would have prevented the bug; when the finding is that no correct seam exists to lock it down, take it to `/improve-codebase-architecture`.
 - **An effort too big and foggy for one session** (greenfield, a huge feature) → **`/wayfinder`** charts a map of decision tickets on the tracker and resolves them one at a time. It produces decisions, not deliverables, and is slow and dense, so never use it for a well-scoped feature. When the map clears, merge at `/to-spec`, which collapses the linked decisions into a buildable plan; go straight to `/implement` only if the effort turned out small.
 
 ## Codebase health

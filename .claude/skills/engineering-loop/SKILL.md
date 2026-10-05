@@ -72,7 +72,11 @@ verifier only gives the verdict, which `python3 scripts/gate.py verdict <pr> <re
 posts on the PR. Each approval is a comment the gate reads, tied to the spec's or plan's
 last edit as GitHub's edit history shows it, or to the head commit, so a later edit or push
 needs approving again, plus the `approved:<point>` label. A re-approval says what changed and
-minimizes the records it supersedes as outdated. `mise run gate build` before building and `mise run gate merge`
+minimizes the records it supersedes as outdated. A change to an approved spec's scope or
+acceptance is a decision the owner never saw: remove `approved:spec`, add `needs-owner`
+with a one-line comment saying what changed, and stop until they approve. A wording fix
+keeps the label and needs only `approve` again, which still asks the person a loop.md §
+Approvals rule names, since the gate can't tell wording from scope. `mise run gate build` before building and `mise run gate merge`
 before merging check every proof (`scripts/gate.py` lists them).
 
 loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
@@ -189,10 +193,23 @@ The ledger (loop.md § Ledger) has one line per entry: what, where, the guard if
 any, what would make it matter, and its issue. The coordinator writes it during triage,
 in the fix commit; the verifier reads it first and does not re-report entries.
 
-Everything real the PR leaves unfixed is filed as an issue before the report: each
-ledger entry, and anything found outside the spec's diff, such as a bug, a flaky test or
-a problem only the owner can fix (`needs-owner`). Each states problem, cause, fix and
-acceptance. A rejected finding is not real, so it gets no issue.
+Everything real the PR leaves unfixed is placed before the report. The test: would
+closing the spec's issue without it be dishonest?
+
+- **Yes, it is within the issue's own acceptance:** the issue stays open, the PR says
+  `Part of #n` instead of `Closes #n`, and a comment on the issue names what remains (a
+  comment, since an edit to the spec needs approving again).
+- **No, it is outside it** (a ledger entry, or a bug, a flaky test or a problem only the
+  owner can fix, `needs-owner`, found outside the spec's diff): a new issue stating
+  problem, cause, fix, acceptance and a `Found while #n …` line. It is a native sub-issue
+  of the originating issue's epic, or of the originating issue itself when that issue's
+  own goal contains it and it has no parent, which makes it an epic
+  ([issues.md](issues.md), Epics): the PR then says `Part of #n`, since an epic stays open
+  until its sub-issues are done. Otherwise it stands alone. Attached, it counts toward
+  the epic's progress instead of starting a chain of follow-ups the board shows as a flat
+  list.
+
+A rejected finding is not real, so it gets no issue.
 
 ## The cap
 
