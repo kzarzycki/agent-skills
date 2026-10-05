@@ -47,3 +47,7 @@
   skill: wait-what
   decision: ported
   note: CONTEXT.md and CONTEXT-MAP.md are now GLOSSARY.md and GLOSSARY-MAP.md
+- upstream: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  skill: ask-matt
+  decision: ported
+  note: After diagnosing-bugs fixes a bug, run retro in the same session to ask what would have prevented it; the no-seam finding still goes to improve-codebase-architecture
