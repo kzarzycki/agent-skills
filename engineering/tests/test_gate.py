@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import itertools
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -115,6 +116,7 @@ def pull(
         number=7,
         body=body,
         headRefOid=HEAD,
+        baseRepository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
         files={"nodes": [{"path": path} for path in files]},
         commits={"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}}]},
         closingIssuesReferences={"nodes": []},
@@ -477,6 +479,314 @@ def test_a_merge_rule_on_a_path_needs_the_owner_and_free_text_is_left_to_the_loo
     billing = pull(files=("billing/invoice.py",), comments=MERGED, labels=("approved:merge",))
     assert gate.proofs("merge", billing, [approved(1, "web")], LOOP) == [
         "PR #7 has no `Approved: merge` record by the owner"
+    ]
+
+
+# --- an exact revert ---
+
+# GitHub's REST answers from a scratch round trip, trimmed to what the gate reads where noted: #1 merged (pull-1.json
+# trimmed), #2 the PR GitHub's Revert button made for it after main moved, #3 that revert plus one line, still open;
+# #2's merge base (trimmed) and the trees (trimmed to path, mode and type) of #1's base and merge commit and of #2's
+# merge base and head.
+REVERTED = Path(__file__).resolve().parent / "fixtures" / "reverts"
+REVERT_BASE, REVERT_HEAD = (
+    "340b9aa38acac5a0d84e8c6d276a6ed2f3afdbe4",
+    "47e28a794ff0884f8631342b8ed1aae4733e1ba6",
+)
+REVERT_BODY = "Reverts kzarzycki/scratch-gate-revert#1\n\n## Evidence\n\n#1 set the wrong rate.\n"
+
+
+@pytest.fixture
+def recorded(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """gh answering REST calls from the recordings, a 404 for any other number; the paths asked for."""
+    asked: list[str] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        path = next(arg for arg in args if arg.startswith("repos/"))
+        asked.append(path)
+        name = re.sub(r"^repos/\{owner\}/\{repo\}/pulls/(\d+)(/files)?.*", r"pull-\1\2", path)
+        name = re.sub(r"^repos/\{owner\}/\{repo\}/git/trees/(\w+)\?recursive=1$", r"tree-\1", name)
+        name = re.sub(r"^repos/\{owner\}/\{repo\}/(compare)/", r"\1-", name)
+        found = REVERTED / f"{name.replace('/', '-')}.json"
+        if not found.exists():
+            raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)\n")
+        if "/files" in path:  # as `--jq '.[]'` prints them
+            assert args[-2:] == ("--jq", ".[]")
+            return "".join(json.dumps(entry) + "\n" for entry in json.loads(found.read_text()))
+        if "/compare/" in path:  # as `--jq .merge_base_commit.sha` prints it
+            assert args[-2:] == ("--jq", ".merge_base_commit.sha")
+            return json.loads(found.read_text())["merge_base_commit"]["sha"] + "\n"
+        return found.read_text()
+
+    monkeypatch.setattr(gate, "gh", gh)
+    monkeypatch.chdir(PROJECT)
+    return asked
+
+
+def revert_pr(number: int = 2, body: str = REVERT_BODY, **fields: Any) -> dict[str, Any]:
+    """The revert PR as GitHub's GraphQL returns it: the paths it touches are #1's."""
+    return {
+        **pull(body=body, files=("app.py", "billing/rate.py", "notes.py"), **fields),
+        "number": number,
+        "baseRefOid": REVERT_BASE,
+        "headRefOid": REVERT_HEAD,
+    }
+
+
+EXACT = record("merge", "coordinator", head=REVERT_HEAD, verdict="exact revert of #1")
+EXACT_BY_OWNER = record("merge", "owner", head=REVERT_HEAD, verdict="exact revert of #1")
+
+
+def gated(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    point: str,
+    pr: dict[str, Any],
+) -> tuple[int, list[str]]:
+    monkeypatch.setattr(gate, "pull_request", lambda _n: pr)
+    code = gate.main(["check", point, str(pr["number"])])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
+    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    done = revert_pr(comments=(EXACT, EXACT_BY_OWNER), labels=("approved:merge",))
+    assert gated(monkeypatch, capsys, "build", done) == (0, [])
+    assert gated(monkeypatch, capsys, "merge", done) == (0, [])
+    # the inverse comes from GitHub's own diff of #1, not from anything gate.py writes
+    assert "repos/{owner}/{repo}/pulls/1/files?per_page=100" in recorded
+    # the modes come from the trees of #1's base and merge commit and of the revert's merge base and head
+    assert {
+        "repos/{owner}/{repo}/git/trees/2a90fbed44fbe633bd17dff0af93d5ea1b5d3fe6?recursive=1",
+        "repos/{owner}/{repo}/git/trees/6417e28b25ef79e8a0e6406bad2e2ae03a8330c3?recursive=1",
+        f"repos/{{owner}}/{{repo}}/compare/{REVERT_BASE}...{REVERT_HEAD}",
+        f"repos/{{owner}}/{{repo}}/git/trees/{REVERT_BASE}?recursive=1",
+        f"repos/{{owner}}/{{repo}}/git/trees/{REVERT_HEAD}?recursive=1",
+    } <= set(recorded)
+
+
+def test_an_exact_revert_still_needs_ci_and_the_merge_approval(
+    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    approved_once = (EXACT, EXACT_BY_OWNER)
+    red = revert_pr(
+        comments=approved_once, labels=("approved:merge",), checks=(("build", "FAILURE"),)
+    )
+    assert gated(monkeypatch, capsys, "merge", red) == (
+        1,
+        ["PR #2: CI check `build` is FAILURE on the head commit"],
+    )
+    unapproved = revert_pr(body="Reverts #1\n\n## Evidence\n\n#1 set the wrong rate.\n")
+    assert gated(monkeypatch, capsys, "merge", unapproved) == (
+        1,
+        [
+            "PR #2 has no `Approved: merge` record by the coordinator",
+            "PR #2 has no `Approved: merge` record by the owner",
+            "PR #2 lacks the `approved:merge` label",
+        ],
+    )
+    bare = revert_pr(body="Reverts #1\n", comments=approved_once, labels=("approved:merge",))
+    assert gated(monkeypatch, capsys, "merge", bare) == (
+        1,
+        ["PR #2: its body has no `## Evidence` section with content"],
+    )
+
+
+def test_an_exact_revert_of_a_path_a_rule_matches_asks_a_person(
+    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #1 changed billing/rate.py, which loop.md's `merge: path `billing/**`` rule matches
+    by_loop = revert_pr(comments=(EXACT,), labels=("approved:merge",))
+    assert gated(monkeypatch, capsys, "merge", by_loop) == (
+        1,
+        ["PR #2 has no `Approved: merge` record by the owner"],
+    )
+
+
+def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
+    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plus = revert_pr(3, comments=(EXACT, EXACT_BY_OWNER), labels=("approved:merge",))
+    assert gated(monkeypatch, capsys, "merge", plus) == (
+        1,
+        [
+            (
+                "PR #3 is not an exact revert of #1: `billing/rate.py` has 1 line(s) beyond the"
+                " inverse of #1, 0 missing. It needs every proof of any PR"
+            ),
+            (
+                "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for a"
+                " ready-for-agent spec"
+            ),
+            "PR #3: no verifier verdict posted (gate.py verdict)",
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("line", "why"),
+    [
+        ("Reverts #3", "#3 is not a merged pull request"),
+        ("Reverts #9", "#9 is not a merged pull request"),
+        (
+            "Reverts other/fork#1",
+            "it names a PR of other/fork, and this is kzarzycki/scratch-gate-revert",
+        ),
+    ],
+)
+def test_reverts_naming_no_merged_pr_here_is_refused(
+    recorded: list[str], line: str, why: str
+) -> None:
+    number = re.findall(r"\d+", line)[-1]
+    assert gate.reverts(revert_pr(body=f"{line}\n")) == (
+        None,
+        [f"PR #2 is not an exact revert of #{number}: {why}. It needs every proof of any PR"],
+    )
+
+
+def test_a_quoted_or_mid_line_reverts_is_no_revert(recorded: list[str]) -> None:
+    for body in ("`Reverts #1`\n", "This Reverts #1\n", "```\nReverts #1\n```\n"):
+        assert gate.reverts(revert_pr(body=body)) == (None, [])
+    assert recorded == []
+
+
+def entry(filename: str, patch: str | None, **fields: Any) -> dict[str, Any]:
+    return {
+        "filename": filename,
+        "status": "modified",
+        "changes": 1,
+        **({"patch": patch} if patch else {}),
+        **fields,
+    }
+
+
+def test_the_inverse_ignores_line_numbers_and_context_and_follows_renames() -> None:
+    original = [
+        entry("a.py", "@@ -1,3 +1,3 @@\n one\n-two\n+2\n three"),
+        entry("new.py", "@@ -1,2 +1,2 @@\n-x\n+y", previous_filename="old.py", status="renamed"),
+    ]
+    revert = [
+        entry("a.py", "@@ -10,2 +10,2 @@\n moved context\n-2\n+two"),
+        entry("old.py", "@@ -1 +1 @@\n-y\n+x", previous_filename="new.py", status="renamed"),
+    ]
+    assert gate.inexact(original, revert, 1, NONE, NONE) == []
+    moved = revert[:1] + [entry("new.py", "@@ -1 +1 @@\n-y\n+x")]
+    assert gate.inexact(original, moved, 1, NONE, NONE) == [
+        "it changes `new.py`, which #1 did not",
+        "it leaves `old.py -> new.py` as #1 changed it",
+    ]
+
+
+def test_a_file_github_shows_no_diff_of_is_no_exact_revert() -> None:
+    assert gate.inexact([entry("logo.png", None)], [entry("logo.png", None)], 1, NONE, NONE) == [
+        "GitHub shows no diff of `logo.png` to compare",
+        "GitHub shows no diff of `logo.png` to compare",
+    ]
+    unchanged = {"filename": "run.sh", "status": "modified", "changes": 0, "patch": ""}
+    assert gate.inexact([unchanged], [unchanged], 1, NONE, NONE) == [
+        "GitHub shows no diff of `run.sh` to compare",
+        "GitHub shows no diff of `run.sh` to compare",
+    ]
+
+
+def test_a_missing_final_newline_counts() -> None:
+    assert gate.changed_lines("@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+x") == [
+        (["x"], ["x\n\\ no newline"])
+    ]
+
+
+CALLS = "@@ -1,2 +1,2 @@\n-authorize()\n-transfer()\n+authorize_v2()\n+transfer_v2()"
+UNDO_CALLS = "@@ -3,2 +3,2 @@\n-authorize_v2()\n-transfer_v2()\n+authorize()\n+transfer()"
+MODES = {"app.py": "100644"}
+# the trees before and after a PR: none of the paths, and app.py's mode kept
+NONE: tuple[dict[str, str], dict[str, str]] = ({}, {})
+KEPT = (MODES, MODES)
+
+
+def test_the_inverse_keeps_the_order_of_changed_lines() -> None:
+    original = [entry("app.py", CALLS)]
+    assert gate.inexact(original, [entry("app.py", UNDO_CALLS)], 1, KEPT, KEPT) == []
+    swapped = UNDO_CALLS.replace("+authorize()\n+transfer()", "+transfer()\n+authorize()")
+    assert gate.inexact(original, [entry("app.py", swapped)], 1, KEPT, KEPT) == [
+        "`app.py` changes the lines #1 changed in another order"
+    ]
+    # the same lines in the same order, one of them moved into another run
+    two = [entry("app.py", "@@ -1,3 +1,3 @@\n-a\n+b\n x\n-c\n+d")]
+    moved = [entry("app.py", "@@ -1,3 +1,3 @@\n-b\n+a\n+c\n x\n-d")]
+    assert gate.inexact(two, moved, 1, KEPT, KEPT) == [
+        "`app.py` changes the lines #1 changed in another order"
+    ]
+
+
+def test_a_revert_that_changes_a_mode_is_no_exact_revert() -> None:
+    exact = ([entry("app.py", CALLS)], [entry("app.py", UNDO_CALLS)], 1)
+    assert gate.inexact(*exact, KEPT, (MODES, {"app.py": "100755"})) == [
+        "`app.py` has mode 100755 at the head, and 100644 before #1"
+    ]
+    for truncated in ((None, MODES), (MODES, None)):
+        assert gate.inexact(*exact, truncated, KEPT) == [
+            "GitHub truncates a tree it would compare file modes in"
+        ]
+        assert gate.inexact(*exact, KEPT, truncated) == [
+            "GitHub truncates a tree it would compare file modes in"
+        ]
+
+
+def test_a_revert_that_also_undoes_a_later_mode_change_is_no_exact_revert() -> None:
+    """#1 kept app.py's mode, main made it executable after, and the revert branches from there and resets it: its
+    head has app.py's mode from before #1, but it undoes main's change too."""
+    exact = ([entry("app.py", CALLS)], [entry("app.py", UNDO_CALLS)], 1)
+    assert gate.inexact(*exact, KEPT, ({"app.py": "100755"}, MODES)) == [
+        "`app.py` has mode 100755 at the merge base, and 100644 after #1"
+    ]
+
+
+def test_an_empty_file_left_in_place_is_no_exact_revert() -> None:
+    added = {"filename": "run.sh", "status": "added", "changes": 0}
+    moded = {"filename": "run.sh", "status": "modified", "changes": 0}
+    assert gate.inexact(
+        [added],
+        [moded],
+        1,
+        ({}, {"run.sh": "100644"}),
+        ({"run.sh": "100644"}, {"run.sh": "100755"}),
+    ) == [
+        "GitHub shows no diff of `run.sh` to compare",
+        "GitHub shows no diff of `run.sh` to compare",
+        "`run.sh` is modified, and undoing #1 needs removed",
+        "`run.sh` has mode 100755 at the head, and absent before #1",
+    ]
+
+
+def test_approving_an_exact_revert_records_it_as_the_verdict(
+    recorded: list[str], github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "pull_request", lambda _n: revert_pr())
+    assert gate.main(["approve", "merge", "2", "--by", "coordinator"]) == 0
+    # no issue to park: the person's approval is asked for on the PR
+    assert github == [
+        (
+            "comment",
+            2,
+            f"Approved: merge\nBy: coordinator\nHead: {REVERT_HEAD}\nVerdict: exact revert of #1\n",
+        ),
+        ("label", 2, "approved:merge", False),
+        ("label", 2, "needs-owner", True),
+    ]
+
+
+def test_approving_an_inexact_revert_without_a_verdict_says_both(
+    recorded: list[str],
+    github: list[tuple[Any, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(gate, "pull_request", lambda _n: revert_pr(3))
+    assert gate.main(["approve", "merge", "3", "--by", "coordinator"]) == 1
+    assert github == []
+    assert capsys.readouterr().out.splitlines()[1:] == [
+        "PR #3 has no verifier verdict: post it first (gate.py verdict)"
     ]
 
 
