@@ -52,9 +52,12 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `templates/<project_type>/.pre-commit-config.yaml.jinja`: the pre-commit and pre-push
   hooks, the gate among them;
 - `templates/_base/_mise_check_task.part` and `templates/_base/_mise_agent_tasks.part`: the
-  `check` and `gate` mise tasks, and `merge-queue`, which applies the ruleset;
+  `check` and `gate` mise tasks, and `merge-queue`, which applies the ruleset and prints how
+  to revert it;
 - `templates/<project_type>/.github/{% if loop_enabled %}rulesets{% endif %}/main.json.jinja`,
-  rendered to `.github/rulesets/main.json`: main's ruleset, with a squash merge queue.
+  rendered to `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a
+  squash merge queue. GitHub layers it on top of the repo's own rulesets, which it leaves
+  untouched, and reverting deletes only it.
 
 A PR stays a draft until no core finding is open (Review trail on the PR), so CI skips its
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
