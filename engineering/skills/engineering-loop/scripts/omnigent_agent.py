@@ -512,8 +512,9 @@ def main(argv: list[str] | None = None) -> int:
             print(wait(og, args.session, args.report.resolve(), args.timeout, args.verdict))
             return 0
         report = args.report.resolve()
-        # The child's workspace is this directory; its Read of a file outside it raises an approval
-        # prompt nobody answers, and it saves its repro files beside the report.
+        # The child's workspace is this directory; outside it a Codex sandbox refuses the write and
+        # Claude Code not in auto mode prompts for the read, which nobody answers. The child also
+        # saves its repro files beside the report.
         if not report.is_relative_to(Path.cwd()):
             raise Fail(
                 f"{report} is outside the child's workspace {Path.cwd()}; use tmp/loop/ in the worktree"
