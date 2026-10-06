@@ -14,7 +14,11 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
 2. **Gates and push.** Once `mise run check` exits 0, commit and push with
    `git push -u origin <branch>` as its own command, since a pre-tool hook may scan the
    whole command text. The coordinator merges your branch; open no PR.
-3. **Report.** Clean up what you started (servers, temporary files), then write your
+3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
+   push, reply on each finding's thread with its commit SHA and resolve the thread; a
+   finding handed to you as deferred gets a reply linking the issue it waits in, and is
+   resolved too (github.md, Review trail).
+4. **Report.** Clean up what you started (servers, temporary files), then write your
    report to a file and send the coordinator its path: the branch and head SHA, the gate
    exit codes, the model you ran on, anything left out and why, and what you tried and
    dropped. A follow-up starts fresh from this report, not your transcript. If you're

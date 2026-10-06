@@ -45,6 +45,9 @@ in its `AGENTS.md`, for example "Every change that lands as a PR runs the
   github.md)`, its components, what must never reach the tracker;
 - `docs/agents/coding-standards.md`: the domain's facts.
 
+The files the loop runs on (CI, `gate.yml`, hooks, mise tasks, the ruleset) come
+from kzarzycki/project-templates; the skill's § Adopting the loop lists them.
+
 Each developer picks how agents run with one line in their personal
 instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
 means native subagents. The verifier comes from the other model family when its

@@ -36,6 +36,32 @@ question for the owner, not a guess:
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
+### Adopting the loop
+
+kzarzycki/project-templates holds the repo files the loop runs on, so the pack keeps no
+second copy. A new repo starts from it with Copier
+(`copier copy --trust gh:kzarzycki/project-templates <dest>`); answering yes to mise, the
+agent layer, the engineering pack and the engineering loop sets `loop_enabled`. An existing
+repo takes these files from it. They are Jinja with includes, so render the template for the
+repo's `project_type` into a scratch directory with `copier copy` and copy the result:
+
+- `templates/_base/_gate_workflow.yml.jinja`, rendered by each template's
+  `.github/workflows/{% if loop_enabled %}gate.yml{% endif %}.jinja`: the `gate.yml`
+  workflow;
+- `templates/<project_type>/.github/workflows/ci.yml.jinja`: CI;
+- `templates/<project_type>/.pre-commit-config.yaml.jinja`: the pre-commit and pre-push
+  hooks, the gate among them;
+- `templates/_base/_mise_check_task.part` and `templates/_base/_mise_agent_tasks.part`: the
+  `check` and `gate` mise tasks, and `merge-queue`, which applies the ruleset;
+- `templates/<project_type>/.github/{% if loop_enabled %}rulesets{% endif %}/main.json.jinja`,
+  rendered to `.github/rulesets/main.json`: main's ruleset, with a squash merge queue.
+
+A PR stays a draft until no core finding is open (Review trail on the PR), so CI skips its
+jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
+`ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
+Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
+draft, the local pre-push gate is its check.
+
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
 in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
@@ -173,6 +199,15 @@ angles run as native subagents, never as full harness sessions.
   that passed, while a fix forward holds every other merge back and ages every branch. The
   reverted PR's issues reopen with a comment naming the revert, and the fix forward is a
   new change through the loop.
+- **Review trail on the PR.** The PR opens as a draft with the branch's first push, and
+  every commit after it is pushed. Each verifier pass is posted as a PR review: one inline
+  comment per finding, labelled `Verifier (<family>), pass <n>`, and a summary carrying the
+  verdict. Each fix is its own commit, replied on its finding's thread with the SHA, and the
+  thread resolved; a deferred finding's reply links the issue it waits in. A human review
+  follows the same pattern. The PR is marked ready once no core finding (blocker or major)
+  is open, and squashed on merge. The PR keeps a public trail of what was found, fixed and
+  iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work: the
+  local pre-push gate is the check while a PR is a draft.
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
