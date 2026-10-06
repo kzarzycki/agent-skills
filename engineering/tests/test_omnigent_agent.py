@@ -512,6 +512,27 @@ def test_a_retried_send_never_delivers_twice(tmp_path: Path) -> None:
     assert not omnigent_agent.question_of(report).exists()
 
 
+def test_an_answer_inside_an_older_message_is_still_sent(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "t")
+    report = tmp_path / "r.md"
+    omnigent_agent.question_of(report).write_text("which base?")
+    og.land(sid, "Do not use main; use the release branch")
+    og.sessions[sid][-1]["created_at"] = time.time() + 1
+    omnigent_agent.send(og, sid, "use main", report, 0)
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
+
+
+def test_a_retry_sends_nothing_when_the_first_copy_lands_between_its_reads(
+    tmp_path: Path,
+) -> None:
+    og = FakeOmnigent(hold=1)  # lands at the retry's first info() call
+    sid = og.create("claude", "t")
+    og.send(sid, "use main")  # the first send; its process already removed the question
+    omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+    assert og.posts == 1
+
+
 def test_same_family_verifier_needs_break_glass(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
