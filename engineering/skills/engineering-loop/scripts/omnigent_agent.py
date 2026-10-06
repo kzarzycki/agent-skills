@@ -276,6 +276,9 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     finds the first copy pending, or in the history since the question was written, and sends
     nothing: a second post delivers twice.
     """
+    text, question = brief.strip(), question_of(report)
+    # Read once, first: the sender of the first copy deletes the question once that copy lands.
+    asked = question.stat().st_mtime if question.exists() else None
     # History before info: Omnigent persists a copy before it drops it from pending_inputs, so a
     # copy seen pending is not among the ``old`` ids and its landing shows up as a new item.
     items = og.items(sid)
@@ -283,31 +286,27 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     info = og.info(sid)
     if not info.get("runner_online", True):
         raise Gone(f"session {sid} has no live runner; start a fresh run instead")
-    text, question = brief.strip(), question_of(report)
 
-    def user_texts(items: list[dict]) -> list[tuple[dict, str]]:
+    # A copy is the same text exactly (both harnesses store it verbatim): a different message that
+    # merely contains it is a new one.
+    def copies(items: list[dict]) -> list[dict]:
         return [
-            (i, text_of(i).strip())
+            i
             for i in items
-            if i.get("type") == "message" and i.get("role") == "user"
+            if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() == text
         ]
 
-    # A retry is the same text exactly: a different answer that merely contains it is a new one.
     def pending(info: dict) -> bool:
         return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
 
     # ponytail: compares the server's item clock with the local question file's; a skewed server
     # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
-    if question.exists() and any(
-        t == text and float(i.get("created_at") or 0) >= question.stat().st_mtime
-        for i, t in user_texts(items)
-    ):
+    if asked is not None and any(float(i.get("created_at") or 0) >= asked for i in copies(items)):
         print(f"session {sid}: this answer already landed", file=sys.stderr)
-        question.unlink()
+        question.unlink(missing_ok=True)
         return
-    if pending(info) or any(  # or it landed between the two reads
-        str(i.get("id")) not in old and t == text for i, t in user_texts(og.items(sid))
-    ):
+    # or it landed between the two reads
+    if pending(info) or any(str(i.get("id")) not in old for i in copies(og.items(sid))):
         print(
             f"session {sid}: this message was already sent; waiting for that copy", file=sys.stderr
         )
@@ -316,7 +315,7 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     deadline, said = time.monotonic() + confirm_seconds, False
     while True:
         info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
-        if any(str(i.get("id")) not in old and text in t for i, t in user_texts(og.items(sid))):
+        if any(str(i.get("id")) not in old for i in copies(og.items(sid))):
             break
         if pending(info):
             if not said:

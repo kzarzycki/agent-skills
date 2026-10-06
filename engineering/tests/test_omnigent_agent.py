@@ -533,6 +533,40 @@ def test_a_retry_sends_nothing_when_the_first_copy_lands_between_its_reads(
     assert og.posts == 1
 
 
+def test_a_retry_keeps_its_question_time_when_the_first_sender_removes_it(
+    tmp_path: Path,
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "t")
+    report = tmp_path / "r.md"
+    question = omnigent_agent.question_of(report)
+    question.write_text("which base?")
+    og.land(sid, "use main")
+    og.sessions[sid][-1]["created_at"] = time.time() + 1
+    info = og.info
+    og.info = lambda s: (question.unlink(missing_ok=True), info(s))[1]  # type: ignore[method-assign]
+    omnigent_agent.send(og, sid, "use main", report, 0)
+    assert og.posts == 0
+
+
+def test_a_different_message_containing_the_answer_does_not_confirm_it(
+    tmp_path: Path,
+) -> None:
+    og = FakeOmnigent(deaf={0})
+    sid = og.create("claude", "t")
+    items = og.items
+    og.items = (
+        lambda s: (  # type: ignore[method-assign]
+            og.posts
+            and not og.sessions[s][1:]
+            and og.land(s, "Do not use main; use the release branch"),
+            items(s),
+        )[1]
+    )
+    with pytest.raises(omnigent_agent.Gone):
+        omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+
+
 def test_same_family_verifier_needs_break_glass(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
