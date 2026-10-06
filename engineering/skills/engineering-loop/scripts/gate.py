@@ -19,11 +19,13 @@ commit, with its verdict. `record-check` runs only on a clean checkout at the PR
 fails or changes the tree.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
-`Reverts <owner>/<repo>#<n>`), where #n is a merged PR and, file for file as GitHub's diff of each shows them, the PR adds
-exactly the lines #n removed and removes exactly the lines #n added; line numbers and context may differ. Its code returns
-to a state already specced and reviewed, so `check build` passes it and `check merge` asks only for Evidence (what went
-wrong), green CI, the merge approval and a person's approval where a merge rule holds by path; `approve merge` records
-`Verdict: exact revert of #<n>`. A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
+`Reverts <owner>/<repo>#<n>`), where #n is a merged PR and, file for file as GitHub's diff of each shows them, the PR
+removes what #n added and adds what #n removed (files, and each run of lines in order; line numbers and context may
+differ), and every path either touches has at the PR's head the mode it had before #n. A file GitHub shows no diff of
+(binary, too large, only renamed or moded) is never exact. Its code returns to a state already specced and reviewed,
+so `check build` passes it and `check merge` asks only for Evidence (what went wrong), green CI, the merge approval
+and a person's approval where a merge rule holds by path; `approve merge` records `Verdict: exact revert of #<n>`.
+A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
 
@@ -360,25 +362,39 @@ def labelled(issues: list[dict[str, Any]]) -> set[str]:
     return set().union(*(names(issue) for issue in issues))
 
 
-def changed_lines(patch: str) -> tuple[Counter[str], Counter[str]]:
-    """The lines a file's patch adds and removes; one that ends without a newline is marked so."""
-    added: list[str] = []
-    removed: list[str] = []
+def changed_lines(patch: str) -> list[tuple[list[str], list[str]]]:
+    """Each run of changed lines in a file's patch, in order, as the lines it adds and the lines it removes; a context
+    or `@@` line ends a run, and a line that ends without a newline is marked so."""
+    runs: list[tuple[list[str], list[str]]] = []
     last: list[str] | None = None
     for line in patch.split("\n"):
         if line.startswith("\\") and last:  # `\ No newline at end of file`, about the line before
             last[-1] += "\n\\ no newline"
-            continue
-        last = added if line.startswith("+") else removed if line.startswith("-") else None
-        if last is not None:
+        elif line[:1] in ("+", "-"):
+            if last is None:
+                runs.append(([], []))
+            last = runs[-1][0 if line[0] == "+" else 1]
             last.append(line[1:])
-    return Counter(added), Counter(removed)
+        else:
+            last = None
+    return runs
 
 
-def inexact(original: list[dict[str, Any]], revert: list[dict[str, Any]], number: int) -> list[str]:
-    """Why `revert` does not undo #number, both as GitHub's REST API lists a PR's files; empty when it does. Only added
-    and removed lines count, since line numbers and context move with main. ponytail: a mode change shows no patch and
-    goes unseen; compare `sha`s of each blob when one matters."""
+# the status a file has in the PR that undoes a change of that status
+UNDONE = {"added": "removed", "removed": "added", "modified": "modified", "renamed": "renamed"}
+
+
+def inexact(
+    original: list[dict[str, Any]],
+    revert: list[dict[str, Any]],
+    number: int,
+    before: dict[str, str] | None,
+    after: dict[str, str] | None,
+) -> list[str]:
+    """Why `revert` does not undo #number, both as GitHub's REST API lists a PR's files; empty when it does. Each file
+    must have the inverse status and the inverse runs of changed lines in order, while line numbers and context move
+    with main, and every path either touches must have the mode in `after` (the revert's head tree) that it had in
+    `before` (#number's base tree), or be absent from both. A tree GitHub truncated is None."""
     why: list[str] = []
 
     def changes(entries: list[dict[str, Any]], inverted: bool) -> dict[tuple[str, str], Any]:
@@ -386,12 +402,15 @@ def inexact(original: list[dict[str, Any]], revert: list[dict[str, Any]], number
         for entry in entries:
             old, new = entry.get("previous_filename") or entry["filename"], entry["filename"]
             if (
-                entry.get("changes") and "patch" not in entry
-            ):  # binary, or too large for GitHub to show
+                not entry.get("changes") or "patch" not in entry
+            ):  # binary, too large, or only renamed or moded
                 why.append(f"GitHub shows no diff of `{new}` to compare")
-            added, removed = changed_lines(entry.get("patch") or "")
+            runs = changed_lines(entry.get("patch") or "")
+            status = entry.get("status", "")
             found[(new, old) if inverted else (old, new)] = (
-                (removed, added) if inverted else (added, removed)
+                (UNDONE.get(status, f"no inverse of {status}"), [(r, a) for a, r in runs])
+                if inverted
+                else (status, runs)
             )
         return found
 
@@ -404,13 +423,38 @@ def inexact(original: list[dict[str, Any]], revert: list[dict[str, Any]], number
             why.append(f"it leaves `{shown(key[1], key[0])}` as #{number} changed it")
         elif key not in expected:
             why.append(f"it changes `{shown(*key)}`, which #{number} did not")
-        elif actual[key] != expected[key]:
-            (added, removed), (undo_added, undo_removed) = actual[key], expected[key]
-            extra = sum(((added - undo_added) + (removed - undo_removed)).values())
-            missing = sum(((undo_added - added) + (undo_removed - removed)).values())
+        elif actual[key][0] != expected[key][0]:
+            why.append(
+                f"`{shown(*key)}` is {actual[key][0]}, and undoing #{number} needs {expected[key][0]}"
+            )
+        elif actual[key][1] != expected[key][1]:
+            lines, undo = (
+                Counter(
+                    (sign, line) for run in runs for sign, side in zip("+-", run) for line in side
+                )
+                for runs in (actual[key][1], expected[key][1])
+            )
+            extra, missing = sum((lines - undo).values()), sum((undo - lines).values())
             why.append(
                 f"`{shown(*key)}` has {extra} line(s) beyond the inverse of #{number}, {missing} missing"
+                if extra or missing
+                else f"`{shown(*key)}` changes the lines #{number} changed in another order"
             )
+    if before is None or after is None:
+        why.append("GitHub truncates a tree it would compare file modes in")
+    else:
+        touched = {
+            entry[name]
+            for entry in original + revert
+            for name in ("filename", "previous_filename")
+            if entry.get(name)
+        }
+        for path in sorted(touched):
+            if before.get(path) != after.get(path):
+                why.append(
+                    f"`{path}` has mode {after.get(path, 'absent')} at the head, and"
+                    f" {before.get(path, 'absent')} before #{number}"
+                )
     return why
 
 
@@ -435,7 +479,9 @@ def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
                 (f"PR #{pull['number']}", theirs, pull["files"].get("totalCount") or len(theirs)),
             )
             if len(listed) < total
-        ] or inexact(changes, theirs, number)
+        ] or inexact(
+            changes, theirs, number, tree(original["base"]["sha"]), tree(pull["headRefOid"])
+        )
     if not why:
         return number, []
     return None, [
@@ -517,6 +563,15 @@ def merged_pull(number: int) -> dict[str, Any] | None:
             return None
         raise
     return found if found.get("merged") else None
+
+
+def tree(sha: str) -> dict[str, str] | None:
+    """The mode of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
+    ponytail: one recursive read, up to GitHub's 100,000 entries; read each touched directory when a repo outgrows it."""
+    found = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/git/trees/{sha}?recursive=1"))
+    if found["truncated"]:
+        return None
+    return {entry["path"]: entry["mode"] for entry in found["tree"] if entry["type"] != "tree"}
 
 
 def issue_node(number: int) -> dict[str, Any]:

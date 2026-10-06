@@ -485,8 +485,10 @@ def test_a_merge_rule_on_a_path_needs_the_owner_and_free_text_is_left_to_the_loo
 # --- an exact revert ---
 
 # GitHub's REST answers from a scratch round trip, trimmed to what the gate reads where noted: #1 merged (pull-1.json
-# trimmed), #2 the PR GitHub's Revert button made for it after main moved, #3 that revert plus one line, still open.
+# trimmed), #2 the PR GitHub's Revert button made for it after main moved, #3 that revert plus one line, still open;
+# the trees (trimmed to path, mode and type) of #1's base and #2's head.
 REVERTED = Path(__file__).resolve().parent / "fixtures" / "reverts"
+REVERT_HEAD = "47e28a794ff0884f8631342b8ed1aae4733e1ba6"
 REVERT_BODY = "Reverts kzarzycki/scratch-gate-revert#1\n\n## Evidence\n\n#1 set the wrong rate.\n"
 
 
@@ -499,6 +501,7 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         path = next(arg for arg in args if arg.startswith("repos/"))
         asked.append(path)
         name = re.sub(r"^repos/\{owner\}/\{repo\}/pulls/(\d+)(/files)?.*", r"pull-\1\2", path)
+        name = re.sub(r"^repos/\{owner\}/\{repo\}/git/trees/(\w+)\?recursive=1$", r"tree-\1", name)
         found = REVERTED / f"{name.replace('/', '-')}.json"
         if not found.exists():
             raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)\n")
@@ -517,11 +520,12 @@ def revert_pr(number: int = 2, body: str = REVERT_BODY, **fields: Any) -> dict[s
     return {
         **pull(body=body, files=("app.py", "billing/rate.py", "notes.py"), **fields),
         "number": number,
+        "headRefOid": REVERT_HEAD,
     }
 
 
-EXACT = record("merge", "coordinator", head=HEAD, verdict="exact revert of #1")
-EXACT_BY_OWNER = record("merge", "owner", head=HEAD, verdict="exact revert of #1")
+EXACT = record("merge", "coordinator", head=REVERT_HEAD, verdict="exact revert of #1")
+EXACT_BY_OWNER = record("merge", "owner", head=REVERT_HEAD, verdict="exact revert of #1")
 
 
 def gated(
@@ -543,6 +547,11 @@ def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
     assert gated(monkeypatch, capsys, "merge", done) == (0, [])
     # the inverse comes from GitHub's own diff of #1, not from anything gate.py writes
     assert "repos/{owner}/{repo}/pulls/1/files?per_page=100" in recorded
+    # the modes come from the trees of #1's base and the revert's head
+    assert {
+        "repos/{owner}/{repo}/git/trees/2a90fbed44fbe633bd17dff0af93d5ea1b5d3fe6?recursive=1",
+        f"repos/{{owner}}/{{repo}}/git/trees/{REVERT_HEAD}?recursive=1",
+    } <= set(recorded)
 
 
 def test_an_exact_revert_still_needs_ci_and_the_merge_approval(
@@ -631,37 +640,89 @@ def test_a_quoted_or_mid_line_reverts_is_no_revert(recorded: list[str]) -> None:
 
 
 def entry(filename: str, patch: str | None, **fields: Any) -> dict[str, Any]:
-    return {"filename": filename, "changes": 1, **({"patch": patch} if patch else {}), **fields}
+    return {
+        "filename": filename,
+        "status": "modified",
+        "changes": 1,
+        **({"patch": patch} if patch else {}),
+        **fields,
+    }
 
 
 def test_the_inverse_ignores_line_numbers_and_context_and_follows_renames() -> None:
     original = [
         entry("a.py", "@@ -1,3 +1,3 @@\n one\n-two\n+2\n three"),
-        entry("new.py", "@@ -1,2 +1,2 @@\n-x\n+y", previous_filename="old.py"),
+        entry("new.py", "@@ -1,2 +1,2 @@\n-x\n+y", previous_filename="old.py", status="renamed"),
     ]
     revert = [
         entry("a.py", "@@ -10,2 +10,2 @@\n moved context\n-2\n+two"),
-        entry("old.py", "@@ -1 +1 @@\n-y\n+x", previous_filename="new.py"),
+        entry("old.py", "@@ -1 +1 @@\n-y\n+x", previous_filename="new.py", status="renamed"),
     ]
-    assert gate.inexact(original, revert, 1) == []
-    assert gate.inexact(original, revert[:1] + [entry("new.py", "@@ -1 +1 @@\n-y\n+x")], 1) == [
+    assert gate.inexact(original, revert, 1, {}, {}) == []
+    moved = revert[:1] + [entry("new.py", "@@ -1 +1 @@\n-y\n+x")]
+    assert gate.inexact(original, moved, 1, {}, {}) == [
         "it changes `new.py`, which #1 did not",
         "it leaves `old.py -> new.py` as #1 changed it",
     ]
 
 
 def test_a_file_github_shows_no_diff_of_is_no_exact_revert() -> None:
-    assert gate.inexact([entry("logo.png", None)], [entry("logo.png", None)], 1) == [
+    assert gate.inexact([entry("logo.png", None)], [entry("logo.png", None)], 1, {}, {}) == [
         "GitHub shows no diff of `logo.png` to compare",
         "GitHub shows no diff of `logo.png` to compare",
+    ]
+    unchanged = {"filename": "run.sh", "status": "modified", "changes": 0, "patch": ""}
+    assert gate.inexact([unchanged], [unchanged], 1, {}, {}) == [
+        "GitHub shows no diff of `run.sh` to compare",
+        "GitHub shows no diff of `run.sh` to compare",
     ]
 
 
 def test_a_missing_final_newline_counts() -> None:
-    assert gate.changed_lines("@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+x") == (
-        {"x": 1},
-        {"x\n\\ no newline": 1},
-    )
+    assert gate.changed_lines("@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+x") == [
+        (["x"], ["x\n\\ no newline"])
+    ]
+
+
+CALLS = "@@ -1,2 +1,2 @@\n-authorize()\n-transfer()\n+authorize_v2()\n+transfer_v2()"
+UNDO_CALLS = "@@ -3,2 +3,2 @@\n-authorize_v2()\n-transfer_v2()\n+authorize()\n+transfer()"
+MODES = {"app.py": "100644"}
+
+
+def test_the_inverse_keeps_the_order_of_changed_lines() -> None:
+    original = [entry("app.py", CALLS)]
+    assert gate.inexact(original, [entry("app.py", UNDO_CALLS)], 1, MODES, MODES) == []
+    swapped = UNDO_CALLS.replace("+authorize()\n+transfer()", "+transfer()\n+authorize()")
+    assert gate.inexact(original, [entry("app.py", swapped)], 1, MODES, MODES) == [
+        "`app.py` changes the lines #1 changed in another order"
+    ]
+    # the same lines in the same order, one of them moved into another run
+    two = [entry("app.py", "@@ -1,3 +1,3 @@\n-a\n+b\n x\n-c\n+d")]
+    moved = [entry("app.py", "@@ -1,3 +1,3 @@\n-b\n+a\n+c\n x\n-d")]
+    assert gate.inexact(two, moved, 1, MODES, MODES) == [
+        "`app.py` changes the lines #1 changed in another order"
+    ]
+
+
+def test_a_revert_that_changes_a_mode_is_no_exact_revert() -> None:
+    exact = ([entry("app.py", CALLS)], [entry("app.py", UNDO_CALLS)], 1)
+    assert gate.inexact(*exact, MODES, {"app.py": "100755"}) == [
+        "`app.py` has mode 100755 at the head, and 100644 before #1"
+    ]
+    assert gate.inexact(*exact, None, MODES) == [
+        "GitHub truncates a tree it would compare file modes in"
+    ]
+
+
+def test_an_empty_file_left_in_place_is_no_exact_revert() -> None:
+    added = {"filename": "run.sh", "status": "added", "changes": 0}
+    moded = {"filename": "run.sh", "status": "modified", "changes": 0}
+    assert gate.inexact([added], [moded], 1, {}, {"run.sh": "100755"}) == [
+        "GitHub shows no diff of `run.sh` to compare",
+        "GitHub shows no diff of `run.sh` to compare",
+        "`run.sh` is modified, and undoing #1 needs removed",
+        "`run.sh` has mode 100755 at the head, and absent before #1",
+    ]
 
 
 def test_approving_an_exact_revert_records_it_as_the_verdict(
@@ -674,7 +735,7 @@ def test_approving_an_exact_revert_records_it_as_the_verdict(
         (
             "comment",
             2,
-            f"Approved: merge\nBy: coordinator\nHead: {HEAD}\nVerdict: exact revert of #1\n",
+            f"Approved: merge\nBy: coordinator\nHead: {REVERT_HEAD}\nVerdict: exact revert of #1\n",
         ),
         ("label", 2, "approved:merge", False),
         ("label", 2, "needs-owner", True),
