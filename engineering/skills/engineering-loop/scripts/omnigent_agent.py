@@ -519,10 +519,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"{report} is outside the child's workspace {Path.cwd()}; use tmp/loop/ in the worktree"
             )
         if args.cmd == "send":
-            try:  # the report of the turn before, which must not end this wait
-                since = report.stat().st_mtime_ns
-            except FileNotFoundError:
-                since = None
+            # A report older than the question the follow-up answers, else than the send, is the
+            # turn before's. The question first: a rerun after the first send died must not take
+            # the report that answer already produced as the old one.
+            since = None
+            for path in (question_of(report), report):
+                try:
+                    since = path.stat().st_mtime_ns
+                    break
+                except FileNotFoundError:
+                    pass
             send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
             print(wait(og, args.session, report, args.timeout, args.verdict, since))
             return 0

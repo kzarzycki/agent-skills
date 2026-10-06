@@ -599,6 +599,24 @@ def test_send_ignores_the_report_of_the_turn_before(
     assert capsys.readouterr().out.strip() == str(report)
 
 
+def test_a_rerun_after_the_answer_landed_returns_the_report_it_produced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid = og.create("claude", "t")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    report = tmp_path / "r.md"
+    question = omnigent_agent.question_of(report)
+    question.write_text("which base?")
+    os.utime(question, (1, 1))
+    og.send(sid, "use main")  # the first send died before it removed the question
+    report.write_text("done\nSATISFIED: yes\n")  # and the child answered with its report
+    (tmp_path / "a.md").write_text("use main")
+    assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--verdict"]) == 0
+    assert og.posts == 1
+
+
 def test_a_follow_up_sent_as_the_turn_before_ends_is_waited_for(tmp_path: Path) -> None:
     og = FakeOmnigent()
     sid = og.create("claude", "t")
