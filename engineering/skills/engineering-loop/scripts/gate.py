@@ -18,6 +18,13 @@ with the line `CI: none` in loop.md, a `record-check` pass on the head instead),
 commit, with its verdict. `record-check` runs only on a clean checkout at the PR head, and records nothing if the check
 fails or changes the tree.
 
+An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
+`Reverts <owner>/<repo>#<n>`), where #n is a merged PR and, file for file as GitHub's diff of each shows them, the PR adds
+exactly the lines #n removed and removes exactly the lines #n added; line numbers and context may differ. Its code returns
+to a state already specced and reviewed, so `check build` passes it and `check merge` asks only for Evidence (what went
+wrong), green CI, the merge approval and a person's approval where a merge rule holds by path; `approve merge` records
+`Verdict: exact revert of #<n>`. A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
+
 An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
 
     Approved: spec
@@ -50,6 +57,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +70,7 @@ POINTS = ("spec", "plan", "merge")
 VERDICT = "Verifier verdict"
 NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-PULL = f"""number body headRefOid labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number body headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion }} ... on StatusContext {{ context state }} }} }} }} }} }} }}
@@ -81,6 +89,8 @@ CONDITION = re.compile(
 )
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
+# a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
+REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
 CHANGED = {
     "spec": "The spec changed after the last approval, so it was checked again.\n",
@@ -291,8 +301,15 @@ def problems(
     return found
 
 
-def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop: str) -> list[str]:
-    """One line per approval or proof the PR and its issues lack at `point` (build or merge)."""
+def proofs(
+    point: str,
+    pull: dict[str, Any],
+    issues: list[dict[str, Any]],
+    loop: str,
+    revert: int | None = None,
+) -> list[str]:
+    """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
+    #`revert` names no issue and needs no verdict."""
     loop_rules, found = rules(loop), []
     for issue in issues:
         labels = names(issue)
@@ -319,7 +336,7 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
     evidence = section(pull["body"] or "", "Evidence")
     if not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
-    if not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
+    if revert is None and not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
         found.append(f"{where}: no verifier verdict posted (gate.py verdict)")
     if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
         if not any(
@@ -333,10 +350,97 @@ def proofs(point: str, pull: dict[str, Any], issues: list[dict[str, Any]], loop:
             )
     elif os.environ.get("GITHUB_ACTIONS") != "true":
         found += ci(where, pull)
-    paths = merge_paths(pull, loop_rules)
-    owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
+    owner = owner_needed("merge", loop_rules, labelled(issues), merge_paths(pull, loop_rules))
     found += approvals(where, pull, "merge", "head", pull["headRefOid"], owner)
     return found
+
+
+def labelled(issues: list[dict[str, Any]]) -> set[str]:
+    """Every label on the issues: a merge rule holds when it holds for any of them."""
+    return set().union(*(names(issue) for issue in issues))
+
+
+def changed_lines(patch: str) -> tuple[Counter[str], Counter[str]]:
+    """The lines a file's patch adds and removes; one that ends without a newline is marked so."""
+    added: list[str] = []
+    removed: list[str] = []
+    last: list[str] | None = None
+    for line in patch.split("\n"):
+        if line.startswith("\\") and last:  # `\ No newline at end of file`, about the line before
+            last[-1] += "\n\\ no newline"
+            continue
+        last = added if line.startswith("+") else removed if line.startswith("-") else None
+        if last is not None:
+            last.append(line[1:])
+    return Counter(added), Counter(removed)
+
+
+def inexact(original: list[dict[str, Any]], revert: list[dict[str, Any]], number: int) -> list[str]:
+    """Why `revert` does not undo #number, both as GitHub's REST API lists a PR's files; empty when it does. Only added
+    and removed lines count, since line numbers and context move with main. ponytail: a mode change shows no patch and
+    goes unseen; compare `sha`s of each blob when one matters."""
+    why: list[str] = []
+
+    def changes(entries: list[dict[str, Any]], inverted: bool) -> dict[tuple[str, str], Any]:
+        found = {}
+        for entry in entries:
+            old, new = entry.get("previous_filename") or entry["filename"], entry["filename"]
+            if (
+                entry.get("changes") and "patch" not in entry
+            ):  # binary, or too large for GitHub to show
+                why.append(f"GitHub shows no diff of `{new}` to compare")
+            added, removed = changed_lines(entry.get("patch") or "")
+            found[(new, old) if inverted else (old, new)] = (
+                (removed, added) if inverted else (added, removed)
+            )
+        return found
+
+    def shown(old: str, new: str) -> str:
+        return new if old == new else f"{old} -> {new}"
+
+    expected, actual = changes(original, inverted=True), changes(revert, inverted=False)
+    for key in sorted(expected.keys() | actual.keys()):
+        if key not in actual:
+            why.append(f"it leaves `{shown(key[1], key[0])}` as #{number} changed it")
+        elif key not in expected:
+            why.append(f"it changes `{shown(*key)}`, which #{number} did not")
+        elif actual[key] != expected[key]:
+            (added, removed), (undo_added, undo_removed) = actual[key], expected[key]
+            extra = sum(((added - undo_added) + (removed - undo_removed)).values())
+            missing = sum(((undo_added - added) + (undo_removed - removed)).values())
+            why.append(
+                f"`{shown(*key)}` has {extra} line(s) beyond the inverse of #{number}, {missing} missing"
+            )
+    return why
+
+
+def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
+    """The merged PR this one exactly reverts, or a line saying why its `Reverts #<n>` is no exact revert; (None, [])
+    for a PR without one."""
+    found = REVERTS.search(QUOTED.sub("", pull["body"] or ""))
+    if not found:
+        return None, []
+    repo, number = found.group(1), int(found.group(2))
+    base = pull["baseRepository"]["nameWithOwner"]
+    if repo and repo.lower() != base.lower():
+        why = [f"it names a PR of {repo}, and this is {base}"]
+    elif not (original := merged_pull(number)):
+        why = [f"#{number} is not a merged pull request"]
+    else:
+        changes, theirs = pr_changes(number), pr_changes(pull["number"])
+        why = [
+            f"GitHub lists {len(listed)} of {where}'s {total} files"
+            for where, listed, total in (
+                (f"#{number}", changes, original["changed_files"]),
+                (f"PR #{pull['number']}", theirs, pull["files"].get("totalCount") or len(theirs)),
+            )
+            if len(listed) < total
+        ] or inexact(changes, theirs, number)
+    if not why:
+        return number, []
+    return None, [
+        f"PR #{pull['number']} is not an exact revert of #{number}: {'; '.join(why)}. It needs every proof of any PR"
+    ]
 
 
 def ci(where: str, pull: dict[str, Any]) -> list[str]:
@@ -388,15 +492,31 @@ def pull_request(pr: int) -> dict[str, Any]:
     return pull
 
 
-def pr_files(number: int) -> list[str]:
-    """Every path a PR changes, as GitHub's REST API pages them: up to 3000."""
-    return gh(
+def pr_changes(number: int) -> list[dict[str, Any]]:
+    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
+    out = gh(
         "api",
         "--paginate",
         f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
         "--jq",
-        ".[].filename",
-    ).splitlines()
+        ".[]",
+    )
+    return [json.loads(line) for line in out.splitlines()]
+
+
+def pr_files(number: int) -> list[str]:
+    return [entry["filename"] for entry in pr_changes(number)]
+
+
+def merged_pull(number: int) -> dict[str, Any] | None:
+    """PR #number as GitHub's REST API returns it, when it was merged; None for an open or closed PR, or an issue."""
+    try:
+        found: dict[str, Any] = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/pulls/{number}"))
+    except subprocess.CalledProcessError as exc:
+        if "Not Found" in exc.stderr:
+            return None
+        raise
+    return found if found.get("merged") else None
 
 
 def issue_node(number: int) -> dict[str, Any]:
@@ -486,11 +606,13 @@ def check(point: str, pr: int | None) -> int:
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
-    issues = closing_issues(pull)
-    found = problems(
-        issues, listed(tracker, "Components"), CATEGORIES | listed(tracker, "Extra categories")
-    )
-    found += proofs(point, pull, issues, loop)
+    revert, found = reverts(pull)
+    issues = [] if revert else closing_issues(pull)
+    if not revert:
+        found += problems(
+            issues, listed(tracker, "Components"), CATEGORIES | listed(tracker, "Extra categories")
+        )
+    found += proofs(point, pull, issues, loop, revert)
     for line in found:
         print(line)
     return 1 if found else 0
@@ -500,22 +622,35 @@ def approve(point: str, number: int, by: str, triage: str | None) -> int:
     loop_rules = rules(read(LOOP))
     if point == "merge":
         pull = pull_request(number)
+        revert, refused = reverts(pull)
         verdicts = [body for body in bodies(pull) if body.lstrip().startswith(VERDICT)]
-        if not verdicts:
-            raise Refused(f"PR #{number} has no verifier verdict: post it first (gate.py verdict)")
-        verdict = "; ".join(
-            line.strip()
-            for line in verdicts[-1].splitlines()
-            if line.strip().startswith(("VERDICT:", "SATISFIED:"))
+        if not revert and not verdicts:
+            raise Refused(
+                "\n".join(
+                    [
+                        *refused,
+                        f"PR #{number} has no verifier verdict: post it first (gate.py verdict)",
+                    ]
+                )
+            )
+        verdict = (
+            f"exact revert of #{revert}"
+            if revert
+            else "; ".join(
+                line.strip()
+                for line in verdicts[-1].splitlines()
+                if line.strip().startswith(("VERDICT:", "SATISFIED:"))
+            )
         )
-        issues, paths = closing_issues(pull), merge_paths(pull, loop_rules)
+        issues = [] if revert else closing_issues(pull)
+        # an exact revert names no issue, so a person's approval is asked for on the PR itself
         node, targets, key, value = (
             pull,
-            [issue["number"] for issue in issues],
+            [issue["number"] for issue in issues] or [number],
             "head",
             pull["headRefOid"],
         )
-        owner = any(owner_needed("merge", loop_rules, names(issue), paths) for issue in issues)
+        owner = owner_needed("merge", loop_rules, labelled(issues), merge_paths(pull, loop_rules))
         record = f"Head: {pull['headRefOid']}\nVerdict: {verdict}\n" + (
             f"Triage: {triage}\n" if triage else ""
         )
