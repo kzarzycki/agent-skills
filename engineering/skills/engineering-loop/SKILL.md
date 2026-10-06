@@ -142,12 +142,37 @@ angles run as native subagents, never as full harness sessions.
   even different calls, mean stop and report yourself blocked with the error line. That
   includes a permission classifier that fails closed because its provider is down: every
   retry is a full-context turn.
+- **Land small and soon.** Every PR branches off a freshly fetched `origin/main` and merges
+  as soon as its gates pass, because a branch that lives as long as the work behind it goes
+  stale against main, and a pile of them cascades on every rebase and breaks main when they
+  land. An epic lands as one PR per sub-issue, each off main, with no epic or integration
+  branch. A sub-issue whose work isn't usable yet lands unexposed, so main stays
+  releasable while the epic is half done: wired into no entry point, or behind a flag the
+  user docs don't name yet. The sub-issue that exposes it comes last, and documents the
+  flag or removes it.
 - **One concern per PR.** A change the spec's diff doesn't need (agent config, a skill,
-  CI, tooling, an unrelated fix) gets its own PR from a freshly fetched `origin/main`, so
-  it can be reviewed and reverted alone. A change that needs another unmerged branch
-  stacks on it and rebases onto `origin/main` once that lands. Before starting a fix,
-  look for one in flight on the board's `Build` column and in open PRs: use it, and don't
-  pause other work waiting for it.
+  CI, tooling, an unrelated fix) gets its own PR from main, so it can be reviewed and
+  reverted alone. A finding goes on the open PR's branch only when it makes that PR wrong
+  or unmergeable: a review blocker or major, a bug the PR introduced, its CI failing, or a
+  break on main the PR would cause. Anything else (a minor, an improvement, an adjacent bug
+  found on the way) waits for that PR to land and starts from main, because on its branch
+  it restarts the PR's review and CI and couples two concerns; chains of follow-up PRs come
+  from PRs landing slower than they are produced, and fast landing makes the wait cheap.
+  Never push to a PR someone else owns, since that rewrites work under its owner: comment
+  on it, or wait for it to land and start from main. Before starting a fix, look for one
+  in flight on the board's `Build` column and in open PRs: use it, and don't pause other
+  work waiting for it.
+- **Stacks are one deep.** Stacking on an unmerged branch is the exception for when
+  waiting isn't possible, and only on a PR already in Land (verdict triaged, waiting for
+  CI), because a base still in review changes under its stack and every change cascades.
+  Its owner moves the stacked PR onto main the moment its base lands, and it lands itself
+  with its own `Closes`. Anything else waits, or builds
+  on main behind a seam.
+- **Revert first.** When main goes red after a merge, or a merged change proves wrong in
+  use, the first fix is a revert PR off main, because a revert returns main to a state
+  that passed, while a fix forward holds every other merge back and ages every branch. The
+  reverted PR's issues reopen with a comment naming the revert, and the fix forward is a
+  new change through the loop.
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
