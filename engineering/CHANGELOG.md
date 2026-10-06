@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.10.0 - 2026-10-06
+
+- Land small and soon (`SKILL.md`): every PR branches off `origin/main` and merges as soon as
+  its gates pass. An epic lands as one PR per sub-issue, each off main, with no epic or
+  integration branch; work not yet usable lands unexposed (no entry point, or a flag the user
+  docs don't name), and the sub-issue that exposes it comes last.
+- Stacks are one deep, and only on a PR already in Land; the stacked PR moves onto main the
+  moment its base lands.
+- One concern per PR, rewritten: a finding goes on the open PR's branch only when it makes that
+  PR wrong or unmergeable; anything else, a satisfied verdict's note included, waits for the
+  merge and starts from main. Never push to a PR someone else owns.
+- Revert first: when main goes red after a merge, or a merged change proves wrong in use, the
+  first fix is a revert PR off main, and the reverted PR's issues reopen. Accept starts by
+  reading main's push run on the merge SHA.
+- Waiting: while a PR waits for CI, the coordinator moves other ready items forward.
+
 ## 0.9.2 - 2026-10-05
 
 - Epics (`issues.md`): an epic is an issue whose goal is an outcome the owner tracks, with

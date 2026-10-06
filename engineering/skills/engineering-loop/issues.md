@@ -52,7 +52,10 @@ An epic is an issue whose goal is an outcome the owner tracks; its work items ar
 native sub-issues. It carries the `epic` label next to its category, so a board view can
 filter for epics, and it closes when its outcome holds, that is when its sub-issues are
 done. Prefer converting an existing issue whose spec already states the outcome over
-filing a new one. Two levels only: a sub-issue never has sub-issues of its own, since the
+filing a new one. An epic lands as its sub-issues' PRs, one per sub-issue, each off
+main, with no epic or integration branch; a sub-issue whose work isn't usable yet lands
+unexposed, and the sub-issue that exposes it comes last (SKILL.md, Land small and soon).
+Two levels only: a sub-issue never has sub-issues of its own, since the
 board's Parent issue field names only the direct parent and a grandchild would not show
 under its epic.
 

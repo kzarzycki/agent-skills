@@ -30,8 +30,10 @@ UI, and delegate the rest.
    write the plan with it next, as a `## Plan` comment on the issue, and approve it too.
    When `approve` says a person must approve as well, comment what to approve (board:
    `Needs owner`) and stop. Otherwise carry on: the owner reads it when they like.
-3. **Branch and notes.** Cut the PR branch, open a draft PR that closes the spec (board:
-   `Build`), and run `mise run gate build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
+3. **Branch and notes.** Cut the PR branch off a freshly fetched `origin/main`, or, one
+   deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
+   get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
+   that closes the spec (board: `Build`), and run `mise run gate build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
@@ -65,8 +67,9 @@ UI, and delegate the rest.
    collide. Triage every finding (SKILL.md), hand the fixes to a worker or make them
    yourself, and push. Each later pass gets a fresh verifier, started the same way, plus
    the previous report's path and head; reviving the old one re-reads its whole earlier
-   review every turn. A note on a satisfied verdict is fixed in this PR too, never
-   deferred; when that fix changes nothing an agent or tool reads, it needs no further
+   review every turn. A finding that doesn't make the PR wrong or unmergeable, a note on a
+   satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
+   concern per PR). A fix that changes nothing an agent or tool reads needs no further
    pass: rerun the gates and show the diff in the PR body. Instructions are code: a skill,
    a role file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt, and
    anything a tool parses each need the pass. Only prose for people is exempt: a README,
@@ -104,11 +107,20 @@ UI, and delegate the rest.
      `Replaced by #<n>` and delete its head branch (its PR page can restore it).
    - Fast-forward the main checkout (`git -C <main checkout> pull --ff-only`), and tell
      the live peers that main moved: the merge SHA, plus any setup step they must run.
-9. **Accept** on the owner's instance, through a worker whose report you read: bring the
+   - A PR stacked on this one moves onto main now: `gh pr edit <stacked> --base main`, then
+     merge `origin/main` into its branch and push.
+9. **Accept.** First read main's push run on the merge SHA
+   (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
+   with `CI: none` there is none). When it ends red, revert before anything else
+   (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
+   freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
+   `Part of #<spec>`, so the gate finds the spec, through this loop; reopen every issue
+   the PR closed with `gh issue reopen <n> --comment "Reverted in #<revert pr>: <why>."`. Then accept on
+   the owner's instance, through a worker whose report you read: bring the
    instance up on the merged main the way loop.md § Proof on a branch says, then check each new result on
    real data against a reference the code did not produce, in the order of loop.md § Acceptance references. The
-   spec's acceptance examples name which. A failure is a new change through this loop,
-   not a patch on main.
+   spec's acceptance examples name which. A failure is reverted the same way, and the fix
+   forward is a new change through this loop, never a patch on main.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents. For every
    worktree your notes list, run its teardown (loop.md § Worktree), then, from the main checkout,
    `git worktree remove --force <path>` and `git branch -D <branch>` (a detached
@@ -120,7 +132,10 @@ UI, and delegate the rest.
    when it was, and the main instance's link.
 
 **Waiting.** Results come to you: a subagent's result or a backend's reply arrives as a
-new prompt. With nothing else to do, end your turn. Don't poll agent lists, logs or panes,
+new prompt. While a PR waits for CI, move other ready items forward (another PR's step, a
+spec, triage) and come back to the PR when CI reports, because CI takes tens of minutes
+and a coordinator that waits through it makes CI the loop's speed. With nothing else to
+do, end your turn. Don't poll agent lists, logs or panes,
 or sleep: every check re-reads your whole context. Read the report file a reply names,
 not logs or scrollback.
 
