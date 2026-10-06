@@ -278,7 +278,10 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     """
     text, question = brief.strip(), question_of(report)
     # Read once, first: the sender of the first copy deletes the question once that copy lands.
-    asked = question.stat().st_mtime if question.exists() else None
+    try:
+        asked: float | None = question.stat().st_mtime
+    except FileNotFoundError:
+        asked = None
     # History before info: Omnigent persists a copy before it drops it from pending_inputs, so a
     # copy seen pending is not among the ``old`` ids and its landing shows up as a new item.
     items = og.items(sid)
