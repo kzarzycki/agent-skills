@@ -63,8 +63,9 @@ yourself, keeping standards and spec as separate axes.
 Write Markdown to the report path:
 
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
-- Per finding: a title, severity (blocker|major|minor), file:line, the failing input or
-  contradicted requirement, and the evidence (the command and its output).
+- Per finding: a title, severity (blocker|major|minor), file:line at the reviewed head (it
+  becomes the PR review's inline comment), the failing input or contradicted requirement,
+  and the evidence (the command and its output).
 - End with `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`.
 
 Reply with only the path.

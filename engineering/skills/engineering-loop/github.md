@@ -26,6 +26,25 @@ inside the repository: it infers the repo from the remote.
 
 Pull requests are not a triage request surface.
 
+## Review trail
+
+The calls behind SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
+from the remote.
+
+- Post a pass as one review, from a JSON file:
+  `gh api 'repos/{owner}/{repo}/pulls/<pr>/reviews' --input <file>`, with
+  `{"commit_id":"<reviewed head>","event":"COMMENT","body":"Verifier (<family>), pass <n>\n\nVERDICT: ...\nSATISFIED: ...","comments":[{"path":"<file>","line":<n>,"side":"RIGHT","body":"Verifier (<family>), pass <n>, <severity>: <title>\n\n<failing input and evidence>"}]}`.
+  The event stays `COMMENT`, because GitHub refuses `REQUEST_CHANGES` and `APPROVE` on
+  your own PR. One comment whose path or line is outside the PR's diff at that commit
+  refuses the whole review (422, `Path could not be resolved` or `Line could not be
+  resolved`), so such a finding goes in the body.
+- List the threads, each with the id to resolve it and its first comment's id to reply:
+  `gh api graphql -F o='{owner}' -F r='{repo}' -F n=<pr> -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:1){nodes{databaseId body}}}}}}}'`.
+- Reply on a thread: `gh api 'repos/{owner}/{repo}/pulls/<pr>/comments/<first comment databaseId>/replies' -f body="Fixed in <sha>."`
+- Resolve it: `gh api graphql -f t=<thread id> -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}'`.
+- `gh pr create --draft` needs a commit the base lacks: before anything is built, push an
+  empty one (`git commit --allow-empty -m "<spec title>"`), which the squash drops.
+
 ## Board
 
 A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the

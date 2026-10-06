@@ -33,7 +33,8 @@ UI, and delegate the rest.
 3. **Branch and notes.** Cut the PR branch off a freshly fetched `origin/main`, or, one
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
-   that closes the spec (board: `Build`), and run `mise run gate build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
+   that closes the spec with the branch's first push (github.md, Review trail; board:
+   `Build`), and run `mise run gate build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
@@ -64,10 +65,14 @@ UI, and delegate the rest.
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report's verdict with
-   `python3 scripts/gate.py verdict <pr> <report>`. Only a mixed PR's second verifier, running at
+   `python3 scripts/gate.py verdict <pr> <report>`, which the gate reads, and as a PR review
+   of the reviewed head (github.md, Review trail): one inline comment per finding, labelled
+   `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:` and `SATISFIED:`
+   lines. Only a mixed PR's second verifier, running at
    the same time, gets a detached worktree at the same head, so the two gate runs don't
-   collide. Triage every finding (SKILL.md), hand the fixes to a worker or make them
-   yourself, and push. Each later pass gets a fresh verifier, started the same way, plus
+   collide. Triage every finding (SKILL.md), hand the fixes, and each deferred finding
+   with the issue it waits in, to a worker or make them yourself (`worker.md`, Trail), and
+   push. Each later pass gets a fresh verifier, started the same way, plus
    the previous report's path and head; reviving the old one re-reads its whole earlier
    review every turn. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
@@ -92,7 +97,8 @@ UI, and delegate the rest.
      `python3 scripts/gate.py approve merge <pr> --by coordinator --triage <link to the body's triage>`.
      When it says a person must approve as well, give them the PR link and stop; once
      they have added `approved:merge` or said so, approve again with `--by owner`.
-   - `gh pr ready` marks the head approved: CI runs the merge gate on a ready PR. A push
+   - `gh pr ready` marks the head approved: CI skips a draft and runs the merge gate on a
+     ready PR, so it comes only here, with no core finding open (SKILL.md, Review trail). A push
      after it needs `gh pr ready --undo` first, then a new approval.
    - Once CI is green (with `CI: none`, once `python3 scripts/gate.py record-check <pr>` has
      recorded a pass on that head), `mise run gate merge <pr>`, then
@@ -100,7 +106,7 @@ UI, and delegate the rest.
      merge queue (`gh api repos/{owner}/{repo}/rules/branches/<base>` lists a `merge_queue`
      rule), run `gh pr merge <pr> --match-head-commit <landing sha>` instead: gh
      refuses `--delete-branch` there, because the queue merges later (the repository's
-     delete-on-merge setting removes the branch), and the queue sets the merge method. It
+     delete-on-merge setting removes the branch), and the queue sets the merge method (squash). It
      queues the PR, or turns on auto-merge when checks are still running.
      The PR has landed only once `gh pr view <pr> --json state,mergeCommit` shows `MERGED`.
      Before working on other items, start one background command whose exit wakes you when
@@ -115,6 +121,15 @@ UI, and delegate the rest.
      (`gh pr edit <pr> --add-reviewer <login>`), add `needs-owner` to the issue, and
      stop. Never use `--admin`, which overrides the project's protection, and never push
      to main.
+   - Human review findings: triage each review comment with One concern per PR (SKILL.md).
+     A blocker, a major or a bug the PR introduced is fixed on the PR's own branch; anything
+     else gets a reply on its thread linking the issue it waits in, and starts from main once
+     the PR lands. The fixes follow the review trail (SKILL.md): `gh pr ready --undo` first,
+     so CI skips the half-done fix, then each fix its own pushed commit, replied on its
+     thread with the SHA and resolved (`worker.md`, Trail), and a verifier pass (step 7)
+     before the PR is ready again. Never cascade a fix down a stack or re-prove a merge
+     order: a merge queue tests each PR on top of main, and a PR stacked on this one moves
+     onto main when it lands (SKILL.md, Stacks are one deep).
    - Closing keywords fire only on a PR merged into the default branch, and GitHub misses
      some even there. They stay on the PR that carries the work: a stacked PR keeps its own
      `Closes` and lands itself once retargeted onto main. Copy them to its base only when
