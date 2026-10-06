@@ -1,6 +1,7 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
 import importlib.util
+import os
 import subprocess
 import sys
 import time
@@ -212,13 +213,23 @@ def test_wait_times_out_with_last_message(tmp_path: Path) -> None:
         omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=0)
 
 
-def test_wait_fails_when_turn_ends_idle_with_no_output(tmp_path: Path) -> None:
-    og = FakeOmnigent(status="idle")  # the brief is the last item and nothing follows
-    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
-    statuses = iter(["running", "idle"])
-    og.info = lambda s: {"status": next(statuses), "pending_elicitations": []}  # type: ignore[method-assign]
-    with pytest.raises(omnigent_agent.Fail, match=r"ended \(idle\)"):
-        omnigent_agent.wait(og, sid, tmp_path / "r.md")
+def test_wait_keeps_waiting_through_a_mid_turn_idle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(status="idle")  # the brief is the last item while the child works
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", report, None, 0)
+    monkeypatch.setattr(omnigent_agent, "IDLE_GRACE_SECONDS", 3600)
+    statuses = iter(["running", "idle", "idle", "running"])
+
+    def info(s: str) -> dict:
+        status = next(statuses, None)
+        if status is None:
+            report.write_text("done")
+        return {"status": status or "running", "pending_elicitations": []}
+
+    og.info = info  # type: ignore[method-assign]
+    assert omnigent_agent.wait(og, sid, report, timeout=5) == str(report)
 
 
 def test_wait_keeps_waiting_through_launch_idle(
@@ -565,6 +576,51 @@ def test_a_different_message_containing_the_answer_does_not_confirm_it(
     )
     with pytest.raises(omnigent_agent.Gone):
         omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+
+
+def test_send_ignores_the_report_of_the_turn_before(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid = og.create("claude", "t")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    report = tmp_path / "r.md"
+    report.write_text("old findings\nSATISFIED: yes\n")
+    os.utime(report, (1, 1))
+    (tmp_path / "a.md").write_text("fix C1")
+    argv = ["send", sid, "a.md", "r.md", "--verdict"]
+    assert omnigent_agent.main(argv) == 1  # the turn ended and only the stale report is there
+    assert "without a verdict" in capsys.readouterr().err
+
+    info = og.info
+    og.info = lambda s: (report.write_text("new\nSATISFIED: yes\n"), info(s))[1]  # type: ignore[method-assign]
+    assert omnigent_agent.main(argv) == 0
+    assert capsys.readouterr().out.strip() == str(report)
+
+
+def test_a_follow_up_sent_as_the_turn_before_ends_is_waited_for(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "t")
+    report = tmp_path / "r.md"
+    og.sessions[sid].append({"type": "message", "role": "assistant", "content": []})
+    # the turn before ends, the follow-up lands in the idle gap, then its own turn runs
+    script = iter(["running", "idle", "idle", "running", "running"])
+
+    def info(s: str) -> dict:
+        status = next(script, "running")
+        if status == "idle" and og.sessions[s][-1].get("role") != "user":
+            og.land(s, "fix C1")
+        if (
+            status == "running"
+            and og.sessions[s][-1].get("role") == "user"
+            and not next(iter([report.exists()]))
+        ):
+            report.write_text("done")
+        return {"status": status, "pending_elicitations": []}
+
+    og.info = info  # type: ignore[method-assign]
+    assert omnigent_agent.wait(og, sid, report, timeout=5) == str(report)
 
 
 def test_same_family_verifier_needs_break_glass(

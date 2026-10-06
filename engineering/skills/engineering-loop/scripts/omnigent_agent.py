@@ -44,7 +44,9 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
-IDLE_GRACE_SECONDS = 30.0  # idle with the brief last: a turn that ended with no output
+# Idle with the brief last for this long: a turn that ended with no output. Shorter is not proof:
+# claude-native was seen idle for 15 s mid-turn, with the brief last, before its reply came.
+IDLE_GRACE_SECONDS = 30.0
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no live runner
 
@@ -392,7 +394,12 @@ def start(
 
 
 def wait(
-    og: Omnigent, sid: str, report: Path, timeout: float = 3 * 3600, verdict: bool = False
+    og: Omnigent,
+    sid: str,
+    report: Path,
+    timeout: float = 3 * 3600,
+    verdict: bool = False,
+    since: int | None = None,
 ) -> str:
     """Return the report path, or raise with the child's last message once it cannot deliver one.
 
@@ -400,15 +407,22 @@ def wait(
     verifier can write its findings before its gate run ends. Raises ``Asked`` with the question's
     path when the child wrote one instead. Fails when the turn ends without a report, when the
     child is blocked on an approval or input prompt (nothing answers it), or after ``timeout``
-    seconds.
+    seconds. With ``since`` (a follow-up), only a report modified after that ``st_mtime_ns``
+    counts: the one from the earlier turn is still there.
     """
     deadline = time.monotonic() + timeout
-    seen_running, idle_since = False, None
+    idle_since = None
     question = question_of(report)
     missing = f"a verdict in {report}" if verdict else str(report)
 
     def done() -> bool:
-        return report.exists() and (not verdict or bool(VERDICT.search(report.read_text())))
+        try:
+            mtime = report.stat().st_mtime_ns
+        except FileNotFoundError:
+            return False
+        return (since is None or mtime > since) and (
+            not verdict or bool(VERDICT.search(report.read_text()))
+        )
 
     while not done():
         if question.exists():
@@ -425,14 +439,11 @@ def wait(
             raise Fail(
                 f"session {sid} is blocked on a prompt: {'; '.join(prompts)}\nlast message: {said}"
             )
-        seen_running |= status in RUNNING
         # Idle with the brief last is a turn that ended with no output (codex forwarder maps an
-        # empty completed turn to idle), unless it is the launch idle: so only once this wait saw
-        # the session run, or the idle outlasted IDLE_GRACE_SECONDS.
+        # empty completed turn to idle), unless it is the launch idle, the gap before a follow-up's
+        # turn or a mid-turn idle: so only once the idle outlasted IDLE_GRACE_SECONDS.
         idle_since = (idle_since or time.monotonic()) if status not in RUNNING else None
-        empty_turn = seen_running or (
-            idle_since is not None and time.monotonic() - idle_since >= IDLE_GRACE_SECONDS
-        )
+        empty_turn = idle_since is not None and time.monotonic() - idle_since >= IDLE_GRACE_SECONDS
         if status not in RUNNING and (
             status == "failed" or (last is not None and last.get("role") != "user") or empty_turn
         ):
@@ -508,8 +519,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{report} is outside the child's workspace {Path.cwd()}; use tmp/loop/ in the worktree"
             )
         if args.cmd == "send":
+            try:  # the report of the turn before, which must not end this wait
+                since = report.stat().st_mtime_ns
+            except FileNotFoundError:
+                since = None
             send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
-            print(wait(og, args.session, report, args.timeout, args.verdict))
+            print(wait(og, args.session, report, args.timeout, args.verdict, since))
             return 0
         brief = args.brief.read_text()
         verifier = bool(args.role and "verifier" in args.role)
