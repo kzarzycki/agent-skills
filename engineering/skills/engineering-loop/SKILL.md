@@ -165,7 +165,8 @@ angles run as native subagents, never as full harness sessions.
 - **Stacks are one deep.** Stacking on an unmerged branch is the exception for when
   waiting isn't possible, and only on a PR already in Land (verdict triaged, waiting for
   CI), because a base still in review changes under its stack and every change cascades.
-  The stacked PR moves onto main the moment its base lands. Anything else waits, or builds
+  Its owner moves the stacked PR onto main the moment its base lands, and it lands itself
+  with its own `Closes`. Anything else waits, or builds
   on main behind a seam.
 - **Revert first.** When main goes red after a merge, or a merged change proves wrong in
   use, the first fix is a revert PR off main, because a revert returns main to a state

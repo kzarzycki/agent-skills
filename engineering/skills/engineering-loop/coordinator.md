@@ -42,7 +42,9 @@ UI, and delegate the rest.
 4. **Build.** Start every item nothing blocks. Hand an item to a worker when it can run in
    parallel or would flood your context. Build it yourself only when the cause is read
    and the fix and its test are a few lines in one area, following `worker.md` and saying
-   so in the PR body. A fix to the process itself goes to a separate worker and PR. Cut
+   so in the PR body. A fix to the process itself goes to a separate worker and PR from
+   main, unless it is a blocker or major that makes this PR wrong: that one goes on this
+   PR's branch (SKILL.md, One concern per PR). Cut
    each worker's branch from the PR branch with loop.md § Worktree, and start it
    with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
@@ -97,8 +99,10 @@ UI, and delegate the rest.
      stop. Never use `--admin`, which overrides the project's protection, and never push
      to main.
    - Closing keywords fire only on a PR merged into the default branch, and GitHub misses
-     some even there. List a stacked PR's issues with `Closes` on the PR that reaches the
-     default branch. Once the work is on the default branch, close each issue a PR on the
+     some even there. They stay on the PR that carries the work: a stacked PR keeps its own
+     `Closes` and lands itself once retargeted onto main. Copy them to its base only when
+     the base actually contains the stacked work (the stack was merged into it), since
+     otherwise the base's merge closes issues whose work isn't on main. Once the work is on the default branch, close each issue a PR on the
      way names with `Closes` (never `Part of`) that is still open
      (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
      When that was an epic's last open sub-issue, close and move the epic the same way.
@@ -107,8 +111,11 @@ UI, and delegate the rest.
      `Replaced by #<n>` and delete its head branch (its PR page can restore it).
    - Fast-forward the main checkout (`git -C <main checkout> pull --ff-only`), and tell
      the live peers that main moved: the merge SHA, plus any setup step they must run.
-   - A PR stacked on this one moves onto main now: `gh pr edit <stacked> --base main`, then
-     merge `origin/main` into its branch and push.
+   - A PR stacked on this one moves onto main now. When you own it,
+     `gh pr edit <stacked> --base main`, then merge `origin/main` into its branch and push.
+     Otherwise comment on it, naming the merge SHA, so its owner moves it
+     (`gh pr comment <stacked> --body "Base #<pr> landed in <merge sha>: retarget onto main and merge it in."`):
+     never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
    with `CI: none` there is none). When it ends red, revert before anything else
