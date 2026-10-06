@@ -21,10 +21,11 @@ fails or changes the tree.
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
 `Reverts <owner>/<repo>#<n>`), where #n is a merged PR and, file for file as GitHub's diff of each shows them, the PR
 removes what #n added and adds what #n removed (files, and each run of lines in order; line numbers and context may
-differ), and every path either touches has at the PR's head the mode it had before #n. A file GitHub shows no diff of
-(binary, too large, only renamed or moded) is never exact. Its code returns to a state already specced and reviewed,
-so `check build` passes it and `check merge` asks only for Evidence (what went wrong), green CI, the merge approval
-and a person's approval where a merge rule holds by path; `approve merge` records `Verdict: exact revert of #<n>`.
+differ), and every path either touches has at the PR's merge base the mode it had after #n and at its head the mode
+it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
+exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
+only for Evidence (what went wrong), green CI, the merge approval and a person's approval where a merge rule holds by
+path; `approve merge` records `Verdict: exact revert of #<n>`.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
@@ -72,7 +73,7 @@ POINTS = ("spec", "plan", "merge")
 VERDICT = "Verifier verdict"
 NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-PULL = f"""number body headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number body baseRefOid headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion }} ... on StatusContext {{ context state }} }} }} }} }} }} }}
@@ -388,13 +389,14 @@ def inexact(
     original: list[dict[str, Any]],
     revert: list[dict[str, Any]],
     number: int,
-    before: dict[str, str] | None,
-    after: dict[str, str] | None,
+    undone: tuple[dict[str, str] | None, dict[str, str] | None],
+    undoing: tuple[dict[str, str] | None, dict[str, str] | None],
 ) -> list[str]:
     """Why `revert` does not undo #number, both as GitHub's REST API lists a PR's files; empty when it does. Each file
     must have the inverse status and the inverse runs of changed lines in order, while line numbers and context move
-    with main, and every path either touches must have the mode in `after` (the revert's head tree) that it had in
-    `before` (#number's base tree), or be absent from both. A tree GitHub truncated is None."""
+    with main. Every path either touches must have, in `undoing` (the revert's merge base and head trees), the modes
+    it had in `undone` (#number's base and merge commit trees) the other way round, absence included. A tree GitHub
+    truncated is None."""
     why: list[str] = []
 
     def changes(entries: list[dict[str, Any]], inverted: bool) -> dict[tuple[str, str], Any]:
@@ -440,7 +442,9 @@ def inexact(
                 if extra or missing
                 else f"`{shown(*key)}` changes the lines #{number} changed in another order"
             )
-    if before is None or after is None:
+    before, after = undone
+    base, head = undoing
+    if None in (before, after, base, head):
         why.append("GitHub truncates a tree it would compare file modes in")
     else:
         touched = {
@@ -450,11 +454,15 @@ def inexact(
             if entry.get(name)
         }
         for path in sorted(touched):
-            if before.get(path) != after.get(path):
-                why.append(
-                    f"`{path}` has mode {after.get(path, 'absent')} at the head, and"
-                    f" {before.get(path, 'absent')} before #{number}"
-                )
+            for theirs, ours, where, when in (
+                (after, base, "at the merge base", "after"),
+                (before, head, "at the head", "before"),
+            ):
+                if ours.get(path) != theirs.get(path):
+                    why.append(
+                        f"`{path}` has mode {ours.get(path, 'absent')} {where}, and"
+                        f" {theirs.get(path, 'absent')} {when} #{number}"
+                    )
     return why
 
 
@@ -480,7 +488,11 @@ def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
             )
             if len(listed) < total
         ] or inexact(
-            changes, theirs, number, tree(original["base"]["sha"]), tree(pull["headRefOid"])
+            changes,
+            theirs,
+            number,
+            (tree(original["base"]["sha"]), tree(original["merge_commit_sha"])),
+            (tree(merge_base(pull["baseRefOid"], pull["headRefOid"])), tree(pull["headRefOid"])),
         )
     if not why:
         return number, []
@@ -563,6 +575,13 @@ def merged_pull(number: int) -> dict[str, Any] | None:
             return None
         raise
     return found if found.get("merged") else None
+
+
+def merge_base(base: str, head: str) -> str:
+    """The commit GitHub diffs a PR's head against: where it branched from its base."""
+    return gh(
+        "api", f"repos/{{owner}}/{{repo}}/compare/{base}...{head}", "--jq", ".merge_base_commit.sha"
+    ).strip()
 
 
 def tree(sha: str) -> dict[str, str] | None:
