@@ -8,9 +8,10 @@
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
 path of a question the child wrote (``<report>.question``) instead of a report; exit 1 prints the
 reason and the child's last message. A coordinator launches it as one background command, so its
-exit is the wake. ``send`` answers that question in the same session, then waits the same way; it
-refuses (exit 4) a session whose runner Omnigent reaped after its idle timeout, since a send there
-answers ``queued`` and never arrives: start a fresh run whose brief carries the question and answer.
+exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
+same way; it refuses (exit 4) a session whose runner Omnigent reaped after its idle timeout, since a
+send there answers ``queued`` and never arrives: start a fresh run whose brief carries the question
+and answer.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -265,16 +266,76 @@ def delivered(
 
 
 def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: float) -> None:
-    """Send a follow-up (an answer) to a session whose runner is still up, and confirm it arrived."""
-    if not og.info(sid).get("runner_online", True):
+    """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands.
+
+    Omnigent hands a message to the harness at once, also mid-turn: that is steering (the web
+    composer's queue and its "Always steer" live only in the browser). The session lists it under
+    ``pending_inputs`` until the harness folds it in at its next tool boundary, which a long
+    foreground command holds off for minutes. So pending is delivery under way, and the message is
+    lost only once it has been neither pending nor in the history for ``confirm_seconds``. A retry
+    finds the first copy pending, or in the history since the question was written, and sends
+    nothing: a second post delivers twice.
+    """
+    text, question = brief.strip(), question_of(report)
+    # Read once, first: the sender of the first copy deletes the question once that copy lands.
+    try:
+        asked: float | None = question.stat().st_mtime
+    except FileNotFoundError:
+        asked = None
+    # History before info: Omnigent persists a copy before it drops it from pending_inputs, so a
+    # copy seen pending is not among the ``old`` ids and its landing shows up as a new item.
+    items = og.items(sid)
+    old = frozenset(str(i.get("id")) for i in items)
+    info = og.info(sid)
+    if not info.get("runner_online", True):
         raise Gone(f"session {sid} has no live runner; start a fresh run instead")
-    old = frozenset(str(i.get("id")) for i in og.items(sid))
-    og.send(sid, brief)
-    if not delivered(og, sid, brief, confirm_seconds, old):
-        raise Gone(
-            f"session {sid}: message not in history after {confirm_seconds:.0f}s; start a fresh run instead"
+
+    # A copy is the same text exactly (both harnesses store it verbatim): a different message that
+    # merely contains it is a new one.
+    def copies(items: list[dict]) -> list[dict]:
+        return [
+            i
+            for i in items
+            if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() == text
+        ]
+
+    def pending(info: dict) -> bool:
+        return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+
+    # ponytail: compares the server's item clock with the local question file's; a skewed server
+    # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
+    if asked is not None and any(float(i.get("created_at") or 0) >= asked for i in copies(items)):
+        print(f"session {sid}: this answer already landed", file=sys.stderr)
+        question.unlink(missing_ok=True)
+        return
+    # or it landed between the two reads
+    if pending(info) or any(str(i.get("id")) not in old for i in copies(og.items(sid))):
+        print(
+            f"session {sid}: this message was already sent; waiting for that copy", file=sys.stderr
         )
-    question_of(report).unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
+    else:
+        og.send(sid, brief)
+    deadline, said = time.monotonic() + confirm_seconds, False
+    while True:
+        info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
+        if any(str(i.get("id")) not in old for i in copies(og.items(sid))):
+            break
+        if pending(info):
+            if not said:
+                print(
+                    f"session {sid} is {info.get('status')}: message queued in its harness until"
+                    " the current step ends",
+                    file=sys.stderr,
+                )
+                said = True
+            deadline = time.monotonic() + confirm_seconds
+        elif time.monotonic() >= deadline:
+            raise Gone(
+                f"session {sid}: message neither pending nor in history for {confirm_seconds:.0f}s;"
+                " start a fresh run instead"
+            )
+        time.sleep(POLL_SECONDS)
+    question.unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
 
 
 def start(
