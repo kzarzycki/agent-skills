@@ -73,7 +73,7 @@ UI, and delegate the rest.
    the changelog, a code comment.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
    waits for the landing rule (SKILL.md):
-   - Merge `origin/main` in only when GitHub requires it: `gh pr view <pr> --json
+   - Fetch, then merge `origin/main` in only when GitHub requires it: `gh pr view <pr> --json
      mergeStateStatus` is `DIRTY` (a conflict) or `BEHIND` (main requires an up-to-date
      branch). A merge queue tests the PR on top of main anyway, so a merge there only costs
      a CI run. When you do merge it in, rerun the gates. A fresh verifier
@@ -98,7 +98,11 @@ UI, and delegate the rest.
      delete-on-merge setting removes the branch), and the queue sets the merge method. It
      queues the PR, or turns on auto-merge when checks are still running.
      The PR has landed only once `gh pr view <pr> --json state,mergeCommit` shows `MERGED`.
-     Work on other items until then, and use that merge commit in the steps below.
+     Before working on other items, start one background command whose exit wakes you when
+     the PR merges or drops out of the queue, the way the backend runs one (Waiting):
+     `until gh api graphql -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){state isInMergeQueue autoMergeRequest{enabledAt}}}}' -F o=<owner> -F r=<repo> -F n=<pr> --jq '.data.repository.pullRequest | select(.state == "MERGED" or (.isInMergeQueue == false and .autoMergeRequest == null)) | .state' | grep -q .; do sleep 60; done`
+     (`gh pr view` has no queue field).
+     Then use the merge commit in the steps below.
    - A PR the queue removes without merging: read the failed queue run. A failure that comes
      from the combination with main gets fixed on the PR's branch, with main merged in, and
      the PR is queued again. A fault in code already on main is its own change.
