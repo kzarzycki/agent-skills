@@ -525,6 +525,8 @@ def watch(
     first = True
     while True:
         ids = list(dict.fromkeys(sessions + (og.children(parent) if parent else [])))
+        if first:  # idle at the start, empty turn or not, is the baseline, not a turn ending later
+            idle_since.update((sid, time.monotonic() - IDLE_GRACE_SECONDS) for sid in ids)
         changes = []
         for sid in ids:
             key, line = observe(og, sid, idle_since)

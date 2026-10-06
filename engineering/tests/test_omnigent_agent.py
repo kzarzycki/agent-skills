@@ -802,3 +802,46 @@ def test_watch_picks_up_a_child_started_after_it(monkeypatch: pytest.MonkeyPatch
     assert omnigent_agent.watch(og, [], parent="p", timeout=5) == [
         "k t-k: turn ended\nlast message: report at r.md"
     ]
+
+
+class Clock:
+    """`time.monotonic` for `watch`, moved on by each poll's sleep."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, step: float) -> None:
+        self.now = 1000.0
+        monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: self.now)
+        monkeypatch.setattr(
+            omnigent_agent.time, "sleep", lambda s: setattr(self, "now", self.now + step)
+        )
+
+
+def test_watch_keeps_an_idle_it_starts_in_past_the_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    Clock(monkeypatch, step=20)
+    og = Roster(a=[{"status": "idle"}])
+    og.items = lambda sid: [said("user", "go", "1")]  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="no session changed"):
+        omnigent_agent.watch(og, ["a"], timeout=200)
+
+
+def test_watch_ignores_a_launch_idle_within_the_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    Clock(monkeypatch, step=5)
+    flap = [{"status": "running"}, {"status": "idle"}, {"status": "idle"}, {"status": "running"}]
+    og = Roster(a=flap)
+    og.items = lambda sid: [said("user", "go", "1")]  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="no session changed"):
+        omnigent_agent.watch(og, ["a"], timeout=100)
+
+
+def test_watch_reports_an_empty_turn_once_past_the_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    Clock(monkeypatch, step=20)
+    og = Roster(a=[{"status": "running"}, {"status": "idle"}])
+    og.items = lambda sid: [said("user", "go", "1")]  # type: ignore[method-assign]
+    assert omnigent_agent.watch(og, ["a"], timeout=200) == ["a t-a: turn ended\nlast message: go"]
+
+
+def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
+    prompt = {"elicitation_id": "e2", "params": {"message": "Claude wants to call **Bash**"}}
+    og = Roster(a=[{"status": "running"}, {"status": "running", "pending_elicitations": [prompt]}])
+    assert omnigent_agent.watch(og, ["a"], timeout=5) == [
+        "a t-a: blocked on a prompt: Claude wants to call **Bash**\nlast message: (none)"
+    ]
