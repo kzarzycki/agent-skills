@@ -26,9 +26,11 @@ owner only when neither settles it, then run
 `python3 scripts/omnigent_agent.py send <session> <answer-file> <report>` in the
 background. It continues the same session while its cache is warm and waits as `run`
 does; add `--verdict` when the child is a verifier, because `send` and `wait` are not
-given the role. Exit 4 means the answer did not land, usually because Omnigent reaped the
-runner (idle over an hour): start a fresh run whose brief carries the question and the
-answer.
+given the role. A child still in a turn gets the answer at its next tool boundary; until
+then `send` reports it queued and waits, and a rerun of the same `send` waits for the
+first copy instead of delivering a second. Exit 4 means the answer did not land, usually
+because Omnigent reaped the runner (idle over an hour): start a fresh run whose brief
+carries the question and the answer.
 
 **Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old

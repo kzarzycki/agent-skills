@@ -25,8 +25,13 @@ spec.loader.exec_module(omnigent_agent)
 class FakeOmnigent:
     """Sessions whose sends land only when `deaf` is not set for that session number."""
 
-    def __init__(self, deaf: set[int] = frozenset(), reply: str = "", status: str = "idle") -> None:
+    def __init__(
+        self, deaf: set[int] = frozenset(), reply: str = "", status: str = "idle", hold: int = 0
+    ) -> None:
         self.deaf, self.reply, self.final = deaf, reply, status
+        self.hold = hold  # polls of info() a send stays pending: a turn busy in a long tool call
+        self.held: list[tuple[str, str, int]] = []
+        self.posts = 0
         self.sessions: dict[str, list[dict]] = {}
         self.deleted: list[str] = []
         self.prompts: list[dict] = []
@@ -40,13 +45,21 @@ class FakeOmnigent:
     def send(self, sid: str, text: str) -> None:
         if "send" in self.fail:
             raise omnigent_agent.Fail("POST events: HTTP 503")
+        self.posts += 1
         if int(sid[1:]) in self.deaf:
             return
+        if self.hold:
+            self.held.append((sid, text, self.hold))
+            return
+        self.land(sid, text)
+
+    def land(self, sid: str, text: str) -> None:
         self.sessions[sid].append(
             {
                 "id": f"i{len(self.sessions[sid])}",
                 "type": "message",
                 "role": "user",
+                "created_at": time.time(),
                 "content": [{"type": "input_text", "text": text}],
             }
         )
@@ -63,7 +76,17 @@ class FakeOmnigent:
         return self.sessions[sid]
 
     def info(self, sid: str) -> dict:
-        return {"status": self.final, "pending_elicitations": self.prompts}
+        for held in list(self.held):
+            self.held.remove(held)
+            if held[2] > 1:
+                self.held.append((held[0], held[1], held[2] - 1))
+            else:
+                self.land(held[0], held[1])
+        pending = [
+            {"content": [{"type": "input_text", "text": t}]} for s, t, _ in self.held if s == sid
+        ]
+        status = "running" if pending else self.final
+        return {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
 
     def delete(self, sid: str) -> None:
         if "delete" in self.fail:
@@ -455,8 +478,38 @@ def test_send_refuses_reaped_runner(tmp_path: Path) -> None:
 def test_send_fails_when_answer_never_arrives(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     sid = og.create("claude", "t")
-    with pytest.raises(omnigent_agent.Gone, match="not in history"):
+    with pytest.raises(omnigent_agent.Gone, match="neither pending nor in history"):
         omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+
+
+def test_send_to_a_busy_session_waits_while_the_harness_holds_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=5)  # pending longer than confirm_seconds: a long tool call
+    sid = og.create("claude", "t")
+    report = tmp_path / "r.md"
+    omnigent_agent.question_of(report).write_text("which base?")
+    omnigent_agent.send(og, sid, "use main", report, 0)
+    assert "queued" in capsys.readouterr().err
+    assert not omnigent_agent.question_of(report).exists()
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
+
+
+def test_a_retried_send_never_delivers_twice(tmp_path: Path) -> None:
+    og = FakeOmnigent(hold=3)
+    sid = og.create("claude", "t")
+    report = tmp_path / "r.md"
+    omnigent_agent.question_of(report).write_text("which base?")
+    og.send(sid, "use main")  # the first send, still pending when it gave up
+    omnigent_agent.send(og, sid, "use main", report, 0)  # retry while pending
+    omnigent_agent.question_of(report).write_text(
+        "which base?"
+    )  # as if the first send's unlink never ran
+    og.sessions[sid][-1]["created_at"] = time.time() + 1  # the answer landed after the question
+    omnigent_agent.send(og, sid, "use main", report, 0)  # retry after it landed
+    assert og.posts == 1
+    assert [omnigent_agent.text_of(i) for i in og.sessions[sid][1:]] == ["use main"]
+    assert not omnigent_agent.question_of(report).exists()
 
 
 def test_same_family_verifier_needs_break_glass(
