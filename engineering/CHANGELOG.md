@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.11.0 - 2026-10-06
+
+- Human review findings on an open PR (`coordinator.md`, Land): each review comment is triaged
+  with One concern per PR. A blocker, a major or a bug the PR introduced is fixed on that PR's
+  branch; anything else is answered on its thread and waits for the merge. The fixes follow the
+  review trail below: the PR goes back to draft, each fix is a pushed commit replied on its
+  thread, and the PR is ready again after a verifier pass. No fix cascades down a stack: a merge
+  queue tests each PR on top of main, and a stacked PR follows Stacks are one deep.
+- Review trail on the PR (`SKILL.md`, `coordinator.md`, `worker.md`, `github.md`): the PR opens
+  as a draft with the first push, and each verifier pass is posted as a PR review with one inline
+  comment per finding, labelled `Verifier (<family>), pass <n>`, and the verdict in its summary.
+  Each fix is its own commit, replied on its thread with the SHA and the thread resolved; a
+  deferred finding's reply links its issue. The PR goes ready once no blocker or major is open,
+  and is squashed on merge. `github.md` gives the `gh api` calls (review, thread reply,
+  `resolveReviewThread`).
+- Adopting the loop (`SKILL.md`): a new repo starts from kzarzycki/project-templates with
+  Copier (`loop_enabled`); an existing repo copies the rendered CI workflow, `gate.yml`,
+  pre-commit and pre-push hooks, mise `check`/`gate`/`merge-queue` tasks and main's ruleset from
+  there, so the pack keeps no second copy. CI skips draft PRs and runs on `ready_for_review`;
+  merge-queue and push runs are unaffected, and the local pre-push gate checks a draft.
+- The merge gate lets an exact revert through without a new spec: a PR whose body says
+  `Reverts #<n>`, with #n merged and a diff that is file for file the inverse of #n's (line
+  order, file status and modes included), skips the spec proofs and the verifier verdict, and
+  `approve merge` records `Verdict: exact revert of #<n>`. It still needs Evidence, green CI and
+  the merge approvals. A merge rule's owner check reads the union of the PR's issues' labels, so
+  a path rule also holds on a PR that names no issue.
+
 ## 0.10.0 - 2026-10-06
 
 - Land small and soon (`SKILL.md`): every PR branches off `origin/main` and merges as soon as
