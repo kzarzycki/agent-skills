@@ -37,11 +37,18 @@ class FakeOmnigent:
         self.deleted: list[str] = []
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
+        self.titles: dict[str, str] = {}
 
     def create(self, agent: str, title: str, model: str | None = None) -> str:
         sid = f"s{len(self.sessions)}"
         self.sessions[sid] = [{"type": "resource_event"}]
+        self.titles[sid] = title
+        if "create" in self.fail:  # the server made it; the answer timed out
+            raise omnigent_agent.Fail("POST /v1/sessions: TimeoutError: timed out")
         return sid
+
+    def find(self, title: str, after: float) -> str | None:
+        return next((s for s, t in self.titles.items() if t == title), None)
 
     def send(self, sid: str, text: str) -> None:
         if "send" in self.fail:
@@ -731,3 +738,207 @@ def test_the_server_comes_from_the_one_login_when_config_names_none(
         omnigent_agent.Omnigent()
     config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
     assert omnigent_agent.Omnigent().base == "https://named.example"
+
+
+def test_a_get_that_times_out_once_is_retried_and_wait_returns_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import json
+
+    report = tmp_path / "r.md"
+    answers = iter(
+        [
+            TimeoutError("timed out"),
+            {"status": "running", "pending_elicitations": []},
+            {"data": [{"type": "message", "role": "user", "content": []}]},
+        ]
+    )
+
+    def urlopen(req: object, timeout: float) -> io.BytesIO:
+        answer = next(answers, None)
+        if isinstance(answer, Exception):
+            raise answer
+        report.write_text("done")  # written while the read was retried
+        return io.BytesIO(json.dumps(answer or {}).encode())
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    assert omnigent_agent.wait(og, "s0", report, timeout=5) == str(report)
+
+
+def test_a_post_that_times_out_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    posts = []
+
+    def urlopen(req: object, timeout: float) -> None:
+        posts.append(req)
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    with pytest.raises(omnigent_agent.Fail, match="POST /x: TimeoutError"):
+        og.call("POST", "/x", {})
+    assert len(posts) == 1
+
+
+def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_session(
+    tmp_path: Path,
+) -> None:
+    og = FakeOmnigent()
+    og.fail.add("create")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert sid == "s0" and list(og.sessions) == ["s0"] and og.posts == 1
+
+
+def test_a_failed_create_with_no_session_made_fails_the_start(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    og.fail.add("create")
+    og.find = lambda title, after: None  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="start failed: POST /v1/sessions"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.posts == 0
+
+
+def test_the_lookup_matches_the_title_under_the_parent_created_after_the_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def call(self, method: str, path: str, body: object = None) -> object:
+        assert path == "/v1/sessions/coord/child_sessions"
+        return {
+            "data": [
+                {"id": "old", "title": "t", "created_at": 99},
+                {"id": "other", "title": "t-x", "created_at": 200},
+                {"id": "new", "title": "t", "created_at": 100},
+            ]
+        }
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    og = object.__new__(omnigent_agent.Omnigent)
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "coord")
+    assert og.find("t", 100) == "new"
+    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID")
+    assert og.find("t", 100) is None  # top level: no parent to look under
+
+
+def test_a_found_session_that_already_has_the_brief_is_not_briefed_twice(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    og.fail.add("create")
+    find = og.find
+
+    def briefed(title: str, after: float) -> str | None:
+        sid = find(title, after)
+        brief = tmp_path / "r.md.brief"
+        og.land(
+            sid,
+            f"Your brief from the coordinator is the file {brief}. Read it now and do what it says.",
+        )
+        return sid
+
+    og.find = briefed  # type: ignore[method-assign]
+    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.posts == 0
+
+
+def test_a_turn_that_ends_without_the_report_is_nudged_once_then_the_report_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(status="idle")  # the brief stays last: the turn ended with no output
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", report, None, 0)
+    monkeypatch.setattr(omnigent_agent, "IDLE_GRACE_SECONDS", 0)
+    send = og.send
+
+    def answer(s: str, text: str) -> None:
+        send(s, text)
+        report.write_text("done")
+
+    og.send = answer  # type: ignore[method-assign]
+    assert omnigent_agent.wait(og, sid, report) == str(report)
+    assert og.posts == 2
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == omnigent_agent.NUDGE.format(
+        report=report
+    )
+
+
+def test_a_second_turn_that_ends_without_the_report_fails(tmp_path: Path) -> None:
+    og = FakeOmnigent(reply="waiting for the background command")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", report, None, 0)
+    with pytest.raises(omnigent_agent.Fail, match="(?s)ended \\(idle\\) without .*background"):
+        omnigent_agent.wait(og, sid, report)
+    assert og.posts == 2  # the brief and one nudge
+
+
+def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    report = tmp_path / "r.md"
+    report.write_text("the pass before")
+    os.utime(report, (1, 1))
+    (tmp_path / "b.md").write_text("fix C1")
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1  # the old report is not taken
+    assert "without" in capsys.readouterr().err
+
+    info = og.info
+    og.info = lambda s: (report.write_text("fixed"), info(s))[1]  # type: ignore[method-assign]
+    assert omnigent_agent.main(argv) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == str(report)
+
+
+def test_a_brief_with_an_empty_backtick_span_is_refused_before_a_session_exists(
+    tmp_path: Path,
+) -> None:
+    og = FakeOmnigent()
+    with pytest.raises(omnigent_agent.Fail, match="line 2 has an empty `` span"):
+        omnigent_agent.start(og, "claude", "t", "edit\nthe `` file", tmp_path / "r.md", None, 0)
+    assert og.sessions == {}
+    omnigent_agent.start(og, "claude", "t", "```sh\nls\n```", tmp_path / "r.md", None, 0)
+
+
+def test_a_failed_session_reports_its_last_task_error_and_runner_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(status="failed")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    info = og.info
+    og.info = lambda s: {  # type: ignore[method-assign]
+        **info(s),
+        "id": s,
+        "parent_session_id": "coord",
+        "last_task_error": {"message": "claude exited: too many open files"},
+    }
+    monkeypatch.setattr(omnigent_agent, "RUNNER_LOGS", tmp_path)
+    (tmp_path / "runner-coord-1.log").write_text("")
+    with pytest.raises(
+        omnigent_agent.Fail,
+        match=f"(?s)ended \\(failed\\): claude exited: too many open files.*{tmp_path}/runner-coord-1.log",
+    ):
+        omnigent_agent.wait(og, sid, tmp_path / "r.md")
+    assert og.posts == 1  # a failed session is not nudged
+
+
+def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    models = []
+    og = FakeOmnigent(reply="done")
+    create = og.create
+    og.create = lambda a, t, m=None: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("verify")
+    base = ["start", "codex", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    omnigent_agent.main([*base, "--role", "verifier.md"])
+    omnigent_agent.main([*base[:2], "t2", *base[3:]])
+    monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "named")
+    omnigent_agent.main([*base[:2], "t3", *base[3:], "--role", "verifier.md"])
+    assert models == [omnigent_agent.CODEX_VERIFIER_MODEL, None, "named"]
