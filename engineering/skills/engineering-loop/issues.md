@@ -25,7 +25,9 @@ that acts on the state it finds.
   removes it.
 
 The `triage` skill's roles map as needs-triage = no state label, needs-info =
-`needs-owner`.
+`needs-owner`, ready-for-agent = `approved:spec`, which only the spec approval adds: a
+`ready-for-agent` label that `to-spec` or `to-tickets` would set is not added, since a
+label without its approval record would read as approved.
 
 ## Labels
 
