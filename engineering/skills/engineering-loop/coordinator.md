@@ -9,14 +9,14 @@ UI, and delegate the rest.
    given by its state ([issues.md](issues.md)): `needs-owner` waits until the owner
    answers what it asks, or approves (the `approved:<point>` label, their word in the
    session, or a spec's issue moved to `Ready`: SKILL.md, Approvals and proof);
-   `ready-for-agent` goes to its open PR's step, else to its plan when one is due and
+   `approved:spec` goes to its open PR's step, else to its plan when one is due and
    missing, else to step 3; no state label is triaged here. Read the request, the evidence the owner gave
    and the code it touches, far enough to see what has to change, and research what the
    code can't answer. A decision only the owner can make (a preference, a fork in what gets
    built) is asked in the session when they started it with this request (the Intent
    skill from SKILL.md's Practice, in rounds, each question with your recommendation);
    otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
-   answered, remove `needs-owner`; once they have approved, `gate.py approve` with
+   answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records it and removes the label. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
@@ -25,8 +25,11 @@ UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Add `ready-for-agent` and the size label (board: `Ready`), then approve
-   the spec (SKILL.md, Approvals and proof). When loop.md § Practice names a plan skill,
+   references. Add the size label, then approve the spec (SKILL.md, Approvals and proof):
+   its `approved:spec` is the ready state (board: `Ready`). An epic's stories are filed as
+   its sub-issues, each with its spec, before you ask for the epic's approval, and the
+   request lists them: every epic and story has its own owner approval, and none inherits
+   another's. When loop.md § Practice names a plan skill,
    write the plan with it next, as a `## Plan` comment on the issue, and approve it too.
    When `approve` says a person must approve as well, comment what to approve (board:
    `Needs owner`) and stop. Otherwise carry on: the owner reads it when they like.
@@ -34,7 +37,7 @@ UI, and delegate the rest.
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
    that closes the spec with the branch's first push (github.md, Review trail; board:
-   `Build`), and run `mise run gate build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
+   `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
@@ -65,7 +68,7 @@ UI, and delegate the rest.
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report's verdict with
-   `python3 scripts/gate.py verdict <pr> <report>`, which the gate reads, and as a PR review
+   `python3 scripts/approvals.py verdict <pr> <report>`, which the gate reads, and as a PR review
    of the reviewed head (github.md, Review trail): one inline comment per finding, labelled
    `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:` and `SATISFIED:`
    lines. Only a mixed PR's second verifier, running at
@@ -89,19 +92,29 @@ UI, and delegate the rest.
      a CI run. When you do merge it in, rerun the gates. A fresh verifier
      reviews the merge first (step 7) only when main's changes touch a file the PR changes
      (`git diff --name-only <old base> origin/main` against
-     `git diff --name-only origin/main...HEAD`) or change the gate (the `check` task, a
+     `git diff --name-only origin/main...HEAD`) or change a merge check (a `check:` task, a
      tool it runs, or the lint, type or test configuration). Otherwise the rerun gates are
      the review.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`, then approve the merge on the head that lands:
-     `python3 scripts/gate.py approve merge <pr> --by coordinator --triage <link to the body's triage>`.
+     `python3 scripts/approvals.py approve merge <pr> --by coordinator --triage <link to the body's triage>`.
      When it says a person must approve as well, give them the PR link and stop; once
      they have added `approved:merge` or said so, approve again with `--by owner`.
-   - `gh pr ready` marks the head approved: CI skips a draft and runs the merge gate on a
-     ready PR, so it comes only here, with no core finding open (SKILL.md, Review trail). A push
-     after it needs `gh pr ready --undo` first, then a new approval.
-   - Once CI is green (with `CI: none`, once `python3 scripts/gate.py record-check <pr>` has
-     recorded a pass on that head), `mise run gate merge <pr>`, then
+   - `gh pr ready` once no local objection is left: `mise run check` passed on the head and
+     the verifier is satisfied, with no core finding open (SKILL.md, Review trail). It starts
+     the full list on GitHub, since CI skips a draft. A push after it needs
+     `gh pr ready --undo` first, then a new approval.
+   - Don't wait idle for CI: start one background command whose exit wakes you, the way the
+     backend runs one (Waiting), `gh pr checks <pr> --required --watch --fail-fast`
+     (without `--required` where the base requires no check). It exits 0 once the checks are
+     green and 1 on the first red one, or with `no checks reported` when it started before CI
+     registered any: start it again.
+   - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
+     with the failing log as its brief, rather than fixing it yourself. It fixes the check,
+     runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
+     since its last verdict's head; the PR is marked ready again with a new merge approval.
+   - Once those checks are green (with `CI: none`, once `python3 scripts/approvals.py local-ci <pr>`
+     has recorded a pass on that head), `mise run loop:approvals merge <pr>`, then
      `gh pr merge <pr> --squash --delete-branch --match-head-commit <landing sha>`. Under a
      merge queue (`gh api repos/{owner}/{repo}/rules/branches/<base>` lists a `merge_queue`
      rule), run `gh pr merge <pr> --match-head-commit <landing sha>` instead: gh

@@ -15,9 +15,9 @@ owner asks for that change, and the PR body says so.
 | Step | Prevents |
 |---|---|
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
-| **Spec.** Written into the intent's issue for the owner, then `ready-for-agent` and approved; the PR closes it. | a decision the owner never saw |
+| **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it. | a decision the owner never saw |
 | **Build.** Workers, or the coordinator when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** `mise run check`. | a broken change |
+| **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A verifier from the other model family, three passes at most. | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -30,9 +30,8 @@ question for the owner, not a guess:
 
 | Where | Sections | Read at |
 |---|---|---|
-| `mise run check` | the gate: lint, types, tests, e2e, leak checks; CI runs the same task | Gates, Land |
-| `mise run gate <build\|merge> [pr]` | the proof gate: `scripts/gate.py check`, then the project's own checks; a pre-push hook and CI run it too | Build, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/gate.py record-check <pr>`: it runs `mise run check` on a clean checkout at the PR head and records a pass on the PR. | every step but Gates |
+| mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `setup:dev` on a fresh checkout | Build, Gates, Land |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -43,27 +42,29 @@ second copy. A new repo starts from it with Copier
 (`copier copy --trust gh:kzarzycki/project-templates <dest>`); answering yes to mise, the
 agent layer, the engineering pack and the engineering loop sets `loop_enabled`. An existing
 repo takes these files from it. They are Jinja with includes, so render the template for the
-repo's `project_type` into a scratch directory with `copier copy` and copy the result:
+repo's `project_type` into a scratch directory with `copier copy` and copy the rendered:
 
-- `templates/_base/_gate_workflow.yml.jinja`, rendered by each template's
-  `.github/workflows/{% if loop_enabled %}gate.yml{% endif %}.jinja`: the `gate.yml`
-  workflow;
-- `templates/<project_type>/.github/workflows/ci.yml.jinja`: CI;
-- `templates/<project_type>/.pre-commit-config.yaml.jinja`: the pre-commit and pre-push
-  hooks, the gate among them;
-- `templates/_base/_mise_check_task.part` and `templates/_base/_mise_agent_tasks.part`: the
-  `check` and `gate` mise tasks, and `merge-queue`, which applies the ruleset and prints how
-  to revert it;
-- `templates/<project_type>/.github/{% if loop_enabled %}rulesets{% endif %}/main.json.jinja`,
-  rendered to `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a
-  squash merge queue. GitHub layers it on top of the repo's own rulesets, which it leaves
-  untouched, and reverting deletes only it.
+- `mise.toml` tasks: the `check:`, `lint:`, `test:`, `ci:`, `loop:`, `setup:` and `agent:`
+  groups, with the old names as aliases;
+- `.pre-commit-config.yaml`: the git hooks, each one a caller of a mise task;
+- `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals` job;
+- `.github/check-paths.yml`: each part's path filter;
+- `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
+  merge queue, requiring exactly two checks, `check` and `loop:approvals`. `mise run
+  setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
+  leaves untouched, and reverting deletes only it.
+
+Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
+harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
+`test:changed` and `check:secrets`. The proofs stay off the push, because a push is
+reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, on
+ready PRs in CI, and in the merge queue.
 
 A PR stays a draft until no core finding is open (Review trail on the PR), so CI skips its
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
-draft, the local pre-push gate is its check.
+draft, `mise run check` before each push is its check.
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
@@ -94,10 +95,10 @@ merging or state-keeping is overridden, because two writers of one state drift a
 ### Approvals and proof
 
 The coordinator approves each point itself with
-`python3 scripts/gate.py approve <spec|plan|merge> <issue or PR> --by coordinator`: the
+`python3 scripts/approvals.py approve <spec|plan|merge> <issue or PR> --by coordinator`: the
 spec once it meets its contract, the plan once it covers the spec, the merge once the
 verifier's verdict is triaged with no core finding open and the gate is green. The
-verifier only gives the verdict, which `python3 scripts/gate.py verdict <pr> <report>`
+verifier only gives the verdict, which `python3 scripts/approvals.py verdict <pr> <report>`
 posts on the PR. Each approval is a comment the gate reads, tied to the spec's or plan's
 last edit as GitHub's edit history shows it, or to the head commit, so a later edit or push
 needs approving again, plus the `approved:<point>` label. A re-approval says what changed and
@@ -105,8 +106,10 @@ minimizes the records it supersedes as outdated. A change to an approved spec's 
 acceptance is a decision the owner never saw: remove `approved:spec`, add `needs-owner`
 with a one-line comment saying what changed, and stop until they approve. A wording fix
 keeps the label and needs only `approve` again, which still asks the person a loop.md §
-Approvals rule names, since the gate can't tell wording from scope. `mise run gate build` before building and `mise run gate merge`
-before merging check every proof (`scripts/gate.py` lists them).
+Approvals rule names, since the gate can't tell wording from scope. `mise run loop:approvals
+build` before building and `mise run loop:approvals merge` before merging check every proof
+(`scripts/approvals.py` lists them). `scripts/gate.py` and `local-ci`'s old name
+`record-check` still run for one release.
 
 loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
 line, `<point>: <condition>`, such as `spec: size:L or larger, or component billing`. The
@@ -117,7 +120,7 @@ path), or the kind of change; `always` matches everything. When a rule matches,
 adding `approved:<point>`, by saying so in the session, or, for a spec on a repo with a
 board, by moving the issue to `Ready` while it has `needs-owner` (`python3
 scripts/board.py column <issue>` prints `Ready`), and then you run `approve`
-with `--by owner`. A condition `gate.py` can't read is yours alone to judge. A rule GitHub
+with `--by owner`. A condition `approvals.py` can't read is yours alone to judge. A rule GitHub
 can enforce, such as a required review or a code owner, belongs in branch protection or
 `CODEOWNERS`, which the loop obeys and never overrides.
 
@@ -209,8 +212,8 @@ angles run as native subagents, never as full harness sessions.
   thread resolved; a deferred finding's reply links the issue it waits in. A human review
   follows the same pattern. The PR is marked ready once no core finding (blocker or major)
   is open, and squashed on merge. The PR keeps a public trail of what was found, fixed and
-  iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work: the
-  local pre-push gate is the check while a PR is a draft.
+  iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
+  `mise run check` before each push is the check while a PR is a draft.
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
@@ -226,7 +229,7 @@ angles run as native subagents, never as full harness sessions.
   natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open and
   the ledger is updated; it writes the PR's evidence and the merge approval. The PR merges
-  when `mise run gate merge <pr>` then exits 0 on the head that lands (the reviewed head,
+  when `mise run loop:approvals merge <pr>` then exits 0 on the head that lands (the reviewed head,
   plus only what `coordinator.md` steps 7 and 8 exempt from a further pass). Nothing else
   needs authorising, except an owner who asked to see the change first: then hold the
   merge and give them the link and what to click.

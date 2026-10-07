@@ -52,7 +52,9 @@ A GitHub Projects board linked to the repo (the `github-project-board-setup` ski
 progress fields shown). `python3 scripts/board.py <issue> <column>` adds the
 issue when it is missing and sets its column; it is the only thing that moves a ticket, so
 the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
-created through the API.
+created through the API. `python3 scripts/board.py column <issue>` prints the later of the
+issue's board column and the one its labels give, so an issue with `approved:spec` reads
+`Ready` even when its move failed or the repo has no board.
 
 ## Publish an issue batch
 

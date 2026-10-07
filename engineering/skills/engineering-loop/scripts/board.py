@@ -9,7 +9,9 @@ then sets its Status. Ids are looked up by name on every call: GitHub changes op
 Exit 1 with gh's reason or the valid columns; the labels, not the board, are an issue's state, so a failed move never
 blocks a ticket. Needs the `project` token scope (`gh auth refresh -s project`).
 
-`column` prints the issue's column, or nothing when the repo has no board or the issue is not on it.
+`column` prints the issue's column: the later of its board column and the one its labels give (issues.md, Board:
+`needs-owner` is `Needs owner`, `approved:spec` is `Ready`, neither is `Intent`), since the labels are the state and a
+board move may have failed. A board column the loop does not name is printed as is.
 """
 
 from __future__ import annotations
@@ -18,6 +20,10 @@ import json
 import subprocess
 import sys
 from typing import Any
+
+# importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
+sys.dont_write_bytecode = True
+from approvals import NEEDS_OWNER, READY  # the label names, defined once
 
 # ponytail: the repo's first linked project is the board; pick by title when a second one is linked.
 LOOKUP = """query($owner: String!, $name: String!, $issue: Int!) {
@@ -32,7 +38,7 @@ ADD = """mutation($project: ID!, $issue: ID!) {
 COLUMN = """query($owner: String!, $name: String!, $issue: Int!) {
   repository(owner: $owner, name: $name) {
     projectsV2(first: 1) { nodes { id } }
-    issue(number: $issue) { projectItems(first: 20) { nodes { project { id } fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } }
+    issue(number: $issue) { labels(first: 50) { nodes { name } } projectItems(first: 20) { nodes { project { id } fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } }
   }
 }"""
 SET = """mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
@@ -87,15 +93,31 @@ def move(issue: int, column: str) -> None:
     _graphql(SET, project=project, item=item, field=field, option=option)
 
 
+# the loop's columns in stage order (issues.md, Board)
+COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Done"]
+
+
+def labelled(labels: set[str]) -> str:
+    """The column an issue's state labels give."""
+    return "Needs owner" if NEEDS_OWNER in labels else "Ready" if READY in labels else "Intent"
+
+
 def column_of(repo: dict[str, Any]) -> str:
-    """The issue's Status on the repo's board; empty without a board, off it, or with no Status."""
+    """The later of the issue's Status on the repo's board and the column its labels give; a Status the loop does not
+    name wins."""
     boards = repo["projectsV2"]["nodes"]
-    if not boards:
-        return ""
-    for item in repo["issue"]["projectItems"]["nodes"]:
-        if item["project"]["id"] == boards[0]["id"]:
-            return (item["fieldValueByName"] or {}).get("name", "")
-    return ""
+    status = next(
+        (
+            (item["fieldValueByName"] or {}).get("name", "")
+            for item in repo["issue"]["projectItems"]["nodes"]
+            if boards and item["project"]["id"] == boards[0]["id"]
+        ),
+        "",
+    )
+    labels = labelled({label["name"] for label in repo["issue"]["labels"]["nodes"]})
+    if status and status not in COLUMNS:
+        return status
+    return max(status or labels, labels, key=COLUMNS.index)
 
 
 def main(argv: list[str]) -> int:
