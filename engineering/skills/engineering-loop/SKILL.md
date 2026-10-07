@@ -8,7 +8,7 @@ description: The engineering loop, run for every change that will land as a PR, 
 A project turns the loop on with one line in its `AGENTS.md`. From then on every change
 that lands as a PR runs it, from the owner's request to the merge: tooling, agent
 configuration and files under `~/` too, through the repo that owns them. Each step
-prevents a failure, and leaves proof on GitHub that the gate checks. Size changes who
+prevents a failure, and leaves proof on GitHub that `approvals.py` checks. Size changes who
 builds and how long the spec is, never which steps run: a step is skipped only when the
 owner asks for that change, and the PR body says so.
 
@@ -42,7 +42,7 @@ second copy. A new repo starts from it with Copier
 (`copier copy --trust gh:kzarzycki/project-templates <dest>`); answering yes to mise, the
 agent layer, the engineering pack and the engineering loop sets `loop_enabled`. An existing
 repo takes these files from it. They are Jinja with includes, so render the template for the
-repo's `project_type` into a scratch directory with `copier copy` and copy the rendered:
+repo's `project_type` into a scratch directory with `copier copy` and copy the rendered files:
 
 - `mise.toml` tasks: the `check:`, `lint:`, `test:`, `ci:`, `loop:`, `setup:` and `agent:`
   groups, with the old names as aliases;
@@ -84,11 +84,11 @@ produces what this table says:
 | Intent | open questions settled, or asked in the issue | `grilling` |
 | Spec | the spec in the issue, or linked from it, with acceptance examples and the reference each checks against | `to-spec` |
 | Plan, only when loop.md § Practice names a plan skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
-| Build | commits on the branch, with the gate green | the worker role |
+| Build | commits on the branch, with `check` green | the worker role |
 | Review | findings with path, cost and repro, then the verdict lines | `code-review`, run by the verifier |
 | Land | the PR body | `pr` |
 
-Whatever the practice, the issue and the board hold the state, the gate runs, the
+Whatever the practice, the issue and the board hold the state, the gates run, the
 verifier is from the other model family, and the loop merges. A practice skill's own
 merging or state-keeping is overridden, because two writers of one state drift apart.
 
@@ -97,16 +97,16 @@ merging or state-keeping is overridden, because two writers of one state drift a
 The coordinator approves each point itself with
 `python3 scripts/approvals.py approve <spec|plan|merge> <issue or PR> --by coordinator`: the
 spec once it meets its contract, the plan once it covers the spec, the merge once the
-verifier's verdict is triaged with no core finding open and the gate is green. The
+verifier's verdict is triaged with no core finding open and the gates are green. The
 verifier only gives the verdict, which `python3 scripts/approvals.py verdict <pr> <report>`
-posts on the PR. Each approval is a comment the gate reads, tied to the spec's or plan's
+posts on the PR. Each approval is a comment `approvals.py` reads, tied to the spec's or plan's
 last edit as GitHub's edit history shows it, or to the head commit, so a later edit or push
 needs approving again, plus the `approved:<point>` label. A re-approval says what changed and
 minimizes the records it supersedes as outdated. A change to an approved spec's scope or
 acceptance is a decision the owner never saw: remove `approved:spec`, add `needs-owner`
 with a one-line comment saying what changed, and stop until they approve. A wording fix
 keeps the label and needs only `approve` again, which still asks the person a loop.md §
-Approvals rule names, since the gate can't tell wording from scope. `mise run loop:approvals
+Approvals rule names, since `approvals.py` can't tell wording from scope. `mise run loop:approvals
 build` before building and `mise run loop:approvals merge` before merging check every proof
 (`scripts/approvals.py` lists them). `scripts/gate.py` and `local-ci`'s old name
 `record-check` still run for one release.

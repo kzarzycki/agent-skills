@@ -20,9 +20,8 @@ that acts on the state it finds.
   Approvals requires.
 - **`approved:spec`:** ready: the spec is written into that same issue and approved
   (SKILL.md, Approvals and proof). Where a tool owns an issue's body, the spec is a comment
-  headed `## Spec`. The spec step sets the size label and approves; when a person must
-  approve, the approval adds `needs-owner` instead, and the person's `approved:spec`
-  removes it.
+  headed `## Spec`. The spec step sets the size label and approves; who else approves, and
+  how, is SKILL.md, Approvals and proof.
 
 The `triage` skill's roles map as needs-triage = no state label, needs-info =
 `needs-owner`, ready-for-agent = `approved:spec`, which only the spec approval adds: a
@@ -60,9 +59,8 @@ An epic is an issue whose goal is an outcome the owner tracks; its work items ar
 native sub-issues. It carries the `epic` label next to its category, so a board view can
 filter for epics, and it closes when its outcome holds, that is when its sub-issues are
 done. Prefer converting an existing issue whose spec already states the outcome over
-filing a new one. Its stories are filed as sub-issues, each with its spec, before the
-epic's approval is asked for, so the owner approves the epic knowing its parts; each story
-then gets its own approval, never inherited from the epic. An epic lands as its sub-issues' PRs, one per sub-issue, each off
+filing a new one. Its stories are filed before its approval is asked for (coordinator.md,
+Spec). An epic lands as its sub-issues' PRs, one per sub-issue, each off
 main, with no epic or integration branch; a sub-issue whose work isn't usable yet lands
 unexposed, and the sub-issue that exposes it comes last (SKILL.md, Land small and soon).
 Two levels only: a sub-issue never has sub-issues of its own, since the

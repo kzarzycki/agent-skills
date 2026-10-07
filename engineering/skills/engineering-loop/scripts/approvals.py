@@ -10,7 +10,7 @@ Run from the repo root. The project's `mise run loop:approvals <point> [pr]` tas
 that task. `gate.py` and `record-check` are the old names of this script and of `local-ci`, kept for one release.
 
 `check build` needs every issue the PR closes to carry `approved:spec` and not `needs-owner`, with exactly one
-category, a component and exactly one size (a `wayfinder:` ticket needs only those two labels), and its approvals: `spec`
+category, a component and exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its approvals: `spec`
 always, `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.md § Practice). Category, component and
 size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`).
 `check merge` adds the PR's: the `## Evidence` section of its body, a posted verifier verdict, CI, and a `merge`

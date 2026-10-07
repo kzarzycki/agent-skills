@@ -59,7 +59,7 @@ UI, and delegate the rest.
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
 6. **Prove** before review: a worker drives the real thing on the PR branch the way
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
-   reports; you read the report. A green gate is necessary, not sufficient.
+   reports; you read the report. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). Commit and push, then start the verifier (SKILL.md) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
@@ -68,7 +68,7 @@ UI, and delegate the rest.
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report's verdict with
-   `python3 scripts/approvals.py verdict <pr> <report>`, which the gate reads, and as a PR review
+   `python3 scripts/approvals.py verdict <pr> <report>`, which `approvals.py` reads, and as a PR review
    of the reviewed head (github.md, Review trail): one inline comment per finding, labelled
    `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:` and `SATISFIED:`
    lines. Only a mixed PR's second verifier, running at
@@ -166,7 +166,7 @@ UI, and delegate the rest.
    with `CI: none` there is none). When it ends red, revert before anything else
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
-   `Part of #<spec>`, so the gate finds the spec, through this loop; reopen every issue
+   `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue
    the PR closed with `gh issue reopen <n> --comment "Reverted in #<revert pr>: <why>."`. Then accept on
    the owner's instance, through a worker whose report you read: bring the
    instance up on the merged main the way loop.md § Proof on a branch says, then check each new result on
