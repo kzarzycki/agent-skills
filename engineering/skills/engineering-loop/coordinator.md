@@ -195,6 +195,7 @@ spec, triage) and come back to the PR when CI reports, because CI takes tens of 
 and a coordinator that waits through it makes CI the loop's speed. With nothing else to
 do, end your turn. Don't poll agent lists, logs or panes,
 or sleep: every check re-reads your whole context. Read the report file a reply names,
-not logs or scrollback.
+not logs or scrollback. A child nothing waits on reaches you only through the untitled
+inbox notice, so watch your children as the orchestration file says (Omnigent: `watch`).
 
 A core finding still open after pass 3 goes to the owner and stops the landing.
