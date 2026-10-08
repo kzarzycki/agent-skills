@@ -18,9 +18,10 @@ always, `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.m
 size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`).
 A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
-`check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the newest verifier
-verdict saying `SATISFIED: yes` with 0 blocker and 0 major, on the head, or on an earlier head where no commit since
-changes a file the PR changes (at that head or now; only a merge of main came in); and no review whose latest state
+`check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; every verifier
+verdict on the newest verdict's head saying `SATISFIED: yes` with 0 blocker and 0 major, that head being the PR's,
+or an earlier one where no commit since changes a file the PR changes (at that head or now; only a merge of main
+came in); and no review whose latest state
 is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
 `CI: none` in loop.md, a `local-ci` pass on the head instead), and, where a `merge:` rule asks, for the owner's
@@ -394,29 +395,43 @@ def proofs(
 
 
 def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
-    """One line per reason the newest verifier verdict lets nothing land: it is not satisfied, a blocker or a major
-    is open, or it is on an older head and the commits since change a file the PR changes (touched_since). A head
-    that only took in main's changes to other files needs no further pass (coordinator.md step 8)."""
+    """One line per reason the verifier verdicts let nothing land: one on the newest verdict's head (a mixed PR's two
+    verifiers post on one) is not satisfied, or has a blocker or a major open, or that head is older and the commits
+    since change a file the PR changes (touched_since). A head that only took in main's changes to other files needs
+    no further pass (coordinator.md step 8); a verdict on a later head supersedes those on an earlier one."""
     verdicts = [found for body in bodies(pull) if (found := parsed(body, VERDICT)) is not None]
     if not verdicts:
         return [f"{where}: no verifier verdict posted (approvals.py verdict)"]
-    newest = verdicts[-1]
-    head = newest.get("head", "").lower()
-    counts = [
-        re.search(rf"(\d+)\s+{kind}s?\b", newest.get("verdict", ""))
-        for kind in ("blocker", "major")
+    head = verdicts[-1].get("head", "").lower()
+    unreadable = [
+        f"{where}: a verifier verdict lacks a `Head:`, `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
     ]
-    if not re.fullmatch(r"[0-9a-f]{7,40}", head) or None in counts or "satisfied" not in newest:
-        return [
-            f"{where}: the newest verifier verdict lacks a `Head:`, `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
+    if not re.fullmatch(r"[0-9a-f]{7,40}", head):
+        return unreadable
+    same = [
+        found
+        for found in verdicts
+        if (theirs := found.get("head", "").lower())
+        and (theirs.startswith(head) or head.startswith(theirs))
+    ]
+    counts = [
+        [
+            re.search(rf"(\d+)\s+{kind}s?\b", found.get("verdict", ""))
+            for kind in ("blocker", "major")
         ]
+        for found in same
+    ]
+    if any(None in pair for pair in counts) or any("satisfied" not in found for found in same):
+        return unreadable
     found = []
-    if newest["satisfied"].lower().split()[:1] != ["yes"]:
-        found.append(f"{where}: the newest verifier verdict is not satisfied: fix and verify again")
-    blocker, major = (int(count.group(1)) for count in counts if count)
+    if any(verdict["satisfied"].lower().split()[:1] != ["yes"] for verdict in same):
+        found.append(
+            f"{where}: a verifier verdict on {head} is not satisfied: fix and verify again"
+        )
+    blocker, major = (sum(int(pair[kind].group(1)) for pair in counts) for kind in (0, 1))
     if blocker or major:
         found.append(
-            f"{where}: the newest verifier verdict has {blocker} blocker and {major} major open: fix and verify again"
+            f"{where}: the verifier verdicts on {head} have {blocker} blocker and {major} major open: fix and verify again"
         )
     if not pull["headRefOid"].lower().startswith(head):
         since = touched_since(pull, head)

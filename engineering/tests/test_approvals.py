@@ -969,7 +969,9 @@ def test_the_verdict_posts_the_reports_last_lines_with_the_head_it_reviewed(
     otherwise get a verdict nobody gave."""
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": "2" * 40})
     report = tmp_path / "report.md"
-    report.write_text(f"findings\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 2 minor\nSATISFIED: yes\n")
+    report.write_text(
+        f"findings\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 2 minor\nSATISFIED: yes\n"
+    )
     assert approvals.main(["verdict", "7", str(report)]) == 0
     assert github == [("comment", 7, VERDICT)]
     github.clear()
@@ -1029,19 +1031,19 @@ def verified(*comments: str, files: tuple[str, ...] = ("app.py",), **fields: Any
     [
         (
             verdict_on(HEAD, satisfied="no"),
-            "PR #7: the newest verifier verdict is not satisfied: fix and verify again",
+            f"PR #7: a verifier verdict on {HEAD} is not satisfied: fix and verify again",
         ),
         (
             verdict_on(HEAD, "1 blocker, 0 major, 0 minor"),
-            "PR #7: the newest verifier verdict has 1 blocker and 0 major open: fix and verify again",
+            f"PR #7: the verifier verdicts on {HEAD} have 1 blocker and 0 major open: fix and verify again",
         ),
         (
             verdict_on(HEAD, "0 blockers, 2 majors, 0 minor"),
-            "PR #7: the newest verifier verdict has 0 blocker and 2 major open: fix and verify again",
+            f"PR #7: the verifier verdicts on {HEAD} have 0 blocker and 2 major open: fix and verify again",
         ),
         (
             "Verifier verdict\nHead: (none)\nSATISFIED: yes\n",
-            "PR #7: the newest verifier verdict lacks a `Head:`, `VERDICT:` or `SATISFIED:` line (approvals.py verdict)",
+            "PR #7: a verifier verdict lacks a `Head:`, `VERDICT:` or `SATISFIED:` line (approvals.py verdict)",
         ),
     ],
 )
@@ -1049,8 +1051,18 @@ def test_a_verdict_unsatisfied_or_with_a_blocker_or_major_open_lets_nothing_land
     verdict: str, line: str
 ) -> None:
     assert verified(verdict) == [line]
-    assert verified(verdict, VERDICT) == []  # the newest verdict decides
     assert verified(VERDICT, verdict) == [line]
+
+
+def test_every_verdict_on_the_newest_head_must_be_satisfied() -> None:
+    """A mixed PR's two verifiers post on one head: the second's satisfied verdict leaves the first's blocker open."""
+    blocked = verdict_on(HEAD, "1 blocker, 0 major, 0 minor", satisfied="no")
+    assert verified(blocked, verdict_on(HEAD[:7])) == [
+        f"PR #7: a verifier verdict on {HEAD[:7]} is not satisfied: fix and verify again",
+        f"PR #7: the verifier verdicts on {HEAD[:7]} have 1 blocker and 0 major open: fix and verify again",
+    ]
+    # a verdict on a later head supersedes those on an earlier one
+    assert verified(verdict_on(OLD, "1 blocker, 0 major, 0 minor", satisfied="no"), VERDICT) == []
 
 
 def test_a_verdict_on_the_head_by_its_short_sha_covers_it() -> None:
@@ -1259,15 +1271,15 @@ def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     [
         (
             {"comments": (verdict_on(HEAD, satisfied="no"),)},
-            "PR #7: the newest verifier verdict is not satisfied: fix and verify again",
+            f"PR #7: a verifier verdict on {HEAD} is not satisfied: fix and verify again",
         ),
         (
             {"comments": (verdict_on(HEAD, "1 blocker, 0 major, 0 minor"),)},
-            "PR #7: the newest verifier verdict has 1 blocker and 0 major open: fix and verify again",
+            f"PR #7: the verifier verdicts on {HEAD} have 1 blocker and 0 major open: fix and verify again",
         ),
         (
             {"comments": (verdict_on(HEAD, "0 blocker, 1 major, 0 minor"),)},
-            "PR #7: the newest verifier verdict has 0 blocker and 1 major open: fix and verify again",
+            f"PR #7: the verifier verdicts on {HEAD} have 0 blocker and 1 major open: fix and verify again",
         ),
         (
             {"comments": (verdict_on(OLD),)},
