@@ -3,6 +3,7 @@
 
     python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
+    python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -14,6 +15,9 @@ exit is the wake. ``send`` answers that question in the same session, also mid-t
 same way; it refuses (exit 4) a session whose runner Omnigent reaped after its idle timeout, since a
 send there answers ``queued`` and never arrives: start a fresh run whose brief carries the question
 and answer.
+``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
+a prompt or fails, printing each one's id, title, that change and its last message; it is how a
+coordinator or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -273,6 +277,10 @@ class Omnigent:
             None,
         )
 
+    def children(self, sid: str) -> list[str]:
+        page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
+        return [str(c["id"]) for c in page.get("data", [])]
+
 
 def parent_id() -> str:
     """The runner's primary session (the coordinator, also when a child runs this), else empty."""
@@ -292,6 +300,15 @@ def text_of(item: dict) -> str:
 
 def last_message(items: list[dict]) -> dict | None:
     return next((i for i in reversed(items) if i.get("type") == "message"), None)
+
+
+def prompts_of(info: dict) -> list[str]:
+    """What each pending approval prompt asks: the tool call it holds, else its message."""
+    return [
+        str(p.get("content_preview") or p.get("message") or e)
+        for e in info.get("pending_elicitations") or []
+        for p in [e.get("params") or {}]
+    ]
 
 
 def delivered(
@@ -499,10 +516,7 @@ def wait(
         status = str(info.get("status"))
         last = last_message(og.items(sid))
         said = text_of(last) if last else "(none)"
-        prompts = [
-            str((e.get("params") or {}).get("message") or e)
-            for e in info.get("pending_elicitations") or []
-        ]
+        prompts = prompts_of(info)
         if prompts:
             raise Fail(
                 f"session {sid} is blocked on a prompt: {'; '.join(prompts)}\nlast message: {said}"
@@ -544,6 +558,81 @@ def wait(
     return str(report)
 
 
+def observe(
+    og: Omnigent, sid: str, idle_since: dict[str, tuple], baseline: bool = False
+) -> tuple[tuple, str]:
+    """A session's state as a comparable key (``running``, ``blocked``, ``failed`` or ``ended``,
+    with what makes this occurrence distinct) and the line that reports it.
+
+    A turn has ended as ``wait`` judges it: not running, with the last message not the user's,
+    or idle past ``IDLE_GRACE_SECONDS`` (an empty turn), so the launch idle wakes nobody. The
+    grace runs from the last message's arrival, so a follow-up landing on an idle session gets
+    its own. ``baseline`` starts a new idle already past the grace: idle at the start is no news.
+    """
+    info = og.info(sid)
+    status = str(info.get("status"))
+    last = last_message(og.items(sid))
+    head = f"{sid} {info.get('title') or ''}".rstrip()
+    tail = f"\nlast message: {text_of(last) if last else '(none)'}"
+    lid = last.get("id") if last else None
+    if status in RUNNING:
+        idle_since.pop(sid, None)
+    elif sid not in idle_since or idle_since[sid][0] != lid:  # (last message id, idle since)
+        idle_since[sid] = (lid, time.monotonic() - (IDLE_GRACE_SECONDS if baseline else 0))
+    if prompts := prompts_of(info):
+        ids = tuple(str(e.get("elicitation_id") or e) for e in info["pending_elicitations"])
+        return ("blocked", ids), f"{head}: blocked on a prompt: {'; '.join(prompts)}{tail}"
+    if status == "failed":
+        e = info.get("last_task_error") or {}  # an object of strings: title, message, code, ...
+        error = e.get("message") or e.get("title") or "(no error recorded)"
+        return ("failed", str(error)), f"{head}: failed: {error}{tail}"
+    if status not in RUNNING and (
+        (last is not None and last.get("role") != "user")
+        or time.monotonic() - idle_since[sid][1] >= IDLE_GRACE_SECONDS
+    ):
+        return ("ended", str(last.get("id")) if last else ""), f"{head}: turn ended{tail}"
+    return ("running",), head
+
+
+def watch(
+    og: Omnigent, sessions: list[str], parent: str | None = None, timeout: float = 3 * 3600
+) -> list[str]:
+    """Return a line per session that ended a turn, blocked on a prompt or failed since the call.
+
+    Watches ``sessions`` and, with ``parent``, its sub-agents, re-listed each poll so one started
+    later is watched too. A state already there at the first poll is not news, except a prompt: a
+    block waits on someone until it is answered. A session first seen later starts as running, so
+    its first end is reported.
+    """
+    # ponytail: polls GET /v1/sessions/{id} per session. /v1/sessions/{id}/stream (SSE) pushes the
+    # same changes within a second, but per session, without replay, and it registers a viewer;
+    # upgrade when a wake must beat POLL_SECONDS or rosters grow past a few dozen sessions.
+    deadline = time.monotonic() + timeout
+    seen: dict[str, tuple] = {}
+    idle_since: dict[str, tuple] = {}
+    first = True
+    while True:
+        ids = list(dict.fromkeys(sessions + (og.children(parent) if parent else [])))
+        changes = []
+        for sid in ids:
+            # idle at the start, empty turn or not, is the baseline, not a turn ending later
+            key, line = observe(og, sid, idle_since, baseline=first)
+            before = seen.get(sid, None if first else ("running",))
+            seen[sid] = key
+            if (
+                key != before
+                and key[0] != "running"
+                and (before is not None or key[0] == "blocked")
+            ):
+                changes.append(line)
+        if changes:
+            return changes
+        first = False
+        if time.monotonic() >= deadline:
+            raise Fail(f"no session changed in {timeout:.0f}s: {', '.join(ids) or '(none)'}")
+        time.sleep(POLL_SECONDS)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -576,6 +665,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("brief", type=Path, help="file with the answer or follow-up")
     p.add_argument("report", type=Path)
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p = sub.add_parser("watch")
+    p.add_argument("sessions", nargs="*")
+    p.add_argument("--children", metavar="PARENT", help="also watch this session's sub-agents")
     p = sub.add_parser("wait")
     p.add_argument("session")
     p.add_argument("report", type=Path)
@@ -591,12 +683,18 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         og = Omnigent()
+        if args.cmd == "watch":
+            if not args.sessions and not args.children:
+                raise Fail("watch needs a session or --children <parent>")
+            print("\n".join(watch(og, args.sessions, args.children, args.timeout)))
+            return 0
         if args.cmd == "wait":
             print(wait(og, args.session, args.report.resolve(), args.timeout, args.verdict))
             return 0
         report = args.report.resolve()
-        # The child's workspace is this directory; its Read of a file outside it raises an approval
-        # prompt nobody answers, and it saves its repro files beside the report.
+        # The child's workspace is this directory; outside it a Codex sandbox refuses the write and
+        # Claude Code prompts for the read (denies it in auto mode), which nobody answers. The child also
+        # saves its repro files beside the report.
         if not report.is_relative_to(Path.cwd()):
             raise Fail(
                 f"{report} is outside the child's workspace {Path.cwd()}; use tmp/loop/ in the worktree"

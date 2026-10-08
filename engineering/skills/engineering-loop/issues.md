@@ -9,21 +9,24 @@ Never on GitHub, and optionally Extra labels and Extra categories.
 
 ## States
 
-Two labels are an issue's state; the others only classify it. Every issue starts as an
-intent, whoever raises it, so each phase can run in a different session that acts on the
-state it finds.
+Two labels are an issue's state; the others classify it or record an approval. Every
+issue starts as an intent, whoever raises it, so each phase can run in a different session
+that acts on the state it finds.
 
 - **No state label:** an intent that needs triage: the owner's loose idea, bug or
   feedback, an agent's first write for a request, or what a PR leaves unfixed.
 - **`needs-owner`:** waiting for the owner: a decision research can't settle (the
   questions are a comment), a step only they can take, or an approval loop.md §
   Approvals requires.
-- **`ready-for-agent`:** specced. Only the spec step adds it, after writing the spec into
-  that same issue. Where a tool owns an issue's body, the spec is a comment headed
-  `## Spec`.
+- **`approved:spec`:** ready: the spec is written into that same issue and approved
+  (SKILL.md, Approvals and proof). Where a tool owns an issue's body, the spec is a comment
+  headed `## Spec`. The spec step sets the size label and approves; who else approves, and
+  how, is SKILL.md, Approvals and proof.
 
 The `triage` skill's roles map as needs-triage = no state label, needs-info =
-`needs-owner`.
+`needs-owner`, ready-for-agent = `approved:spec`, which only the spec approval adds: a
+`ready-for-agent` label that `to-spec` or `to-tickets` would set is not added, since a
+label without its approval record would read as approved.
 
 ## Labels
 
@@ -33,18 +36,23 @@ The `triage` skill's roles map as needs-triage = no state label, needs-info =
   configuration; no behaviour changes), or one of the project's extra categories.
 - **Component**, at least one, set with the category: where the change lands, from the
   project's list.
-- **Size**, exactly one, added with `ready-for-agent`, once the code has been read. It is
+- **Size**, exactly one, set by the spec step, once the code has been read. It is
   the size of the change, not a time estimate, and an intent has none: `size:XS` one line
   or one config value; `size:S` one module, the coordinator builds it; `size:M` several
   modules, one worker; `size:L` several workers or slices in one PR; `size:XL` too big
   for one spec: split it, or run it as a wayfinder map.
 
-- **Approval**, `approved:spec` and `approved:plan` on the issue, `approved:merge` on the
-  PR: added with an approval (SKILL.md, Approvals and proof), last when a person must
-  approve, so adding it is how they approve.
+- **Approval**, `approved:spec` and `approved:plan` on the issue: added with an approval
+  (SKILL.md, Approvals and proof), last when a person must approve, so adding it is how they
+  approve. `approved:merge` on the PR is the owner's merge approval itself, added by them
+  once `check` is green on the head and removed by a push.
 
 A wayfinder map or ticket carries its `wayfinder:` label instead of a category, and no
 component or size: it resolves a decision, not a change.
+
+Label names are the loop's fixed set here plus the project's `docs/agents/issue-tracker.md`
+(Components, Extra categories); the scripts read them from these two places only
+(`scripts/approvals.py`, `label_names`).
 
 ## Epics
 
@@ -52,7 +60,8 @@ An epic is an issue whose goal is an outcome the owner tracks; its work items ar
 native sub-issues. It carries the `epic` label next to its category, so a board view can
 filter for epics, and it closes when its outcome holds, that is when its sub-issues are
 done. Prefer converting an existing issue whose spec already states the outcome over
-filing a new one. An epic lands as its sub-issues' PRs, one per sub-issue, each off
+filing a new one. Its stories are filed before its approval is asked for (coordinator.md,
+Spec). An epic lands as its sub-issues' PRs, one per sub-issue, each off
 main, with no epic or integration branch; a sub-issue whose work isn't usable yet lands
 unexposed, and the sub-issue that exposes it comes last (SKILL.md, Land small and soon).
 Two levels only: a sub-issue never has sub-issues of its own, since the
@@ -69,7 +78,7 @@ report it and carry on.
 |---|---|---|
 | `Intent` | filed, no state label | whoever files it |
 | `Needs owner` | it has `needs-owner` | whoever parks it |
-| `Ready` | specced, `ready-for-agent` | the spec step |
+| `Ready` | it has `approved:spec` | the spec step, or the owner approving |
 | `Build` | its draft PR is open | the coordinator |
 | `Verify` | the verifier has the PR | the coordinator |
 | `Done` | closed | whoever closes it |

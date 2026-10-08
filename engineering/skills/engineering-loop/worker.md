@@ -11,9 +11,12 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
-2. **Gates and push.** Once `mise run check` exits 0, commit and push with
-   `git push -u origin <branch>` as its own command, since a pre-tool hook may scan the
-   whole command text. The coordinator merges your branch; open no PR.
+2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
+   before each push. Once it exits 0, commit and push with `git push -u origin <branch>` as
+   its own command, since a pre-tool hook may scan the whole command text. The coordinator
+   merges your branch; open no PR. Your job ends at the push: don't wait for CI. A brief
+   that is a failing CI log is a check red after the PR went ready: fix it in the worktree
+   you are given, then `mise run check` and push the same way.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve the thread; a
    finding handed to you as deferred gets a reply linking the issue it waits in, and is

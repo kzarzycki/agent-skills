@@ -35,9 +35,10 @@ proof, an independent verifier and landing. A project turns it on with one line
 in its `AGENTS.md`, for example "Every change that lands as a PR runs the
 `engineering-loop` skill", and states its own facts in files it owns:
 
-- `mise run check`: the gate, which CI runs too;
-- `mise run gate <build|merge> [pr]`: the proof gate, `scripts/gate.py check`
-  plus the project's own checks, run by the loop, a pre-push hook and CI;
+- its mise tasks, each described in `mise tasks ls`: `check` before every push,
+  the `check:` parts that CI and the merge queue run, and `loop:approvals
+  <build|merge> [pr]`, the proofs (`scripts/approvals.py check`), run by the loop
+  and CI;
 - `docs/agents/loop.md`: the owner, how to prove a change, acceptance
   references, the skill for each stage it changes, where a person must approve
   too, the worktree command, the ledger path;
@@ -45,7 +46,7 @@ in its `AGENTS.md`, for example "Every change that lands as a PR runs the
   github.md)`, its components, what must never reach the tracker;
 - `docs/agents/coding-standards.md`: the domain's facts.
 
-The files the loop runs on (CI, `gate.yml`, hooks, mise tasks, the ruleset) come
+The files the loop runs on (CI, git hooks, mise tasks, the ruleset) come
 from kzarzycki/project-templates; the skill's § Adopting the loop lists them.
 
 Each developer picks how agents run with one line in their personal
