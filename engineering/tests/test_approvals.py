@@ -1418,9 +1418,17 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "auto": True,
         "compares": {},
         "calls": [],
+        "run": {"status": "completed", "url": "https://github.com/o/r/actions/runs/12345"},
     }
 
     def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("run", "view"):
+            state["calls"].append(args[:3])
+            if state["run"] is None:
+                raise subprocess.CalledProcessError(
+                    1, args, stderr="failed to get run: HTTP 404: Not Found"
+                )
+            return json.dumps(state["run"])
         if args[0] in ("pr", "run"):
             state["calls"].append(args)
             return ""
@@ -1637,8 +1645,58 @@ def test_land_reruns_the_approvals_run_left_red_when_only_it_blocks_a_proven_pr(
                 " since resolving a review thread starts no workflow; run land again"
             )
         ],
-        [("run", "rerun", "12345")],
+        [("run", "view", "12345"), ("run", "rerun", "12345")],
     )
+
+
+def test_land_waits_without_a_rerun_while_the_approvals_run_still_runs(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    approvals_red(landing)
+    landing["run"]["status"] = "in_progress"
+    assert landed(capsys, landing) == (
+        approvals.WAITING,
+        [
+            (
+                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit: its run 12345 is"
+                " in_progress, so the status is not posted yet; run land again"
+            )
+        ],
+        [("run", "view", "12345")],
+    )
+
+
+def test_land_never_reruns_a_run_this_repo_does_not_have(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    approvals_red(landing, "https://github.com/someone/else/actions/runs/1")
+    landing["run"] = None
+    assert landed(capsys, landing) == (
+        approvals.WAITING,
+        [
+            (
+                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit, and its target names"
+                " no Actions run of this repo: rerun the workflow that posts it, then run land again"
+            )
+        ],
+        [("run", "view", "1")],
+    )
+
+
+def test_land_never_reruns_a_check_run_named_like_the_approvals_status(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["rulesets"] = ["check", "loop:approvals"]
+    pr = pull(
+        reviews=(VERDICT,),
+        files=("app.py",),
+        checks=(("check", "SUCCESS"), ("loop:approvals", "FAILURE")),
+    )
+    pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
+    landing["pull"] = pr
+    code, lines, calls = landed(capsys, landing)
+    assert (code, calls) == (approvals.WAITING, [])
+    assert "PR #7: `loop:approvals` is FAILURE on the head commit" in lines
 
 
 def test_land_never_reruns_the_approvals_run_on_a_failed_proof(

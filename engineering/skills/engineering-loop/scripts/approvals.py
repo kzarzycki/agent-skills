@@ -1092,6 +1092,24 @@ def land(pr: int) -> int:
                 " rerun the workflow that posts it, then run land again"
             )
             return WAITING
+        # gh resolves the id in this checkout's repo; a target naming another repo's run, or one that is gone, fails
+        try:
+            run = json.loads(gh("run", "view", found[1], "--json", "status,url"))
+        except subprocess.CalledProcessError:
+            run = None
+        if run is None or not RUN.search(run.get("url") or ""):
+            print(
+                f"{stale}, and its target names no Actions run of this repo:"
+                " rerun the workflow that posts it, then run land again"
+            )
+            return WAITING
+        if run.get("status") != "completed":
+            print(
+                f"{stale}: its run {found[1]} is {run.get('status')}, so the status is not posted yet; run land again"
+            )
+            return WAITING
+        # ponytail: a status forged to name another workflow's run reruns that run; whoever can post statuses
+        # can rerun runs anyway. Pin the context to the approvals app in the ruleset to close it.
         gh("run", "rerun", found[1])
         print(
             f"{stale}: reran run {found[1]}, since resolving a review thread starts no workflow; run land again"
