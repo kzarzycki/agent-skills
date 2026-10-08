@@ -414,8 +414,9 @@ def proofs(
 def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     """One line per reason the verifier's PR reviews (a body starting `Verifier (<family>), pass <n>`, by the PR's
     author or the account running this, since anyone can review a public repo) let nothing land: one on the newest
-    pass's commit (a mixed PR's two verifiers review one) is not satisfied, or has a blocker or a major open, or that
-    commit is older than the head and the commits since change a file the PR changes (touched_since). A head that
+    pass's commit with that commit's highest pass number (a mixed PR's two verifiers share one, and a later pass on
+    the same commit supersedes an earlier one) is not satisfied, or has a blocker or a major open, or that commit is
+    older than the head and the commits since change a file the PR changes (touched_since). A head that
     only took in main's changes to other files needs no further pass (coordinator.md step 8); a pass on a later
     commit supersedes those on an earlier one. ponytail: no bot-PR exemption (#106: an allow-listed bot's lock- or
     manifest-only PR passes without a verifier); add it with the allow-list when a project lands bot PRs."""
@@ -427,6 +428,7 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     verdicts = [
         (
             ((review.get("commit") or {}).get("oid") or "").lower(),
+            int(PASS.match(review["body"])[2]),
             {
                 key.strip(): value.strip()
                 for key, _, value in (line.partition(":") for line in review["body"].splitlines())
@@ -439,7 +441,9 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     if not verdicts:
         return [f"{where}: no verifier review posted (approvals.py verdict)"]
     head = verdicts[-1][0]
-    same = [lines for commit, lines in verdicts if commit == head]
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    last = max(number for number, _ in on_head)
+    same = [lines for number, lines in on_head if number == last]
     counts = [
         [
             re.search(rf"(\d+)\s+{kind}s?\b", lines.get("VERDICT", ""))

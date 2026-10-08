@@ -1191,6 +1191,26 @@ def test_every_verifier_review_on_the_newest_passs_commit_must_be_satisfied() ->
     assert verified(verdict_on(OLD, "1 blocker, 0 major, 0 minor", satisfied="no"), VERDICT) == []
 
 
+def test_a_later_pass_on_the_same_commit_supersedes_an_earlier_one() -> None:
+    """Pass 1's major, triaged as theoretical with no commit after it, is accepted by pass 2 on the same head; a mixed
+    PR's two verifiers share a pass number, so both of pass 2's reviews still count."""
+    rejected = verdict_on(
+        HEAD,
+        "0 blocker, 1 major, 0 minor",
+        satisfied="no",
+        heading="Verifier (claude, same-family), pass 1",
+    )
+    accepted = verdict_on(HEAD, heading="Verifier (claude, same-family), pass 2")
+    assert verified(rejected, accepted) == []
+    codex = verdict_on(
+        HEAD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (codex), pass 2"
+    )
+    assert verified(rejected, codex, accepted) == [
+        f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
+        f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
+    ]
+
+
 def test_a_review_on_an_older_commit_covers_a_merge_of_main_that_touches_no_pr_file(
     compares: dict[str, list[str]],
 ) -> None:
