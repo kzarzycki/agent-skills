@@ -1421,7 +1421,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     }
 
     def gh(*args: str, data: str | None = None) -> str:
-        if args[0] == "pr":
+        if args[0] in ("pr", "run"):
             state["calls"].append(args)
             return ""
         if args[:2] == ("api", "--paginate") and args[2].endswith("/rules/branches/main"):
@@ -1599,6 +1599,109 @@ def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     landing["pull"] = pr
     assert landed(capsys, landing)[2] == [(*MERGE, "--auto")]
+
+
+RUN_URL = "https://github.com/kzarzycki/scratch-gate-revert/actions/runs/12345/job/678"
+
+
+def approvals_red(
+    landing: dict[str, Any], url: str | None = RUN_URL, state: str = "FAILURE", **change: Any
+) -> dict[str, Any]:
+    """A proven ready PR whose required `loop:approvals` status is the FAILURE the approvals workflow posted while a
+    review thread was open; resolving the thread fired no workflow."""
+    landing["rulesets"] = ["check", "loop:approvals"]
+    pr = pull(**{"reviews": (VERDICT,), "files": ("app.py",), **change})
+    pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
+    pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"].append(
+        {
+            "__typename": "StatusContext",
+            "context": "loop:approvals",
+            "state": state,
+            "createdAt": "2026-10-03T13:00:00Z",
+            "targetUrl": url,
+        }
+    )
+    landing["pull"] = pr
+    return pr
+
+
+def test_land_reruns_the_approvals_run_left_red_when_only_it_blocks_a_proven_pr(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    approvals_red(landing)
+    assert landed(capsys, landing) == (
+        approvals.WAITING,
+        [
+            (
+                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit: reran run 12345,"
+                " since resolving a review thread starts no workflow; run land again"
+            )
+        ],
+        [("run", "rerun", "12345")],
+    )
+
+
+def test_land_never_reruns_the_approvals_run_on_a_failed_proof(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    approvals_red(landing, threads=(False,))
+    code, lines, calls = landed(capsys, landing)
+    assert (code, calls) == (1, [])
+    assert any("review thread(s) unresolved" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("change", "line"),
+    [
+        ({"checks": (("check", "FAILURE"),)}, "PR #7: `check` is FAILURE on the head commit"),
+        (
+            {"checks": (("check", "IN_PROGRESS"),)},
+            "PR #7: `check` is IN_PROGRESS on the head commit",
+        ),
+        ({"checks": ()}, "PR #7: no `check` on the head commit yet"),
+        ({"files": (".github/ci.yml",)}, "PR #7 waits for the owner's `approved:merge` label"),
+        (
+            {"state": "PENDING", "auto": False},
+            "PR #7: `loop:approvals` is PENDING on the head commit",
+        ),
+        (
+            {"loop": "- CI: none\n"},
+            (
+                "PR #7: the project has no CI (loop.md `CI: none`), and no local check passed on the head"
+                " (approvals.py local-ci)"
+            ),
+        ),
+    ],
+)
+def test_land_never_reruns_the_approvals_run_while_anything_else_waits(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], change: dict[str, Any], line: str
+) -> None:
+    """Another required check red, pending or missing, the owner's label asked for, `loop:approvals` itself still
+    pending where the repo allows no auto-merge, or a project without CI waiting on its local check: a rerun would not let the PR land, so land waits."""
+    landing["auto"] = change.pop("auto", True)
+    if "loop" in change:
+        Path("docs/agents/loop.md").write_text(GITHUB_RULE + change.pop("loop"))
+    approvals_red(landing, **change)
+    code, lines, calls = landed(capsys, landing)
+    assert (code, calls) == (approvals.WAITING, [])
+    assert line in lines
+
+
+@pytest.mark.parametrize("url", [None, "", "https://example.com/approvals"])
+def test_land_says_so_when_the_approvals_status_names_no_run(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], url: str | None
+) -> None:
+    approvals_red(landing, url)
+    assert landed(capsys, landing) == (
+        approvals.WAITING,
+        [
+            (
+                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit, and the status names no"
+                " Actions run to rerun: rerun the workflow that posts it, then run land again"
+            )
+        ],
+        [],
+    )
 
 
 @pytest.mark.parametrize(

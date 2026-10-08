@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.1 - 2026-10-09
+
+- `approvals.py land` reruns a stale `loop:approvals`. Resolving a review thread starts no
+  GitHub Actions workflow, so the FAILURE the approvals workflow posted while a thread was
+  open stayed on the head and `land` exited 3 for good. When every proof holds and that
+  status is the only required check not green, `land` reruns the Actions run its target URL
+  names (`gh run rerun`) and exits 3; a status naming no run is reported, with nothing rerun.
+
 ## 0.13.0 - 2026-10-09
 
 The merge contract's landing (kzarzycki/agent-skills#108, #106) and the launcher's resilience (#93).
