@@ -46,7 +46,9 @@ UI, and delegate the rest.
    so in the PR body. A fix to the process itself goes to a separate worker and PR from
    main, unless it is a blocker or major that makes this PR wrong: that one goes on this
    PR's branch (SKILL.md, One concern per PR). Cut
-   each worker's branch from the PR branch with loop.md § Worktree, and start it
+   each worker's branch from the PR branch with loop.md § Worktree, run from your own
+   worktree so the worker's sits inside it (orchestration/omnigent.md, Permission prompts),
+   and start it
    with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. Choose its model by the item (SKILL.md,
@@ -60,8 +62,9 @@ UI, and delegate the rest.
 7. **Verify** (board: `Verify`). Commit and push, then start the verifier (SKILL.md) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
-   worktree, which the project gitignores: a child is prompted for every file it reads
-   outside its workspace, and nobody answers. When the change has something to see, first
+   worktree, which the project gitignores: outside its workspace a Codex child's sandbox
+   refuses the write and a Claude Code child is prompted for a read (denied in auto mode),
+   which nobody answers. When the change has something to see, first
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report's verdict with
@@ -161,10 +164,11 @@ UI, and delegate the rest.
    spec's acceptance examples name which. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents. For every
-   worktree your notes list, run its teardown (loop.md § Worktree), then, from the main checkout,
+   worktree your notes list, children's before yours, since removing yours first leaves
+   theirs as stale entries, run its teardown (loop.md § Worktree), then, from the main checkout,
    `git worktree remove --force <path>` and `git branch -D <branch>` (a detached
-   verifier's worktree has none). Remove only what your notes list: other sessions'
-   worktrees sit beside yours.
+   verifier's worktree has none). Remove only what your notes list: the project's
+   `.worktrees/` also holds other sessions' worktrees.
 11. **Report** to the owner: the PR and merge SHA, gate exit codes, the acceptance
    examples as checked (with a screenshot when there is something to see), ledger lines
    added, findings rejected, issues filed, each agent's model, `verifier: same family`

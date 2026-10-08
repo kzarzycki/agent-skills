@@ -10,7 +10,7 @@ python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <repor
 Run it from the worktree the child works in, because the script makes its current
 directory the session's workspace. The report path goes under `tmp/loop/` in that
 worktree: outside its workspace a Codex child's sandbox refuses the write and a Claude Code
-child not in auto mode is prompted for a read, which nobody answers, so the script refuses
+child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
 `s120-verifier-p1`. The brief file holds only the task specifics; the script writes it,
 under a fixed preamble (owner-authorized imperative, the role file, long commands in the
@@ -69,9 +69,12 @@ finished … Call sys_read_inbox". Don't read the inbox; end your turn. The back
 command's exit carries the result, with its checks.
 
 **Permission prompts.** Worktrees go inside the project, in a gitignored `.worktrees/<branch>`
-(loop.md § Worktree), so an agent whose workspace is the project, the coordinator included,
-reads and writes in every worktree inside its workspace, in any harness. Outside it, Claude
-Code not in auto mode prompts for a read (`cd <sibling>; grep ...` or a plain
+(loop.md § Worktree), and a child's worktree goes inside the worktree of the agent that starts
+it: a coordinator working in `.worktrees/<pr-branch>` cuts each child's at `.worktrees/<branch>`
+there, which the same tracked `.gitignore` keeps out of its tree. An agent's workspace is the
+directory it was started in, so its reads in its own worktree and its children's never prompt,
+in any harness; its writes there follow the permission mode (Codex's workspace-write allows
+them). Outside it, Claude Code prompts for a read, or denies it in auto mode (`cd <sibling>; grep ...` or a plain
 `cat <sibling>/f`), which nobody answers, and Codex's workspace-write sandbox refuses a write.
 No allow rule stands in for the layout: a project rule `Read(/../**)` or `Read(../**)` never
 matches a sibling, an absolute `//…` or `~/…` rule names one machine's layout, and a project's

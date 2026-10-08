@@ -513,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         report = args.report.resolve()
         # The child's workspace is this directory; outside it a Codex sandbox refuses the write and
-        # Claude Code not in auto mode prompts for the read, which nobody answers. The child also
+        # Claude Code prompts for the read (denies it in auto mode), which nobody answers. The child also
         # saves its repro files beside the report.
         if not report.is_relative_to(Path.cwd()):
             raise Fail(
