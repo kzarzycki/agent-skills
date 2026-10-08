@@ -475,22 +475,27 @@ def wait(
     return str(report)
 
 
-def observe(og: Omnigent, sid: str, idle_since: dict[str, float]) -> tuple[tuple, str]:
+def observe(
+    og: Omnigent, sid: str, idle_since: dict[str, tuple], baseline: bool = False
+) -> tuple[tuple, str]:
     """A session's state as a comparable key (``running``, ``blocked``, ``failed`` or ``ended``,
     with what makes this occurrence distinct) and the line that reports it.
 
     A turn has ended as ``wait`` judges it: not running, with the last message not the user's,
-    or idle past ``IDLE_GRACE_SECONDS`` (an empty turn), so the launch idle wakes nobody.
+    or idle past ``IDLE_GRACE_SECONDS`` (an empty turn), so the launch idle wakes nobody. The
+    grace runs from the last message's arrival, so a follow-up landing on an idle session gets
+    its own. ``baseline`` starts a new idle already past the grace: idle at the start is no news.
     """
     info = og.info(sid)
     status = str(info.get("status"))
     last = last_message(og.items(sid))
     head = f"{sid} {info.get('title') or ''}".rstrip()
     tail = f"\nlast message: {text_of(last) if last else '(none)'}"
+    lid = last.get("id") if last else None
     if status in RUNNING:
         idle_since.pop(sid, None)
-    else:
-        idle_since.setdefault(sid, time.monotonic())
+    elif sid not in idle_since or idle_since[sid][0] != lid:  # (last message id, idle since)
+        idle_since[sid] = (lid, time.monotonic() - (IDLE_GRACE_SECONDS if baseline else 0))
     if prompts := prompts_of(info):
         ids = tuple(str(e.get("elicitation_id") or e) for e in info["pending_elicitations"])
         return ("blocked", ids), f"{head}: blocked on a prompt: {'; '.join(prompts)}{tail}"
@@ -500,7 +505,7 @@ def observe(og: Omnigent, sid: str, idle_since: dict[str, float]) -> tuple[tuple
         return ("failed", str(error)), f"{head}: failed: {error}{tail}"
     if status not in RUNNING and (
         (last is not None and last.get("role") != "user")
-        or time.monotonic() - idle_since[sid] >= IDLE_GRACE_SECONDS
+        or time.monotonic() - idle_since[sid][1] >= IDLE_GRACE_SECONDS
     ):
         return ("ended", str(last.get("id")) if last else ""), f"{head}: turn ended{tail}"
     return ("running",), head
@@ -521,15 +526,14 @@ def watch(
     # upgrade when a wake must beat POLL_SECONDS or rosters grow past a few dozen sessions.
     deadline = time.monotonic() + timeout
     seen: dict[str, tuple] = {}
-    idle_since: dict[str, float] = {}
+    idle_since: dict[str, tuple] = {}
     first = True
     while True:
         ids = list(dict.fromkeys(sessions + (og.children(parent) if parent else [])))
-        if first:  # idle at the start, empty turn or not, is the baseline, not a turn ending later
-            idle_since.update((sid, time.monotonic() - IDLE_GRACE_SECONDS) for sid in ids)
         changes = []
         for sid in ids:
-            key, line = observe(og, sid, idle_since)
+            # idle at the start, empty turn or not, is the baseline, not a turn ending later
+            key, line = observe(og, sid, idle_since, baseline=first)
             before = seen.get(sid, None if first else ("running",))
             seen[sid] = key
             if (

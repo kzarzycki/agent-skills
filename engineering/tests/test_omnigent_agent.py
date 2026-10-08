@@ -839,6 +839,23 @@ def test_watch_reports_an_empty_turn_once_past_the_grace(monkeypatch: pytest.Mon
     assert omnigent_agent.watch(og, ["a"], timeout=200) == ["a t-a: turn ended\nlast message: go"]
 
 
+def test_watch_gives_a_follow_up_to_an_idle_baseline_its_own_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    Clock(monkeypatch, step=5)
+    # idle after a turn (baseline); the follow-up lands while still idle; running; its answer.
+    og = Roster(
+        a=[{"status": "idle"}, {"status": "idle"}, {"status": "running"}, {"status": "idle"}]
+    )
+    done = [said("user", "go", "1"), said("assistant", "report at r.md", "2")]
+    follow_up = [*done, said("user", "pass 2: fix F1", "3")]
+    history = [done, follow_up, follow_up, [*follow_up, said("assistant", "fixed", "4")]]
+    og.items = lambda sid: history.pop(0) if len(history) > 1 else history[0]  # type: ignore[method-assign]
+    assert omnigent_agent.watch(og, ["a"], timeout=100) == [
+        "a t-a: turn ended\nlast message: fixed"
+    ]
+
+
 def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     prompt = {"elicitation_id": "e2", "params": {"message": "Claude wants to call **Bash**"}}
     og = Roster(a=[{"status": "running"}, {"status": "running", "pending_elicitations": [prompt]}])
