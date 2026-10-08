@@ -116,7 +116,7 @@ def pull(
         comments,
         number=7,
         state="OPEN",
-        isDraft=True,
+        isDraft=False,
         body=body,
         baseRefName="main",
         baseRefOid=BASE,
@@ -1149,13 +1149,28 @@ READY = ("pr", "ready", "7")
 MERGE = ("pr", "merge", "7", "--squash", "--match-head-commit", HEAD)
 
 
-def test_land_marks_a_proven_pr_ready_and_merges_it_at_its_head(
+def test_land_merges_a_proven_ready_pr_at_its_head(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [READY, MERGE])
-    landing["calls"].clear()
-    landing["pull"]["isDraft"] = False
     assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+
+
+def test_land_marks_a_proven_draft_ready_and_waits_for_the_ci_that_starts(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A draft's checks are skipped (CI skips drafts) and say nothing about the ready PR: no merge, no auto-merge."""
+    landing["pull"]["isDraft"] = True
+    landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"] = [
+        {"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "SKIPPED"}
+    ]
+    for rulesets in (["check"], []):
+        landing["calls"].clear()
+        landing["rulesets"] = rulesets
+        assert landed(capsys, landing) == (
+            approvals.WAITING,
+            ["PR #7 is ready now: CI starts on ready, run land again"],
+            [READY],
+        )
 
 
 def test_land_turns_on_auto_merge_while_required_checks_are_pending(
@@ -1169,7 +1184,7 @@ def test_land_turns_on_auto_merge_while_required_checks_are_pending(
     assert landed(capsys, landing) == (
         0,
         [f"PR #7: auto-merge on at {HEAD}, once check pass"],
-        [READY, (*MERGE, "--auto")],
+        [(*MERGE, "--auto")],
     )
 
 
@@ -1192,7 +1207,7 @@ def test_land_waits_without_auto_merge_where_github_would_not_hold_the_merge(
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     landing.update(change, pull=pr)
     code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (approvals.WAITING, [READY])
+    assert (code, calls) == (approvals.WAITING, [])
     assert line in lines
 
 
@@ -1206,7 +1221,7 @@ def test_a_base_with_no_required_checks_needs_every_check_green(
     assert landed(capsys, landing) == (
         approvals.WAITING,
         ["PR #7: `pr-board / sync` is FAILURE on the head commit"],
-        [READY],
+        [],
     )
     assert approvals.ci("PR #7", pull(checks=()), set()) == [
         "PR #7: no check on the head commit yet"
@@ -1223,7 +1238,7 @@ def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     pr = pull(comments=(VERDICT,), checks=(("check", "SUCCESS"), ("qualify", "QUEUED")))
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     landing["pull"] = pr
-    assert landed(capsys, landing)[2] == [READY, (*MERGE, "--auto")]
+    assert landed(capsys, landing)[2] == [(*MERGE, "--auto")]
 
 
 @pytest.mark.parametrize(
@@ -1271,7 +1286,7 @@ def test_land_merges_on_a_verdict_whose_head_only_main_came_in_after(
 ) -> None:
     landing["compares"].update({f"{BASE}...{OLD}": ["app.py"], f"{OLD}...{HEAD}": ["README.md"]})
     landing["pull"]["comments"]["nodes"] = [note(verdict_on(OLD))]
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [READY, MERGE])
+    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
 
 
 def test_land_says_a_merged_pr_is_merged_and_refuses_a_closed_one(
@@ -1294,7 +1309,7 @@ def test_without_loop_md_an_issue_needs_only_approved_spec_and_no_needs_owner(
     bare = issue(1, "approved:spec")  # no category, component, size or approval record
     landing["pull"]["closingIssuesReferences"]["nodes"] = [bare]
     landing["pull"]["files"]["nodes"] = [{"path": ".github/ci.yml"}]
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [READY, MERGE])
+    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
     landing["calls"].clear()
     landing["pull"]["closingIssuesReferences"]["nodes"] = [
         issue(1, "approved:spec", "needs-owner"),

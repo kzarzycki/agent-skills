@@ -104,10 +104,12 @@ UI, and delegate the rest.
    - Run `python3 scripts/approvals.py land <pr>` (the project's `mise run loop:land <pr>`)
      once no local objection is left: `mise run check` passed on the head and the newest
      verdict, satisfied with no core finding open, covers it (SKILL.md, Review trail). Exit 1
-     names each missing proof, and nothing on the PR changed: add the proof. Otherwise it
-     marks the PR ready, which starts the full list on GitHub since CI skips a draft, then
-     merges it pinned to the head (`--match-head-commit`) when the base's required checks
-     are green, or turns on auto-merge pinned to the head while they are pending: exit 0.
+     names each missing proof, and nothing on the PR changed: add the proof. On a draft it
+     marks the PR ready, which starts the full list on GitHub since CI skips a draft, and
+     exits 3, since the draft's skipped checks say nothing about the ready PR: run it again.
+     On a ready PR it merges pinned to the head (`--match-head-commit`) when the base's
+     required checks are green, or turns on auto-merge pinned to the head while they are
+     pending: exit 0.
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Exit 3: it waits for something auto-merge
      would not hold for (a red check, the owner's label, a repository without auto-merge, a

@@ -119,8 +119,8 @@ build` before building and `mise run loop:approvals merge` before merging check 
 (`scripts/approvals.py` lists them); `merge` exits 3 while it waits for `check` or the
 owner's label, and 1 when a proof is missing. An agent merges only with `python3
 scripts/approvals.py land <pr>` (the project's `loop:land` task): it runs every merge proof,
-then marks the PR ready and merges it pinned to its head, or turns on auto-merge while only
-required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand, because
+marks a draft ready and waits for the CI that starts, and on a ready PR merges it pinned to
+its head, or turns on auto-merge while only required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand, because
 `land` is what refuses a PR whose proof is missing. A repo without `docs/agents/loop.md` has
 no rules: `land` there needs each named issue to carry `approved:spec` and not
 `needs-owner`, and the PR's own proofs. `scripts/gate.py` and `local-ci`'s old name

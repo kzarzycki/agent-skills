@@ -28,8 +28,9 @@ status) for the newest run of the aggregate `check` on the head to be green, the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
 GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
-PR when one fails. Then it marks a draft ready, which starts CI, and reads the checks the base requires (its rulesets
-and branch protection; a base requiring none requires every check on the head green). With every required check
+PR when one fails. A draft it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing
+about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
+protection; a base requiring none requires every check on the head green). With every required check
 green and the label where a rule asks: `gh pr merge --squash --match-head-commit <head>`, exit 0. While only
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
 exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
@@ -940,8 +941,9 @@ def check(point: str, pr: int | None) -> int:
 
 
 def land(pr: int) -> int:
-    """Every merge proof, then ready and merge pinned to the head: at once when nothing waits, else auto-merge while
-    only the base's required checks are pending and the repo allows it; exit 3 while anything else waits."""
+    """Every merge proof; a draft is then marked ready and waits (exit 3) for the CI that starts. A ready PR merges
+    pinned to the head: at once when nothing waits, else auto-merge while only the base's required checks are pending
+    and the repo allows it; exit 3 while anything else waits."""
     tracker, loop = project()
     pull = pull_request(pr)
     where, head = f"PR #{pr}", pull["headRefOid"]
@@ -955,10 +957,13 @@ def land(pr: int) -> int:
         for line in found:
             print(line)
         return 1
+    if pull["isDraft"]:
+        # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
+        gh("pr", "ready", str(pr))
+        print(f"{where} is ready now: CI starts on ready, run land again")
+        return WAITING
     required = required_checks(pull["baseRefName"])
     checking, owner = ran(pull, loop, required), owner_waits(pull, issues, loop)
-    if pull["isDraft"]:
-        gh("pr", "ready", str(pr))
     # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the repo's
     # delete_branch_on_merge removes the remote one. Add it when a repo lacks that setting.
     merge = ["pr", "merge", str(pr), "--squash", "--match-head-commit", head]
