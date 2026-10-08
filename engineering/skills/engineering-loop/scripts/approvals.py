@@ -1076,12 +1076,39 @@ def approve(point: str, number: int, by: str) -> int:
     return 0
 
 
-# a report's finding: `### <id> (<severity>) <path>:<line>: <title>`, its text up to the next heading or the trailer
+# a report's finding heading: `### <id> (<severity>) <path>:<line>: <title>`, the line a number or a range `<n>-<m>`
 FINDING = re.compile(
-    r"^###[ \t]+(\S+)[ \t]+\((blocker|major|minor)\)[ \t]+`?([^\s`]+?):(\d+)`?:?[ \t]+(.+?)[ \t]*\n(.*?)"
-    r"(?=^#|^(?:Head|VERDICT|SATISFIED):|\Z)",
-    re.MULTILINE | re.DOTALL,
+    r"###[ \t]+(\S+)[ \t]+\((blocker|major|minor)\)[ \t]+`?([^\s`]+?):(\d+(?:-\d+)?)`?:?[ \t]+(.+?)[ \t]*",
+    re.IGNORECASE,
 )
+
+
+def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str]]:
+    """Each finding of a report as (id, severity, path, line, title, body): its body up to the next heading of
+    levels 1 to 3 or the closing `Head:`/`VERDICT:`/`SATISFIED:` lines, outside a code fence. A `### ` heading that
+    is no finding is refused, since the review would leave it out without a word."""
+    found: list[tuple[str, str, str, str, str, list[str]]] = []
+    body: list[str] | None = None  # the open finding's lines
+    fenced = False
+    for line in text.splitlines():
+        if re.match(r"[ \t>]*(```|~~~)", line):
+            fenced = not fenced
+        elif not fenced and re.match(r"#{1,3} |(Head|VERDICT|SATISFIED):", line):
+            body = None
+            if line.startswith("### "):
+                heading = FINDING.fullmatch(line.rstrip())
+                if not heading:
+                    raise Refused(
+                        f"{report}: can't read the finding heading `{line.strip()}`: write it "
+                        "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
+                    )
+                name, severity, path, at, title = heading.groups()
+                body = []
+                found.append((name, severity.lower(), path, at, title, body))
+            continue
+        if body is not None:
+            body.append(line)
+    return [(*finding[:5], "\n".join(finding[5]).strip()) for finding in found]
 
 
 def diff_lines(base: str, head: str) -> dict[str, list[int]]:
@@ -1143,21 +1170,20 @@ def verdict(pr: int, report: Path) -> int:
     heading = f"Verifier ({family}), pass {number}"
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
-    for name, severity, path, line, title, body in FINDING.findall(text):
+    for name, severity, path, line, title, body in findings(text, report):
         said = f"**{heading} · {name}** ({severity}): {title}"
         if not diff.get(path):
-            outside.append(
-                f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body.strip()}"
-            )
+            outside.append(f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}")
             continue
-        at = min(diff[path], key=lambda candidate: abs(candidate - int(line)))
+        last = int(line.rpartition("-")[2])  # a range anchors at its last line
+        at = min(diff[path], key=lambda candidate: abs(candidate - last))
         moved = (
             f"At `{path}:{line}`, outside the diff: placed at the nearest diff line.\n\n"
-            if at != int(line)
+            if at != last
             else ""
         )
         comments.append(
-            {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body.strip()}"}
+            {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
     summary = "\n\n".join(
         [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}"]

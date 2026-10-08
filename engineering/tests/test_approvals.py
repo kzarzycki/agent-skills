@@ -1098,6 +1098,72 @@ def test_an_unfinished_report_posts_nothing(
     assert [call for call in reviewing if call[0] == "review"] == []
 
 
+RANGED = f"""Verifier: claude, pass 1
+
+## Correctness
+
+### C1 (Major) app.py:9-11: a line range and a capitalised severity
+
+```
+$ grep x
+# the line that matters
+### quoted, not a finding
+```
+
+### C2 (minor) `app.py:28-29`: a range outside the diff
+
+The run.
+
+Head: {HEAD}
+VERDICT: 0 blocker, 1 major, 1 minor
+SATISFIED: no
+"""
+
+
+def test_a_finding_takes_a_line_range_any_case_severity_and_a_fenced_heading_in_its_evidence(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path
+) -> None:
+    """A range anchors at its last line, or the nearest diff line; a `#` line inside a code fence is evidence."""
+    report = tmp_path / "report.md"
+    report.write_text(RANGED)
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    heading = "Verifier (claude), pass 1"
+    assert reviewing[-1][2]["comments"] == [
+        {
+            "path": "app.py",
+            "line": 11,
+            "side": "RIGHT",
+            "body": (
+                f"**{heading} · C1** (major): a line range and a capitalised severity\n\n"
+                "```\n$ grep x\n# the line that matters\n### quoted, not a finding\n```"
+            ),
+        },
+        {
+            "path": "app.py",
+            "line": 30,
+            "side": "RIGHT",
+            "body": (
+                f"**{heading} · C2** (minor): a range outside the diff\n\n"
+                "At `app.py:28-29`, outside the diff: placed at the nearest diff line.\n\nThe run."
+            ),
+        },
+    ]
+
+
+def test_a_finding_heading_verdict_cant_read_posts_nothing(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A finding the review would leave out is no finding on the trail: refuse rather than drop it."""
+    report = tmp_path / "report.md"
+    report.write_text(REPORT.replace("### C2 (minor) app.py:40:", "### C2 (minor) app.py:"))
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert capsys.readouterr().out == (
+        f"{report}: can't read the finding heading `### C2 (minor) app.py: a line outside the diff`: write it "
+        "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`\n"
+    )
+    assert [call for call in reviewing if call[0] == "review"] == []
+
+
 def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

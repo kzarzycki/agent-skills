@@ -69,9 +69,11 @@ keep these lines exact:
   pass 2` when you are the model family that wrote the diff.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
-  line at the reviewed head (it becomes the PR review's inline comment, moved to the
-  nearest line of the diff when outside it), then the failing input or contradicted
-  requirement and the evidence (the command and its output) up to the next heading.
+  line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
+  review's inline comment, moved to the nearest line of the diff when outside it), then
+  the failing input or contradicted requirement and the evidence (the command and its
+  output) up to the next heading outside a code fence. `verdict` refuses a `### `
+  heading it can't read, rather than leave that finding off the review.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`.
   The merge reads the review as covering that commit only, so a push after your review
