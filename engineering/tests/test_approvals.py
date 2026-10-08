@@ -36,6 +36,7 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     is the checkout's root; a test says otherwise."""
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: PUSHED)
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
+    monkeypatch.setattr(approvals, "viewer", lambda: "loop")
 
 
 def problems(issues: list[dict[str, Any]]) -> list[str]:
@@ -51,6 +52,7 @@ def note(body: str, **fields: Any) -> dict[str, Any]:
         "lastEditedAt": None,
         "isMinimized": False,
         "viewerCanMinimize": True,
+        "author": {"login": "loop"},
         **fields,
     }
 
@@ -115,6 +117,7 @@ def pull(
         labels,
         comments,
         number=7,
+        author={"login": "worker"},
         state="OPEN",
         isDraft=False,
         body=body,
@@ -1101,6 +1104,22 @@ def test_a_compare_past_the_300_files_github_lists_does_not_cover_the_head(
     compares[f"{OLD}...{HEAD}"] = [f"vendor/{n}.py" for n in range(300)]
     assert verified(verdict_on(OLD)) == [
         f"PR #7: the newest verifier verdict is on {OLD}, and GitHub can't compare it with the head: verify the head"
+    ]
+
+
+def test_only_a_verdict_by_the_prs_author_or_the_viewer_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anyone can comment on a public repo; a stranger's satisfied verdict is no verdict."""
+    stranger = note(VERDICT, author={"login": "stranger"})
+    blocked = verdict_on(HEAD, "1 blocker, 0 major, 0 minor", satisfied="no")
+    assert verified(stranger) == ["PR #7: no verifier verdict posted (approvals.py verdict)"]
+    assert verified(note(blocked), stranger) == verified(blocked)
+    assert verified(note(VERDICT, author={"login": "worker"})) == []  # the PR's author
+    monkeypatch.setattr(approvals, "viewer", lambda: "coordinator")
+    assert verified(note(VERDICT, author={"login": "coordinator"})) == []
+    assert verified(note(VERDICT, author=None)) == [  # a deleted account
+        "PR #7: no verifier verdict posted (approvals.py verdict)"
     ]
 
 

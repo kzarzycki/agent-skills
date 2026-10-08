@@ -19,7 +19,8 @@ size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_
 A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; every verifier
-verdict on the newest verdict's head saying `SATISFIED: yes` with 0 blocker and 0 major, that head being the PR's,
+verdict on the newest verdict's head (a verdict counts only when the PR's author or the account running this
+posted it) saying `SATISFIED: yes` with 0 blocker and 0 major, that head being the PR's,
 or an earlier one where no commit since changes a file the PR changes (at that head or now; only a merge of main
 came in); and no review whose latest state
 is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
@@ -97,9 +98,9 @@ MERGE_LABEL = "approved:merge"
 # check merge's exit while it waits for `check` or the owner; argparse's usage error is 2
 WAITING = 3
 VERDICT = "Verifier verdict"
-NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
+NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize author { login }"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-PULL = f"""number state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number author {{ login }} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT]) {{ nodes {{ ... on LabeledEvent {{ createdAt label {{ name }} }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
@@ -399,7 +400,14 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     verifiers post on one) is not satisfied, or has a blocker or a major open, or that head is older and the commits
     since change a file the PR changes (touched_since). A head that only took in main's changes to other files needs
     no further pass (coordinator.md step 8); a verdict on a later head supersedes those on an earlier one."""
-    verdicts = [found for body in bodies(pull) if (found := parsed(body, VERDICT)) is not None]
+    posted = [note for note in notes(pull) if parsed(note["body"], VERDICT) is not None]
+    # anyone can comment on a public repo: only the PR's author or the account running this posts a verdict
+    trusted = {(pull.get("author") or {}).get("login"), viewer() if posted else None} - {None}
+    verdicts = [
+        parsed(note["body"], VERDICT) or {}
+        for note in posted
+        if (note.get("author") or {}).get("login") in trusted
+    ]
     if not verdicts:
         return [f"{where}: no verifier verdict posted (approvals.py verdict)"]
     head = verdicts[-1].get("head", "").lower()
@@ -891,6 +899,11 @@ def minimize(comment_id: str) -> None:
         f"id={comment_id}",
         "--silent",
     )
+
+
+def viewer() -> str:
+    """The login of the account `gh` runs as."""
+    return gh("api", "user", "--jq", ".login").strip()
 
 
 def current_pr() -> int | None:
