@@ -10,7 +10,7 @@
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
 those tasks.
-`gate.py` and `record-check` are the old names of this script and of `local-ci`, kept for one release.
+`gate.py` and `record-check` are the old names of this script and of `local-ci`, kept until 0.14.0.
 
 `check build` needs every issue the PR closes to carry `approved:spec` and not `needs-owner`, with exactly one
 category, a component and exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its approvals: `spec`

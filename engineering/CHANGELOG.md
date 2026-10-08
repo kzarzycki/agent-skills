@@ -13,6 +13,7 @@ The merge contract's landing (kzarzycki/agent-skills#108, #106) and the launcher
 - The gates are the merge approval. A loop.md § Approvals `merge:` rule (same conditions as
   `spec:`, plus `path <glob>` read from the PR's files) asks for the owner's `approved:merge`;
   a `merge:` condition the gate can't read asks for it too. With no rule, no label is needed.
+  A project that wants the 0.12.0 behaviour, a label on every merge, writes `- merge: always`.
 - The verifier's verdict is a GitHub PR review: `approvals.py verdict <pr> <report>` posts the
   report on its reviewed `Head:` with one inline thread per finding, and refuses a report it
   can't parse. `check merge` and `land` need the newest pass's reviews on that commit
@@ -26,6 +27,7 @@ The merge contract's landing (kzarzycki/agent-skills#108, #106) and the launcher
 - The loop docs: land only through `approvals.py land`; every fix after a verdict, a note's
   included, gets a delta pass, and after pass 3 a delta check; who replies on and resolves
   which review thread (`ADDRESSED`, `WONT_FIX`, `INVALID`).
+- `gate.py` and `record-check` stay as aliases until 0.14.0, which removes them.
 - `omnigent_agent.py watch` exits as soon as a session ends a turn, blocks on a prompt or
   fails (#97); worktrees nest inside the project and the agent that starts them (#101); the
   launcher retries idempotent reads, never doubles a timed-out create and nudges a turn that

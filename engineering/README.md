@@ -54,7 +54,7 @@ instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
 means native subagents. The verifier comes from the other model family when its
 CLI is installed; otherwise the PR body says `verifier: same family`.
 
-The independently versioned release tag is `engineering-v0.8.3`. APM resolves
+The package is released under independently versioned `engineering-vX.Y.Z` tags. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
 

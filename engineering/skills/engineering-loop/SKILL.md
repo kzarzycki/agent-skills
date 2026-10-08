@@ -126,7 +126,7 @@ its head, or turns on auto-merge while only required checks are pending. Never r
 `land` is what refuses a PR whose proof is missing. A repo without `docs/agents/loop.md` has
 no rules: `land` there needs each named issue to carry `approved:spec` and not
 `needs-owner`, and the PR's own proofs. `scripts/gate.py` and `local-ci`'s old name
-`record-check` still run for one release.
+`record-check` still run until 0.14.0.
 
 loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
 line, `<spec|plan|merge>: <condition>`, such as `spec: size:L or larger, or component

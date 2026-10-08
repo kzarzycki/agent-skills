@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The old name of approvals.py, kept for one release: runs it with the same arguments, so its output and exit code
+"""The old name of approvals.py, kept until 0.14.0: runs it with the same arguments, so its output and exit code
 are approvals.py's."""
 
 import runpy
