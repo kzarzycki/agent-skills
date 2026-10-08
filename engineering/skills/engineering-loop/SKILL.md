@@ -307,7 +307,10 @@ A rejected finding is not real, so it gets no issue.
 ## The cap
 
 Pass 1 reviews the PR's full diff; passes 2 and 3 review the diff since the previous
-report and rerun its repros. After pass 3, fix the open core items and check them with
-the verifier's repro files, ledger the edge items, reject the theoretical ones, and land.
+report and rerun its repros. After pass 3, fix the open core items, ledger the edge
+items and reject the theoretical ones. The fixes then get a delta check on the fixed
+head, not a pass 4 review: the verifier reruns its repro files against the change since
+pass 3's head and posts the result with `approvals.py verdict`, since `land` merges only
+a head a verifier review covers. Then land.
 The one stop: a core item still open after pass 3 means the fix keeps regressing, so it
 goes to the owner as a question about the design, not a pass 4.
