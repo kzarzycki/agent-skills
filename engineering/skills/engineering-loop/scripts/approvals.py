@@ -2,24 +2,38 @@
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
     python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    python3 scripts/approvals.py land <pr>                  # every merge proof, then ready and merge; exit 0, 1 or 3
     python3 scripts/approvals.py approve <spec|plan> <issue> --by <coordinator|owner>
     python3 scripts/approvals.py verdict <pr> <report>      # post the verifier's verdict lines on the PR
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
 
-Run from the repo root. The project's `mise run loop:approvals <point> [pr]` task runs `check`; the loop and CI call
-that task. `gate.py` and `record-check` are the old names of this script and of `local-ci`, kept for one release.
+Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
+<point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
+those tasks.
+`gate.py` and `record-check` are the old names of this script and of `local-ci`, kept for one release.
 
 `check build` needs every issue the PR closes to carry `approved:spec` and not `needs-owner`, with exactly one
 category, a component and exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its approvals: `spec`
 always, `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.md § Practice). Category, component and
 size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`).
-`check merge` adds the PR's: the `## Evidence` section of its body and a posted verifier verdict, whose absence fails
-(exit 1); then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending` status) for the
-newest run of the aggregate `check` on the head to be green, the one check it reads (with the line `CI: none` in
-loop.md, a `local-ci` pass on the head instead), and for the owner's `approved:merge` label on the PR, added after the
-head was pushed and still present, which is the merge approval. A push removes the label (the approvals workflow does
-it on `synchronize`), so the label never covers a head the owner did not see; the push time is GitHub's repository
-activity for the head branch. No PR yet, or every proof held: exit 0.
+A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
+approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
+`check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the newest verifier
+verdict saying `SATISFIED: yes` with 0 blocker and 0 major, on the head, or on an earlier head where no commit since
+changes a file the PR changes (at that head or now; only a merge of main came in); and no review whose latest state
+is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
+`CI: none` in loop.md, a `local-ci` pass on the head instead), and, where a `merge:` rule asks, for the owner's
+`approved:merge` label on the PR, added after the head was pushed and still present. A push removes the label (the
+approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
+GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
+`land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
+PR when one fails. Then it marks a draft ready, which starts CI, and reads the checks the base requires (its rulesets
+and branch protection; a base requiring none requires every check on the head green). With every required check
+green and the label where a rule asks: `gh pr merge --squash --match-head-commit <head>`, exit 0. While only
+required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
+exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
+merged PR: exit 0; a closed one: exit 1.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
@@ -28,7 +42,7 @@ removes what #n added and adds what #n removed (files, and each run of lines in 
 differ), and every path either touches has at the PR's merge base the mode it had after #n and at its head the mode
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
-only for Evidence (what went wrong), a green `check` and the `approved:merge` label.
+only for Evidence (what went wrong), no review requesting changes, a green `check` and the label where a rule asks.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 A spec or plan approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for
@@ -43,13 +57,16 @@ a person can open the version approved. Every approval is a new comment: a re-ap
 changed, and `approve` minimizes as outdated each earlier record it supersedes, keeping another approver's record of
 the same version.
 
-The coordinator approves spec and plan. A rule in loop.md § Approvals, one `- <spec|plan>: <condition>` line each, adds
-a person's approval (`By: owner`). Its label goes on last: the coordinator's approval removes the label and adds
-`needs-owner`, so a person approves by adding the label, or by saying so in the session; then `approve --by owner`
-writes their record, adds the label and removes `needs-owner`. A person who already approved the current spec or plan
-keeps their label when the coordinator approves again on resuming. A condition the gate can read is `always`, `size:L`
-(`size:L or larger`, `size:L+`), `component <name>` or `category <name>`, joined by `or`; any other words make the rule
-the loop's alone, and so does a `path <glob>`, since a spec or plan comes before the change. The spec is the issue
+The coordinator approves spec and plan. A rule in loop.md § Approvals, one `- <spec|plan|merge>: <condition>` line
+each, adds a person's approval. For a spec or plan (`By: owner`) its label goes on last: the coordinator's approval
+removes the label and adds `needs-owner`, so a person approves by adding the label, or by saying so in the session;
+then `approve --by owner` writes their record, adds the label and removes `needs-owner`. A person who already approved
+the current spec or plan keeps their label when the coordinator approves again on resuming. A condition the gate can
+read is `always`, `size:L` (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>`,
+joined by `or`. For a spec or plan any other words, or a `path`, make the rule the loop's alone, since a spec or plan
+comes before the change. A `merge:` rule asks for the owner's `approved:merge` on the labels of the PR and its issues
+and the PR's files; a `merge:` condition the gate can't read asks for it too, since nothing else would enforce it.
+Without a matching `merge:` rule the gates are the merge approval. The spec is the issue
 body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the first backticked name of each
 list item under `## Components` and `## Extra categories`. Reads and writes through `gh`. Stdlib only.
@@ -80,8 +97,8 @@ WAITING = 3
 VERDICT = "Verifier verdict"
 NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-PULL = f"""number body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
-  files(first: 100) {{ totalCount nodes {{ path }} }}
+PULL = f"""number state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+  files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT]) {{ nodes {{ ... on LabeledEvent {{ createdAt label {{ name }} }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
@@ -109,6 +126,8 @@ CHANGED = {
     "plan": "The plan changed after the last approval, so it was checked again.\n",
 }
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+# a finished check run or a set status that is not green: it turns green only when run again, never by waiting
+RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
 
 
 def named(body: str) -> list[int]:
@@ -141,10 +160,9 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 def rules(loop: str) -> list[tuple[str, str]]:
-    """loop.md § Approvals as (point, condition) pairs; a `merge:` line is ignored, since the owner approves every
-    merge with the `approved:merge` label."""
+    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan` and `merge`."""
     return re.findall(
-        r"^[ \t]*[-*] +(spec|plan):[ \t]*(.+?)[ \t]*$",
+        r"^[ \t]*[-*] +(spec|plan|merge):[ \t]*(.+?)[ \t]*$",
         section(loop, "Approvals"),
         re.MULTILINE,
     )
@@ -185,6 +203,24 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
 
 def owner_needed(point: str, loop_rules: list[tuple[str, str]], labels: set[str]) -> bool:
     return any(matches(condition, labels, None) for rule, condition in loop_rules if rule == point)
+
+
+def paths(pull: dict[str, Any]) -> list[str] | None:
+    """The files the PR changes; None past the one page of 100 the gate reads."""
+    files = pull["files"]
+    found = [file["path"] for file in files["nodes"]]
+    return None if (files.get("totalCount") or 0) > len(found) else found
+
+
+def merge_asked(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> bool:
+    """Whether a `merge:` rule asks for the owner's `approved:merge` label, on the labels of the PR and its issues
+    and on the PR's files. A condition the gate can't read asks for it, since nothing else would enforce it."""
+    labels = names(pull).union(*(names(issue) for issue in issues))
+    return any(
+        matches(condition, labels, paths(pull)) is not False
+        for rule, condition in rules(loop or "")
+        if rule == "merge"
+    )
 
 
 def version(holder: dict[str, Any]) -> str:
@@ -228,10 +264,11 @@ def spec_holder(issue: dict[str, Any]) -> dict[str, Any]:
     return headed(issue, "## Spec") or issue
 
 
-def parsed(body: str, point: str) -> dict[str, str] | None:
-    """An `Approved: <point>` comment's lower-cased `Key: value` lines; None for any other comment."""
+def parsed(body: str, heading: str) -> dict[str, str] | None:
+    """The lower-cased `Key: value` lines of a comment whose first line is `heading` (`Approved: <point>`, or
+    `Verifier verdict`); None for any other comment."""
     lines = body.strip().splitlines()
-    if not lines or lines[0].strip() != f"Approved: {point}":
+    if not lines or lines[0].strip() != heading:
         return None
     return {
         key.strip().lower(): value.strip()
@@ -241,7 +278,9 @@ def parsed(body: str, point: str) -> dict[str, str] | None:
 
 def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
     """The approval records for `point` among a node's comments."""
-    return [found for body in bodies(node) if (found := parsed(body, point)) is not None]
+    return [
+        found for body in bodies(node) if (found := parsed(body, f"Approved: {point}")) is not None
+    ]
 
 
 def current(node: dict[str, Any], point: str, key: str, value: str, by: str) -> bool:
@@ -269,9 +308,10 @@ def approvals(
     return found
 
 
-def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]]) -> list[str]:
-    """One line per reason an issue the PR closes waits for the owner or lacks a label of `kinds` (label_names);
-    empty when none does. A missing `approved:spec` is proofs()'s line."""
+def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) -> list[str]:
+    """One line per reason an issue the PR closes waits for the owner or lacks a label of `kinds` (label_names;
+    None, without docs/agents/issue-tracker.md, checks no label's shape); empty when none does. A missing
+    `approved:spec` is proofs()'s line."""
     if not issues:
         return [
             "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an approved spec"
@@ -286,6 +326,8 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]]) -> list[s
             # size, and no approval records, so its state is the label alone
             if READY not in labels:
                 found.append(f"#{issue['number']} lacks `{READY}`: spec it first")
+            continue
+        if kinds is None:
             continue
         for kind in ("category", "size"):
             allowed = kinds[kind]
@@ -304,17 +346,22 @@ def proofs(
     point: str,
     pull: dict[str, Any],
     issues: list[dict[str, Any]],
-    loop: str,
+    loop: str | None,
     revert: int | None = None,
 ) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
-    #`revert` names no issue and needs no verdict. What the merge waits for is waits()'s."""
-    loop_rules, found = rules(loop), []
+    #`revert` names no issue and needs no verdict. Without docs/agents/loop.md (`loop` None) an issue needs only the
+    `approved:spec` label. What the merge waits for is waits()'s."""
+    loop_rules, found = rules(loop or ""), []
     for issue in issues:
         labels = names(issue)
         if any(label.startswith("wayfinder:") for label in labels):
             continue
         where = f"#{issue['number']}"
+        if loop is None:
+            if READY not in labels:
+                found.append(f"{where} lacks the `{READY}` label")
+            continue
         found += approvals(
             where,
             issue,
@@ -335,19 +382,74 @@ def proofs(
     evidence = section(pull["body"] or "", "Evidence")
     if not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
-    if revert is None and not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
-        found.append(f"{where}: no verifier verdict posted (approvals.py verdict)")
+    if revert is None:
+        found += reviewed(where, pull)
+    found += [
+        f"{where}: {(review.get('author') or {}).get('login', 'a reviewer')} requested changes: answer the review"
+        for review in pull["latestReviews"]["nodes"]
+        if review["state"] == "CHANGES_REQUESTED"
+    ]
+    return found
+
+
+def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
+    """One line per reason the newest verifier verdict lets nothing land: it is not satisfied, a blocker or a major
+    is open, or it is on an older head and the commits since change a file the PR changes (touched_since). A head
+    that only took in main's changes to other files needs no further pass (coordinator.md step 8)."""
+    verdicts = [found for body in bodies(pull) if (found := parsed(body, VERDICT)) is not None]
+    if not verdicts:
+        return [f"{where}: no verifier verdict posted (approvals.py verdict)"]
+    newest = verdicts[-1]
+    head = newest.get("head", "").lower()
+    counts = [
+        re.search(rf"(\d+)\s+{kind}s?\b", newest.get("verdict", ""))
+        for kind in ("blocker", "major")
+    ]
+    if not re.fullmatch(r"[0-9a-f]{7,40}", head) or None in counts or "satisfied" not in newest:
+        return [
+            f"{where}: the newest verifier verdict lacks a `Head:`, `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
+        ]
+    found = []
+    if newest["satisfied"].lower().split()[:1] != ["yes"]:
+        found.append(f"{where}: the newest verifier verdict is not satisfied: fix and verify again")
+    blocker, major = (int(count.group(1)) for count in counts if count)
+    if blocker or major:
+        found.append(
+            f"{where}: the newest verifier verdict has {blocker} blocker and {major} major open: fix and verify again"
+        )
+    if not pull["headRefOid"].lower().startswith(head):
+        since = touched_since(pull, head)
+        if since is None:
+            found.append(
+                f"{where}: the newest verifier verdict is on {head}, and GitHub can't compare it with the head: verify the head"
+            )
+        elif since:
+            changed = ", ".join(f"`{path}`" for path in since)
+            found.append(
+                f"{where}: the newest verifier verdict is on {head}, and later commits change {changed}: verify the change since"
+            )
     return found
 
 
 def waits(
-    pull: dict[str, Any], loop: str, pushed: Callable[[dict[str, Any]], str | None] | None = None
+    pull: dict[str, Any],
+    issues: list[dict[str, Any]],
+    loop: str | None,
+    pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: the aggregate `check` green on the head (with `CI: none`, a local-ci
-    pass), and the owner's `approved:merge` label added after the head's push. `pushed(pull)` is when the head was
-    pushed (default: GitHub's repository activity)."""
+    """One line per thing the merge waits for: ran()'s aggregate `check`, and the owner's label (owner_waits)."""
+    return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
+
+
+def no_ci(loop: str | None) -> bool:
+    return re.search(NO_CI, loop or "", re.MULTILINE | re.IGNORECASE) is not None
+
+
+def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
+    """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
+    `CI: none` a local-ci pass."""
     where = f"PR #{pull['number']}"
-    if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
+    if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
         if any(
             [line.strip() for line in body.strip().splitlines()[:2]] == head
@@ -359,7 +461,21 @@ def waits(
                 f"{where}: the project has no CI (loop.md `CI: none`), and no local check passed on the head (approvals.py local-ci)"
             ]
     else:
-        found = ci(where, pull)
+        found = ci(where, pull, required)
+    return found
+
+
+def owner_waits(
+    pull: dict[str, Any],
+    issues: list[dict[str, Any]],
+    loop: str | None,
+    pushed: Callable[[dict[str, Any]], str | None] | None = None,
+) -> list[str]:
+    """A line while a `merge:` rule asks (merge_asked) and the owner's `approved:merge` label is not on the PR, added
+    after the head's push. `pushed(pull)` is when the head was pushed (default: GitHub's repository activity)."""
+    where, found = f"PR #{pull['number']}", []
+    if not merge_asked(pull, issues, loop):
+        return found
     if MERGE_LABEL not in names(pull):
         return found + [f"{where} waits for the owner's `{MERGE_LABEL}` label"]
     added = max(
@@ -520,30 +636,49 @@ def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
     ]
 
 
-def ci(where: str, pull: dict[str, Any]) -> list[str]:
-    """A line unless the newest run of the aggregate `check` on the head is green: the one check the merge reads, since
-    every other check is advisory or the ruleset's."""
+def head_checks(
+    pull: dict[str, Any], required: set[str] | None
+) -> tuple[list[tuple[str, str]], int | None]:
+    """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
+    the aggregate `check`, the one check `check merge` reads, since every other check is advisory or the ruleset's;
+    empty: every check); and how many checks GitHub returned when it holds more than that one page, else None."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
     every = contexts["contexts"]["nodes"] if contexts else []
-    nodes = [node for node in every if (node.get("name") or node.get("context")) == "check"]
-    if not nodes:
-        if contexts and (contexts["contexts"].get("totalCount") or 0) > len(every):
-            return [f"{where} has more than {len(every)} CI checks: the gate reads one page"]
-        return [f"{where}: no `check` on the head commit yet"]
+    more = (
+        len(every)
+        if contexts and (contexts["contexts"].get("totalCount") or 0) > len(every)
+        else None
+    )
+    wanted = {"check"} if required is None else required
     # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of one check on the
     # head; only the newest says whether it is green. One job name in two workflows is two checks.
     newest: dict[tuple[str, str], dict[str, Any]] = {}
-    for node in nodes:
+    for node in every:
+        name = node.get("name") or node.get("context")
+        if wanted and name not in wanted:
+            continue
         run = (node.get("checkSuite") or {}).get("workflowRun") or {}
-        key = ((run.get("workflow") or {}).get("name", ""), node.get("name") or node.get("context"))
+        key = ((run.get("workflow") or {}).get("name", ""), name)
         if key not in newest or started(node) >= started(newest[key]):
             newest[key] = node
-    checks = [
+    return [
         (name, node.get("conclusion") or node.get("state") or node.get("status"))
         for (_, name), node in newest.items()
-    ]
-    return [
+    ], more
+
+
+def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> list[str]:
+    """A line per check head_checks() reads that is not green on the head, or not there yet."""
+    checks, more = head_checks(pull, required)
+    wanted = {"check"} if required is None else required
+    if wanted:
+        missing = [f"`{name}`" for name in sorted(wanted - {name for name, _ in checks})]
+    else:  # every check of none would pass a head CI has not reached yet
+        missing = [] if checks else ["check"]
+    if more is not None and (missing or not wanted):
+        return [f"{where} has more than {more} CI checks: the gate reads one page"]
+    return [f"{where}: no {name} on the head commit yet" for name in missing] + [
         f"{where}: `{name}` is {state} on the head commit"
         for name, state in checks
         if state not in GREEN
@@ -609,6 +744,54 @@ def merge_base(base: str, head: str) -> str:
     return gh(
         "api", f"repos/{{owner}}/{{repo}}/compare/{base}...{head}", "--jq", ".merge_base_commit.sha"
     ).strip()
+
+
+def compared(base: str, head: str) -> set[str] | None:
+    """The paths GitHub's compare of `base...head` changes, a rename by both names; None at the 300 files it lists.
+    ponytail: one compare; read the commits' own files when a PR outgrows it."""
+    out = gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/compare/{base}...{head}",
+        "--jq",
+        "(.files | length), (.files[] | .filename, .previous_filename // empty)",
+    ).splitlines()
+    return None if int(out[0]) >= 300 else set(out[1:])
+
+
+def touched_since(pull: dict[str, Any], reviewed: str) -> list[str] | None:
+    """The files the PR changes, at `reviewed` or at its head, that the commits after `reviewed` change, sorted; None
+    when GitHub can't say (a commit it no longer has, or more files than it lists)."""
+    now = paths(pull)
+    try:
+        then = compared(pull["baseRefOid"], reviewed)
+        later = compared(reviewed, pull["headRefOid"])
+    except subprocess.CalledProcessError:
+        return None
+    if now is None or then is None or later is None:
+        return None
+    return sorted((then | set(now)) & later)
+
+
+def required_checks(base: str) -> set[str]:
+    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's."""
+    rulesets = gh(
+        "api",
+        "--paginate",
+        f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
+        "--jq",
+        '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context',
+    )
+    protection = gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/branches/{base}",
+        "--jq",
+        ".protection.required_status_checks.contexts // [] | .[]",
+    )
+    return set((rulesets + protection).split())
+
+
+def auto_merge_allowed() -> bool:
+    return gh("api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge").strip() == "true"
 
 
 def tree(sha: str) -> dict[str, str] | None:
@@ -711,28 +894,91 @@ def read(path: Path) -> str:
     try:
         return path.read_text()
     except OSError as exc:
-        raise Refused(f"{path}: {exc.strerror}: run from the repo root") from exc
+        raise Refused(f"{path}: {exc.strerror}") from exc
+
+
+def toplevel() -> Path:
+    """The checkout's root, so a run from a subdirectory reads the same files."""
+    try:
+        return Path(git("rev-parse", "--show-toplevel").strip())
+    except subprocess.CalledProcessError as exc:
+        raise Refused("not in a git checkout: run from the repo's checkout") from exc
+
+
+def project() -> tuple[str | None, str | None]:
+    """The checkout's docs/agents/issue-tracker.md and loop.md, None for one it lacks: a repo without the loop's
+    files has no rules, and its issues no label shape."""
+    root = toplevel()
+    tracker, loop = (
+        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP)
+    )
+    return tracker, loop
+
+
+def gated(
+    point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Every missing proof at `point`, and the issues the PR names (none for an exact revert)."""
+    revert, found = reverts(pull)
+    issues = [] if revert else closing_issues(pull)
+    if not revert:
+        found += problems(issues, None if tracker is None else label_names(tracker))
+    return found + proofs(point, pull, issues, loop, revert), issues
 
 
 def check(point: str, pr: int | None) -> int:
-    tracker, loop = read(TRACKER), read(LOOP)
+    tracker, loop = project()
     if pr is None and (pr := current_pr()) is None:
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
-    revert, found = reverts(pull)
-    issues = [] if revert else closing_issues(pull)
-    if not revert:
-        found += problems(issues, label_names(tracker))
-    found += proofs(point, pull, issues, loop, revert)
-    waiting = waits(pull, loop) if point == "merge" else []
+    found, issues = gated(point, pull, tracker, loop)
+    waiting = waits(pull, issues, loop) if point == "merge" else []
     for line in found + waiting:
         print(line)
     return 1 if found else WAITING if waiting else 0
 
 
+def land(pr: int) -> int:
+    """Every merge proof, then ready and merge pinned to the head: at once when nothing waits, else auto-merge while
+    only the base's required checks are pending and the repo allows it; exit 3 while anything else waits."""
+    tracker, loop = project()
+    pull = pull_request(pr)
+    where, head = f"PR #{pr}", pull["headRefOid"]
+    if pull["state"] == "MERGED":
+        print(f"{where} is merged")
+        return 0
+    if pull["state"] != "OPEN":
+        raise Refused(f"{where} is closed: nothing to land")
+    found, issues = gated("merge", pull, tracker, loop)
+    if found:  # never ready on a missing proof: ready starts CI and, with auto-merge, the merge
+        for line in found:
+            print(line)
+        return 1
+    required = required_checks(pull["baseRefName"])
+    checking, owner = ran(pull, loop, required), owner_waits(pull, issues, loop)
+    if pull["isDraft"]:
+        gh("pr", "ready", str(pr))
+    # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the repo's
+    # delete_branch_on_merge removes the remote one. Add it when a repo lacks that setting.
+    merge = ["pr", "merge", str(pr), "--squash", "--match-head-commit", head]
+    if not checking + owner:
+        gh(*merge)
+        print(f"{where} merges at {head}")
+        return 0
+    states = [state for _, state in head_checks(pull, required)[0]]
+    pending = not owner and not no_ci(loop) and not RED.intersection(states)
+    if pending and required and auto_merge_allowed():
+        gh(*merge, "--auto")
+        print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
+        return 0
+    for line in checking + owner:
+        print(line)
+    return WAITING
+
+
 def approve(point: str, number: int, by: str) -> int:
-    loop_rules = rules(read(LOOP))
+    loop_rules = rules(project()[1] or "")
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
@@ -741,7 +987,9 @@ def approve(point: str, number: int, by: str) -> int:
     owner = owner_needed(point, loop_rules, names(issue))
     record = f"{point.capitalize()}: {value}\n"
     earlier = [
-        (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
+        (note, found)
+        for note in notes(issue)
+        if (found := parsed(note["body"], f"Approved: {point}")) is not None
     ]
     if any(found.get("by") == by and found.get(point) != value for _, found in earlier):
         record += CHANGED[point]
@@ -836,6 +1084,8 @@ def main(argv: list[str]) -> int:
     posting.add_argument("report", type=Path)
     recording = commands.add_parser("local-ci", aliases=["record-check"])
     recording.add_argument("pr", type=int)
+    landing = commands.add_parser("land")
+    landing.add_argument("pr", type=int)
     args = parser.parse_args(argv)
     try:
         if args.command == "check":
@@ -844,6 +1094,8 @@ def main(argv: list[str]) -> int:
             return approve(args.point, args.number, args.by)
         if args.command in ("local-ci", "record-check"):
             return local_ci(args.pr)
+        if args.command == "land":
+            return land(args.pr)
         return verdict(args.pr, args.report)
     except Refused as exc:
         print(exc)
