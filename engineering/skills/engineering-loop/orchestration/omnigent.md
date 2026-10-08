@@ -30,13 +30,14 @@ does; add `--verdict` when the child is a verifier, because `send` and `wait` ar
 given the role. A child still in a turn gets the answer at its next tool boundary; until
 then `send` reports it queued and waits, and a rerun of the same `send` waits for the
 first copy instead of delivering a second. A report left from the earlier turn does not
-end the wait: only one written after the send counts. Exit 4 means the answer did not
-land, usually because Omnigent reaped the runner (idle over an hour): start a fresh run
-whose brief carries the question and the answer.
+end the wait: only one written after the send counts. A session whose runner Omnigent
+reaped (idle over an hour) is revived in place first (`retry_session`, operating-omnigent
+skill), keeping its conversation. Exit 4 means the revive failed or the answer did not
+land: start a fresh run whose brief carries the question and the answer.
 
 **Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old
-transcript, and a send to a reaped session answers `queued` and never arrives.
+transcript.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default.

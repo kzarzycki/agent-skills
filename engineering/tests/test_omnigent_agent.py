@@ -477,13 +477,56 @@ def test_send_answers_live_session_and_clears_question(tmp_path: Path) -> None:
     assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
 
 
-def test_send_refuses_reaped_runner(tmp_path: Path) -> None:
+def reaped(og: FakeOmnigent, reply: dict, online_after: int = 1) -> list[str]:
+    """Make every session reaped until a retry_session answering ``reply``, then online after
+    ``online_after`` more info() reads; returns the retried session ids."""
+    retried: list[str] = []
+    polls = [0]
+    info = og.info
+
+    def reaped_info(s: str) -> dict:
+        polls[0] += 1
+        return {**info(s), "runner_online": bool(retried) and polls[0] > online_after}
+
+    def retry(s: str) -> dict:
+        retried.append(s)
+        polls[0] = 0
+        return reply
+
+    og.info, og.retry = reaped_info, retry  # type: ignore[method-assign,attr-defined]
+    return retried
+
+
+def test_send_revives_a_reaped_runner_then_sends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     og = FakeOmnigent()
     sid = og.create("claude", "t")
-    og.info = lambda s: {"status": "idle", "runner_online": False}  # type: ignore[method-assign]
-    with pytest.raises(omnigent_agent.Gone):
+    retried = reaped(og, {"queued": False, "recovered": True, "recovery": "runner_relaunched"}, 2)
+    omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+    assert retried == [sid]
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
+
+
+def test_send_exits_gone_naming_the_reply_when_the_revive_fails(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "t")
+    reaped(og, {"queued": False, "recovered": False, "recovery": "no_runner"})
+    with pytest.raises(omnigent_agent.Gone, match='revive failed: .*"no_runner"'):
         omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
     assert og.sessions[sid] == [{"type": "resource_event"}]
+
+
+def test_a_revive_whose_runner_never_comes_online_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    og = FakeOmnigent()
+    sid = og.create("claude", "t")
+    reaped(og, {"recovered": True, "recovery": "runner_relaunched"}, online_after=10**9)
+    with pytest.raises(omnigent_agent.Gone, match="no runner online after 0s"):
+        omnigent_agent.revive(og, sid, seconds=0)
 
 
 def test_send_fails_when_answer_never_arrives(tmp_path: Path) -> None:

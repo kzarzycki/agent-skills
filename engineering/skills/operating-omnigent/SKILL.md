@@ -16,7 +16,7 @@ raw kills, and killing a runner orphans it rather than disposing its session.
 | Piece | Find it | Notes |
 |---|---|---|
 | Server (API + web UI) | `omnigent.cli server` on `127.0.0.1:6767` | One per machine. DB `~/.omnigent/chat.db`, artifacts `~/.omnigent/artifacts`. |
-| Runner | `omnigent.runner._entry`, one PID per open session | Each spawns its own `tmux` and `claude`/`codex` terminal, so `ps` looks crowded. Idle-reaps after `runner.idle_timeout_s` (3600 s). |
+| Runner | `omnigent.runner._entry`, one PID per open session | Each spawns its own `tmux` and `claude`/`codex` terminal, so `ps` looks crowded. Idle-reaps after `runner.idle_timeout_s` (3600 s); the session then shows `runner_online: false` and is revived in place (§ Commands). |
 | Logs | server `~/.omnigent/logs/server/local-server-*.log`; runner `~/.omnigent/logs/host-runner/runner-<id>.log`; CLI `~/.omnigent/logs/cli-*.log` | One file per session ever. Count live `omnigent.runner._entry` PIDs, never log files or numbers in old notes. |
 
 `curl` is often missing from PATH in non-login shells; probe with `python3` urllib or
@@ -55,7 +55,8 @@ g("/health").read()   # {"status":"ok"}: the server is alive
 |---|---|---|
 | Restart server | `omnigent stop && omnigent server start` (`omnigent server status` to check) | Drops every websocket and interrupts mid-turn work; sessions persist in SQLite. |
 | Attach to a live session | `omnigent attach conv_xxx` | Interactive; needs a real terminal, not a headless shell. Starts nothing. |
-| Reopen a stored session | `omnigent resume conv_xxx` | claude-native lands in `omnigent claude`. |
+| Reopen a stored session | `omnigent resume conv_xxx` | Interactive, like `attach`: fails headless. claude-native lands in `omnigent claude`. |
+| Revive a reaped session | `POST /v1/sessions/conv_xxx/events` with `{"type": "retry_session", "data": {}}`, then poll `GET /v1/sessions/conv_xxx` until `runner_online` is true, then send as usual | Relaunches the runner on the same session and keeps its whole conversation; replies `{"queued": false, "recovered": true, "recovery": "runner_relaunched"}` (`"already_connected"` when it was live). It is the web UI's "Resume session" button and works headless, unlike `omnigent resume`; the engineering-loop launcher's `send` does it by itself. Fallback: `PATCH /v1/sessions/conv_xxx` with `{"runner_id": ""}` (empty string clears, null leaves unchanged), then `POST /v1/hosts/<host_id>/runners` with `{"session_id", "workspace"}`; without the clear it fails 400 "session already has a runner bound". |
 | Archive (reversible) | `PATCH /v1/sessions/conv_xxx` with `{"archived": true}` | Hidden; transcript kept. |
 | Dispose (irreversible, owner-level) | `DELETE /v1/sessions/conv_xxx` | Removes tasks, terminals, files and the row. A running turn keeps running and the runner process is orphaned until the idle timeout; killing it sooner needs the user's approval for `kill <pid>`. |
 
