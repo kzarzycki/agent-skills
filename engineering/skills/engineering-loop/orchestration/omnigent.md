@@ -65,7 +65,22 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 child under that runner's primary session (the coordinator), so the owner's sidebar shows
 only coordinators. When a child's turn ends, Omnigent wakes you with "sub-agent …
 finished … Call sys_read_inbox". Don't read the inbox; end your turn. The background
-command's exit carries the result, with its checks.
+command's exit carries the result, with its checks. A child no `run`, `send` or `wait` is
+waiting on (its command died, or it was started elsewhere) still wakes only that untitled
+notice, so keep `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the
+background for it.
+
+**Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
+run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
+approval prompt or fails, printing for each the id, title, `turn ended`,
+`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A chief
+of staff watches its coordinators this way: a top-level session tells nobody when its
+turn ends or it blocks, and the UI's "Completed" reaches no agent. Handle what it printed,
+then start `watch` again. States a session is already in when `watch` starts are not news,
+except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
+every few seconds; the session stream pushes the same changes faster but per session and
+without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
+API: a person approves it in the UI, so a watched prompt still waits for one.
 
 **List:** `sys_session_list`. **Close:** `sys_session_close`; where it refuses with
 `session_not_a_sub_agent`, leave the finished session idle.

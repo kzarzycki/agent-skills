@@ -731,3 +731,134 @@ def test_the_server_comes_from_the_one_login_when_config_names_none(
         omnigent_agent.Omnigent()
     config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
     assert omnigent_agent.Omnigent().base == "https://named.example"
+
+
+class Roster:
+    """Sessions for `watch`, each a script of info() snapshots; the last one repeats."""
+
+    def __init__(self, **scripts: list[dict]) -> None:
+        self.scripts = {sid: list(s) for sid, s in scripts.items()}
+        self.kids: list[str] = []
+
+    def info(self, sid: str) -> dict:
+        script = self.scripts[sid]
+        return dict(script.pop(0) if len(script) > 1 else script[0], title=f"t-{sid}")
+
+    def items(self, sid: str) -> list[dict]:
+        return []
+
+    def children(self, parent: str) -> list[str]:
+        return list(self.kids)
+
+
+def said(role: str, text: str, i: str) -> dict:
+    return {"id": i, "type": "message", "role": role, "content": [{"type": "x", "text": text}]}
+
+
+def test_watch_wakes_on_a_turn_end_with_title_and_last_message() -> None:
+    og = Roster(a=[{"status": "running"}, {"status": "running"}, {"status": "idle"}])
+    msgs = [[said("user", "go", "1")], [said("user", "go", "1")], [said("assistant", "done", "2")]]
+    og.items = lambda sid: msgs.pop(0) if len(msgs) > 1 else msgs[0]  # type: ignore[method-assign]
+    assert omnigent_agent.watch(og, ["a"], timeout=5) == ["a t-a: turn ended\nlast message: done"]
+
+
+def test_watch_ignores_states_it_starts_in_and_the_launch_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "IDLE_GRACE_SECONDS", 3600)
+    og = Roster(
+        a=[{"status": "idle"}], b=[{"status": "failed", "last_task_error": {"message": "boom"}}]
+    )
+    with pytest.raises(omnigent_agent.Fail, match="no session changed in 0s: a, b"):
+        omnigent_agent.watch(og, ["a", "b"], timeout=0)
+
+
+def test_watch_reports_a_prompt_at_once_with_the_tool_call() -> None:
+    prompt = {
+        "elicitation_id": "e1",
+        "params": {"message": "Claude wants to call **Bash**", "content_preview": "Bash(rm x)"},
+    }
+    og = Roster(a=[{"status": "running", "pending_elicitations": [prompt]}])
+    assert omnigent_agent.watch(og, ["a"], timeout=0) == [
+        "a t-a: blocked on a prompt: Bash(rm x)\nlast message: (none)"
+    ]
+
+
+def test_watch_reports_a_failure_with_its_error() -> None:
+    og = Roster(
+        a=[
+            {"status": "running"},
+            {"status": "failed", "last_task_error": {"code": "x", "message": "runner died"}},
+        ]
+    )
+    assert omnigent_agent.watch(og, ["a"], timeout=5)[0].startswith("a t-a: failed: runner died")
+
+
+def test_watch_picks_up_a_child_started_after_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    og = Roster(k=[{"status": "idle"}])
+    og.items = lambda sid: [said("assistant", "report at r.md", "9")]  # type: ignore[method-assign]
+    polls = iter([[], ["k"]])
+    og.children = lambda parent: next(polls, ["k"])  # type: ignore[method-assign]
+    assert omnigent_agent.watch(og, [], parent="p", timeout=5) == [
+        "k t-k: turn ended\nlast message: report at r.md"
+    ]
+
+
+class Clock:
+    """`time.monotonic` for `watch`, moved on by each poll's sleep."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, step: float) -> None:
+        self.now = 1000.0
+        monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: self.now)
+        monkeypatch.setattr(
+            omnigent_agent.time, "sleep", lambda s: setattr(self, "now", self.now + step)
+        )
+
+
+def test_watch_keeps_an_idle_it_starts_in_past_the_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    Clock(monkeypatch, step=20)
+    og = Roster(a=[{"status": "idle"}])
+    og.items = lambda sid: [said("user", "go", "1")]  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="no session changed"):
+        omnigent_agent.watch(og, ["a"], timeout=200)
+
+
+def test_watch_ignores_a_launch_idle_within_the_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    Clock(monkeypatch, step=5)
+    flap = [{"status": "running"}, {"status": "idle"}, {"status": "idle"}, {"status": "running"}]
+    og = Roster(a=flap)
+    og.items = lambda sid: [said("user", "go", "1")]  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="no session changed"):
+        omnigent_agent.watch(og, ["a"], timeout=100)
+
+
+def test_watch_reports_an_empty_turn_once_past_the_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    Clock(monkeypatch, step=20)
+    og = Roster(a=[{"status": "running"}, {"status": "idle"}])
+    og.items = lambda sid: [said("user", "go", "1")]  # type: ignore[method-assign]
+    assert omnigent_agent.watch(og, ["a"], timeout=200) == ["a t-a: turn ended\nlast message: go"]
+
+
+def test_watch_gives_a_follow_up_to_an_idle_baseline_its_own_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    Clock(monkeypatch, step=5)
+    # idle after a turn (baseline); the follow-up lands while still idle; running; its answer.
+    og = Roster(
+        a=[{"status": "idle"}, {"status": "idle"}, {"status": "running"}, {"status": "idle"}]
+    )
+    done = [said("user", "go", "1"), said("assistant", "report at r.md", "2")]
+    follow_up = [*done, said("user", "pass 2: fix F1", "3")]
+    history = [done, follow_up, follow_up, [*follow_up, said("assistant", "fixed", "4")]]
+    og.items = lambda sid: history.pop(0) if len(history) > 1 else history[0]  # type: ignore[method-assign]
+    assert omnigent_agent.watch(og, ["a"], timeout=100) == [
+        "a t-a: turn ended\nlast message: fixed"
+    ]
+
+
+def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
+    prompt = {"elicitation_id": "e2", "params": {"message": "Claude wants to call **Bash**"}}
+    og = Roster(a=[{"status": "running"}, {"status": "running", "pending_elicitations": [prompt]}])
+    assert omnigent_agent.watch(og, ["a"], timeout=5) == [
+        "a t-a: blocked on a prompt: Claude wants to call **Bash**\nlast message: (none)"
+    ]
