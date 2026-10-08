@@ -121,7 +121,9 @@ UI, and delegate the rest.
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Exit 3: it waits for something auto-merge
      would not hold for (a red check, the owner's label, a repository without auto-merge, a
-     base with no required checks); run it again once that clears. Never mark a PR ready or
+     base with no required checks); run it again once that clears. When every proof holds and
+     only `loop:approvals` is red (resolving a review thread starts no workflow), it reruns the
+     Actions run that posted it and exits 3. Never mark a PR ready or
      merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what refuses a PR
      whose proof is missing. A push after it needs `gh pr ready --undo` first; the push
      removes `approved:merge`, and after the verdict on the new head `land` runs again.

@@ -115,7 +115,7 @@ PULL = f"""number author {{ login }} state isDraft body baseRefName baseRefOid h
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
-    ... on StatusContext {{ context state createdAt }} }} }} }} }} }} }}
+    ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords, plus `Part of` for a spec the PR builds on but leaves open; ponytail: same-repo `#n`
 # only, add owner/repo#n and issue URLs when a PR here uses one.
@@ -141,6 +141,9 @@ CHANGED = {
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 # a finished check run or a set status that is not green: it turns green only when run again, never by waiting
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
+# the commit status the project's approvals workflow posts; its target is the Actions run that posted it
+APPROVALS = "loop:approvals"
+RUN = re.compile(r"/actions/runs/(\d+)")
 
 
 def named(body: str) -> list[int]:
@@ -1024,7 +1027,8 @@ def check(point: str, pr: int | None) -> int:
 def land(pr: int) -> int:
     """Every merge proof; a draft is then marked ready and waits (exit 3) for the CI that starts. A ready PR merges
     pinned to the head: at once when nothing waits, else auto-merge while only the base's required checks are pending
-    and the repo allows it; exit 3 while anything else waits."""
+    and the repo allows it; exit 3 while anything else waits. When a red `loop:approvals` status is all that
+    waits, its Actions run is rerun: exit 3."""
     tracker, loop = project()
     pull = pull_request(pr)
     where, head = f"PR #{pr}", pull["headRefOid"]
@@ -1064,6 +1068,53 @@ def land(pr: int) -> int:
         gh(*merge, "--auto")
         print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
         return 0
+    red = [(name, state) for name, state in checks if state not in GREEN]
+    statuses = [
+        node
+        for node in pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+        if node.get("__typename") == "StatusContext" and node.get("context") == APPROVALS
+    ]
+    # Resolving a review thread starts no workflow, so the FAILURE the approvals workflow posted while one was open
+    # stays on the head. When every proof holds and that status is all that waits, run its workflow again.
+    if (
+        statuses
+        and not owner
+        and not no_ci(loop)
+        and required <= {name for name, _ in checks}
+        and [name for name, _ in red] == [APPROVALS]
+        and red[0][1] in RED
+    ):
+        stale = f"{where}: every proof holds but `{APPROVALS}` is {red[0][1]} on the head commit"
+        found = RUN.search(max(statuses, key=started).get("targetUrl") or "")
+        if found is None:
+            print(
+                f"{stale}, and the status names no Actions run to rerun:"
+                " rerun the workflow that posts it, then run land again"
+            )
+            return WAITING
+        # gh resolves the id in this checkout's repo; a target naming another repo's run, or one that is gone, fails
+        try:
+            run = json.loads(gh("run", "view", found[1], "--json", "status,url"))
+        except subprocess.CalledProcessError:
+            run = None
+        if run is None or not RUN.search(run.get("url") or ""):
+            print(
+                f"{stale}, and its target names no Actions run of this repo:"
+                " rerun the workflow that posts it, then run land again"
+            )
+            return WAITING
+        if run.get("status") != "completed":
+            print(
+                f"{stale}: its run {found[1]} is {run.get('status')}, so the status is not posted yet; run land again"
+            )
+            return WAITING
+        # ponytail: a status forged to name another workflow's run reruns that run; whoever can post statuses
+        # can rerun runs anyway. Pin the context to the approvals app in the ruleset to close it.
+        gh("run", "rerun", found[1])
+        print(
+            f"{stale}: reran run {found[1]}, since resolving a review thread starts no workflow; run land again"
+        )
+        return WAITING
     for line in checking + owner:
         print(line)
     return WAITING
