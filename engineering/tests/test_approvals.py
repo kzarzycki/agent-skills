@@ -26,14 +26,13 @@ HEAD = "a" * 40
 WRITTEN = "2026-10-01T09:00:00Z"
 AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
 IDS = itertools.count(1)
+PUSHED, LABELED = "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z"
 
 
 @pytest.fixture(autouse=True)
-def local(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run as on a developer's machine, even inside CI, in a repo whose base branch requires no checks; a test sets
-    GITHUB_ACTIONS or the ruleset itself."""
-    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
-    monkeypatch.setattr(approvals, "required_checks", lambda _base: False)
+def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The head was pushed at PUSHED, before the PR's labels were added (LABELED); a test says otherwise."""
+    monkeypatch.setattr(approvals, "head_pushed", lambda _pull: PUSHED)
 
 
 def problems(issues: list[dict[str, Any]]) -> list[str]:
@@ -101,7 +100,8 @@ def pull(
     files: tuple[str, ...] = (),
     comments: tuple[str, ...] = (),
     labels: tuple[str, ...] = (),
-    checks: tuple[tuple[str, str], ...] = (("build", "SUCCESS"),),
+    checks: tuple[tuple[str, str], ...] = (("check", "SUCCESS"),),
+    labeled: str = LABELED,
 ) -> dict[str, Any]:
     contexts = [
         {"__typename": "CheckRun", "name": name, "status": "COMPLETED", "conclusion": state}
@@ -113,19 +113,25 @@ def pull(
         number=7,
         body=body,
         baseRefName="main",
+        headRefName="feature",
         headRefOid=HEAD,
         baseRepository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
         files={"nodes": [{"path": path} for path in files]},
         commits={"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}}]},
         closingIssuesReferences={"nodes": []},
+        timelineItems={
+            "nodes": [{"createdAt": labeled, "label": {"name": name}} for name in labels]
+        },
     )
 
 
 VERDICT = f"Verifier verdict\nHead: {HEAD}\nVERDICT: 0 blocker, 1 major, 0 minor\nSATISFIED: yes\n"
-MERGED = (
-    VERDICT,
-    record("merge", "coordinator", head=HEAD, verdict="VERDICT: 0 blocker; SATISFIED: yes"),
-)
+OWNED = ("approved:merge",)
+
+
+def merge(pr: dict[str, Any], issues: list[dict[str, Any]], loop: str = LOOP) -> list[str]:
+    """check merge's lines: what fails, then what it waits for."""
+    return approvals.proofs("merge", pr, issues, loop) + approvals.waits(pr, loop)
 
 
 # --- labels and state ---
@@ -191,8 +197,8 @@ def test_a_wayfinder_ticket_needs_only_its_state() -> None:
     assert problems([issue(58, "wayfinder:task", "ready-for-agent")]) == [
         "#58 lacks `approved:spec`: spec it first"
     ]
-    merged = pull(comments=MERGED, labels=("approved:merge",))
-    assert approvals.proofs("merge", merged, [issue(58, "wayfinder:task")], LOOP) == []
+    merged = pull(comments=(VERDICT,), labels=OWNED)
+    assert merge(merged, [issue(58, "wayfinder:task")]) == []
 
 
 def test_a_specced_issue_without_a_component_or_exactly_one_size_is_named() -> None:
@@ -241,8 +247,6 @@ def test_the_body_names_its_closing_issues(body: str, numbers: list[int]) -> Non
 def test_loop_md_rules_and_practice_are_read_from_their_sections() -> None:
     assert approvals.rules(LOOP) == [
         ("spec", "size:L or larger, or component `api`"),
-        ("merge", "path `billing/**`"),
-        ("merge", "a change that can place live orders"),
     ]
     assert not approvals.practice_plans(LOOP)
     assert approvals.practice_plans("## Practice\n\n- Plan: writing-plans\n")
@@ -318,6 +322,18 @@ def test_a_spec_in_a_comment_is_the_one_approved() -> None:
     assert approvals.proofs("build", pull(), [tool_owned], LOOP) == []
 
 
+def test_a_heading_is_the_comments_whole_first_line() -> None:
+    notes = (
+        "## Spec\n\nthe old spec",
+        "## Specification notes\n\nnot a spec",
+        "  ## Spec  \nthe spec",
+    )
+    found = approvals.headed(issue(1, comments=notes), "## Spec")
+    assert found is not None and found["body"] == "  ## Spec  \nthe spec"
+    assert approvals.headed(issue(1, comments=notes[1:2]), "## Spec") is None
+    assert approvals.headed(issue(1, comments=("## Plan\n1. a",)), "## Plan") is not None
+
+
 def test_a_due_plan_needs_its_comment_and_approval() -> None:
     plans = "## Practice\n\n- Plan: writing-plans\n"
     assert approvals.proofs("build", pull(), [approved(1, "web")], plans) == [
@@ -339,64 +355,69 @@ def test_a_due_plan_needs_its_comment_and_approval() -> None:
 
 
 def test_a_pr_with_every_proof_passes_merge() -> None:
-    checks = (("build", "SUCCESS"), ("gate", "SUCCESS"))
-    done = pull(comments=MERGED, labels=("approved:merge",), checks=checks)
-    assert approvals.proofs("merge", done, [approved(1, "web")], LOOP) == []
+    checks = (("check", "SUCCESS"), ("pr-board / sync", "FAILURE"))
+    done = pull(comments=(VERDICT,), labels=OWNED, checks=checks)
+    assert merge(done, [approved(1, "web")]) == []
 
 
-def test_inside_github_actions_the_other_checks_are_their_own_status(
+def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def gated(pr: dict[str, Any]) -> tuple[int, list[str]]:
+        pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
+        monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+        code = approvals.main(["check", "merge", "7"])
+        return code, capsys.readouterr().out.splitlines()
+
+    monkeypatch.chdir(PROJECT)
+    running = pull(comments=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
+    assert gated(running) == (
+        approvals.WAITING,
+        [
+            "PR #7: `check` is IN_PROGRESS on the head commit",
+            "PR #7 waits for the owner's `approved:merge` label",
+        ],
+    )
+    assert gated(pull(comments=(VERDICT,), labels=OWNED)) == (0, [])
+    assert gated(pull(labels=OWNED, checks=(("check", "IN_PROGRESS"),))) == (
+        1,
+        [
+            "PR #7: no verifier verdict posted (approvals.py verdict)",
+            "PR #7: `check` is IN_PROGRESS on the head commit",
+        ],
+    )
+
+
+def test_a_label_added_before_the_heads_push_is_no_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    running = pull(
-        comments=MERGED,
-        labels=("approved:merge",),
-        checks=(("build", "IN_PROGRESS"), ("gate", "IN_PROGRESS")),
-    )
-    assert approvals.proofs("merge", running, [approved(1, "web")], LOOP) == [
-        "PR #7: CI check `build` is IN_PROGRESS on the head commit",
-        "PR #7: CI check `gate` is IN_PROGRESS on the head commit",
+    stale = pull(comments=(VERDICT,), labels=OWNED, labeled="2026-10-01T09:59:59Z")
+    assert merge(stale, [approved(1, "web")]) == [
+        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
-    monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    assert approvals.proofs("merge", running, [approved(1, "web")], LOOP) == []
+    monkeypatch.setattr(approvals, "head_pushed", lambda _pull: None)
+    assert merge(pull(comments=(VERDICT,), labels=OWNED), [approved(1, "web")]) == [
+        f"PR #7: GitHub lists no push of the head {HEAD}, so `approved:merge` can't be dated after it"
+    ]
 
 
-def test_a_red_advisory_check_is_the_queues_when_the_base_requires_checks() -> None:
-    advisory = pull(
-        comments=MERGED,
-        labels=("approved:merge",),
-        checks=(("check", "SUCCESS"), ("pr-board / sync", "FAILURE")),
-    )
-    bases: list[str] = []
-
-    def ruleset(base: str) -> bool:
-        bases.append(base)
-        return True
-
-    assert approvals.proofs("merge", advisory, [approved(1, "web")], LOOP, None, ruleset) == []
-    assert bases == ["main"]
-    assert approvals.proofs(
-        "merge", advisory, [approved(1, "web")], LOOP, None, lambda _b: False
-    ) == ["PR #7: CI check `pr-board / sync` is FAILURE on the head commit"]
-
-
-@pytest.mark.parametrize(
-    ("types", "required"),
-    [
-        ("pull_request\nrequired_status_checks\nmerge_queue\n", True),
-        ("deletion\nmerge_queue\n", False),
-        ("", False),
-    ],
-)
-def test_the_base_requires_checks_when_its_rules_have_a_required_status_checks_rule(
-    monkeypatch: pytest.MonkeyPatch, types: str, required: bool
+def test_the_head_was_pushed_when_the_branchs_activity_last_names_it(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []
-    monkeypatch.undo()  # the autouse fixture's stub of required_checks
-    monkeypatch.setattr(approvals, "gh", lambda *args: calls.append(args) or types)
-    assert approvals.required_checks("main") is required
+    monkeypatch.undo()  # the autouse fixture's stub of head_pushed
+    monkeypatch.setattr(approvals, "gh", lambda *args: calls.append(args) or f"{PUSHED}\n")
+    assert approvals.head_pushed(pull()) == PUSHED
     assert calls == [
-        ("api", "--paginate", "repos/{owner}/{repo}/rules/branches/main", "--jq", ".[].type")
+        (
+            "api",
+            "repos/{owner}/{repo}/activity?ref=refs/heads/feature&per_page=100",
+            "--jq",
+            f'[.[] | select(.after == "{HEAD}") | .timestamp] | first // ""',
+        )
     ]
+    monkeypatch.setattr(approvals, "gh", lambda *args: "\n")
+    assert approvals.head_pushed(pull()) is None
 
 
 def run(name: str, conclusion: str, started: str, workflow: str = "CI") -> dict[str, Any]:
@@ -417,10 +438,20 @@ def with_runs(*runs: dict[str, Any]) -> dict[str, Any]:
     return pr
 
 
+def test_only_the_aggregate_check_is_read() -> None:
+    pr = with_runs(
+        run("lint", "FAILURE", "2026-10-03T13:00:00Z"),
+        {"__typename": "StatusContext", "context": "loop:approvals", "state": "PENDING"},
+    )
+    assert approvals.ci("PR #7", pr) == ["PR #7: no `check` on the head commit yet"]
+    pr = with_runs(run("lint", "FAILURE", "2026-10-03T13:00:00Z"), run("check", "SUCCESS", ""))
+    assert approvals.ci("PR #7", pr) == []
+
+
 def test_a_run_cancelled_by_a_newer_green_run_of_the_same_check_is_not_a_problem() -> None:
     pr = with_runs(
-        run("loop:approvals", "CANCELLED", "2026-10-03T13:44:42Z"),
-        run("loop:approvals", "SUCCESS", "2026-10-03T13:44:49Z"),
+        run("check", "CANCELLED", "2026-10-03T13:44:42Z"),
+        run("check", "SUCCESS", "2026-10-03T13:44:49Z"),
     )
     assert approvals.ci("PR #7", pr) == []
 
@@ -430,7 +461,7 @@ def test_the_newest_run_of_a_check_counts_when_it_failed() -> None:
         run("check", "SUCCESS", "2026-10-03T13:00:00Z"),
         run("check", "FAILURE", "2026-10-03T14:00:00Z"),
     )
-    assert approvals.ci("PR #7", pr) == ["PR #7: CI check `check` is FAILURE on the head commit"]
+    assert approvals.ci("PR #7", pr) == ["PR #7: `check` is FAILURE on the head commit"]
 
 
 def test_one_job_name_in_two_workflows_is_two_checks() -> None:
@@ -438,7 +469,7 @@ def test_one_job_name_in_two_workflows_is_two_checks() -> None:
         run("check", "SUCCESS", "2026-10-03T14:00:00Z", "CI"),
         run("check", "FAILURE", "2026-10-03T13:00:00Z", "Nightly"),
     )
-    assert approvals.ci("PR #7", pr) == ["PR #7: CI check `check` is FAILURE on the head commit"]
+    assert approvals.ci("PR #7", pr) == ["PR #7: `check` is FAILURE on the head commit"]
 
 
 def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
@@ -451,8 +482,8 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
     ]
 
     def proofs(*comments: str) -> list[str]:
-        merged = pull(comments=(*MERGED, *comments), labels=("approved:merge",), checks=())
-        return approvals.proofs("merge", merged, [approved(1, "web")], no_ci)
+        merged = pull(comments=(VERDICT, *comments), labels=OWNED, checks=())
+        return merge(merged, [approved(1, "web")], no_ci)
 
     assert (
         proofs(),
@@ -481,55 +512,18 @@ def test_only_a_bare_ci_none_line_opts_out_of_ci(line: str, opted_out: bool) -> 
     ) == opted_out
 
 
-def test_a_merge_record_without_its_verdict_is_no_approval() -> None:
-    headless = (VERDICT, record("merge", "coordinator", head=HEAD))
-    assert approvals.proofs(
-        "merge", pull(comments=headless, labels=("approved:merge",)), [approved(1, "web")], LOOP
-    ) == [
-        "PR #7 has no `Approved: merge` record by the coordinator for its current head: approve again"
-    ]
-
-
 def test_more_checks_than_one_page_is_refused() -> None:
-    big = pull(comments=MERGED, labels=("approved:merge",))
+    big = pull(comments=(VERDICT,), labels=OWNED, checks=(("lint", "SUCCESS"),))
     big["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] = 101
-    assert approvals.proofs("merge", big, [approved(1, "web")], LOOP) == [
+    assert merge(big, [approved(1, "web")]) == [
         "PR #7 has more than 1 CI checks: the gate reads one page",
     ]
-
-
-def test_files_past_the_first_page_are_read_only_where_a_merge_path_rule_needs_them(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    big = pull(comments=MERGED, labels=("approved:merge",))
-    big["files"]["totalCount"] = 101
-    read: list[int] = []
-    rest = [f"src/{n}.py" for n in range(100)] + ["billing/invoice.py"]
-    monkeypatch.setattr(approvals, "pr_files", lambda number: read.append(number) or rest)
-    no_path_rule = "## Approvals\n\n- spec: size:L or larger\n"
-    assert (
-        approvals.proofs("build", big, [approved(1, "web")], LOOP),
-        approvals.proofs("merge", big, [approved(1, "web")], no_path_rule),
-        read,
-    ) == ([], [], [])
-    assert approvals.proofs("merge", big, [approved(1, "web")], LOOP) == [
-        "PR #7 has no `Approved: merge` record by the owner"
-    ]
-    assert read == [7]
-
-
-def test_more_files_than_github_lists_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    big = pull(comments=MERGED, labels=("approved:merge",))
-    big["files"]["totalCount"] = 3001
-    monkeypatch.setattr(approvals, "pr_files", lambda _n: [f"src/{n}.py" for n in range(3000)])
-    with pytest.raises(approvals.Refused, match="PR #7 changes 3001 files and GitHub lists 3000"):
-        approvals.proofs("merge", big, [approved(1, "web")], LOOP)
 
 
 def test_more_comments_than_one_page_is_refused(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    crowded = pull(comments=MERGED, labels=("approved:merge",))
+    crowded = pull(comments=(VERDICT, "a note"), labels=OWNED)
     crowded["comments"]["totalCount"] = 101
     crowded["closingIssuesReferences"]["nodes"] = [approved(1, "web")]
     monkeypatch.setattr(approvals, "pull_request", lambda _n: crowded)
@@ -548,38 +542,19 @@ def test_a_path_rule_on_the_spec_is_left_to_the_loop() -> None:
 
 
 def test_a_pr_without_its_proof_names_each_missing_one() -> None:
-    bare = pull(
-        body="## Evidence\n\n## Summary\n", checks=(("build", "FAILURE"), ("lint", "IN_PROGRESS"))
-    )
-    assert approvals.proofs("merge", bare, [approved(1, "web")], LOOP) == [
+    bare = pull(body="## Evidence\n\n## Summary\n", checks=(("check", "FAILURE"),))
+    assert merge(bare, [approved(1, "web")]) == [
         "PR #7: its body has no `## Evidence` section with content",
         "PR #7: no verifier verdict posted (approvals.py verdict)",
-        "PR #7: CI check `build` is FAILURE on the head commit",
-        "PR #7: CI check `lint` is IN_PROGRESS on the head commit",
-        "PR #7 has no `Approved: merge` record by the coordinator",
-        "PR #7 lacks the `approved:merge` label",
+        "PR #7: `check` is FAILURE on the head commit",
+        "PR #7 waits for the owner's `approved:merge` label",
     ]
-    assert "PR #7: no CI check on the head commit" in approvals.proofs(
-        "merge", pull(checks=()), [], ""
-    )
+    assert "PR #7: no `check` on the head commit yet" in merge(pull(checks=()), [], "")
 
 
-def test_a_push_after_the_merge_approval_needs_approving_again() -> None:
-    old = (VERDICT, record("merge", "coordinator", head="b" * 40, verdict="VERDICT: 0 blocker"))
-    assert approvals.proofs(
-        "merge", pull(comments=old, labels=("approved:merge",)), [approved(1, "web")], LOOP
-    ) == [
-        "PR #7 has no `Approved: merge` record by the coordinator for its current head: approve again"
-    ]
-
-
-def test_a_merge_rule_on_a_path_needs_the_owner_and_free_text_is_left_to_the_loop() -> None:
-    plain = pull(comments=MERGED, labels=("approved:merge",))
-    assert approvals.proofs("merge", plain, [approved(1, "web")], LOOP) == []
-    billing = pull(files=("billing/invoice.py",), comments=MERGED, labels=("approved:merge",))
-    assert approvals.proofs("merge", billing, [approved(1, "web")], LOOP) == [
-        "PR #7 has no `Approved: merge` record by the owner"
-    ]
+def test_a_merge_rule_in_loop_md_changes_nothing_the_owner_approves_every_merge() -> None:
+    billing = pull(files=("billing/invoice.py",), comments=(VERDICT,), labels=OWNED)
+    assert merge(billing, [approved(1, "web")]) == []
 
 
 # --- an exact revert ---
@@ -633,10 +608,6 @@ def revert_pr(number: int = 2, body: str = REVERT_BODY, **fields: Any) -> dict[s
     }
 
 
-EXACT = record("merge", "coordinator", head=REVERT_HEAD, verdict="exact revert of #1")
-EXACT_BY_OWNER = record("merge", "owner", head=REVERT_HEAD, verdict="exact revert of #1")
-
-
 def gated(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -651,7 +622,7 @@ def gated(
 def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
     recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    done = revert_pr(comments=(EXACT, EXACT_BY_OWNER), labels=("approved:merge",))
+    done = revert_pr(labels=OWNED)
     assert gated(monkeypatch, capsys, "build", done) == (0, [])
     assert gated(monkeypatch, capsys, "merge", done) == (0, [])
     # the inverse comes from GitHub's own diff of #1, not from anything approvals.py writes
@@ -666,48 +637,30 @@ def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
     } <= set(recorded)
 
 
-def test_an_exact_revert_still_needs_ci_and_the_merge_approval(
+def test_an_exact_revert_still_needs_check_and_the_merge_approval(
     recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    approved_once = (EXACT, EXACT_BY_OWNER)
-    red = revert_pr(
-        comments=approved_once, labels=("approved:merge",), checks=(("build", "FAILURE"),)
-    )
+    red = revert_pr(labels=OWNED, checks=(("check", "FAILURE"),))
     assert gated(monkeypatch, capsys, "merge", red) == (
-        1,
-        ["PR #2: CI check `build` is FAILURE on the head commit"],
+        approvals.WAITING,
+        ["PR #2: `check` is FAILURE on the head commit"],
     )
     unapproved = revert_pr(body="Reverts #1\n\n## Evidence\n\n#1 set the wrong rate.\n")
     assert gated(monkeypatch, capsys, "merge", unapproved) == (
-        1,
-        [
-            "PR #2 has no `Approved: merge` record by the coordinator",
-            "PR #2 has no `Approved: merge` record by the owner",
-            "PR #2 lacks the `approved:merge` label",
-        ],
+        approvals.WAITING,
+        ["PR #2 waits for the owner's `approved:merge` label"],
     )
-    bare = revert_pr(body="Reverts #1\n", comments=approved_once, labels=("approved:merge",))
+    bare = revert_pr(body="Reverts #1\n", labels=OWNED)
     assert gated(monkeypatch, capsys, "merge", bare) == (
         1,
         ["PR #2: its body has no `## Evidence` section with content"],
     )
 
 
-def test_an_exact_revert_of_a_path_a_rule_matches_asks_a_person(
-    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    # #1 changed billing/rate.py, which loop.md's `merge: path `billing/**`` rule matches
-    by_loop = revert_pr(comments=(EXACT,), labels=("approved:merge",))
-    assert gated(monkeypatch, capsys, "merge", by_loop) == (
-        1,
-        ["PR #2 has no `Approved: merge` record by the owner"],
-    )
-
-
 def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
     recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    plus = revert_pr(3, comments=(EXACT, EXACT_BY_OWNER), labels=("approved:merge",))
+    plus = revert_pr(3, labels=OWNED)
     assert gated(monkeypatch, capsys, "merge", plus) == (
         1,
         [
@@ -861,37 +814,6 @@ def test_an_empty_file_left_in_place_is_no_exact_revert() -> None:
     ]
 
 
-def test_approving_an_exact_revert_records_it_as_the_verdict(
-    recorded: list[str], github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: revert_pr())
-    assert approvals.main(["approve", "merge", "2", "--by", "coordinator"]) == 0
-    # no issue to park: the person's approval is asked for on the PR
-    assert github == [
-        (
-            "comment",
-            2,
-            f"Approved: merge\nBy: coordinator\nHead: {REVERT_HEAD}\nVerdict: exact revert of #1\n",
-        ),
-        ("label", 2, "approved:merge", False),
-        ("label", 2, "needs-owner", True),
-    ]
-
-
-def test_approving_an_inexact_revert_without_a_verdict_says_both(
-    recorded: list[str],
-    github: list[tuple[Any, ...]],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: revert_pr(3))
-    assert approvals.main(["approve", "merge", "3", "--by", "coordinator"]) == 1
-    assert github == []
-    assert capsys.readouterr().out.splitlines()[1:] == [
-        "PR #3 has no verifier verdict: post it first (approvals.py verdict)"
-    ]
-
-
 # --- writing proof ---
 
 
@@ -996,56 +918,11 @@ def test_a_comment_gate_py_cannot_or_need_not_minimize_is_left_alone(
     assert [call for call in github if call[0] == "minimize"] == []
 
 
-def test_resuming_after_the_owner_approved_keeps_their_label(
-    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    owned = (
-        VERDICT,
-        record("merge", "owner", head=HEAD, verdict="VERDICT: 0 blocker; SATISFIED: yes"),
-    )
-    pr = pull(files=("billing/invoice.py",), comments=owned, labels=("approved:merge",))
-    pr["closingIssuesReferences"]["nodes"] = [specced(1, "bug")]
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
-    assert approvals.main(["approve", "merge", "7", "--by", "coordinator"]) == 0
-    assert github[1:] == [("label", 7, "approved:merge", True)]
-
-
-def test_a_merge_approval_carries_the_head_and_the_verdict(
-    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pr = pull(comments=(VERDICT,))
-    pr["closingIssuesReferences"]["nodes"] = [specced(1, "bug")]
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
-    assert (
-        approvals.main(
-            ["approve", "merge", "7", "--by", "coordinator", "--triage", "https://x/7#triage"]
-        )
-        == 0
-    )
-    assert github == [
-        (
-            "comment",
-            7,
-            (
-                f"Approved: merge\nBy: coordinator\nHead: {HEAD}\n"
-                "Verdict: VERDICT: 0 blocker, 1 major, 0 minor; SATISFIED: yes\nTriage: https://x/7#triage\n"
-            ),
-        ),
-        ("label", 7, "approved:merge", True),
-    ]
-
-
-def test_a_merge_approval_needs_a_posted_verdict(
-    github: list[tuple[Any, ...]],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
-    assert approvals.main(["approve", "merge", "7", "--by", "coordinator"]) == 1
-    assert (github, capsys.readouterr().out) == (
-        [],
-        "PR #7 has no verifier verdict: post it first (approvals.py verdict)\n",
-    )
+def test_merge_is_no_approve_point(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        approvals.main(["approve", "merge", "7", "--by", "coordinator"])
+    assert exited.value.code == 2
+    assert "invalid choice: 'merge'" in capsys.readouterr().err
 
 
 def test_the_verdict_posts_the_reports_last_lines(
@@ -1193,8 +1070,8 @@ def test_a_local_ci_record_is_the_merge_proof_without_ci(
 ) -> None:
     assert approvals.main(["local-ci", "7"]) == 0
     posted = [body for kind, _pr, body in github if kind == "comment"]
-    merged = pull(comments=(*MERGED, *posted), labels=("approved:merge",), checks=())
-    assert approvals.proofs("merge", merged, [approved(1, "web")], LOOP + "\nCI: none\n") == []
+    merged = pull(comments=(VERDICT, *posted), labels=OWNED, checks=())
+    assert merge(merged, [approved(1, "web")], LOOP + "\nCI: none\n") == []
 
 
 @pytest.mark.parametrize("change", [{}, {"exit": 2}])

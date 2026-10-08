@@ -9,11 +9,18 @@ The merge contract's agent-skills part (kzarzycki/agent-skills#102, #104).
   clean checkout at the PR head for a `CI: none` repo; a record of the old `mise run check`
   still counts. `gate.py` and `record-check` stay for this release as aliases with the same
   output and exit code.
-- `check merge` leaves CI to the merge queue when the base branch has a
-  `required_status_checks` rule (`GET repos/{owner}/{repo}/rules/branches/<base>`), so a red
-  advisory check no longer blocks; without one it still needs every check green, now
-  counting only each check's newest run per workflow, so a run cancelled by a newer green
-  one no longer blocks (replaces #76).
+- `check merge` reads one check, the aggregate `check` on the head, counting only its newest
+  run per workflow, so a red advisory check or a run cancelled by a newer green one no longer
+  blocks (replaces #76).
+- The merge approval is the owner's `approved:merge` label, added after the head's push (dated
+  by GitHub's repository activity) and still present; the `Approved: merge` record and
+  `approve merge` are gone, and a loop.md `merge:` rule is ignored. `check merge` exits 1 when
+  a proof is missing (Evidence, the verdict, an approved spec) and 3 while it waits for a green
+  `check` or the label, which the approvals workflow posts as a `pending` `loop:approvals`
+  status. The coordinator asks the owner only once `check` is green, turns on auto-merge with
+  `gh pr ready` (`gh pr merge <pr> --auto --squash --match-head-commit <head>`), and deletes
+  no remote branch: GitHub deletes the merged head branch.
+- `headed()` matches a comment's whole first line, so `## Specification notes` is no `## Spec`.
 - `approved:spec` is the ready state and `ready-for-agent` is gone: `check build` needs
   `approved:spec`, a size, a category and a component, and no `needs-owner`. A `wayfinder:`
   ticket needs `approved:spec` in place of `ready-for-agent`. Category, component and size

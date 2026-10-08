@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
-    python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; no PR yet: exit 0
-    python3 scripts/approvals.py approve <spec|plan|merge> <issue or pr> --by <coordinator|owner> [--triage <link>]
+    python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    python3 scripts/approvals.py approve <spec|plan> <issue> --by <coordinator|owner>
     python3 scripts/approvals.py verdict <pr> <report>      # post the verifier's verdict lines on the PR
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
 
@@ -13,10 +13,13 @@ that task. `gate.py` and `record-check` are the old names of this script and of 
 category, a component and exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its approvals: `spec`
 always, `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.md § Practice). Category, component and
 size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`).
-`check merge` adds the PR's: the `## Evidence` section of its body, a posted verifier verdict, CI, and a `merge`
-approval on the head commit, with its verdict. CI is the newest run of every check on the head green, unless the base
-branch has a `required_status_checks` rule, which the merge queue enforces, or it runs inside GitHub Actions,
-where each other check is its own status; with the line `CI: none` in loop.md, a `local-ci` pass on the head instead.
+`check merge` adds the PR's: the `## Evidence` section of its body and a posted verifier verdict, whose absence fails
+(exit 1); then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending` status) for the
+newest run of the aggregate `check` on the head to be green, the one check it reads (with the line `CI: none` in
+loop.md, a `local-ci` pass on the head instead), and for the owner's `approved:merge` label on the PR, added after the
+head was pushed and still present, which is the merge approval. A push removes the label (the approvals workflow does
+it on `synchronize`), so the label never covers a head the owner did not see; the push time is GitHub's repository
+activity for the head branch. No PR yet, or every proof held: exit 0.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
@@ -25,29 +28,29 @@ removes what #n added and adds what #n removed (files, and each run of lines in 
 differ), and every path either touches has at the PR's merge base the mode it had after #n and at its head the mode
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
-only for Evidence (what went wrong), green CI, the merge approval and a person's approval where a merge rule holds by
-path; `approve merge` records `Verdict: exact revert of #<n>`.
+only for Evidence (what went wrong), a green `check` and the `approved:merge` label.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
-An approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for the board:
+A spec or plan approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for
+the board:
 
     Approved: spec
     By: coordinator
-    Spec: as edited 2026-10-02 14:35:27 UTC      (plan: Plan:, merge: Head: <sha> and Verdict:)
+    Spec: as edited 2026-10-02 14:35:27 UTC      (plan: Plan:)
 
 A spec or plan is named by its last edit as GitHub shows it in the edit history (`as written <time>` before any), so
-a person can open the version approved. Every approval is a new comment: a re-approval says the spec, plan or head
+a person can open the version approved. Every approval is a new comment: a re-approval says the spec or plan
 changed, and `approve` minimizes as outdated each earlier record it supersedes, keeping another approver's record of
 the same version.
 
-The coordinator approves every point. A rule in loop.md § Approvals, one `- <point>: <condition>` line each, adds a
-person's approval (`By: owner`). Its label goes on last: the coordinator's approval removes the label and adds
+The coordinator approves spec and plan. A rule in loop.md § Approvals, one `- <spec|plan>: <condition>` line each, adds
+a person's approval (`By: owner`). Its label goes on last: the coordinator's approval removes the label and adds
 `needs-owner`, so a person approves by adding the label, or by saying so in the session; then `approve --by owner`
-writes their record, adds the label and removes `needs-owner`. A person who already approved the current spec, plan
-or head keeps their label when the coordinator approves again on resuming. A condition the gate can read is `always`, `size:L`
-(`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` in backticks, joined by `or`;
-any other words make the rule the loop's alone, and so does a path on spec or plan, which come before the change. The spec is the issue body, or its last `## Spec` comment where a
-tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
+writes their record, adds the label and removes `needs-owner`. A person who already approved the current spec or plan
+keeps their label when the coordinator approves again on resuming. A condition the gate can read is `always`, `size:L`
+(`size:L or larger`, `size:L+`), `component <name>` or `category <name>`, joined by `or`; any other words make the rule
+the loop's alone, and so does a `path <glob>`, since a spec or plan comes before the change. The spec is the issue
+body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the first backticked name of each
 list item under `## Components` and `## Extra categories`. Reads and writes through `gh`. Stdlib only.
 """
@@ -57,7 +60,6 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
-import os
 import re
 import subprocess
 import sys
@@ -71,12 +73,16 @@ CATEGORIES = {"bug", "enhancement", "documentation", "chore"}
 SIZE_ORDER = ["size:XS", "size:S", "size:M", "size:L", "size:XL"]
 SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
-POINTS = ("spec", "plan", "merge")
+POINTS = ("spec", "plan")
+MERGE_LABEL = "approved:merge"
+# check merge's exit while it waits for `check` or the owner; argparse's usage error is 2
+WAITING = 3
 VERDICT = "Verifier verdict"
 NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-PULL = f"""number body baseRefName baseRefOid headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }}
+  timelineItems(last: 100, itemTypes: [LABELED_EVENT]) {{ nodes {{ ... on LabeledEvent {{ createdAt label {{ name }} }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt }} }} }} }} }} }} }}
@@ -101,7 +107,6 @@ CHECKED = "Local check passed"
 CHANGED = {
     "spec": "The spec changed after the last approval, so it was checked again.\n",
     "plan": "The plan changed after the last approval, so it was checked again.\n",
-    "merge": "The head moved after the last approval, so it was checked again.\n",
 }
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
@@ -136,9 +141,10 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 def rules(loop: str) -> list[tuple[str, str]]:
-    """loop.md § Approvals as (point, condition) pairs."""
+    """loop.md § Approvals as (point, condition) pairs; a `merge:` line is ignored, since the owner approves every
+    merge with the `approved:merge` label."""
     return re.findall(
-        r"^[ \t]*[-*] +(spec|plan|merge):[ \t]*(.+?)[ \t]*$",
+        r"^[ \t]*[-*] +(spec|plan):[ \t]*(.+?)[ \t]*$",
         section(loop, "Approvals"),
         re.MULTILINE,
     )
@@ -177,31 +183,8 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
     return None if unread else False
 
 
-def owner_needed(
-    point: str, loop_rules: list[tuple[str, str]], labels: set[str], paths: list[str] | None
-) -> bool:
-    return any(matches(condition, labels, paths) for rule, condition in loop_rules if rule == point)
-
-
-def merge_paths(pull: dict[str, Any], loop_rules: list[tuple[str, str]]) -> list[str]:
-    """The PR's paths, read only when a merge rule has a path condition to judge."""
-    if not any(
-        found.group(5)
-        for point, condition in loop_rules
-        if point == "merge"
-        for found in CONDITION.finditer(condition)
-    ):
-        return []
-    total = pull["files"].get("totalCount") or 0
-    paths = [file["path"] for file in pull["files"]["nodes"]]
-    if total > len(paths):  # past GraphQL's one page, e.g. a PR that commits synced agent files
-        paths = pr_files(pull["number"])
-    if total > len(paths):
-        raise Refused(
-            f"PR #{pull['number']} changes {total} files and GitHub lists {len(paths)}: "
-            "the gate can't judge a path rule on the rest, so split the PR"
-        )
-    return paths
+def owner_needed(point: str, loop_rules: list[tuple[str, str]], labels: set[str]) -> bool:
+    return any(matches(condition, labels, None) for rule, condition in loop_rules if rule == point)
 
 
 def version(holder: dict[str, Any]) -> str:
@@ -233,8 +216,10 @@ def bodies(node: dict[str, Any]) -> list[str]:
 
 
 def headed(node: dict[str, Any], heading: str) -> dict[str, Any] | None:
-    """The last comment that starts with `heading`."""
-    found = [note for note in notes(node) if note["body"].lstrip().startswith(heading)]
+    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`."""
+    found = [
+        note for note in notes(node) if note["body"].strip().split("\n", 1)[0].rstrip() == heading
+    ]
     return found[-1] if found else None
 
 
@@ -260,12 +245,9 @@ def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
 
 
 def current(node: dict[str, Any], point: str, key: str, value: str, by: str) -> bool:
-    """Whether `by` approved `point` for this spec, plan or head; a merge record also carries its verdict."""
+    """Whether `by` approved `point` for this spec or plan."""
     return any(
-        record.get("by") == by
-        and record.get(key) == value
-        and (point != "merge" or bool(record.get("verdict")))
-        for record in records(node, point)
+        record.get("by") == by and record.get(key) == value for record in records(node, point)
     )
 
 
@@ -324,11 +306,9 @@ def proofs(
     issues: list[dict[str, Any]],
     loop: str,
     revert: int | None = None,
-    requires_checks: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
-    #`revert` names no issue and needs no verdict. `requires_checks(base)` says whether the base branch's rules
-    require status checks (default: GitHub's answer)."""
+    #`revert` names no issue and needs no verdict. What the merge waits for is waits()'s."""
     loop_rules, found = rules(loop), []
     for issue in issues:
         labels = names(issue)
@@ -341,11 +321,11 @@ def proofs(
             "spec",
             "spec",
             version(spec_holder(issue)),
-            owner_needed("spec", loop_rules, labels, None),
+            owner_needed("spec", loop_rules, labels),
         )
         plan = headed(issue, "## Plan")
         if plan is not None:
-            plan_owner = owner_needed("plan", loop_rules, labels, None)
+            plan_owner = owner_needed("plan", loop_rules, labels)
             found += approvals(where, issue, "plan", "plan", version(plan), plan_owner)
         elif practice_plans(loop):
             found.append(f"{where} has no `## Plan` comment, and one is due")
@@ -357,28 +337,49 @@ def proofs(
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if revert is None and not any(body.lstrip().startswith(VERDICT) for body in bodies(pull)):
         found.append(f"{where}: no verifier verdict posted (approvals.py verdict)")
-    if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
-        if not any(
-            [line.strip() for line in body.strip().splitlines()[:2]]
-            == [CHECKED, f"Head: {pull['headRefOid']}"]
-            for body in bodies(pull)
-        ):
-            found.append(
-                f"{where}: the project has no CI (loop.md `CI: none`), and no local check passed on"
-                " the head (approvals.py local-ci)"
-            )
-    elif os.environ.get("GITHUB_ACTIONS") != "true" and not (requires_checks or required_checks)(
-        pull["baseRefName"]
-    ):
-        found += ci(where, pull)
-    owner = owner_needed("merge", loop_rules, labelled(issues), merge_paths(pull, loop_rules))
-    found += approvals(where, pull, "merge", "head", pull["headRefOid"], owner)
     return found
 
 
-def labelled(issues: list[dict[str, Any]]) -> set[str]:
-    """Every label on the issues: a merge rule holds when it holds for any of them."""
-    return set().union(*(names(issue) for issue in issues))
+def waits(
+    pull: dict[str, Any], loop: str, pushed: Callable[[dict[str, Any]], str | None] | None = None
+) -> list[str]:
+    """One line per thing the merge waits for: the aggregate `check` green on the head (with `CI: none`, a local-ci
+    pass), and the owner's `approved:merge` label added after the head's push. `pushed(pull)` is when the head was
+    pushed (default: GitHub's repository activity)."""
+    where = f"PR #{pull['number']}"
+    if re.search(NO_CI, loop, re.MULTILINE | re.IGNORECASE):
+        head = [CHECKED, f"Head: {pull['headRefOid']}"]
+        if any(
+            [line.strip() for line in body.strip().splitlines()[:2]] == head
+            for body in bodies(pull)
+        ):
+            found = []
+        else:
+            found = [
+                f"{where}: the project has no CI (loop.md `CI: none`), and no local check passed on the head (approvals.py local-ci)"
+            ]
+    else:
+        found = ci(where, pull)
+    if MERGE_LABEL not in names(pull):
+        return found + [f"{where} waits for the owner's `{MERGE_LABEL}` label"]
+    added = max(
+        (
+            event["createdAt"]
+            for event in pull["timelineItems"]["nodes"]
+            if (event.get("label") or {}).get("name") == MERGE_LABEL
+        ),
+        default="",
+    )
+    when = (pushed or head_pushed)(pull)
+    if when is None:
+        found.append(
+            f"{where}: GitHub lists no push of the head {pull['headRefOid']}, so `{MERGE_LABEL}` can't be dated after it"
+        )
+    elif added <= when:  # ISO 8601 in UTC, so it orders as text
+        found.append(
+            f"{where}: `{MERGE_LABEL}` was added before the head was pushed: the owner adds it again"
+        )
+    return found
 
 
 def changed_lines(patch: str) -> list[tuple[list[str], list[str]]]:
@@ -519,25 +520,17 @@ def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
     ]
 
 
-def required_checks(base: str) -> bool:
-    """Whether a ruleset on `base` has a `required_status_checks` rule: then the merge queue enforces the required
-    checks, and a red advisory one must not block. ponytail: rulesets only; a classic branch protection's required
-    checks leave this False, so the gate keeps reading every check, the stricter answer."""
-    out = gh(
-        "api", "--paginate", f"repos/{{owner}}/{{repo}}/rules/branches/{base}", "--jq", ".[].type"
-    )
-    return "required_status_checks" in out.split()
-
-
 def ci(where: str, pull: dict[str, Any]) -> list[str]:
-    """One line per CI check whose newest run on the head is not green; one when there is none."""
+    """A line unless the newest run of the aggregate `check` on the head is green: the one check the merge reads, since
+    every other check is advisory or the ruleset's."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
-    nodes = contexts["contexts"]["nodes"] if contexts else []
+    every = contexts["contexts"]["nodes"] if contexts else []
+    nodes = [node for node in every if (node.get("name") or node.get("context")) == "check"]
     if not nodes:
-        return [f"{where}: no CI check on the head commit"]
-    if (contexts["contexts"].get("totalCount") or 0) > len(nodes):
-        return [f"{where} has more than {len(nodes)} CI checks: the gate reads one page"]
+        if contexts and (contexts["contexts"].get("totalCount") or 0) > len(every):
+            return [f"{where} has more than {len(every)} CI checks: the gate reads one page"]
+        return [f"{where}: no `check` on the head commit yet"]
     # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of one check on the
     # head; only the newest says whether it is green. One job name in two workflows is two checks.
     newest: dict[tuple[str, str], dict[str, Any]] = {}
@@ -551,7 +544,7 @@ def ci(where: str, pull: dict[str, Any]) -> list[str]:
         for (_, name), node in newest.items()
     ]
     return [
-        f"{where}: CI check `{name}` is {state} on the head commit"
+        f"{where}: `{name}` is {state} on the head commit"
         for name, state in checks
         if state not in GREEN
     ]
@@ -600,10 +593,6 @@ def pr_changes(number: int) -> list[dict[str, Any]]:
     return [json.loads(line) for line in out.splitlines()]
 
 
-def pr_files(number: int) -> list[str]:
-    return [entry["filename"] for entry in pr_changes(number)]
-
-
 def merged_pull(number: int) -> dict[str, Any] | None:
     """PR #number as GitHub's REST API returns it, when it was merged; None for an open or closed PR, or an issue."""
     try:
@@ -629,6 +618,19 @@ def tree(sha: str) -> dict[str, str] | None:
     if found["truncated"]:
         return None
     return {entry["path"]: entry["mode"] for entry in found["tree"] if entry["type"] != "tree"}
+
+
+def head_pushed(pull: dict[str, Any]) -> str | None:
+    """When the head commit was last pushed to the PR's branch, from GitHub's repository activity (pushes, force
+    pushes, the branch's creation); None when it lists none. ponytail: the newest 100 activities of a same-repo branch;
+    page further, or read a fork's, when a PR here needs it."""
+    out = gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/activity?ref=refs/heads/{pull['headRefName']}&per_page=100",
+        "--jq",
+        f'[.[] | select(.after == "{pull["headRefOid"]}") | .timestamp] | first // ""',
+    ).strip()
+    return out or None
 
 
 def issue_node(number: int) -> dict[str, Any]:
@@ -723,81 +725,45 @@ def check(point: str, pr: int | None) -> int:
     if not revert:
         found += problems(issues, label_names(tracker))
     found += proofs(point, pull, issues, loop, revert)
-    for line in found:
+    waiting = waits(pull, loop) if point == "merge" else []
+    for line in found + waiting:
         print(line)
-    return 1 if found else 0
+    return 1 if found else WAITING if waiting else 0
 
 
-def approve(point: str, number: int, by: str, triage: str | None) -> int:
+def approve(point: str, number: int, by: str) -> int:
     loop_rules = rules(read(LOOP))
-    if point == "merge":
-        pull = pull_request(number)
-        revert, refused = reverts(pull)
-        verdicts = [body for body in bodies(pull) if body.lstrip().startswith(VERDICT)]
-        if not revert and not verdicts:
-            raise Refused(
-                "\n".join(
-                    [
-                        *refused,
-                        f"PR #{number} has no verifier verdict: post it first (approvals.py verdict)",
-                    ]
-                )
-            )
-        verdict = (
-            f"exact revert of #{revert}"
-            if revert
-            else "; ".join(
-                line.strip()
-                for line in verdicts[-1].splitlines()
-                if line.strip().startswith(("VERDICT:", "SATISFIED:"))
-            )
-        )
-        issues = [] if revert else closing_issues(pull)
-        # an exact revert names no issue, so a person's approval is asked for on the PR itself
-        node, targets, key, value = (
-            pull,
-            [issue["number"] for issue in issues] or [number],
-            "head",
-            pull["headRefOid"],
-        )
-        owner = owner_needed("merge", loop_rules, labelled(issues), merge_paths(pull, loop_rules))
-        record = f"Head: {pull['headRefOid']}\nVerdict: {verdict}\n" + (
-            f"Triage: {triage}\n" if triage else ""
-        )
-    else:
-        issue = issue_node(number)
-        holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
-        if holder is None:
-            raise Refused(f"#{number} has no `## Plan` comment to approve")
-        node, targets, key, value = issue, [number], point, version(holder)
-        owner = owner_needed(point, loop_rules, names(issue), None)
-        record = f"{point.capitalize()}: {value}\n"
+    issue = issue_node(number)
+    holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
+    if holder is None:
+        raise Refused(f"#{number} has no `## Plan` comment to approve")
+    value = version(holder)
+    owner = owner_needed(point, loop_rules, names(issue))
+    record = f"{point.capitalize()}: {value}\n"
     earlier = [
-        (note, found) for note in notes(node) if (found := parsed(note["body"], point)) is not None
+        (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
     ]
-    if any(found.get("by") == by and found.get(key) != value for _, found in earlier):
+    if any(found.get("by") == by and found.get(point) != value for _, found in earlier):
         record += CHANGED[point]
     comment(number, f"Approved: {point}\nBy: {by}\n{record}")
     # what this record supersedes: any earlier one but another approver's of the same version
     for note, found in earlier:
-        superseded = found.get(key) != value or found.get("by") == by
+        superseded = found.get(point) != value or found.get("by") == by
         if superseded and not note.get("isMinimized") and note.get("viewerCanMinimize"):
             minimize(note["id"])
-    # a person who already approved this spec, plan or head keeps their label when the loop resumes
+    # a person who already approved this spec or plan keeps their label when the loop resumes
     if (
-        by == "coordinator" and owner and not current(node, point, key, value, "owner")
+        by == "coordinator" and owner and not current(issue, point, point, value, "owner")
     ):  # the label goes on last: a person adds it to approve
         label(number, f"approved:{point}", add=False)
-        for target in targets:
-            label(target, NEEDS_OWNER, add=True)
+        label(number, NEEDS_OWNER, add=True)
         print(
             f"a person must approve {point} too: {NEEDS_OWNER} added; stop until they add `approved:{point}`"
         )
         return 0
     label(number, f"approved:{point}", add=True)
     if by == "owner":
-        for target in targets:
-            label(target, NEEDS_OWNER, add=False)
+        label(number, NEEDS_OWNER, add=False)
     return 0
 
 
@@ -865,7 +831,6 @@ def main(argv: list[str]) -> int:
     approving.add_argument("point", choices=POINTS)
     approving.add_argument("number", type=int)
     approving.add_argument("--by", choices=("coordinator", "owner"), required=True)
-    approving.add_argument("--triage")
     posting = commands.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
@@ -876,7 +841,7 @@ def main(argv: list[str]) -> int:
         if args.command == "check":
             return check(args.point, args.pr)
         if args.command == "approve":
-            return approve(args.point, args.number, args.by, args.triage)
+            return approve(args.point, args.number, args.by)
         if args.command in ("local-ci", "record-check"):
             return local_ci(args.pr)
         return verdict(args.pr, args.report)

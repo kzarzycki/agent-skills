@@ -96,14 +96,17 @@ UI, and delegate the rest.
      tool it runs, or the lint, type or test configuration). Otherwise the rerun gates are
      the review.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
-     `## Evidence`, then approve the merge on the head that lands:
-     `python3 scripts/approvals.py approve merge <pr> --by coordinator --triage <link to the body's triage>`.
-     When it says a person must approve as well, give them the PR link and stop; once
-     they have added `approved:merge` or said so, approve again with `--by owner`.
+     `## Evidence`. The merge approval is the owner's `approved:merge` label on the head that
+     lands (SKILL.md, Approvals and proof); you never add it.
    - `gh pr ready` once no local objection is left: `mise run check` passed on the head and
      the verifier is satisfied, with no core finding open (SKILL.md, Review trail). It starts
-     the full list on GitHub, since CI skips a draft. A push after it needs
-     `gh pr ready --undo` first, then a new approval.
+     the full list on GitHub, since CI skips a draft. With it, turn on auto-merge pinned to
+     that head: `gh pr merge <pr> --auto --squash --match-head-commit <head>` (under a merge
+     queue gh only warns that the queue sets the method). The PR then queues and merges by
+     itself once `check` and `loop:approvals` are green, and GitHub deletes its head branch
+     (the repository's `delete_branch_on_merge`, which `setup:github` sets with
+     `allow_auto_merge`). A push after it needs `gh pr ready --undo` first; the push removes
+     `approved:merge`, and the PR goes ready with auto-merge again on the new head.
    - Don't wait idle for CI: start one background command whose exit wakes you, the way the
      backend runs one (Waiting), `gh pr checks <pr> --required --watch --fail-fast`
      (without `--required` where the base requires no check). It exits 0 once the checks are
@@ -112,15 +115,13 @@ UI, and delegate the rest.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
-     since its last verdict's head; the PR is marked ready again with a new merge approval.
-   - Once those checks are green (with `CI: none`, once `python3 scripts/approvals.py local-ci <pr>`
-     has recorded a pass on that head), `mise run loop:approvals merge <pr>`, then
-     `gh pr merge <pr> --squash --delete-branch --match-head-commit <landing sha>`. Under a
-     merge queue (`gh api repos/{owner}/{repo}/rules/branches/<base>` lists a `merge_queue`
-     rule), run `gh pr merge <pr> --match-head-commit <landing sha>` instead: gh
-     refuses `--delete-branch` there, because the queue merges later (the repository's
-     delete-on-merge setting removes the branch), and the queue sets the merge method (squash). It
-     queues the PR, or turns on auto-merge when checks are still running.
+     since its last verdict's head; the PR is marked ready again, with auto-merge on its new head.
+   - Ask the owner only once `check` is green on the head (with `CI: none`, once
+     `python3 scripts/approvals.py local-ci <pr>` has recorded a pass on that head), so they
+     never approve a head CI could still reject: run `mise run loop:approvals merge <pr>`.
+     Exit 1 names a missing proof: add it. Exit 3 (waiting) with only the owner's label left:
+     give the owner the PR link and ask for `approved:merge`. Exit 0: the label is on, and
+     auto-merge does the rest.
      The PR has landed only once `gh pr view <pr> --json state,mergeCommit` shows `MERGED`.
      Before working on other items, start one background command whose exit wakes you when
      the PR merges or drops out of the queue, the way the backend runs one (Waiting):
@@ -153,7 +154,7 @@ UI, and delegate the rest.
      When that was an epic's last open sub-issue, close and move the epic the same way.
    - A PR replaced by another: the replacement carries `Closes` for every issue the old
      one closed, so none is left pointing only at a closed PR; close the old one with
-     `Replaced by #<n>` and delete its head branch (its PR page can restore it).
+     `Replaced by #<n>`.
    - Fast-forward the main checkout (`git -C <main checkout> pull --ff-only`), and tell
      the live peers that main moved: the merge SHA, plus any setup step they must run.
    - A PR stacked on this one moves onto main now. When you own it,
@@ -175,9 +176,10 @@ UI, and delegate the rest.
    forward is a new change through this loop, never a patch on main.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents. For every
    worktree your notes list, run its teardown (loop.md § Worktree), then, from the main checkout,
-   `git worktree remove --force <path>` and `git branch -D <branch>` (a detached
-   verifier's worktree has none). Remove only what your notes list: other sessions'
-   worktrees sit beside yours.
+   `git worktree remove --force <path>` and `git branch -D <branch>`, the local branch only
+   (a detached verifier's worktree has none): GitHub deleted the merged head branch, and you
+   delete no remote branch. Remove only what your notes list: other sessions' worktrees sit
+   beside yours.
 11. **Report** to the owner: the PR and merge SHA, gate exit codes, the acceptance
    examples as checked (with a screenshot when there is something to see), ledger lines
    added, findings rejected, issues filed, each agent's model, `verifier: same family`

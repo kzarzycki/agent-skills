@@ -47,7 +47,11 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `mise.toml` tasks: the `check:`, `lint:`, `test:`, `ci:`, `loop:`, `setup:` and `agent:`
   groups, with the old names as aliases;
 - `.pre-commit-config.yaml`: the git hooks, each one a caller of a mise task;
-- `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals` job;
+- `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals`
+  workflow, which turns `mise run loop:approvals merge`'s exit into the `loop:approvals`
+  commit status on the head (0 success, 1 failure, 3 pending, since a job's own result can't
+  hold a merge as pending), runs again when CI completes, posts success on a merge-queue
+  commit, and removes `approved:merge` on a push;
 - `.github/check-paths.yml`: each part's path filter;
 - `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
   merge queue, requiring exactly two checks, `check` and `loop:approvals`. `mise run
@@ -57,8 +61,8 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
 `test:changed` and `check:secrets`. The proofs stay off the push, because a push is
-reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, on
-ready PRs in CI, and in the merge queue.
+reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, and
+`loop:approvals merge` on ready PRs in CI.
 
 A PR stays a draft until no core finding is open (Review trail on the PR), so CI skips its
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
@@ -94,28 +98,30 @@ merging or state-keeping is overridden, because two writers of one state drift a
 
 ### Approvals and proof
 
-The coordinator approves each point itself with
-`python3 scripts/approvals.py approve <spec|plan|merge> <issue or PR> --by coordinator`: the
-spec once it meets its contract, the plan once it covers the spec, the merge once the
-verifier's verdict is triaged with no core finding open and the gates are green. The
-verifier only gives the verdict, which `python3 scripts/approvals.py verdict <pr> <report>`
-posts on the PR. Each approval is a comment `approvals.py` reads, tied to the spec's or plan's
-last edit as GitHub's edit history shows it, or to the head commit, so a later edit or push
-needs approving again, plus the `approved:<point>` label. A re-approval says what changed and
+The coordinator approves the spec and the plan itself with
+`python3 scripts/approvals.py approve <spec|plan> <issue> --by coordinator`: the spec once
+it meets its contract, the plan once it covers the spec. The verifier only gives the
+verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts on the PR. Each
+approval is a comment `approvals.py` reads, tied to the spec's or plan's last edit as
+GitHub's edit history shows it, so a later edit needs approving again, plus the
+`approved:<point>` label. The merge approval is the owner's `approved:merge` label on the
+PR, asked for once `check` is green on the head: it counts only when added after that
+head's push, and a push removes it, so it never covers code the owner did not see. A re-approval says what changed and
 minimizes the records it supersedes as outdated. A change to an approved spec's scope or
 acceptance is a decision the owner never saw: remove `approved:spec`, add `needs-owner`
 with a one-line comment saying what changed, and stop until they approve. A wording fix
 keeps the label and needs only `approve` again, which still asks the person a loop.md §
 Approvals rule names, since `approvals.py` can't tell wording from scope. `mise run loop:approvals
 build` before building and `mise run loop:approvals merge` before merging check every proof
-(`scripts/approvals.py` lists them). `scripts/gate.py` and `local-ci`'s old name
+(`scripts/approvals.py` lists them); `merge` exits 3 while it waits for `check` or the
+owner's label, and 1 when a proof is missing. `scripts/gate.py` and `local-ci`'s old name
 `record-check` still run for one release.
 
-loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
-line, `<point>: <condition>`, such as `spec: size:L or larger, or component billing`. The
-condition is judged on what the issue carries (size, component, category), the paths the
-PR touches (merge only: a spec or plan comes before the change, so there the loop judges a
-path), or the kind of change; `always` matches everything. When a rule matches,
+loop.md § Approvals adds a person's approval to a spec or plan, never in place of the
+loop's: one rule per line, `<spec|plan>: <condition>`, such as `spec: size:L or larger, or
+component billing`. `approvals.py` judges a condition on what the issue carries (size,
+component, category; `always` matches everything), never a path, since a spec or plan comes
+before the change. When a rule matches,
 `approve` leaves the label off, adds `needs-owner`, and you stop: a person approves by
 adding `approved:<point>`, by saying so in the session, or, for a spec on a repo with a
 board, by moving the issue to `Ready` while it has `needs-owner` (`python3
@@ -228,11 +234,10 @@ angles run as native subagents, never as full harness sessions.
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open and
-  the ledger is updated; it writes the PR's evidence and the merge approval. The PR merges
-  when `mise run loop:approvals merge <pr>` then exits 0 on the head that lands (the reviewed head,
-  plus only what `coordinator.md` steps 7 and 8 exempt from a further pass). Nothing else
-  needs authorising, except an owner who asked to see the change first: then hold the
-  merge and give them the link and what to click.
+  the ledger is updated; it writes the PR's evidence, marks it ready and turns on auto-merge.
+  The PR merges when `mise run loop:approvals merge <pr>` exits 0 on the head that lands (the
+  reviewed head, plus only what `coordinator.md` steps 7 and 8 exempt from a further pass):
+  `check` green there and the owner's `approved:merge` label, their one action.
 
 ## Triage
 
