@@ -807,7 +807,7 @@ def test_the_lookup_matches_the_title_under_the_parent_created_after_the_attempt
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def call(self, method: str, path: str, body: object = None) -> object:
-        assert path == "/v1/sessions/coord/child_sessions"
+        assert path == "/v1/sessions/coord/child_sessions?limit=100"
         return {
             "data": [
                 {"id": "old", "title": "t", "created_at": 99},
@@ -941,7 +941,46 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     omnigent_agent.main([*base[:2], "t2", *base[3:]])
     monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "named")
     omnigent_agent.main([*base[:2], "t3", *base[3:], "--role", "verifier.md"])
-    assert models == [omnigent_agent.CODEX_VERIFIER_MODEL, None, "named"]
+    omnigent_agent.main([*base[:2], "t4", *base[3:], "--role", "verifier.md", "--model", "flag"])
+    assert models == [omnigent_agent.CODEX_VERIFIER_MODEL, None, "named", "flag"]
+
+
+def test_start_refuses_a_report_already_there(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "r.md").write_text("the pass before")
+    (tmp_path / "b.md").write_text("fix C1")
+    argv = ["start", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1  # its `wait` would take the old report
+    assert "already exists" in capsys.readouterr().err and og.sessions == {}
+
+
+def test_the_nudge_is_awaited_before_the_next_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(status="idle")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", report, None, 0)
+    monkeypatch.setattr(omnigent_agent, "IDLE_GRACE_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    late: list[str] = []
+    og.send = lambda s, text: late.append(text)  # type: ignore[method-assign]
+    items = og.items
+
+    def landing(s: str) -> list[dict]:  # the nudge shows up a few reads after its send
+        if late and len(late) < 4:
+            late.append("")
+        elif late:
+            og.land(s, late.pop(0))
+            late.clear()
+            report.write_text("done")
+        return items(s)
+
+    og.items = landing  # type: ignore[method-assign]
+    assert omnigent_agent.wait(og, sid, report) == str(report)
 
 
 class Roster:

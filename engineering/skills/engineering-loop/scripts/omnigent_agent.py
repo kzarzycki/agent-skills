@@ -267,7 +267,7 @@ class Omnigent:
         parent = parent_id()
         if not parent:
             return None
-        page = self.call("GET", f"/v1/sessions/{parent}/child_sessions")
+        page = self.call("GET", f"/v1/sessions/{parent}/child_sessions?limit=100")
         return next(
             (
                 str(c["id"])
@@ -720,6 +720,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{args.agent} would verify {args.author}-written code; pass --same-family to allow it"
             )
         # A report already there is a pass before (a fix pass reuses the path): only a newer one counts.
+        # `wait` after a separate `start` has no launch time to compare, so `start` refuses it.
+        if args.cmd == "start" and report.exists():
+            raise Fail(
+                f"{report} already exists; wait would return at once (use run, or a new path)"
+            )
         launched = time.time_ns()
         report.parent.mkdir(parents=True, exist_ok=True)
         sid, survivors = start(

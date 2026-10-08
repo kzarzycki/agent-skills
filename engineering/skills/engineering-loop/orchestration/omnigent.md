@@ -39,8 +39,9 @@ whose brief carries the question and the answer.
 
 **Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old
-transcript, and a send to a reaped session answers `queued` and never arrives. It may
+transcript, and a send to a reaped session answers `queued` and never arrives. A `run` may
 reuse the report path: a report already there counts only once rewritten after the launch.
+`start` refuses one, since the `wait` after it has no launch time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default; a Codex verifier's default is
