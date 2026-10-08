@@ -68,6 +68,8 @@ Write Markdown to the report path:
 - Per finding: a title, severity (blocker|major|minor), file:line at the reviewed head (it
   becomes the PR review's inline comment), the failing input or contradicted requirement,
   and the evidence (the command and its output).
-- End with `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`.
+- End with `Head: <sha>`, the head you reviewed (`git rev-parse HEAD` in your worktree),
+  then `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`. The merge
+  reads the verdict as covering that head only, so a push after your review needs its own.
 
 Reply with only the path.

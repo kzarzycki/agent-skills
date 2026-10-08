@@ -959,22 +959,35 @@ def test_merge_is_no_approve_point(capsys: pytest.CaptureFixture[str]) -> None:
     assert "invalid choice: 'merge'" in capsys.readouterr().err
 
 
-def test_the_verdict_posts_the_reports_last_lines(
+def test_the_verdict_posts_the_reports_last_lines_with_the_head_it_reviewed(
     github: list[tuple[Any, ...]],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
+    """The head is the one the report names, not the PR's head when the verdict is posted: a push in between would
+    otherwise get a verdict nobody gave."""
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": "2" * 40})
     report = tmp_path / "report.md"
-    report.write_text("findings\nVERDICT: 0 blocker, 0 major, 2 minor\nSATISFIED: yes\n")
+    report.write_text(f"findings\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 2 minor\nSATISFIED: yes\n")
     assert approvals.main(["verdict", "7", str(report)]) == 0
     assert github == [("comment", 7, VERDICT)]
-    report.write_text("findings, unfinished\n")
-    assert approvals.main(["verdict", "7", str(report)]) == 1
-    assert (
-        capsys.readouterr().out == f"{report} has no `SATISFIED:` line: the report is unfinished\n"
-    )
+    github.clear()
+    for unfinished, why in (
+        ("findings, unfinished\n", "has no `SATISFIED:` line: the report is unfinished"),
+        (
+            "findings\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n",
+            "has no `Head: <sha>` line naming the head it reviewed",
+        ),
+        (
+            "Head: the latest\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n",
+            "has no `Head: <sha>` line naming the head it reviewed",
+        ),
+    ):
+        report.write_text(unfinished)
+        assert approvals.main(["verdict", "7", str(report)]) == 1
+        assert capsys.readouterr().out == f"{report} {why}\n"
+    assert github == []
 
 
 # --- the verdict that lets a PR land ---

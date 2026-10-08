@@ -68,7 +68,9 @@ UI, and delegate the rest.
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report's verdict with
-   `python3 scripts/approvals.py verdict <pr> <report>`, which `approvals.py` reads, and as a PR review
+   `python3 scripts/approvals.py verdict <pr> <report>`, which `approvals.py` reads: it posts
+   the report's `Head:` line, the head the verifier reviewed, and refuses a report without
+   one. Post it also as a PR review
    of the reviewed head (github.md, Review trail): one inline comment per finding, labelled
    `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:` and `SATISFIED:`
    lines. Only a mixed PR's second verifier, running at

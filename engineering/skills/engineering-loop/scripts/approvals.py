@@ -4,7 +4,7 @@
     python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     python3 scripts/approvals.py land <pr>                  # every merge proof, then ready and merge; exit 0, 1 or 3
     python3 scripts/approvals.py approve <spec|plan> <issue> --by <coordinator|owner>
-    python3 scripts/approvals.py verdict <pr> <report>      # post the verifier's verdict lines on the PR
+    python3 scripts/approvals.py verdict <pr> <report>      # post the report's Head, VERDICT and SATISFIED lines
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
@@ -1026,8 +1026,15 @@ def verdict(pr: int, report: Path) -> int:
     satisfied = [line for line in lines if line.startswith("SATISFIED:")]
     if not satisfied:
         raise Refused(f"{report} has no `SATISFIED:` line: the report is unfinished")
-    head = pull_request(pr)["headRefOid"]
-    comment(pr, "\n".join([VERDICT, f"Head: {head}", *verdicts[-1:], satisfied[-1]]) + "\n")
+    # the head the verifier reviewed, which a push since the review may have moved the PR's head past
+    heads = [
+        found[1]
+        for line in lines
+        if (found := re.fullmatch(r"Head:[ \t]*([0-9a-fA-F]{7,40})", line))
+    ]
+    if not heads:
+        raise Refused(f"{report} has no `Head: <sha>` line naming the head it reviewed")
+    comment(pr, "\n".join([VERDICT, f"Head: {heads[-1]}", *verdicts[-1:], satisfied[-1]]) + "\n")
     return 0
 
 
