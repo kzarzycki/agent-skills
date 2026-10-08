@@ -927,9 +927,13 @@ def minimize(comment_id: str) -> None:
     )
 
 
-def viewer() -> str:
-    """The login of the account `gh` runs as."""
-    return gh("api", "user", "--jq", ".login").strip()
+def viewer() -> str | None:
+    """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
+    token (`github.token`), where the PR's author, the shared account, is the one trusted."""
+    try:
+        return gh("api", "user", "--jq", ".login").strip()
+    except subprocess.CalledProcessError:
+        return None
 
 
 def current_pr() -> int | None:

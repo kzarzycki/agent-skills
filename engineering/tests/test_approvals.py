@@ -28,6 +28,7 @@ AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
 IDS = itertools.count(1)
 PUSHED, LABELED = "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z"
 TOPLEVEL = approvals.toplevel
+VIEWER = approvals.viewer
 
 
 @pytest.fixture(autouse=True)
@@ -1255,6 +1256,27 @@ def test_only_a_review_by_the_prs_author_or_the_viewer_counts(
     monkeypatch.setattr(approvals, "viewer", lambda: "coordinator")
     assert verified(verdict_on(HEAD, author="coordinator")) == []
     assert verified(verdict_on(HEAD, author=None)) == [  # a deleted account
+        "PR #7: no verifier review posted (approvals.py verdict)"
+    ]
+
+
+def test_without_a_user_token_only_the_prs_authors_review_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An installation token (the approvals workflow's `github.token`) can't read `GET /user`: the gate trusts the
+    PR's author, the shared account, instead of failing every PR with a verifier review."""
+
+    def gh(*args: str, data: str | None = None) -> str:
+        assert args[:2] == ("api", "user"), args
+        raise subprocess.CalledProcessError(
+            1, "gh", stderr="gh: Resource not accessible by integration (HTTP 403)\n"
+        )
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "viewer", VIEWER)
+    assert approvals.viewer() is None
+    assert verified(verdict_on(HEAD, author="worker")) == []
+    assert verified(verdict_on(HEAD, author="loop")) == [
         "PR #7: no verifier review posted (approvals.py verdict)"
     ]
 
