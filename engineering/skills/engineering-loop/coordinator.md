@@ -67,22 +67,22 @@ UI, and delegate the rest.
    outside its workspace, and nobody answers. When the change has something to see, first
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
-   unfinished: never triage or land on it. Post each finished report's verdict with
-   `python3 scripts/approvals.py verdict <pr> <report>`, which `approvals.py` reads: it posts
-   the report's `Head:` line, the head the verifier reviewed, and refuses a report without
-   one. Post it also as a PR review
-   of the reviewed head (github.md, Review trail): one inline comment per finding, labelled
-   `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:` and `SATISFIED:`
-   lines. Only a mixed PR's second verifier, running at
-   the same time, gets a detached worktree at the same head, so the two gate runs don't
-   collide. Triage every finding (SKILL.md), hand the fixes, and each deferred finding
-   with the issue it waits in, to a worker or make them yourself (`worker.md`, Trail), and
-   push. Each later pass gets a fresh verifier, started the same way, plus
+   unfinished: never triage or land on it. Post each finished report with
+   `python3 scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
+   report's `Head:` line names (github.md, Review trail), one inline comment per finding,
+   labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:` and
+   `SATISFIED:` lines. That review is what the merge gate reads. Only a mixed PR's second
+   verifier, running at the same time, gets a detached worktree at the same head, so the two
+   gate runs don't collide. Triage every finding (SKILL.md) and hand the fixes to a worker,
+   or make them yourself (`worker.md`, Trail): the fixer replies on each fixed thread with
+   the SHA and resolves it `ADDRESSED`. Resolve each deferred finding's thread yourself,
+   `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
+   `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way, plus
    the previous report's path and head; reviving the old one re-reads its whole earlier
    review every turn. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
    concern per PR). Every fix after a verdict needs a verdict on its head, because `land`
-   (step 8) merges only a head the newest verdict covers. A fix that changes nothing an
+   (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
    agent or tool reads (prose for people: a README, the changelog, a code comment), a note
    fixed after a satisfied verdict among them, gets a short delta pass: the verifier reviews
    only the change since the last verdict's head. Instructions are code: a skill, a role
@@ -106,8 +106,9 @@ UI, and delegate the rest.
      owner's `approved:merge` label on the head that lands (SKILL.md, Approvals and proof);
      you never add it.
    - Run `python3 scripts/approvals.py land <pr>` (the project's `mise run loop:land <pr>`)
-     once no local objection is left: `mise run check` passed on the head and the newest
-     verdict, satisfied with no core finding open, covers it (SKILL.md, Review trail). Exit 1
+     once no local objection is left: `mise run check` passed on the head, the newest
+     verifier review, satisfied with no core finding open, covers it, and every review
+     thread is resolved (SKILL.md, Review trail on the PR). Exit 1
      names each missing proof, and nothing on the PR changed: add the proof. On a draft it
      marks the PR ready, which starts the full list on GitHub since CI skips a draft, and
      exits 3, since the draft's skipped checks say nothing about the ready PR: run it again.

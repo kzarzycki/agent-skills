@@ -101,12 +101,14 @@ merging or state-keeping is overridden, because two writers of one state drift a
 The coordinator approves the spec and the plan itself with
 `python3 scripts/approvals.py approve <spec|plan> <issue> --by coordinator`: the spec once
 it meets its contract, the plan once it covers the spec. The verifier only gives the
-verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts on the PR. Each
+verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts as a PR review on
+the commit it reviewed. Each
 approval is a comment `approvals.py` reads, tied to the spec's or plan's last edit as
 GitHub's edit history shows it, so a later edit needs approving again, plus the
-`approved:<point>` label. The merge approval is the gates themselves: a satisfied verdict
-with no blocker or major open on the head that lands, no review requesting changes, and
-the base's required checks green. A loop.md § Approvals `merge:` rule adds the owner's
+`approved:<point>` label. The merge approval is the gates themselves: every verifier review
+on the newest pass's commit satisfied with no blocker or major open, that commit covering
+the head that lands, every review thread resolved, no review requesting changes, and the
+base's required checks green. A same-family pass counts, its heading saying so. A loop.md § Approvals `merge:` rule adds the owner's
 `approved:merge` label on the PR, asked for once `check` is green on the head: it counts
 only when added after that head's push, and a push removes it, so it never covers code the
 owner did not see. A re-approval says what changed and
@@ -223,11 +225,16 @@ angles run as native subagents, never as full harness sessions.
   reverted PR's issues reopen with a comment naming the revert, and the fix forward is a
   new change through the loop.
 - **Review trail on the PR.** The PR opens as a draft with the branch's first push, and
-  every commit after it is pushed. Each verifier pass is posted as a PR review: one inline
-  comment per finding, labelled `Verifier (<family>), pass <n>`, and a summary carrying the
-  verdict. Each fix is its own commit, replied on its finding's thread with the SHA, and the
-  thread resolved; a deferred finding's reply links the issue it waits in. A human review
-  follows the same pattern. The PR is marked ready once no core finding (blocker or major)
+  every commit after it is pushed. Each verifier pass is posted as a PR review with
+  `approvals.py verdict`: one inline comment per finding, labelled `Verifier (<family>),
+  pass <n>`, and a summary carrying the verdict. The gate reads these reviews, so the
+  review is the verdict. Resolution follows triage, and the verifier never triages: the
+  worker resolves only a thread it fixed, reason `ADDRESSED`, replying with the fixing SHA;
+  the coordinator resolves a deferred finding `WONT_FIX`, replying with its triage and the
+  issue it waits in, and a rejected one `INVALID`, with the one-line why. The owner may
+  override any resolution, and alone dismisses a teammate's `CHANGES_REQUESTED`; an agent
+  dismisses one only when the owner asks for that review in the session, quoting the ask
+  in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
   is open, and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
   `mise run check` before each push is the check while a PR is a draft.

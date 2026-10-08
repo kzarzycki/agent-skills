@@ -18,9 +18,9 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    that is a failing CI log is a check red after the PR went ready: fix it in the worktree
    you are given, then `mise run check` and push the same way.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
-   push, reply on each finding's thread with its commit SHA and resolve the thread; a
-   finding handed to you as deferred gets a reply linking the issue it waits in, and is
-   resolved too (github.md, Review trail).
+   push, reply on each finding's thread with its commit SHA and resolve it, reason
+   `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
+   rejecting a finding is triage, the coordinator's.
 4. **Report.** Clean up what you started (servers, temporary files), then write your
    report to a file and send the coordinator its path: the branch and head SHA, the gate
    exit codes, the model you ran on, anything left out and why, and what you tried and
