@@ -1506,6 +1506,15 @@ def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
         ]
         landing["calls"].clear()
         assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+    # a base requiring none: another check that ran on the draft doesn't stand in for the skipped one
+    landing["calls"].clear()
+    rollup["nodes"] = [draft, {**draft, "name": "lint", "conclusion": "SUCCESS"}]
+    code, lines, calls = landed(capsys, landing)
+    assert (code, lines, calls) == (
+        approvals.WAITING,
+        ["PR #7: no `check` on the head commit yet"],
+        [],
+    )
 
 
 def test_land_turns_on_auto_merge_while_required_checks_are_pending(

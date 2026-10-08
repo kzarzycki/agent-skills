@@ -689,10 +689,11 @@ def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
 
 def head_checks(
     pull: dict[str, Any], required: set[str] | None
-) -> tuple[list[tuple[str, str]], int | None]:
+) -> tuple[list[tuple[str, str]], int | None, set[str]]:
     """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
     the aggregate `check`, the one check `check merge` reads, since every other check is advisory or the ruleset's;
-    empty: every check); and how many checks GitHub returned when it holds more than that one page, else None."""
+    empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
+    names whose only run is a draft's skip, which the ready PR's CI has not reached yet."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
     every = contexts["contexts"]["nodes"] if contexts else []
@@ -715,30 +716,33 @@ def head_checks(
     # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of one check on the
     # head; only the newest says whether it is green. One job name in two workflows is two checks.
     newest: dict[tuple[str, str], dict[str, Any]] = {}
+    drafts: set[str] = set()
     for node in every:
         name = node.get("name") or node.get("context")
         if wanted and name not in wanted:
             continue
         if node.get("conclusion") == "SKIPPED" and (node.get("completedAt") or "") < ready:
+            drafts.add(name)
             continue
         run = (node.get("checkSuite") or {}).get("workflowRun") or {}
         key = ((run.get("workflow") or {}).get("name", ""), name)
         if key not in newest or started(node) >= started(newest[key]):
             newest[key] = node
-    return [
+    checks = [
         (name, node.get("conclusion") or node.get("state") or node.get("status"))
         for (_, name), node in newest.items()
-    ], more
+    ]
+    return checks, more, drafts - {name for name, _ in checks}
 
 
 def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> list[str]:
     """A line per check head_checks() reads that is not green on the head, or not there yet."""
-    checks, more = head_checks(pull, required)
+    checks, more, drafts = head_checks(pull, required)
     wanted = {"check"} if required is None else required
     if wanted:
         missing = [f"`{name}`" for name in sorted(wanted - {name for name, _ in checks})]
-    else:  # every check of none would pass a head CI has not reached yet
-        missing = [] if checks else ["check"]
+    else:  # every check of none would pass a head CI has not reached yet, or one only the draft skipped
+        missing = [f"`{name}`" for name in sorted(drafts)] or ([] if checks else ["check"])
     if more is not None and (missing or not wanted):
         return [f"{where} has more than {more} CI checks: the gate reads one page"]
     return [f"{where}: no {name} on the head commit yet" for name in missing] + [
@@ -1042,7 +1046,7 @@ def land(pr: int) -> int:
         gh(*merge)
         print(f"{where} merges at {head}")
         return 0
-    checks = head_checks(pull, required)[0]
+    checks = head_checks(pull, required)[0]  # ran() already waits for a draft-only skip
     # a required check not on the head yet may be a draft's skipped run, which GitHub's auto-merge counts as passing
     pending = (
         not owner
