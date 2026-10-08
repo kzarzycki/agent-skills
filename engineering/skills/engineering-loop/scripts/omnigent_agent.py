@@ -8,7 +8,9 @@
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
 path of a question the child wrote (``<report>.question``) instead of a report; exit 1 prints the
-reason and the child's last message. A coordinator launches it as one background command, so its
+reason and the child's last message (for a failed session, its ``last_task_error`` and runner log).
+A report already at the path is a pass before: only one written after the launch counts. The first
+turn that ends with neither gets one nudge to write it; a second fails. A coordinator launches it as one background command, so its
 exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
@@ -22,7 +24,10 @@ Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session c
 for good), ``POST /v1/sessions/{id}/events`` with a ``message`` event, and
 ``GET /v1/sessions/{id}/items`` as the history. A send answers ``queued``/``launching`` even when
 the child never gets it, so the start counts only once the one line naming the brief file is a
-user message in the history. Server and host come from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
+user message in the history. A create that fails may have made the session anyway, so ``start``
+looks its title up among the parent's children (``GET /v1/sessions/{parent}/child_sessions``) and
+briefs that one. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
+brief with an empty backtick span (a name an unquoted heredoc ran). Server and host come from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
 own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists it. Stdlib only.
 """
 
@@ -34,6 +39,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -51,6 +57,15 @@ HTTP_SECONDS = 30.0
 # Idle with the brief last for this long: a turn that ended with no output. Shorter is not proof:
 # claude-native was seen idle for 15 s mid-turn, with the brief last, before its reply came.
 IDLE_GRACE_SECONDS = 30.0
+# A loaded server times out reads the child never noticed; a GET is retried after each of these.
+RETRY_SECONDS = (2.0, 5.0, 15.0)
+TRANSIENT = (TimeoutError, socket.timeout, ConnectionResetError)  # socket.timeout: Python 3.9
+EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
+RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
+NUDGE = "Your turn ended without the report. Run any long command in the foreground, then write the report to {report}."
+# A Codex verifier's model unless --model or OMNIGENT_MODEL_CODEX names one: else it inherits
+# whatever ~/.codex/config.toml sets for interactive use.
+CODEX_VERIFIER_MODEL = "gpt-6.1-sol"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no runner it could revive
 
@@ -150,7 +165,11 @@ class Omnigent:
         return out.stdout.strip()
 
     def call(self, method: str, path: str, body: object = None) -> dict:
-        for attempt in (0, 1):
+        """One request; a ``GET`` is retried on a timeout or reset. A ``POST`` never is: it may
+        have taken effect."""
+        retries = list(RETRY_SECONDS) if method == "GET" else []
+        refreshed = False
+        while True:
             self._token = self._token or self.token()
             req = Request(
                 self.base + path,
@@ -165,20 +184,24 @@ class Omnigent:
                 with urlopen(req, timeout=HTTP_SECONDS) as resp:
                     return json.load(resp)
             except HTTPError as e:
-                if e.code == 401 and attempt == 0:
-                    self._token = ""  # expired mid-run: refresh once
+                if e.code == 401 and not refreshed:
+                    self._token, refreshed = "", True  # expired mid-run: refresh once
                     continue
                 raise Fail(
                     f"{method} {path}: HTTP {e.code} {e.reason}"
                 ) from e  # never read the body: it can stall past the timeout
-            except URLError as e:
-                raise Fail(f"{method} {path}: {e.reason}") from e
             except (
                 OSError,
                 http.client.HTTPException,
-            ) as e:  # socket timeout, reset, bad status line
+            ) as e:  # URLError, timeout, reset, bad status line
+                cause = e.reason if isinstance(e, URLError) else e
+                if retries and isinstance(cause, TRANSIENT):
+                    print(f"{method} {path}: {type(cause).__name__}; retrying", file=sys.stderr)
+                    time.sleep(retries.pop(0))
+                    continue
+                if isinstance(e, URLError):
+                    raise Fail(f"{method} {path}: {e.reason}") from e
                 raise Fail(f"{method} {path}: {type(e).__name__}: {e}") from e
-        raise AssertionError("unreachable")
 
     def agent_id(self, name: str) -> str:
         agents = self.call("GET", "/v1/agents")
@@ -208,7 +231,7 @@ class Omnigent:
         # A sub-agent of the runner's primary session (the coordinator, also when a child runs
         # this): hidden from the owner's sidebar and unread badge, and gone with it. Top level
         # when not run from an Omnigent session.
-        if parent := os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID"):
+        if parent := parent_id():
             body["parent_session_id"] = parent
         if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
             body["model_override"] = model
@@ -243,9 +266,37 @@ class Omnigent:
     def delete(self, sid: str) -> None:
         self.call("DELETE", f"/v1/sessions/{sid}")
 
+    def find(self, title: str, after: float) -> str | None:
+        """The parent's child called ``title`` created at or after ``after`` (epoch seconds): the
+        session a create that failed in transit made anyway. None when there is no parent."""
+        parent = parent_id()
+        if not parent:
+            return None
+        page = self.call("GET", f"/v1/sessions/{parent}/child_sessions?limit=100")
+        return next(
+            (
+                str(c["id"])
+                for c in page.get("data", [])
+                if c.get("title") == title and float(c.get("created_at") or 0) >= after
+            ),
+            None,
+        )
+
     def children(self, sid: str) -> list[str]:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
         return [str(c["id"]) for c in page.get("data", [])]
+
+
+def parent_id() -> str:
+    """The runner's primary session (the coordinator, also when a child runs this), else empty."""
+    return os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
+
+
+def runner_log(info: dict) -> str:
+    """Where the session's runner logs: one file per primary session, children included."""
+    root = info.get("parent_session_id") or info.get("id") or "*"
+    logs = sorted(RUNNER_LOGS.glob(f"runner-{root}-*.log"), key=lambda f: f.stat().st_mtime)
+    return str(logs[-1]) if logs else str(RUNNER_LOGS / f"runner-{root}-*.log")
 
 
 def text_of(item: dict) -> str:
@@ -393,6 +444,11 @@ def start(
     model: str | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose delete failed."""
+    if span := EMPTY_SPAN.search(brief):
+        line = brief[: span.start()].count("\n") + 1
+        raise Fail(
+            f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
+        )
     # The brief goes in a file beside the report and the message only names it: a child can receive
     # an inline brief as pasted text, which it will not take instructions from.
     brief_file = report.with_name(report.name + ".brief")
@@ -421,9 +477,21 @@ def start(
 
     for n in range(attempts):
         # a surviving abandoned child keeps its title, and Omnigent refuses a sibling with the same one
-        sid = og.create(agent, title if n == 0 else f"{title}-r{n + 1}", model)
+        name = title if n == 0 else f"{title}-r{n + 1}"
+        # ponytail: whole seconds of the server's clock against this host's; a skewed server
+        # misses the match and fails as before. Upgrade: an idempotency key, once Omnigent has one.
+        began, found = int(time.time()), None
         try:
-            og.send(sid, text)
+            sid = og.create(agent, name, model)
+        except Fail as e:  # a timed-out create can have made the session: brief that one
+            found = og.find(name, began)
+            if not found:
+                raise failed(f"start failed: {e}") from e
+            print(f"create failed ({e}); briefing session {found}, made anyway", file=sys.stderr)
+            sid = found
+        try:
+            if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
+                og.send(sid, text)
             if delivered(og, sid, text, confirm_seconds):
                 return sid, survivors
         except Fail as e:
@@ -452,7 +520,7 @@ def wait(
     counts: the one from the earlier turn is still there.
     """
     deadline = time.monotonic() + timeout
-    idle_since = None
+    idle_since, nudged = None, False
     question = question_of(report)
     missing = f"a verdict in {report}" if verdict else str(report)
 
@@ -490,6 +558,21 @@ def wait(
                 break
             if question.exists():
                 raise Asked(str(question))
+            if status == "failed":
+                error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
+                raise Fail(
+                    f"session {sid} ended (failed): {error}\nrunner log: {runner_log(info)}\nlast message: {said}"
+                )
+            if not nudged:  # often a turn ended on a background command: one reminder
+                nudge = NUDGE.format(report=report)
+                print(
+                    f"session {sid} ended ({status}) without {missing}; nudging once",
+                    file=sys.stderr,
+                )
+                og.send(sid, nudge)
+                delivered(og, sid, nudge, 60.0)  # else its old last message ends the wait at once
+                idle_since, nudged = None, True
+                continue
             raise Fail(f"session {sid} ended ({status}) without {missing}\nlast message: {said}")
         if time.monotonic() >= deadline:
             raise Fail(
@@ -660,8 +743,13 @@ def main(argv: list[str] | None = None) -> int:
             raise Fail(
                 f"{args.agent} would verify {args.author}-written code; pass --same-family to allow it"
             )
-        if report.exists():
-            raise Fail(f"{report} already exists; wait would return at once")
+        # A report already there is a pass before (a fix pass reuses the path): only a newer one counts.
+        # `wait` after a separate `start` has no launch time to compare, so `start` refuses it.
+        if args.cmd == "start" and report.exists():
+            raise Fail(
+                f"{report} already exists; wait would return at once (use run, or a new path)"
+            )
+        launched = time.time_ns()
         report.parent.mkdir(parents=True, exist_ok=True)
         sid, survivors = start(
             og,
@@ -671,11 +759,13 @@ def main(argv: list[str] | None = None) -> int:
             report,
             args.role,
             args.confirm_seconds,
-            model=args.model,
+            model=args.model
+            or os.environ.get(f"OMNIGENT_MODEL_{args.agent.upper()}")
+            or (CODEX_VERIFIER_MODEL if verifier and args.agent == "codex" else None),
         )
         print(sid, flush=True)
         if args.cmd == "run":
-            print(wait(og, sid, report, args.timeout, verifier))
+            print(wait(og, sid, report, args.timeout, verifier, launched))
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0

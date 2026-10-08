@@ -15,8 +15,11 @@ such a path. Titles look like `s120-parser-worker`,
 `s120-verifier-p1`. The brief file holds only the task specifics; the script writes it,
 under a fixed preamble (owner-authorized imperative, the role file, long commands in the
 foreground, write the report to the path, reply with only the path), to `<report>.brief`
-and sends the child one line naming that file. Exit 0 prints the report path. Exit 1
-prints the reason and the child's last message. With a verifier's role file, the report
+and sends the child one line naming that file. Build the brief with a quoted heredoc
+(`<<'EOF'`): an unquoted one runs each backticked name as a command, and the script
+refuses a brief left with an empty `` `` `` span. Exit 0 prints the report path. Exit 1
+prints the reason and the child's last message; for a session that failed, also its
+`last_task_error` and its runner log. With a verifier's role file, the report
 counts only once it has its `SATISFIED:` line, so a report written in stages does not end
 the wait early. Sessions are filed under the Omnigent project named like the repo, when
 one exists; `OMNIGENT_PROJECT` overrides the name.
@@ -37,10 +40,13 @@ land: start a fresh run whose brief carries the question and the answer.
 
 **Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old
-transcript.
+transcript. A `run` may reuse the report path: a report already there counts only once
+rewritten after the launch. `start` refuses one, since the `wait` after it has no launch
+time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
-`OMNIGENT_MODEL_CLAUDE`), else its harness's default.
+`OMNIGENT_MODEL_CLAUDE`), else its harness's default; a Codex verifier's default is
+`gpt-6.1-sol`, so it does not inherit `~/.codex/config.toml`'s model.
 
 **Same-family verifier.** Pass `--author <claude|codex>` when starting a verifier. When
 it matches the verifier's family the script refuses unless `--same-family` is given; the
@@ -56,11 +62,16 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   then sends.
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
-  abandons the session and retries once with a fresh one.
+  abandons the session and retries once with a fresh one. A create that fails (a timeout
+  on a loaded server) may still have made the session, so the script looks for its title
+  among the parent's children made since, and briefs that one instead of a second.
+- A loaded server times out reads while the child works on. Every `GET` is retried on a
+  timeout or reset, with backoff; a `POST` never is, since it may have taken effect.
 - A child that reads its brief as pasted text asks for a go-ahead, so the brief is a file
   and the message is one line. One that runs a command in the background ends its turn
-  "waiting" and never reports; the preamble covers that. `wait` fails when the turn ends
-  without a report, when the child is blocked on an approval prompt (it prints the
+  "waiting" and never reports; the preamble covers that, and the first turn that ends
+  without a report or a question gets one nudge to finish in the foreground and write the
+  report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
   prompt), or after `--timeout` (default 3h), so the coordinator still wakes.
 
 **Children are your sub-agents.** Run from an Omnigent session, the script creates each
