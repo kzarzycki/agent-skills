@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.13.0 - 2026-10-09
+
+The merge contract's landing (kzarzycki/agent-skills#108, #106) and the launcher's resilience (#93).
+
+- `approvals.py land <pr>` is the one way an agent lands a PR. It refuses (exit 1, the PR
+  untouched) on a missing proof; marks a draft ready and waits (exit 3: run it again once CI
+  starts); then merges at the head (`gh pr merge --squash --match-head-commit`), or turns on
+  auto-merge pinned to the head while only required checks are pending. Required checks are
+  the base's rulesets and branch protection; a base requiring none needs every check green,
+  and a draft's skipped run is no result.
+- The gates are the merge approval. A loop.md § Approvals `merge:` rule (same conditions as
+  `spec:`, plus `path <glob>` read from the PR's files) asks for the owner's `approved:merge`;
+  a `merge:` condition the gate can't read asks for it too. With no rule, no label is needed.
+  A project that wants the 0.12.0 behaviour, a label on every merge, writes `- merge: always`.
+- The verifier's verdict is a GitHub PR review: `approvals.py verdict <pr> <report>` posts the
+  report on its reviewed `Head:` with one inline thread per finding, and refuses a report it
+  can't parse. `check merge` and `land` need the newest pass's reviews on that commit
+  satisfied with 0 blocker and 0 major, on the head or with only a main merge since that
+  touches no PR file; no unresolved review thread; and no person's latest
+  `CHANGES_REQUESTED`. A verdict comment no longer counts. Only a review by the PR's author
+  or the viewer counts.
+- A repo without `docs/agents/loop.md` has no rules: each issue the PR names needs
+  `approved:spec` and no `needs-owner`. The loop's files are read from the checkout's top
+  level, so a run from a subdirectory reads the same rules.
+- The loop docs: land only through `approvals.py land`; every fix after a verdict, a note's
+  included, gets a delta pass, and after pass 3 a delta check; who replies on and resolves
+  which review thread (`ADDRESSED`, `WONT_FIX`, `INVALID`).
+- `gate.py` and `record-check` stay as aliases until 0.14.0, which removes them.
+- `omnigent_agent.py watch` exits as soon as a session ends a turn, blocks on a prompt or
+  fails (#97); worktrees nest inside the project and the agent that starts them (#101); the
+  launcher retries idempotent reads, never doubles a timed-out create and nudges a turn that
+  ended without its report (#107); `send` revives a reaped session in place (#111).
+
 ## 0.12.0 - 2026-10-07
 
 The merge contract's agent-skills part (kzarzycki/agent-skills#102, #104).
