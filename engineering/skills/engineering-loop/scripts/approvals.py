@@ -745,7 +745,13 @@ def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> li
         missing = [f"`{name}`" for name in sorted(drafts)] or ([] if checks else ["check"])
     if more is not None and (missing or not wanted):
         return [f"{where} has more than {more} CI checks: the gate reads one page"]
-    return [f"{where}: no {name} on the head commit yet" for name in missing] + [
+    # ponytail: a job that skips for another reason in a workflow without `ready_for_review` never reruns, so it waits
+    # for good; the line names the cause. Bound the wait by time since ready if a project hits it.
+    late = " since the PR went ready (its workflow may lack the `ready_for_review` type)"
+    return [
+        f"{where}: no {name} on the head commit yet{late if name.strip('`') in drafts else ''}"
+        for name in missing
+    ] + [
         f"{where}: `{name}` is {state} on the head commit"
         for name, state in checks
         if state not in GREEN

@@ -27,6 +27,11 @@ WRITTEN = "2026-10-01T09:00:00Z"
 AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
 IDS = itertools.count(1)
 PUSHED, LABELED = "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z"
+# land's wait for a check whose only run is the draft's skip
+WAITED = (
+    "PR #7: no `check` on the head commit yet since the PR went ready"
+    " (its workflow may lack the `ready_for_review` type)"
+)
 TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
 
@@ -1491,11 +1496,7 @@ def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
         rollup["nodes"] = [draft]
         code, lines, calls = landed(capsys, landing)
         assert (code, calls) == (approvals.WAITING, [])
-        assert (
-            lines == ["PR #7: no `check` on the head commit yet"]
-            if rulesets
-            else ["PR #7: no check on the head commit yet"]
-        )
+        assert lines == [WAITED]
         # a run that completed on the draft is the head's result: a workflow need not run again on ready
         rollup["nodes"] = [{**draft, "conclusion": "SUCCESS"}]
         landing["calls"].clear()
@@ -1512,7 +1513,7 @@ def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
     code, lines, calls = landed(capsys, landing)
     assert (code, lines, calls) == (
         approvals.WAITING,
-        ["PR #7: no `check` on the head commit yet"],
+        [WAITED],
         [],
     )
 
