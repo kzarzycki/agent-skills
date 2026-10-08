@@ -8,7 +8,7 @@ description: Draft or extend a project's CLAUDE.md or AGENTS.md with the command
 Draft the project's agent instruction file: the one the repo already uses (`CLAUDE.md`
 or `AGENTS.md`; when one symlinks to the other, edit the target), else `CLAUDE.md`. When
 the repo compiles its agent files from sources, for example `.apm/instructions/` through
-`mise run agent-sync`, propose the change to the source instead.
+`mise run agent:sync`, propose the change to the source instead.
 
 Survey whatever the project type offers (build, CI and lint config, sampled source and
 tests, commit history, templates and branding, citation and frontmatter style, notebook

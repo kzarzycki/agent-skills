@@ -39,7 +39,9 @@ yourself, keeping standards and spec as separate axes.
 - **Work the given priorities first.**
 - **Passes 2 and 3:** the coordinator gives you the previous report. Review the diff since
   its head, rerun each of its repros and mark it FIXED, NOT FIXED or ACCEPTED, with the
-  evidence line. Judge an ACCEPTED item by whether its recorded reasoning holds.
+  evidence line. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
+  after a fix for a CI check red on a ready PR is the same: only the change since that
+  report's head.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a browser, the API with its client,
   each result checked against the reference the spec names. Then read the server's log

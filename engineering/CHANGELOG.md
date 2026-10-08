@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.12.0 - 2026-10-07
+
+The merge contract's agent-skills part (kzarzycki/agent-skills#102, #104).
+
+- `scripts/gate.py` is `scripts/approvals.py`, with the subcommands `check`, `approve`,
+  `verdict` and `local-ci`. `local-ci` (formerly `record-check`) runs `mise run check:all` on a
+  clean checkout at the PR head for a `CI: none` repo; a record of the old `mise run check`
+  still counts. `gate.py` and `record-check` stay for this release as aliases with the same
+  output and exit code.
+- `check merge` reads one check, the aggregate `check` on the head, counting only its newest
+  run per workflow, so a red advisory check or a run cancelled by a newer green one no longer
+  blocks (replaces #76).
+- The merge approval is the owner's `approved:merge` label, added after the head's push (dated
+  by GitHub's repository activity) and still present; the `Approved: merge` record and
+  `approve merge` are gone, and a loop.md `merge:` rule is ignored. `check merge` exits 1 when
+  a proof is missing (Evidence, the verdict, an approved spec) and 3 while it waits for a green
+  `check` or the label, which the approvals workflow posts as a `pending` `loop:approvals`
+  status. The coordinator asks the owner only once `check` is green, turns on auto-merge with
+  `gh pr ready` (`gh pr merge <pr> --auto --squash --match-head-commit <head>`), and deletes
+  no remote branch: GitHub deletes the merged head branch.
+- `headed()` matches a comment's whole first line, so `## Specification notes` is no `## Spec`.
+- `approved:spec` is the ready state and `ready-for-agent` is gone: `check build` needs
+  `approved:spec`, a size, a category and a component, and no `needs-owner`. A `wayfinder:`
+  ticket needs `approved:spec` in place of `ready-for-agent`. Category, component and size
+  names are read through one rule, `label_names`: the loop's fixed set plus
+  `docs/agents/issue-tracker.md`.
+- `board.py column` prints the later of the issue's board column and the one its labels give,
+  so an issue with `approved:spec` reads `Ready`.
+- The loop docs use the contract's task names (`check`, `check:all`, `test:changed`,
+  `loop:approvals`, `setup:dev`, `setup:github`, `pr:demo`, `agent:sync`) and point at
+  `mise tasks ls` for what each does. Main requires exactly `check` and `loop:approvals`;
+  hooks are git hooks, and the proofs leave the push. The verification flow: the worker runs
+  `test:changed` while iterating and `check` before each push; the PR goes ready once
+  `check` passed and the verifier is satisfied; a check red after ready goes back to draft
+  and to a worker with the failing log, while the coordinator waits on one
+  `gh pr checks --watch --fail-fast`. An epic's stories are filed before its approval is
+  asked for, and each has its own approval.
+
 ## 0.11.0 - 2026-10-06
 
 - Human review findings on an open PR (`coordinator.md`, Land): each review comment is triaged
