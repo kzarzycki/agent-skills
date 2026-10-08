@@ -97,7 +97,9 @@ UI, and delegate the rest.
      reviews the merge first (step 7) only when main's changes touch a file the PR changes
      (`git diff --name-only <old base> origin/main` against
      `git diff --name-only origin/main...HEAD`) or change a merge check (a `check:` task, a
-     tool it runs, or the lint, type or test configuration). Otherwise the rerun gates are
+     tool it runs, or the lint, type or test configuration). `land` enforces only the first
+     half, refusing a verdict whose later commits touch a PR file; the merge-check half is
+     yours, since the gate can't tell such a change. Otherwise the rerun gates are
      the review.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where a loop.md `merge:` rule asks, the merge approval is also the

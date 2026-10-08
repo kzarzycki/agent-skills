@@ -247,9 +247,12 @@ angles run as native subagents, never as full harness sessions.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open and
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr>`, which
   marks it ready and merges it, or turns on auto-merge. The PR merges only when the newest
-  verdict covers the head that lands (the reviewed head, plus only a merge of main that
-  touches no file the PR changes, `coordinator.md` step 8), the required checks are green
-  there, and, where a `merge:` rule asks, the owner's `approved:merge` label is on.
+  verdict covers the head that lands, the required checks are green there, and, where a
+  `merge:` rule asks, the owner's `approved:merge` label is on. `land` checks the file half
+  of coverage: the reviewed head, plus only commits that touch no file the PR changes. A
+  merge of main that changes a merge check (a `check:` task, a tool it runs, the lint, type
+  or test configuration) still gets a fresh verifier pass first, which is your step
+  (`coordinator.md` step 8), since the gate can't tell such a change.
 
 ## Triage
 
