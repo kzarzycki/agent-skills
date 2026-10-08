@@ -12,9 +12,9 @@ reason and the child's last message (for a failed session, its ``last_task_error
 A report already at the path is a pass before: only one written after the launch counts. The first
 turn that ends with neither gets one nudge to write it; a second fails. A coordinator launches it as one background command, so its
 exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
-same way; it refuses (exit 4) a session whose runner Omnigent reaped after its idle timeout, since a
-send there answers ``queued`` and never arrives: start a fresh run whose brief carries the question
-and answer.
+same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
+``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
+once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
 a prompt or fails, printing each one's id, title, that change and its last message; it is how a
 coordinator or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
@@ -67,7 +67,7 @@ NUDGE = "Your turn ended without the report. Run any long command in the foregro
 # whatever ~/.codex/config.toml sets for interactive use.
 CODEX_VERIFIER_MODEL = "gpt-6.1-sol"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
-ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no live runner
+ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no runner it could revive
 
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -237,6 +237,11 @@ class Omnigent:
             body["model_override"] = model
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
+    def retry(self, sid: str) -> dict:
+        return self.call(
+            "POST", f"/v1/sessions/{sid}/events", {"type": "retry_session", "data": {}}
+        )
+
     def send(self, sid: str, text: str) -> None:
         self.call(
             "POST",
@@ -335,6 +340,25 @@ def delivered(
         time.sleep(POLL_SECONDS)
 
 
+def revive(og: Omnigent, sid: str, seconds: float = 120.0) -> None:
+    """Relaunch a reaped session's runner in place (the web UI's "Resume session"); it keeps the
+    whole conversation. Gone when the revive fails or the runner is not online within ``seconds``."""
+    try:
+        reply = og.retry(sid)
+    except Fail as e:
+        raise Gone(f"session {sid} has no live runner and the revive failed: {e}") from e
+    print(f"session {sid} had no live runner; revive: {json.dumps(reply)}", file=sys.stderr)
+    if not reply.get("recovered") and reply.get("recovery") != "already_connected":
+        raise Gone(f"session {sid} has no live runner and the revive failed: {json.dumps(reply)}")
+    deadline = time.monotonic() + seconds
+    while not og.info(sid).get("runner_online", True):
+        if time.monotonic() >= deadline:
+            raise Gone(
+                f"session {sid}: revived ({json.dumps(reply)}) but no runner online after {seconds:.0f}s"
+            )
+        time.sleep(POLL_SECONDS)
+
+
 def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: float) -> None:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands.
 
@@ -358,7 +382,7 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     old = frozenset(str(i.get("id")) for i in items)
     info = og.info(sid)
     if not info.get("runner_online", True):
-        raise Gone(f"session {sid} has no live runner; start a fresh run instead")
+        revive(og, sid)
 
     # A copy is the same text exactly (both harnesses store it verbatim): a different message that
     # merely contains it is a new one.
