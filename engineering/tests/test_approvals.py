@@ -52,7 +52,6 @@ def note(body: str, **fields: Any) -> dict[str, Any]:
         "lastEditedAt": None,
         "isMinimized": False,
         "viewerCanMinimize": True,
-        "author": {"login": "loop"},
         **fields,
     }
 
@@ -107,7 +106,9 @@ def pull(
     labels: tuple[str, ...] = (),
     checks: tuple[tuple[str, str], ...] = (("check", "SUCCESS"),),
     labeled: str = LABELED,
-    reviews: tuple[str, ...] = (),
+    reviews: tuple[dict[str, Any], ...] = (),
+    latest: tuple[str, ...] = (),
+    threads: tuple[bool, ...] = (),
 ) -> dict[str, Any]:
     contexts = [
         {"__typename": "CheckRun", "name": name, "status": "COMPLETED", "conclusion": state}
@@ -128,8 +129,10 @@ def pull(
         baseRepository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
         files={"nodes": [{"path": path} for path in files]},
         latestReviews={
-            "nodes": [{"state": state, "author": {"login": "reviewer"}} for state in reviews]
+            "nodes": [{"state": state, "author": {"login": "reviewer"}} for state in latest]
         },
+        reviews={"nodes": list(reviews)},
+        reviewThreads={"nodes": [{"isResolved": resolved} for resolved in threads]},
         commits={"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": contexts}}}}]},
         closingIssuesReferences={"nodes": []},
         timelineItems={
@@ -138,7 +141,23 @@ def pull(
     )
 
 
-VERDICT = f"Verifier verdict\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 2 minor\nSATISFIED: yes\n"
+def verdict_on(
+    commit: str,
+    counts: str = "0 blocker, 0 major, 1 minor",
+    satisfied: str = "yes",
+    author: str | None = "loop",
+    heading: str = "Verifier (claude), pass 1",
+) -> dict[str, Any]:
+    """A verifier pass's PR review as GitHub's GraphQL returns it, by the account running approvals.py."""
+    return {
+        "author": {"login": author} if author else None,
+        "state": "COMMENTED",
+        "commit": {"oid": commit},
+        "body": f"{heading} on {commit[:7]}.\n\nVERDICT: {counts}\nSATISFIED: {satisfied}\n",
+    }
+
+
+VERDICT = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
 OWNED = ("approved:merge",)
 
 
@@ -210,7 +229,7 @@ def test_a_wayfinder_ticket_needs_only_its_state() -> None:
     assert problems([issue(58, "wayfinder:task", "ready-for-agent")]) == [
         "#58 lacks `approved:spec`: spec it first"
     ]
-    merged = pull(comments=(VERDICT,), labels=OWNED)
+    merged = pull(reviews=(VERDICT,), labels=OWNED)
     assert merge(merged, [issue(58, "wayfinder:task")]) == []
 
 
@@ -376,7 +395,7 @@ def test_a_due_plan_needs_its_comment_and_approval() -> None:
 
 def test_a_pr_with_every_proof_passes_merge() -> None:
     checks = (("check", "SUCCESS"), ("pr-board / sync", "FAILURE"))
-    done = pull(comments=(VERDICT,), labels=OWNED, checks=checks)
+    done = pull(reviews=(VERDICT,), labels=OWNED, checks=checks)
     assert merge(done, [approved(1, "web")]) == []
 
 
@@ -390,7 +409,7 @@ def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
         return code, capsys.readouterr().out.splitlines()
 
     monkeypatch.chdir(PROJECT)
-    running = pull(comments=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
+    running = pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
     assert gated(running) == (
         approvals.WAITING,
         [
@@ -398,11 +417,11 @@ def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
             "PR #7 waits for the owner's `approved:merge` label",
         ],
     )
-    assert gated(pull(comments=(VERDICT,), labels=OWNED)) == (0, [])
+    assert gated(pull(reviews=(VERDICT,), labels=OWNED)) == (0, [])
     assert gated(pull(labels=OWNED, checks=(("check", "IN_PROGRESS"),))) == (
         1,
         [
-            "PR #7: no verifier verdict posted (approvals.py verdict)",
+            "PR #7: no verifier review posted (approvals.py verdict)",
             "PR #7: `check` is IN_PROGRESS on the head commit",
         ],
     )
@@ -411,22 +430,22 @@ def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
 def test_a_label_added_before_the_heads_push_is_no_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stale = pull(comments=(VERDICT,), labels=OWNED, labeled="2026-10-01T09:59:59Z")
+    stale = pull(reviews=(VERDICT,), labels=OWNED, labeled="2026-10-01T09:59:59Z")
     assert merge(stale, [approved(1, "web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
-    same_second = pull(comments=(VERDICT,), labels=OWNED, labeled=PUSHED)
+    same_second = pull(reviews=(VERDICT,), labels=OWNED, labeled=PUSHED)
     assert merge(same_second, [approved(1, "web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: None)
-    assert merge(pull(comments=(VERDICT,), labels=OWNED), [approved(1, "web")]) == [
+    assert merge(pull(reviews=(VERDICT,), labels=OWNED), [approved(1, "web")]) == [
         f"PR #7: GitHub lists no push of the head {HEAD}, so `approved:merge` can't be dated after it"
     ]
 
 
 def test_a_label_added_again_after_the_push_is_the_approval() -> None:
-    again = pull(comments=(VERDICT,), labels=OWNED)
+    again = pull(reviews=(VERDICT,), labels=OWNED)
     again["timelineItems"]["nodes"] = [
         {"createdAt": "2026-10-01T09:00:00Z", "label": {"name": "approved:merge"}},
         {"createdAt": LABELED, "label": {"name": "approved:merge"}},
@@ -515,7 +534,7 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
     ]
 
     def proofs(*comments: str) -> list[str]:
-        merged = pull(comments=(VERDICT, *comments), labels=OWNED, checks=())
+        merged = pull(reviews=(VERDICT,), comments=comments, labels=OWNED, checks=())
         return merge(merged, [approved(1, "web")], no_ci)
 
     assert (
@@ -546,25 +565,20 @@ def test_only_a_bare_ci_none_line_opts_out_of_ci(line: str, opted_out: bool) -> 
 
 
 def test_more_checks_than_one_page_is_refused() -> None:
-    big = pull(comments=(VERDICT,), labels=OWNED, checks=(("lint", "SUCCESS"),))
+    big = pull(reviews=(VERDICT,), labels=OWNED, checks=(("lint", "SUCCESS"),))
     big["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] = 101
     assert merge(big, [approved(1, "web")]) == [
         "PR #7 has more than 1 CI checks: the gate reads one page",
     ]
 
 
-def test_more_comments_than_one_page_is_refused(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    crowded = pull(comments=(VERDICT, "a note"), labels=OWNED)
+def test_more_comments_than_one_page_is_refused() -> None:
+    crowded = pull(comments=("a note", "another"))
     crowded["comments"]["totalCount"] = 101
-    crowded["closingIssuesReferences"]["nodes"] = [approved(1, "web")]
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: crowded)
-    monkeypatch.chdir(PROJECT)
-    assert (approvals.main(["check", "merge", "7"]), capsys.readouterr().out) == (
-        1,
-        "#7 has more than 2 comments: the gate reads one page\n",
-    )
+    with pytest.raises(
+        approvals.Refused, match="#7 has more than 2 comments: the gate reads one page"
+    ):
+        approvals.ran(crowded, "CI: none\n")
 
 
 def test_a_path_rule_on_the_spec_is_left_to_the_loop() -> None:
@@ -578,7 +592,7 @@ def test_a_pr_without_its_proof_names_each_missing_one() -> None:
     bare = pull(body="## Evidence\n\n## Summary\n", checks=(("check", "FAILURE"),))
     assert merge(bare, [approved(1, "web")]) == [
         "PR #7: its body has no `## Evidence` section with content",
-        "PR #7: no verifier verdict posted (approvals.py verdict)",
+        "PR #7: no verifier review posted (approvals.py verdict)",
         "PR #7: `check` is FAILURE on the head commit",
         "PR #7 waits for the owner's `approved:merge` label",
     ]
@@ -587,11 +601,11 @@ def test_a_pr_without_its_proof_names_each_missing_one() -> None:
 
 def test_a_merge_rule_in_loop_md_asks_for_the_owners_label() -> None:
     rule = "## Approvals\n\n- merge: path `billing/**`\n"
-    billing = pull(files=("billing/invoice.py",), comments=(VERDICT,))
+    billing = pull(files=("billing/invoice.py",), reviews=(VERDICT,))
     assert merge(billing, [approved(1, "web")], rule) == [
         "PR #7 waits for the owner's `approved:merge` label"
     ]
-    assert merge(pull(files=("web/app.ts",), comments=(VERDICT,)), [approved(1, "web")], rule) == []
+    assert merge(pull(files=("web/app.ts",), reviews=(VERDICT,)), [approved(1, "web")], rule) == []
     billing["labels"]["nodes"] = [{"name": "approved:merge"}]
     billing["timelineItems"]["nodes"] = [
         {"createdAt": LABELED, "label": {"name": "approved:merge"}}
@@ -714,7 +728,7 @@ def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
                 "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an"
                 " approved spec"
             ),
-            "PR #3: no verifier verdict posted (approvals.py verdict)",
+            "PR #3: no verifier review posted (approvals.py verdict)",
         ],
     )
 
@@ -967,48 +981,138 @@ def test_merge_is_no_approve_point(capsys: pytest.CaptureFixture[str]) -> None:
     assert "invalid choice: 'merge'" in capsys.readouterr().err
 
 
-def test_the_verdict_posts_the_reports_last_lines_with_the_head_it_reviewed(
-    github: list[tuple[Any, ...]],
-    monkeypatch: pytest.MonkeyPatch,
+REPORT = f"""# Verifier report: PR #7, pass 2
+
+Verifier: claude, same-family, pass 2
+
+## Correctness
+
+### C1 (blocker) app.py:12: a draft merges on its skipped checks
+
+- Failing input: a draft.
+
+### C2 (minor) app.py:40: a line outside the diff
+
+Evidence: the run.
+
+### S1 (minor) docs/old.md:3: a file outside the diff
+
+The doc.
+
+Head: {HEAD}
+VERDICT: 1 blocker, 0 major, 2 minor
+SATISFIED: no
+"""
+
+
+@pytest.fixture
+def reviewing(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[Any, ...]]:
+    """`verdict` against a stubbed GitHub: the PR's base, the diff's commentable lines, and each review it posts."""
+    asked: list[tuple[str, str]] = []
+
+    def diff_lines(base: str, head: str) -> dict[str, list[int]]:
+        asked.append((base, head))
+        return {"app.py": [10, 11, 12, 13, 30, 31]}
+
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": "2" * 40})
+    monkeypatch.setattr(approvals, "diff_lines", diff_lines)
+    monkeypatch.setattr(
+        approvals, "post_review", lambda pr, review: github.append(("review", pr, review))
+    )
+    github.append(("asked", asked))
+    return github
+
+
+def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path
+) -> None:
+    """The commit is the report's `Head:`, not the PR's head when it is posted: a push in between would otherwise get
+    a review nobody gave. A finding's line outside the diff moves to the nearest diff line and says so; a file
+    outside the diff goes in the review's body."""
+    report = tmp_path / "report.md"
+    report.write_text(REPORT)
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    (_, asked), (_, pr, review) = reviewing
+    heading = "Verifier (claude, same-family), pass 2"
+    assert (asked, pr) == ([(BASE, HEAD)], 7)
+    assert review == {
+        "commit_id": HEAD,
+        "event": "COMMENT",
+        "body": (
+            f"{heading} on {HEAD[:7]}.\n\n"
+            f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
+            "The doc.\n\nVERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\n"
+        ),
+        "comments": [
+            {
+                "path": "app.py",
+                "line": 12,
+                "side": "RIGHT",
+                "body": f"**{heading} · C1** (blocker): a draft merges on its skipped checks\n\n- Failing input: a draft.",
+            },
+            {
+                "path": "app.py",
+                "line": 31,
+                "side": "RIGHT",
+                "body": (
+                    f"**{heading} · C2** (minor): a line outside the diff\n\n"
+                    "At `app.py:40`, outside the diff: placed at the nearest diff line.\n\nEvidence: the run."
+                ),
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("change", "why"),
+    [
+        (
+            ("SATISFIED: no\n", ""),
+            "has no `VERDICT:` or `SATISFIED:` line: the report is unfinished",
+        ),
+        ((f"Head: {HEAD}\n", ""), "has no `Head: <sha>` line naming the full commit it reviewed"),
+        (
+            (f"Head: {HEAD}\n", f"Head: {HEAD[:7]}\n"),
+            "has no `Head: <sha>` line naming the full commit it reviewed",
+        ),
+        (
+            ("Verifier: claude, same-family, pass 2\n", ""),
+            "has no `Verifier: <family>, pass <n>` line",
+        ),
+    ],
+)
+def test_an_unfinished_report_posts_nothing(
+    reviewing: list[tuple[Any, ...]],
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    change: tuple[str, str],
+    why: str,
 ) -> None:
-    """The head is the one the report names, not the PR's head when the verdict is posted: a push in between would
-    otherwise get a verdict nobody gave."""
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": "2" * 40})
     report = tmp_path / "report.md"
-    report.write_text(
-        f"findings\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 2 minor\nSATISFIED: yes\n"
+    report.write_text(REPORT.replace(*change))
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert capsys.readouterr().out == f"{report} {why}\n"
+    assert [call for call in reviewing if call[0] == "review"] == []
+
+
+def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch = "@@ -1,3 +1,4 @@\n one\n-two\n+2\n+2b\n three\n@@ -20 +21,2 @@\n+x\n y"
+    files = [{"filename": "a.py", "patch": patch}, {"filename": "logo.png", "patch": None}]
+    monkeypatch.setattr(
+        approvals,
+        "gh",
+        lambda *args, data=None: "".join(json.dumps(entry) + "\n" for entry in files),
     )
-    assert approvals.main(["verdict", "7", str(report)]) == 0
-    assert github == [("comment", 7, VERDICT)]
-    github.clear()
-    for unfinished, why in (
-        ("findings, unfinished\n", "has no `SATISFIED:` line: the report is unfinished"),
-        (
-            "findings\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n",
-            "has no `Head: <sha>` line naming the head it reviewed",
-        ),
-        (
-            "Head: the latest\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n",
-            "has no `Head: <sha>` line naming the head it reviewed",
-        ),
-    ):
-        report.write_text(unfinished)
-        assert approvals.main(["verdict", "7", str(report)]) == 1
-        assert capsys.readouterr().out == f"{report} {why}\n"
-    assert github == []
+    assert approvals.diff_lines(BASE, HEAD) == {"a.py": [1, 2, 3, 4, 21, 22], "logo.png": []}
 
 
-# --- the verdict that lets a PR land ---
+# --- the verifier's reviews that let a PR land ---
 
 OLD = "c" * 40
-
-
-def verdict_on(
-    head: str, counts: str = "0 blocker, 0 major, 1 minor", satisfied: str = "yes"
-) -> str:
-    return f"Verifier verdict\nHead: {head}\nVERDICT: {counts}\nSATISFIED: {satisfied}\n"
 
 
 def answer_compares(answers: dict[str, list[str]], args: tuple[str, ...]) -> str:
@@ -1029,76 +1133,83 @@ def compares(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
     return answers
 
 
-def verified(*comments: str, files: tuple[str, ...] = ("app.py",), **fields: Any) -> list[str]:
-    pr = pull(comments=comments, files=files, **fields)
+def verified(
+    *reviews: dict[str, Any], files: tuple[str, ...] = ("app.py",), **fields: Any
+) -> list[str]:
+    pr = pull(reviews=reviews, files=files, **fields)
     return approvals.proofs("merge", pr, [approved(1, "web")], LOOP)
 
 
 @pytest.mark.parametrize(
-    ("verdict", "line"),
+    ("review", "line"),
     [
         (
             verdict_on(HEAD, satisfied="no"),
-            f"PR #7: a verifier verdict on {HEAD} is not satisfied: fix and verify again",
+            f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
         ),
         (
             verdict_on(HEAD, "1 blocker, 0 major, 0 minor"),
-            f"PR #7: the verifier verdicts on {HEAD} have 1 blocker and 0 major open: fix and verify again",
+            f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
         ),
         (
             verdict_on(HEAD, "0 blockers, 2 majors, 0 minor"),
-            f"PR #7: the verifier verdicts on {HEAD} have 0 blocker and 2 major open: fix and verify again",
+            f"PR #7: the verifier reviews on {HEAD} have 0 blocker and 2 major open: fix and verify again",
         ),
         (
-            "Verifier verdict\nHead: (none)\nSATISFIED: yes\n",
-            "PR #7: a verifier verdict lacks a `Head:`, `VERDICT:` or `SATISFIED:` line (approvals.py verdict)",
+            {**verdict_on(HEAD), "body": "Verifier (claude), pass 1\n\nSATISFIED: yes\n"},
+            "PR #7: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)",
+        ),
+        (
+            {**verdict_on(HEAD), "commit": None},
+            "PR #7: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)",
         ),
     ],
 )
-def test_a_verdict_unsatisfied_or_with_a_blocker_or_major_open_lets_nothing_land(
-    verdict: str, line: str
+def test_a_review_unsatisfied_or_with_a_blocker_or_major_open_lets_nothing_land(
+    review: dict[str, Any], line: str
 ) -> None:
-    assert verified(verdict) == [line]
-    assert verified(VERDICT, verdict) == [line]
+    assert verified(review) == [line]
+    assert verified(VERDICT, review) == [line]
 
 
-def test_every_verdict_on_the_newest_head_must_be_satisfied() -> None:
-    """A mixed PR's two verifiers post on one head: the second's satisfied verdict leaves the first's blocker open."""
-    blocked = verdict_on(HEAD, "1 blocker, 0 major, 0 minor", satisfied="no")
-    assert verified(blocked, verdict_on(HEAD[:7])) == [
-        f"PR #7: a verifier verdict on {HEAD[:7]} is not satisfied: fix and verify again",
-        f"PR #7: the verifier verdicts on {HEAD[:7]} have 1 blocker and 0 major open: fix and verify again",
+def test_no_verifier_review_lets_nothing_land() -> None:
+    other = {**VERDICT, "body": "Looks fine.\n\nSATISFIED: yes\n"}
+    assert verified(other) == ["PR #7: no verifier review posted (approvals.py verdict)"]
+    assert verified(verdict_on(HEAD, heading="Verifier (claude, same-family), pass 3")) == []
+
+
+def test_every_verifier_review_on_the_newest_passs_commit_must_be_satisfied() -> None:
+    """A mixed PR's two verifiers review one commit: the second's satisfied review leaves the first's blocker open."""
+    blocked = verdict_on(
+        HEAD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (codex), pass 1"
+    )
+    assert verified(blocked, VERDICT) == [
+        f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
+        f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
     ]
-    # a verdict on a later head supersedes those on an earlier one
+    # a pass on a later commit supersedes those on an earlier one
     assert verified(verdict_on(OLD, "1 blocker, 0 major, 0 minor", satisfied="no"), VERDICT) == []
 
 
-def test_a_verdict_on_the_head_by_its_short_sha_covers_it() -> None:
-    assert verified(verdict_on(HEAD[:7])) == []
-
-
-def test_a_verdict_on_an_older_head_covers_a_merge_of_main_that_touches_no_pr_file(
+def test_a_review_on_an_older_commit_covers_a_merge_of_main_that_touches_no_pr_file(
     compares: dict[str, list[str]],
 ) -> None:
     compares[f"{BASE}...{OLD}"] = ["app.py"]
     compares[f"{OLD}...{HEAD}"] = ["README.md", "docs/guide.md"]
     assert verified(verdict_on(OLD)) == []
-    compares[f"{BASE}...{OLD[:7]}"] = ["app.py"]
-    compares[f"{OLD[:7]}...{HEAD}"] = ["README.md"]
-    assert verified(verdict_on(OLD[:7])) == []
 
 
-def test_a_verdict_on_an_older_head_whose_later_commits_touch_a_pr_file_does_not_cover_it(
+def test_a_review_on_an_older_commit_whose_later_commits_touch_a_pr_file_does_not_cover_it(
     compares: dict[str, list[str]],
 ) -> None:
     compares[f"{BASE}...{OLD}"] = ["app.py", "old.py"]
     compares[f"{OLD}...{HEAD}"] = ["README.md", "app.py", "old.py"]
-    # old.py the PR changed at the verdict's head, and a later commit took the change back out
+    # old.py the PR changed at the reviewed commit, and a later commit took the change back out
     assert verified(verdict_on(OLD)) == [
-        f"PR #7: the newest verifier verdict is on {OLD}, and later commits change `app.py`, `old.py`: verify the change since"
+        f"PR #7: the newest verifier review is on {OLD}, and later commits change `app.py`, `old.py`: verify the change since"
     ]
     assert verified(verdict_on("d" * 40)) == [
-        f"PR #7: the newest verifier verdict is on {'d' * 40}, and GitHub can't compare it with the head: verify the head"
+        f"PR #7: the newest verifier review is on {'d' * 40}, and GitHub can't compare it with the head: verify the head"
     ]
 
 
@@ -1108,31 +1219,48 @@ def test_a_compare_past_the_300_files_github_lists_does_not_cover_the_head(
     compares[f"{BASE}...{OLD}"] = ["app.py"]
     compares[f"{OLD}...{HEAD}"] = [f"vendor/{n}.py" for n in range(300)]
     assert verified(verdict_on(OLD)) == [
-        f"PR #7: the newest verifier verdict is on {OLD}, and GitHub can't compare it with the head: verify the head"
+        f"PR #7: the newest verifier review is on {OLD}, and GitHub can't compare it with the head: verify the head"
     ]
 
 
-def test_only_a_verdict_by_the_prs_author_or_the_viewer_counts(
+def test_only_a_review_by_the_prs_author_or_the_viewer_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Anyone can comment on a public repo; a stranger's satisfied verdict is no verdict."""
-    stranger = note(VERDICT, author={"login": "stranger"})
+    """Anyone can review a public repo; a stranger's satisfied review is no verifier review."""
+    stranger = verdict_on(HEAD, author="stranger")
     blocked = verdict_on(HEAD, "1 blocker, 0 major, 0 minor", satisfied="no")
-    assert verified(stranger) == ["PR #7: no verifier verdict posted (approvals.py verdict)"]
-    assert verified(note(blocked), stranger) == verified(blocked)
-    assert verified(note(VERDICT, author={"login": "worker"})) == []  # the PR's author
+    assert verified(stranger) == ["PR #7: no verifier review posted (approvals.py verdict)"]
+    assert verified(blocked, stranger) == verified(blocked)
+    assert verified(verdict_on(HEAD, author="worker")) == []  # the PR's author
     monkeypatch.setattr(approvals, "viewer", lambda: "coordinator")
-    assert verified(note(VERDICT, author={"login": "coordinator"})) == []
-    assert verified(note(VERDICT, author=None)) == [  # a deleted account
-        "PR #7: no verifier verdict posted (approvals.py verdict)"
+    assert verified(verdict_on(HEAD, author="coordinator")) == []
+    assert verified(verdict_on(HEAD, author=None)) == [  # a deleted account
+        "PR #7: no verifier review posted (approvals.py verdict)"
     ]
 
 
 def test_a_review_requesting_changes_lets_nothing_land() -> None:
-    assert verified(VERDICT, reviews=("CHANGES_REQUESTED", "APPROVED")) == [
+    assert verified(VERDICT, latest=("CHANGES_REQUESTED", "APPROVED")) == [
         "PR #7: reviewer requested changes: answer the review"
     ]
-    assert verified(VERDICT, reviews=("APPROVED", "COMMENTED")) == []
+    assert verified(VERDICT, latest=("APPROVED", "COMMENTED")) == []
+
+
+def test_an_unresolved_review_thread_lets_nothing_land() -> None:
+    assert verified(VERDICT, threads=(True, False, False)) == [
+        "PR #7: 2 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)"
+    ]
+    assert verified(VERDICT, threads=(True, True)) == []
+
+
+def test_more_reviews_or_threads_than_one_page_is_refused() -> None:
+    crowded = pull(reviews=(VERDICT,), threads=(True,))
+    crowded["reviews"]["totalCount"] = 101
+    crowded["reviewThreads"]["totalCount"] = 101
+    assert approvals.proofs("merge", crowded, [approved(1, "web")], LOOP) == [
+        "PR #7 has more than 1 reviews: the gate reads one page",
+        "PR #7 has more than 1 review threads: the gate reads one page",
+    ]
 
 
 # --- merge: rules ---
@@ -1142,7 +1270,7 @@ GITHUB_RULE = "## Approvals\n\n- merge: path `.github/**`\n"
 
 def test_a_merge_path_rule_asks_for_the_label_only_on_a_pr_touching_its_path() -> None:
     def waits(loop: str, *files: str, total: int | None = None) -> list[str]:
-        pr = pull(comments=(VERDICT,), files=files)
+        pr = pull(reviews=(VERDICT,), files=files)
         if total is not None:
             pr["files"]["totalCount"] = total
         return approvals.waits(pr, [approved(1, "web")], loop)
@@ -1168,7 +1296,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
     (agents / "loop.md").write_text(GITHUB_RULE)
-    pr = pull(comments=(VERDICT,), files=("app.py",))
+    pr = pull(reviews=(VERDICT,), files=("app.py",))
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     state: dict[str, Any] = {
         "pull": pr,
@@ -1237,7 +1365,7 @@ def test_land_turns_on_auto_merge_while_required_checks_are_pending(
 ) -> None:
     landing["pull"] = {
         **landing["pull"],
-        **pull(comments=(VERDICT,), checks=(("check", "IN_PROGRESS"),)),
+        **pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),)),
     }
     landing["pull"]["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     assert landed(capsys, landing) == (
@@ -1262,7 +1390,7 @@ def test_land_waits_without_auto_merge_where_github_would_not_hold_the_merge(
     """Auto-merge only while the base's required checks are pending: not where the repo forbids it, the base
     requires none, a required check is red, or the owner's label is asked for, which GitHub would not wait for."""
     checks = (("check", change.pop("state", "IN_PROGRESS")), ("lint", "FAILURE"))
-    pr = pull(comments=(VERDICT,), checks=checks, files=change.pop("files", ("app.py",)))
+    pr = pull(reviews=(VERDICT,), checks=checks, files=change.pop("files", ("app.py",)))
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     landing.update(change, pull=pr)
     code, lines, calls = landed(capsys, landing)
@@ -1275,7 +1403,7 @@ def test_a_base_with_no_required_checks_gets_no_auto_merge_while_a_check_is_pend
 ) -> None:
     """GitHub would merge an auto-merge request at once on a base that requires nothing, pending checks or not."""
     landing["rulesets"] = []
-    pr = pull(comments=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
+    pr = pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     landing["pull"] = pr
     assert landed(capsys, landing) == (
@@ -1289,7 +1417,7 @@ def test_a_base_with_no_required_checks_needs_every_check_green(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     landing["rulesets"] = []
-    pr = pull(comments=(VERDICT,), checks=(("check", "SUCCESS"), ("pr-board / sync", "FAILURE")))
+    pr = pull(reviews=(VERDICT,), checks=(("check", "SUCCESS"), ("pr-board / sync", "FAILURE")))
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     landing["pull"] = pr
     assert landed(capsys, landing) == (
@@ -1309,7 +1437,7 @@ def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     landing.update(rulesets=["check", "loop:approvals"], protection=["qualify"])
     assert approvals.required_checks("main") == {"check", "loop:approvals", "qualify"}
     landing["rulesets"] = []
-    pr = pull(comments=(VERDICT,), checks=(("check", "SUCCESS"), ("qualify", "QUEUED")))
+    pr = pull(reviews=(VERDICT,), checks=(("check", "SUCCESS"), ("qualify", "QUEUED")))
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
     landing["pull"] = pr
     assert landed(capsys, landing)[2] == [(*MERGE, "--auto")]
@@ -1319,27 +1447,31 @@ def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     ("change", "line"),
     [
         (
-            {"comments": (verdict_on(HEAD, satisfied="no"),)},
-            f"PR #7: a verifier verdict on {HEAD} is not satisfied: fix and verify again",
+            {"reviews": (verdict_on(HEAD, satisfied="no"),)},
+            f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
         ),
         (
-            {"comments": (verdict_on(HEAD, "1 blocker, 0 major, 0 minor"),)},
-            f"PR #7: the verifier verdicts on {HEAD} have 1 blocker and 0 major open: fix and verify again",
+            {"reviews": (verdict_on(HEAD, "1 blocker, 0 major, 0 minor"),)},
+            f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
         ),
         (
-            {"comments": (verdict_on(HEAD, "0 blocker, 1 major, 0 minor"),)},
-            f"PR #7: the verifier verdicts on {HEAD} have 0 blocker and 1 major open: fix and verify again",
+            {"reviews": (verdict_on(HEAD, "0 blocker, 1 major, 0 minor"),)},
+            f"PR #7: the verifier reviews on {HEAD} have 0 blocker and 1 major open: fix and verify again",
         ),
         (
-            {"comments": (verdict_on(OLD),)},
-            f"PR #7: the newest verifier verdict is on {OLD}, and later commits change `app.py`: verify the change since",
+            {"reviews": (verdict_on(OLD),)},
+            f"PR #7: the newest verifier review is on {OLD}, and later commits change `app.py`: verify the change since",
         ),
         (
-            {"reviews": ("CHANGES_REQUESTED",)},
+            {"latest": ("CHANGES_REQUESTED",)},
             "PR #7: reviewer requested changes: answer the review",
         ),
         ({"issue": issue(1, "web", "bug", "size:S")}, "#1 lacks the `approved:spec` label"),
-        ({"comments": ()}, "PR #7: no verifier verdict posted (approvals.py verdict)"),
+        ({"reviews": ()}, "PR #7: no verifier review posted (approvals.py verdict)"),
+        (
+            {"threads": (True, False)},
+            "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)",
+        ),
     ],
 )
 def test_land_refuses_a_missing_proof_and_never_marks_the_pr_ready(
@@ -1347,7 +1479,7 @@ def test_land_refuses_a_missing_proof_and_never_marks_the_pr_ready(
 ) -> None:
     landing["compares"].update({f"{BASE}...{OLD}": ["app.py"], f"{OLD}...{HEAD}": ["app.py"]})
     found = change.pop("issue", approved(1, "web", "bug"))
-    pr = pull(**{"comments": (VERDICT,), "files": ("app.py",), **change})
+    pr = pull(**{"reviews": (VERDICT,), "files": ("app.py",), **change})
     pr["closingIssuesReferences"]["nodes"] = [found]
     landing["pull"] = pr
     code, lines, calls = landed(capsys, landing)
@@ -1359,7 +1491,7 @@ def test_land_merges_on_a_verdict_whose_head_only_main_came_in_after(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     landing["compares"].update({f"{BASE}...{OLD}": ["app.py"], f"{OLD}...{HEAD}": ["README.md"]})
-    landing["pull"]["comments"]["nodes"] = [note(verdict_on(OLD))]
+    landing["pull"]["reviews"]["nodes"] = [verdict_on(OLD)]
     assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
 
 
@@ -1555,7 +1687,7 @@ def test_a_local_ci_record_is_the_merge_proof_without_ci(
 ) -> None:
     assert approvals.main(["local-ci", "7"]) == 0
     posted = [body for kind, _pr, body in github if kind == "comment"]
-    merged = pull(comments=(VERDICT, *posted), labels=OWNED, checks=())
+    merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "web")], LOOP + "\nCI: none\n") == []
 
 

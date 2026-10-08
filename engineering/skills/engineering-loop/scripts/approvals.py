@@ -4,7 +4,7 @@
     python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     python3 scripts/approvals.py land <pr>                  # every merge proof, then ready and merge; exit 0, 1 or 3
     python3 scripts/approvals.py approve <spec|plan> <issue> --by <coordinator|owner>
-    python3 scripts/approvals.py verdict <pr> <report>      # post the report's Head, VERDICT and SATISFIED lines
+    python3 scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
@@ -18,12 +18,12 @@ always, `plan` when one is due (a `## Plan` comment, or a `Plan:` line in loop.m
 size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`).
 A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
-`check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; every verifier
-verdict on the newest verdict's head (a verdict counts only when the PR's author or the account running this
-posted it) saying `SATISFIED: yes` with 0 blocker and 0 major, that head being the PR's,
-or an earlier one where no commit since changes a file the PR changes (at that head or now; only a merge of main
-came in); and no review whose latest state
-is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+`check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the verifier's PR
+reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
+PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
+pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head, or an earlier one where
+no commit since changes a file the PR changes (at that commit or now; only a merge of main came in); no unresolved
+review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
 `CI: none` in loop.md, a `local-ci` pass on the head instead), and, where a `merge:` rule asks, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. A push removes the label (the
@@ -38,6 +38,10 @@ required checks are pending and the repo allows auto-merge, the same with `--aut
 exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
 merged PR: exit 0; a closed one: exit 1.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
+`verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
+one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
+`Verifier: <family>, pass <n>` line: one inline comment per finding, moved to the nearest line of the diff when its
+line is outside it and saying so, and in the review's body when its file is outside the diff.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
 `Reverts <owner>/<repo>#<n>`), where #n is a merged PR and, file for file as GitHub's diff of each shows them, the PR
@@ -45,7 +49,8 @@ removes what #n added and adds what #n removed (files, and each run of lines in 
 differ), and every path either touches has at the PR's merge base the mode it had after #n and at its head the mode
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
-only for Evidence (what went wrong), no review requesting changes, a green `check` and the label where a rule asks.
+only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
+label where a rule asks.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 A spec or plan approval is a comment `approve` writes, which the gate reads, plus the `approved:<point>` label for
@@ -98,11 +103,14 @@ POINTS = ("spec", "plan")
 MERGE_LABEL = "approved:merge"
 # check merge's exit while it waits for `check` or the owner; argparse's usage error is 2
 WAITING = 3
-VERDICT = "Verifier verdict"
-NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize author { login }"
+# a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
+PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
+NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 PULL = f"""number author {{ login }} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
+  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT]) {{ nodes {{ ... on LabeledEvent {{ createdAt label {{ name }} }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
@@ -269,11 +277,10 @@ def spec_holder(issue: dict[str, Any]) -> dict[str, Any]:
     return headed(issue, "## Spec") or issue
 
 
-def parsed(body: str, heading: str) -> dict[str, str] | None:
-    """The lower-cased `Key: value` lines of a comment whose first line is `heading` (`Approved: <point>`, or
-    `Verifier verdict`); None for any other comment."""
+def parsed(body: str, point: str) -> dict[str, str] | None:
+    """An `Approved: <point>` comment's lower-cased `Key: value` lines; None for any other comment."""
     lines = body.strip().splitlines()
-    if not lines or lines[0].strip() != heading:
+    if not lines or lines[0].strip() != f"Approved: {point}":
         return None
     return {
         key.strip().lower(): value.strip()
@@ -283,9 +290,7 @@ def parsed(body: str, heading: str) -> dict[str, str] | None:
 
 def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
     """The approval records for `point` among a node's comments."""
-    return [
-        found for body in bodies(node) if (found := parsed(body, f"Approved: {point}")) is not None
-    ]
+    return [found for body in bodies(node) if (found := parsed(body, point)) is not None]
 
 
 def current(node: dict[str, Any], point: str, key: str, value: str, by: str) -> bool:
@@ -389,6 +394,15 @@ def proofs(
         found.append(f"{where}: its body has no `## Evidence` section with content")
     if revert is None:
         found += reviewed(where, pull)
+    threads = pull["reviewThreads"]
+    if (threads.get("totalCount") or 0) > len(threads["nodes"]):
+        found.append(
+            f"{where} has more than {len(threads['nodes'])} review threads: the gate reads one page"
+        )
+    elif unresolved := sum(not thread["isResolved"] for thread in threads["nodes"]):
+        found.append(
+            f"{where}: {unresolved} review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)"
+        )
     found += [
         f"{where}: {(review.get('author') or {}).get('login', 'a reviewer')} requested changes: answer the review"
         for review in pull["latestReviews"]["nodes"]
@@ -398,61 +412,67 @@ def proofs(
 
 
 def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
-    """One line per reason the verifier verdicts let nothing land: one on the newest verdict's head (a mixed PR's two
-    verifiers post on one) is not satisfied, or has a blocker or a major open, or that head is older and the commits
-    since change a file the PR changes (touched_since). A head that only took in main's changes to other files needs
-    no further pass (coordinator.md step 8); a verdict on a later head supersedes those on an earlier one."""
-    posted = [note for note in notes(pull) if parsed(note["body"], VERDICT) is not None]
-    # anyone can comment on a public repo: only the PR's author or the account running this posts a verdict
-    trusted = {(pull.get("author") or {}).get("login"), viewer() if posted else None} - {None}
+    """One line per reason the verifier's PR reviews (a body starting `Verifier (<family>), pass <n>`, by the PR's
+    author or the account running this, since anyone can review a public repo) let nothing land: one on the newest
+    pass's commit (a mixed PR's two verifiers review one) is not satisfied, or has a blocker or a major open, or that
+    commit is older than the head and the commits since change a file the PR changes (touched_since). A head that
+    only took in main's changes to other files needs no further pass (coordinator.md step 8); a pass on a later
+    commit supersedes those on an earlier one. ponytail: no bot-PR exemption (#106: an allow-listed bot's lock- or
+    manifest-only PR passes without a verifier); add it with the allow-list when a project lands bot PRs."""
+    reviews = pull["reviews"]
+    if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
+        return [f"{where} has more than {len(reviews['nodes'])} reviews: the gate reads one page"]
+    passes = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
+    trusted = {(pull.get("author") or {}).get("login"), viewer() if passes else None} - {None}
     verdicts = [
-        parsed(note["body"], VERDICT) or {}
-        for note in posted
-        if (note.get("author") or {}).get("login") in trusted
+        (
+            ((review.get("commit") or {}).get("oid") or "").lower(),
+            {
+                key.strip(): value.strip()
+                for key, _, value in (line.partition(":") for line in review["body"].splitlines())
+                if key.strip() in ("VERDICT", "SATISFIED")
+            },
+        )
+        for review in passes
+        if (review.get("author") or {}).get("login") in trusted
     ]
     if not verdicts:
-        return [f"{where}: no verifier verdict posted (approvals.py verdict)"]
-    head = verdicts[-1].get("head", "").lower()
-    unreadable = [
-        f"{where}: a verifier verdict lacks a `Head:`, `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
-    ]
-    if not re.fullmatch(r"[0-9a-f]{7,40}", head):
-        return unreadable
-    same = [
-        found
-        for found in verdicts
-        if (theirs := found.get("head", "").lower())
-        and (theirs.startswith(head) or head.startswith(theirs))
-    ]
+        return [f"{where}: no verifier review posted (approvals.py verdict)"]
+    head = verdicts[-1][0]
+    same = [lines for commit, lines in verdicts if commit == head]
     counts = [
         [
-            re.search(rf"(\d+)\s+{kind}s?\b", found.get("verdict", ""))
+            re.search(rf"(\d+)\s+{kind}s?\b", lines.get("VERDICT", ""))
             for kind in ("blocker", "major")
         ]
-        for found in same
+        for lines in same
     ]
-    if any(None in pair for pair in counts) or any("satisfied" not in found for found in same):
-        return unreadable
+    if (
+        not head
+        or any(None in pair for pair in counts)
+        or any("SATISFIED" not in lines for lines in same)
+    ):
+        return [
+            f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
+        ]
     found = []
-    if any(verdict["satisfied"].lower().split()[:1] != ["yes"] for verdict in same):
-        found.append(
-            f"{where}: a verifier verdict on {head} is not satisfied: fix and verify again"
-        )
+    if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):
+        found.append(f"{where}: a verifier review on {head} is not satisfied: fix and verify again")
     blocker, major = (sum(int(pair[kind].group(1)) for pair in counts) for kind in (0, 1))
     if blocker or major:
         found.append(
-            f"{where}: the verifier verdicts on {head} have {blocker} blocker and {major} major open: fix and verify again"
+            f"{where}: the verifier reviews on {head} have {blocker} blocker and {major} major open: fix and verify again"
         )
-    if not pull["headRefOid"].lower().startswith(head):
+    if pull["headRefOid"].lower() != head:
         since = touched_since(pull, head)
         if since is None:
             found.append(
-                f"{where}: the newest verifier verdict is on {head}, and GitHub can't compare it with the head: verify the head"
+                f"{where}: the newest verifier review is on {head}, and GitHub can't compare it with the head: verify the head"
             )
         elif since:
             changed = ", ".join(f"`{path}`" for path in since)
             found.append(
-                f"{where}: the newest verifier verdict is on {head}, and later commits change {changed}: verify the change since"
+                f"{where}: the newest verifier review is on {head}, and later commits change {changed}: verify the change since"
             )
     return found
 
@@ -1022,9 +1042,7 @@ def approve(point: str, number: int, by: str) -> int:
     owner = owner_needed(point, loop_rules, names(issue))
     record = f"{point.capitalize()}: {value}\n"
     earlier = [
-        (note, found)
-        for note in notes(issue)
-        if (found := parsed(note["body"], f"Approved: {point}")) is not None
+        (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
     ]
     if any(found.get("by") == by and found.get(point) != value for _, found in earlier):
         record += CHANGED[point]
@@ -1050,21 +1068,95 @@ def approve(point: str, number: int, by: str) -> int:
     return 0
 
 
+# a report's finding: `### <id> (<severity>) <path>:<line>: <title>`, its text up to the next heading or the trailer
+FINDING = re.compile(
+    r"^###[ \t]+(\S+)[ \t]+\((blocker|major|minor)\)[ \t]+`?([^\s`]+?):(\d+)`?:?[ \t]+(.+?)[ \t]*\n(.*?)"
+    r"(?=^#|^(?:Head|VERDICT|SATISFIED):|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def diff_lines(base: str, head: str) -> dict[str, list[int]]:
+    """The lines a review at `head` can comment on, per file: the new side of GitHub's diff of base...head (added and
+    context lines). ponytail: one compare, up to the 300 files it lists."""
+    out = gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/compare/{base}...{head}",
+        "--jq",
+        ".files[] | {filename, patch}",
+    )
+    found: dict[str, list[int]] = {}
+    for entry in (json.loads(line) for line in out.splitlines()):
+        lines, number = found.setdefault(entry["filename"], []), 0
+        for line in (entry.get("patch") or "").split("\n"):
+            hunk = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
+            if hunk:
+                number = int(hunk.group(1))
+            elif line[:1] in (" ", "+"):
+                lines.append(number)
+                number += 1
+    return found
+
+
+def post_review(pr: int, review: dict[str, Any]) -> None:
+    gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
+        "--input",
+        "-",
+        "--silent",
+        data=json.dumps(review),
+    )
+
+
 def verdict(pr: int, report: Path) -> int:
-    lines = [line.strip() for line in read(report).splitlines()]
+    """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
+    line of the diff when its line is outside it, in the review's body when its file is."""
+    text = read(report)
+    lines = [line.strip() for line in text.splitlines()]
     verdicts = [line for line in lines if line.startswith("VERDICT:")]
     satisfied = [line for line in lines if line.startswith("SATISFIED:")]
-    if not satisfied:
-        raise Refused(f"{report} has no `SATISFIED:` line: the report is unfinished")
+    if not satisfied or not verdicts:
+        raise Refused(f"{report} has no `VERDICT:` or `SATISFIED:` line: the report is unfinished")
     # the head the verifier reviewed, which a push since the review may have moved the PR's head past
     heads = [
-        found[1]
-        for line in lines
-        if (found := re.fullmatch(r"Head:[ \t]*([0-9a-fA-F]{7,40})", line))
+        found[1] for line in lines if (found := re.fullmatch(r"Head:[ \t]*([0-9a-fA-F]{40})", line))
     ]
     if not heads:
-        raise Refused(f"{report} has no `Head: <sha>` line naming the head it reviewed")
-    comment(pr, "\n".join([VERDICT, f"Head: {heads[-1]}", *verdicts[-1:], satisfied[-1]]) + "\n")
+        raise Refused(f"{report} has no `Head: <sha>` line naming the full commit it reviewed")
+    passes = [
+        found
+        for line in lines
+        if (found := re.fullmatch(r"Verifier:[ \t]*(.+),[ \t]*pass[ \t]+(\d+)", line))
+    ]
+    if not passes:
+        raise Refused(f"{report} has no `Verifier: <family>, pass <n>` line")
+    head, (family, number) = heads[-1].lower(), passes[-1].groups()
+    heading = f"Verifier ({family}), pass {number}"
+    diff = diff_lines(pull_request(pr)["baseRefOid"], head)
+    comments, outside = [], []
+    for name, severity, path, line, title, body in FINDING.findall(text):
+        said = f"**{heading} · {name}** ({severity}): {title}"
+        if not diff.get(path):
+            outside.append(
+                f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body.strip()}"
+            )
+            continue
+        at = min(diff[path], key=lambda candidate: abs(candidate - int(line)))
+        moved = (
+            f"At `{path}:{line}`, outside the diff: placed at the nearest diff line.\n\n"
+            if at != int(line)
+            else ""
+        )
+        comments.append(
+            {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body.strip()}"}
+        )
+    summary = "\n\n".join(
+        [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}"]
+    )
+    post_review(
+        pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
+    )
     return 0
 
 
