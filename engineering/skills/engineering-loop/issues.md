@@ -44,8 +44,9 @@ label without its approval record would read as approved.
 
 - **Approval**, `approved:spec` and `approved:plan` on the issue: added with an approval
   (SKILL.md, Approvals and proof), last when a person must approve, so adding it is how they
-  approve. `approved:merge` on the PR is the owner's merge approval itself, added by them
-  once `check` is green on the head and removed by a push.
+  approve. `approved:merge` on the PR is the owner's merge approval, asked for only where a
+  loop.md § Approvals `merge:` rule says so (elsewhere the gates are the approval), added by
+  them once `check` is green on the head and removed by a push.
 
 A wayfinder map or ticket carries its `wayfinder:` label instead of a category, and no
 component or size: it resolves a decision, not a change.

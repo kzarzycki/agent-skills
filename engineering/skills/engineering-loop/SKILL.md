@@ -30,7 +30,7 @@ question for the owner, not a guess:
 
 | Where | Sections | Read at |
 |---|---|---|
-| mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `setup:dev` on a fresh checkout | Build, Gates, Land |
+| mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
@@ -101,12 +101,17 @@ merging or state-keeping is overridden, because two writers of one state drift a
 The coordinator approves the spec and the plan itself with
 `python3 scripts/approvals.py approve <spec|plan> <issue> --by coordinator`: the spec once
 it meets its contract, the plan once it covers the spec. The verifier only gives the
-verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts on the PR. Each
+verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts as a PR review on
+the commit it reviewed. Each
 approval is a comment `approvals.py` reads, tied to the spec's or plan's last edit as
 GitHub's edit history shows it, so a later edit needs approving again, plus the
-`approved:<point>` label. The merge approval is the owner's `approved:merge` label on the
-PR, asked for once `check` is green on the head: it counts only when added after that
-head's push, and a push removes it, so it never covers code the owner did not see. A re-approval says what changed and
+`approved:<point>` label. The merge approval is the gates themselves: every verifier review
+on the newest pass's commit satisfied with no blocker or major open, that commit covering
+the head that lands, every review thread resolved, no review requesting changes, and the
+base's required checks green. A same-family pass counts, its heading saying so. A loop.md § Approvals `merge:` rule adds the owner's
+`approved:merge` label on the PR, asked for once `check` is green on the head: it counts
+only when added after that head's push, and a push removes it, so it never covers code the
+owner did not see. A re-approval says what changed and
 minimizes the records it supersedes as outdated. A change to an approved spec's scope or
 acceptance is a decision the owner never saw: remove `approved:spec`, add `needs-owner`
 with a one-line comment saying what changed, and stop until they approve. A wording fix
@@ -114,14 +119,22 @@ keeps the label and needs only `approve` again, which still asks the person a lo
 Approvals rule names, since `approvals.py` can't tell wording from scope. `mise run loop:approvals
 build` before building and `mise run loop:approvals merge` before merging check every proof
 (`scripts/approvals.py` lists them); `merge` exits 3 while it waits for `check` or the
-owner's label, and 1 when a proof is missing. `scripts/gate.py` and `local-ci`'s old name
+owner's label, and 1 when a proof is missing. An agent merges only with `python3
+scripts/approvals.py land <pr>` (the project's `loop:land` task): it runs every merge proof,
+marks a draft ready and waits for the CI that starts, and on a ready PR merges it pinned to
+its head, or turns on auto-merge while only required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand, because
+`land` is what refuses a PR whose proof is missing. A repo without `docs/agents/loop.md` has
+no rules: `land` there needs each named issue to carry `approved:spec` and not
+`needs-owner`, and the PR's own proofs. `scripts/gate.py` and `local-ci`'s old name
 `record-check` still run for one release.
 
-loop.md § Approvals adds a person's approval to a spec or plan, never in place of the
-loop's: one rule per line, `<spec|plan>: <condition>`, such as `spec: size:L or larger, or
-component billing`. `approvals.py` judges a condition on what the issue carries (size,
-component, category; `always` matches everything), never a path, since a spec or plan comes
-before the change. When a rule matches,
+loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
+line, `<spec|plan|merge>: <condition>`, such as `spec: size:L or larger, or component
+billing` or `merge: path .github/**`. `approvals.py` judges a condition on what the issue
+carries (size, component, category; `always` matches everything), and a `merge:` one also on
+the PR's labels and files (`path <glob>`); a spec or plan rule never reads a path, since it
+comes before the change. A `merge:` condition `approvals.py` can't read asks for the label,
+since nothing else would enforce it. When a spec or plan rule matches,
 `approve` leaves the label off, adds `needs-owner`, and you stop: a person approves by
 adding `approved:<point>`, by saying so in the session, or, for a spec on a repo with a
 board, by moving the issue to `Ready` while it has `needs-owner` (`python3
@@ -212,11 +225,16 @@ angles run as native subagents, never as full harness sessions.
   reverted PR's issues reopen with a comment naming the revert, and the fix forward is a
   new change through the loop.
 - **Review trail on the PR.** The PR opens as a draft with the branch's first push, and
-  every commit after it is pushed. Each verifier pass is posted as a PR review: one inline
-  comment per finding, labelled `Verifier (<family>), pass <n>`, and a summary carrying the
-  verdict. Each fix is its own commit, replied on its finding's thread with the SHA, and the
-  thread resolved; a deferred finding's reply links the issue it waits in. A human review
-  follows the same pattern. The PR is marked ready once no core finding (blocker or major)
+  every commit after it is pushed. Each verifier pass is posted as a PR review with
+  `approvals.py verdict`: one inline comment per finding, labelled `Verifier (<family>),
+  pass <n>`, and a summary carrying the verdict. The gate reads these reviews, so the
+  review is the verdict. Resolution follows triage, and the verifier never triages: the
+  worker resolves only a thread it fixed, reason `ADDRESSED`, replying with the fixing SHA;
+  the coordinator resolves a deferred finding `WONT_FIX`, replying with its triage and the
+  issue it waits in, and a rejected one `INVALID`, with the one-line why. The owner may
+  override any resolution, and alone dismisses a teammate's `CHANGES_REQUESTED`; an agent
+  dismisses one only when the owner asks for that review in the session, quoting the ask
+  in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
   is open, and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
   `mise run check` before each push is the check while a PR is a draft.
@@ -234,10 +252,14 @@ angles run as native subagents, never as full harness sessions.
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open and
-  the ledger is updated; it writes the PR's evidence, marks it ready and turns on auto-merge.
-  The PR merges when `mise run loop:approvals merge <pr>` exits 0 on the head that lands (the
-  reviewed head, plus only what `coordinator.md` steps 7 and 8 exempt from a further pass):
-  `check` green there and the owner's `approved:merge` label, their one action.
+  the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr>`, which
+  marks it ready and merges it, or turns on auto-merge. The PR merges only when the newest
+  verdict covers the head that lands, the required checks are green there, and, where a
+  `merge:` rule asks, the owner's `approved:merge` label is on. `land` checks the file half
+  of coverage: the reviewed head, plus only commits that touch no file the PR changes. A
+  merge of main that changes a merge check (a `check:` task, a tool it runs, the lint, type
+  or test configuration) still gets a fresh verifier pass first, which is your step
+  (`coordinator.md` step 8), since the gate can't tell such a change.
 
 ## Triage
 
@@ -285,7 +307,10 @@ A rejected finding is not real, so it gets no issue.
 ## The cap
 
 Pass 1 reviews the PR's full diff; passes 2 and 3 review the diff since the previous
-report and rerun its repros. After pass 3, fix the open core items and check them with
-the verifier's repro files, ledger the edge items, reject the theoretical ones, and land.
+report and rerun its repros. After pass 3, fix the open core items, ledger the edge
+items and reject the theoretical ones. The fixes then get a delta check on the fixed
+head, not a pass 4 review: the verifier reruns its repro files against the change since
+pass 3's head and posts the result with `approvals.py verdict`, since `land` merges only
+a head a verifier review covers. Then land.
 The one stop: a core item still open after pass 3 means the fix keeps regressing, so it
 goes to the owner as a question about the design, not a pass 4.
