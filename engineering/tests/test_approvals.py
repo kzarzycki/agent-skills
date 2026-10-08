@@ -395,10 +395,23 @@ def test_a_label_added_before_the_heads_push_is_no_approval(
     assert merge(stale, [approved(1, "web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
+    same_second = pull(comments=(VERDICT,), labels=OWNED, labeled=PUSHED)
+    assert merge(same_second, [approved(1, "web")]) == [
+        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
+    ]
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: None)
     assert merge(pull(comments=(VERDICT,), labels=OWNED), [approved(1, "web")]) == [
         f"PR #7: GitHub lists no push of the head {HEAD}, so `approved:merge` can't be dated after it"
     ]
+
+
+def test_a_label_added_again_after_the_push_is_the_approval() -> None:
+    again = pull(comments=(VERDICT,), labels=OWNED)
+    again["timelineItems"]["nodes"] = [
+        {"createdAt": "2026-10-01T09:00:00Z", "label": {"name": "approved:merge"}},
+        {"createdAt": LABELED, "label": {"name": "approved:merge"}},
+    ]
+    assert merge(again, [approved(1, "web")]) == []
 
 
 def test_the_head_was_pushed_when_the_branchs_activity_last_names_it(

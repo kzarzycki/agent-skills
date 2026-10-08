@@ -108,10 +108,10 @@ UI, and delegate the rest.
      `allow_auto_merge`). A push after it needs `gh pr ready --undo` first; the push removes
      `approved:merge`, and the PR goes ready with auto-merge again on the new head.
    - Don't wait idle for CI: start one background command whose exit wakes you, the way the
-     backend runs one (Waiting), `gh pr checks <pr> --required --watch --fail-fast`
-     (without `--required` where the base requires no check). It exits 0 once the checks are
-     green and 1 on the first red one, or with `no checks reported` when it started before CI
-     registered any: start it again.
+     backend runs one (Waiting). It waits on `check` alone, because the required
+     `loop:approvals` stays pending until the owner, whom you ask only after it, adds the label:
+     `until gh pr checks <pr> --json name,bucket --jq '.[] | select(.name == "check" and .bucket != "pending") | .bucket' | grep .; do sleep 60; done`.
+     It prints `pass` once `check` is green, or `fail` (or `cancel`) when it is red.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
