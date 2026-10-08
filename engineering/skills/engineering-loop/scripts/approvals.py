@@ -65,7 +65,8 @@ each, adds a person's approval. For a spec or plan (`By: owner`) its label goes 
 removes the label and adds `needs-owner`, so a person approves by adding the label, or by saying so in the session;
 then `approve --by owner` writes their record, adds the label and removes `needs-owner`. A person who already approved
 the current spec or plan keeps their label when the coordinator approves again on resuming. A condition the gate can
-read is `always`, `size:L` (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>`,
+read is `always`, `size:L` (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>`
+(bare, or in backticks for a glob with a space or comma),
 joined by `or`. For a spec or plan any other words, or a `path`, make the rule the loop's alone, since a spec or plan
 comes before the change. A `merge:` rule asks for the owner's `approved:merge` on the labels of the PR and its issues
 and the PR's files; a `merge:` condition the gate can't read asks for it too, since nothing else would enforce it.
@@ -116,7 +117,7 @@ CLOSING = re.compile(
 QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
 CONDITION = re.compile(
     r"\balways\b|\b(size:(?:XS|S|M|L|XL))(\+|[ \t]+or[ \t]+larger\b)?"
-    r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*`([^`]+)`",
+    r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*(?:`([^`]+)`|([^\s`,;]+))",
     re.IGNORECASE,
 )
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
@@ -186,7 +187,8 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
         return None
     unread = False
     for found in CONDITION.finditer(condition):
-        size, larger, kind, name, glob = found.groups()
+        size, larger, kind, name, quoted, bare = found.groups()
+        glob = quoted or bare
         if size:
             index = SIZE_ORDER.index("size:" + size[5:].upper())
             hit = bool(
