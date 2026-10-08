@@ -1094,6 +1094,16 @@ def test_a_verdict_on_an_older_head_whose_later_commits_touch_a_pr_file_does_not
     ]
 
 
+def test_a_compare_past_the_300_files_github_lists_does_not_cover_the_head(
+    compares: dict[str, list[str]],
+) -> None:
+    compares[f"{BASE}...{OLD}"] = ["app.py"]
+    compares[f"{OLD}...{HEAD}"] = [f"vendor/{n}.py" for n in range(300)]
+    assert verified(verdict_on(OLD)) == [
+        f"PR #7: the newest verifier verdict is on {OLD}, and GitHub can't compare it with the head: verify the head"
+    ]
+
+
 def test_a_review_requesting_changes_lets_nothing_land() -> None:
     assert verified(VERDICT, reviews=("CHANGES_REQUESTED", "APPROVED")) == [
         "PR #7: reviewer requested changes: answer the review"
@@ -1234,6 +1244,21 @@ def test_land_waits_without_auto_merge_where_github_would_not_hold_the_merge(
     code, lines, calls = landed(capsys, landing)
     assert (code, calls) == (approvals.WAITING, [])
     assert line in lines
+
+
+def test_a_base_with_no_required_checks_gets_no_auto_merge_while_a_check_is_pending(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub would merge an auto-merge request at once on a base that requires nothing, pending checks or not."""
+    landing["rulesets"] = []
+    pr = pull(comments=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
+    pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
+    landing["pull"] = pr
+    assert landed(capsys, landing) == (
+        approvals.WAITING,
+        ["PR #7: `check` is IN_PROGRESS on the head commit"],
+        [],
+    )
 
 
 def test_a_base_with_no_required_checks_needs_every_check_green(
