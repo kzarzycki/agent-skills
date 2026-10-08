@@ -1468,6 +1468,46 @@ def test_land_marks_a_proven_draft_ready_and_waits_for_the_ci_that_starts(
         )
 
 
+def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The head still holds only the draft's skipped run, which GitHub counts as passing: a skipped run completed
+    before the newest ready-for-review is the draft's, and says nothing about the ready PR."""
+    ready = "2026-10-01T12:00:00Z"
+    landing["pull"]["timelineItems"]["nodes"].append(
+        {"__typename": "ReadyForReviewEvent", "createdAt": ready}
+    )
+    rollup = landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
+    draft = {
+        "__typename": "CheckRun",
+        "name": "check",
+        "status": "COMPLETED",
+        "conclusion": "SKIPPED",
+        "completedAt": "2026-10-01T11:30:00Z",
+    }
+    for rulesets in (["check"], []):
+        landing["calls"].clear()
+        landing["rulesets"] = rulesets
+        rollup["nodes"] = [draft]
+        code, lines, calls = landed(capsys, landing)
+        assert (code, calls) == (approvals.WAITING, [])
+        assert (
+            lines == ["PR #7: no `check` on the head commit yet"]
+            if rulesets
+            else ["PR #7: no check on the head commit yet"]
+        )
+        # a run that completed on the draft is the head's result: a workflow need not run again on ready
+        rollup["nodes"] = [{**draft, "conclusion": "SUCCESS"}]
+        landing["calls"].clear()
+        assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+        rollup["nodes"] = [
+            draft,
+            {**draft, "conclusion": "SKIPPED", "completedAt": "2026-10-01T12:00:01Z"},
+        ]
+        landing["calls"].clear()
+        assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+
+
 def test_land_turns_on_auto_merge_while_required_checks_are_pending(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:

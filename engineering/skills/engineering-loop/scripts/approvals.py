@@ -111,9 +111,10 @@ PULL = f"""number author {{ login }} state isDraft body baseRefName baseRefOid h
   files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
-  timelineItems(last: 100, itemTypes: [LABELED_EVENT]) {{ nodes {{ ... on LabeledEvent {{ createdAt label {{ name }} }} }} }}
+  timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
+    ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion startedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
+    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords, plus `Part of` for a spec the PR builds on but leaves open; ponytail: same-repo `#n`
@@ -701,12 +702,24 @@ def head_checks(
         else None
     )
     wanted = {"check"} if required is None else required
+    # CI skips a draft, and GitHub counts the skipped run as passing: one completed before the newest ready-for-review
+    # is the draft's and says nothing about the ready PR. A run that completed on the draft is the head's result.
+    ready = max(
+        (
+            event["createdAt"]
+            for event in pull["timelineItems"]["nodes"]
+            if event.get("__typename") == "ReadyForReviewEvent"
+        ),
+        default="",
+    )
     # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of one check on the
     # head; only the newest says whether it is green. One job name in two workflows is two checks.
     newest: dict[tuple[str, str], dict[str, Any]] = {}
     for node in every:
         name = node.get("name") or node.get("context")
         if wanted and name not in wanted:
+            continue
+        if node.get("conclusion") == "SKIPPED" and (node.get("completedAt") or "") < ready:
             continue
         run = (node.get("checkSuite") or {}).get("workflowRun") or {}
         key = ((run.get("workflow") or {}).get("name", ""), name)
@@ -1029,8 +1042,14 @@ def land(pr: int) -> int:
         gh(*merge)
         print(f"{where} merges at {head}")
         return 0
-    states = [state for _, state in head_checks(pull, required)[0]]
-    pending = not owner and not no_ci(loop) and not RED.intersection(states)
+    checks = head_checks(pull, required)[0]
+    # a required check not on the head yet may be a draft's skipped run, which GitHub's auto-merge counts as passing
+    pending = (
+        not owner
+        and not no_ci(loop)
+        and required <= {name for name, _ in checks}
+        and not RED.intersection(state for _, state in checks)
+    )
     if pending and required and auto_merge_allowed():
         gh(*merge, "--auto")
         print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
