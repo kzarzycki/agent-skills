@@ -169,8 +169,8 @@ if os.environ.get("GITHUB_STEP_SUMMARY"):
 
 [tasks."ci:check"]
 description = "CI's aggregate check: fails unless the plan and every part passed, naming each failed part and the command that reruns it."
-# PLAN and PARTS are the plan and matrix jobs' results. Locally `mise run check` is only the
-# fast set, so a failed part names its own command.
+# PLAN and PARTS are the plan and matrix jobs' results. A failed part names its own command,
+# so it reruns alone.
 run = '''
 if [ "${PLAN:-}" = success ] && [ "${PARTS:-}" = success ]; then echo "every check: part passed"; exit 0; fi
 echo "::error::plan: ${PLAN:-unknown}, parts: ${PARTS:-unknown}"
@@ -253,7 +253,7 @@ gh pr merge "$PR" --auto --squash --match-head-commit "$head" || {
 
 [tasks."setup:github"]
 alias = "merge-queue"
-description = "Writes GitHub settings (the ruleset, main's classic required checks removed, auto-merge, head branch deletion), then syncs the labels with the pack's labels.py, from the repo's files; runs no checks. --dry-run prints the label plan and writes nothing; --revert deletes the ruleset."
+description = "Writes GitHub settings (the ruleset, qualify dropped from main's classic required checks, auto-merge, head branch deletion), then syncs the labels with the pack's labels.py, from the repo's files; runs no checks. --dry-run prints the label plan and writes nothing; --revert deletes the ruleset."
 usage = '''
 flag "--revert" help="Delete the loop-merge-queue ruleset; the repository settings are restored with the command apply printed"
 flag "--dry-run" help="Print what labels.py would change; write nothing to GitHub (no ruleset, settings or labels)"
@@ -290,11 +290,13 @@ else
   gh api -X POST 'repos/{owner}/{repo}/rulesets' --input .github/rulesets/main.json --jq '"created ruleset loop-merge-queue (\(.id))"'
 fi
 # main's classic branch protection required `qualify` before the ruleset existed; the ruleset's
-# `check` replaces it, so main requires exactly `check` and `loop:approvals`. The rest of that
-# protection stays.
-if contexts="$(gh api 'repos/{owner}/{repo}/branches/main/protection/required_status_checks' --jq '[.contexts[]] | join(",")' 2>/dev/null)"; then
-  gh api -X DELETE 'repos/{owner}/{repo}/branches/main/protection/required_status_checks' >/dev/null
-  echo "removed main's classic required status checks ($contexts); restore: gh api -X PATCH 'repos/{owner}/{repo}/branches/main/protection/required_status_checks' -F strict=true -f 'contexts[]=qualify'"
+# `check` replaces it, so main requires exactly `check` and `loop:approvals`. Only that context
+# goes: status-check protection and the rest of the classic protection stay. A second run finds
+# no `qualify` and skips this.
+classic='repos/{owner}/{repo}/branches/main/protection/required_status_checks/contexts'
+if gh api "$classic" --jq '.[]' 2>/dev/null | grep -qx qualify; then
+  gh api -X DELETE "$classic" -f 'contexts[]=qualify' >/dev/null
+  echo "removed qualify from main's classic required status checks; restore: gh api -X POST '$classic' -f 'contexts[]=qualify'"
 fi
 # Auto-merge lets a ready PR merge once its checks pass; GitHub deletes the merged head branch.
 auto="$(gh api 'repos/{owner}/{repo}' --jq .allow_auto_merge)"
