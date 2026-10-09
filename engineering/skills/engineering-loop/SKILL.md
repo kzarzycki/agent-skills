@@ -123,9 +123,10 @@ loop.md § Approvals holds the policy, one line each:
   such as `risk: path .github/**` or `risk: size:L or larger, or component billing`.
   `approvals.py` judges a condition on the labels of the PR and its issues (size,
   component, category; `always` matches everything) and the PR's files (`path <glob>`); a
-  condition it can't read matches, since nothing else would enforce it. A `merge:` or
-  `spec:` line with a condition in place of the policy reads as a `risk:` rule until the
-  project rewrites it.
+  condition it can't read matches, since nothing else would enforce it. A `merge:` line
+  with a condition in place of the policy reads as a `risk:` rule until the project
+  rewrites it, and so does a `spec:` condition beside `spec: auto unless risk`; without
+  that line the owner approves every spec, so a `spec:` condition holds no merge.
 - `plan: <condition>` asks for the owner's approval of a matching plan.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule

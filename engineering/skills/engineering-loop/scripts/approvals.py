@@ -74,7 +74,8 @@ its body (a follow-up an agent raised), or is a native sub-issue of an epic with
 `approved:spec`, opened by an account GitHub's collaborator permission gives admin, maintain or write. A high-risk one
 is still built; its merge waits for the owner. `merge: auto unless risk` says the gates are the merge approval of a
 change that is not high risk, which also holds without the line. Each `risk: <condition>` line is a risk rule, and
-so is each `merge:` or `spec:` line with a condition in place of a policy, until the project rewrites it. A
+so is each `merge:` line with a condition in place of a policy, until the project rewrites it, and each `spec:`
+condition beside `spec: auto unless risk` (without that line the owner approves every spec, so it holds no merge). A
 `plan: <condition>` line asks for the owner's plan approval. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
 glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
