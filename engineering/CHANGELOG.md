@@ -16,6 +16,12 @@ A bot's lock- or manifest-only PR merges without a verifier review (#106).
   the head is satisfied, whichever family wrote it. The coordinator still prefers a
   verifier of the other family when it is installed and within quota; otherwise a fresh
   same-family session is the normal path, and the PR body names which ran.
+- An unreadable `cap:` line in loop.md, such as `- cap: 3 passes`, is refused at the
+  start of `check` and `land` (#119): the refusal is the only line printed, and `land`
+  marks no draft ready. Before, a PR a risk rule or `risk:high` already held never read
+  the cap, so `check merge` printed its proofs and `land` marked the draft ready.
+- The cap hold (0.14.0) applies when a verifier review at the cap or later left a
+  blocker or major open, and also when it says `SATISFIED: no` with none open.
 
 ## 0.16.0 - 2026-10-09
 

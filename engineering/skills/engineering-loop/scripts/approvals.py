@@ -1311,6 +1311,7 @@ def gated(
 
 def check(point: str, pr: int | None) -> int:
     tracker, loop = project()
+    cap(loop)  # an unreadable `cap:` line is refused before any proof is printed
     if pr is None and (pr := current_pr()) is None:
         print("no PR for this branch yet: nothing to gate")
         return 0
@@ -1329,6 +1330,7 @@ def land(pr: int) -> int:
     and the repo allows it; exit 3 while anything else waits. When a red `loop:approvals` status is all that
     waits, its Actions run is rerun: exit 3."""
     tracker, loop = project()
+    cap(loop)  # an unreadable `cap:` line is refused before any proof or `gh pr ready`
     pull = pull_request(pr)
     where, head = f"PR #{pr}", pull["headRefOid"]
     if pull["state"] == "MERGED":
