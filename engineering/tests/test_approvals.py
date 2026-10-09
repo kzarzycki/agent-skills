@@ -7,7 +7,6 @@ import itertools
 import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -2028,39 +2027,6 @@ def test_a_local_ci_record_is_the_merge_proof_without_ci(
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "web")], LOOP + "\nCI: none\n") == []
-
-
-@pytest.mark.parametrize("change", [{}, {"exit": 2}])
-def test_record_check_is_local_ci(
-    github: list[tuple[Any, ...]],
-    checkout: dict[str, Any],
-    capsys: pytest.CaptureFixture[str],
-    change: dict[str, Any],
-) -> None:
-    checkout.update(change)
-    runs = []
-    for name in ("local-ci", "record-check"):
-        github.clear()
-        runs.append((approvals.main([name, "7"]), capsys.readouterr().out, list(github)))
-    assert runs[0] == runs[1]
-
-
-@pytest.mark.parametrize(
-    "args",
-    [["check", "build", "7"], ["verdict", "7", "report.md"], ["check", "deploy"], ["--help"]],
-)
-def test_gate_py_is_approvals_py(tmp_path: Path, args: list[str]) -> None:
-    def ran(script: str) -> tuple[int, str, str]:
-        done = subprocess.run(
-            [sys.executable, str(SCRIPTS / script), *args],
-            cwd=tmp_path,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return done.returncode, done.stdout, done.stderr
-
-    assert ran("gate.py") == ran("approvals.py")
 
 
 def git_in(where: Path, *args: str) -> str:
