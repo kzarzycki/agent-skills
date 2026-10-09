@@ -19,7 +19,7 @@ owner asks for that change, and the PR body says so.
 | **Build.** Workers, or the coordinator when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
 | **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
-| **Verify.** A verifier from the other model family, up to the cap (The cap). | the author's blind spots |
+| **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
 
 ## What the project states
@@ -95,7 +95,7 @@ produces what this table says:
 | Land | the PR body | `pr` |
 
 Whatever the practice, the issue and the board hold the state, the gates run, the
-verifier is from the other model family, and the loop merges. A practice skill's own
+verifier is a fresh session (Independent verification), and the loop merges. A practice skill's own
 merging or state-keeping is overridden, because two writers of one state drift apart.
 
 ### Approvals and proof
@@ -146,7 +146,7 @@ owner did not see. When the gate infers high risk, it adds `risk:high` to the PR
 the merge approval is the gates themselves: every verifier review on the newest pass's
 commit satisfied with no blocker or major open, that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks
-green. A same-family pass counts, its heading saying so.
+green. A pass counts whichever model family wrote it (Independent verification).
 
 When a spec or plan needs the owner, add `needs-owner`, comment what to approve, and stop:
 a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
@@ -201,13 +201,18 @@ angles run as native subagents, never as full harness sessions.
   each in one decision-log issue, wait out a usage limit and resume, and leave a handoff
   (`handoff` skill) when finished or stuck. Never idle: schedule a time-gated check and
   keep working.
-- **Independent verification.** Nobody verifies a diff their own model family wrote. A PR
-  with code from both families gets a verifier for each family's changes, integration
-  edits included; each writes its own report, the cap counts rounds they share, and
-  landing needs both clear. When the other family is not installed or is out of quota,
-  the verifier is a fresh session of the same family and the PR body says
-  `verifier: same family`. A brief never says who wrote the code or why the verifier
-  shares its family: that biases the review.
+- **Independent verification.** The verifier is a fresh session, never the author's. It
+  is of the other model family when that family is installed and within quota, since it
+  misses different things; otherwise, as for a user with one family installed, a fresh
+  session of the same family is the normal path. The PR body names which ran
+  (`verifier: same family` for the latter). A PR with code from both families gets a
+  verifier for each family's changes where both are available, integration edits
+  included; each writes its own report, and the cap counts rounds they share. The family
+  is a preference the coordinator follows and a record, not a gate: the verifier names it
+  in its review's heading, and the merge gate checks only that the newest pass on the head
+  is satisfied, whichever family wrote it, since the heading is the verifier's own word
+  and proves nothing the gate could hold it to. A brief never says who wrote the code or
+  why the verifier shares its family: that biases the review.
 - **Reports are files.** An agent writes its report to a file and sends only the path to
   whoever started it, through the backend's message operation, then stops. Text left in
   its own session reaches nobody. A report names each agent's model, and returns only

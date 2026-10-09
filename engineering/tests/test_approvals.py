@@ -1285,8 +1285,13 @@ def test_every_verifier_review_on_the_newest_passs_commit_must_be_satisfied() ->
         f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
         f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
     ]
-    # a pass on a later commit supersedes those on an earlier one
+    # a pass on a later commit supersedes those on an earlier one, whichever family wrote either
     assert verified(verdict_on(OLD, "1 blocker, 0 major, 0 minor", satisfied="no"), VERDICT) == []
+    codex = verdict_on(
+        OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (codex), pass 1"
+    )
+    claude = verdict_on(HEAD, heading="Verifier (claude, same-family), pass 2")
+    assert verified(codex, claude) == []
 
 
 def test_a_later_pass_on_the_same_commit_supersedes_an_earlier_one() -> None:

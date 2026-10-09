@@ -11,6 +11,11 @@ A bot's lock- or manifest-only PR merges without a verifier review (#106).
   any other file, a renamed or copied one, or a person's commit or rebase needs the review as usual. Without the line, no PR is
   exempt. The login matches with or without `[bot]`, and only a bot account.
 - The verifier resolves no review thread.
+- The merge gate does not enforce reviewer family (#118): the verifier names its family
+  in the review heading for the record, and the gate checks only that the newest pass on
+  the head is satisfied, whichever family wrote it. The coordinator still prefers a
+  verifier of the other family when it is installed and within quota; otherwise a fresh
+  same-family session is the normal path, and the PR body names which ran.
 
 ## 0.16.0 - 2026-10-09
 
