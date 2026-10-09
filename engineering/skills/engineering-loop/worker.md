@@ -13,10 +13,14 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    where the project records rules. Review angles you want run as native subagents.
 2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
    before each push. Once it exits 0, commit and push with `git push -u origin <branch>` as
-   its own command, since a pre-tool hook may scan the whole command text. The coordinator
-   merges your branch; open no PR. Your job ends at the push: don't wait for CI. A brief
-   that is a failing CI log is a check red after the PR went ready: fix it in the worktree
-   you are given, then `mise run check` and push the same way.
+   its own command, since a pre-tool hook may scan the whole command text. Commit and push
+   after each step whose gates are green, not only at the end, so a worker killed mid-task
+   leaves its work on the branch. The coordinator merges your branch and opens the PR: a
+   brief that asks for a PR means push the branch and report it. A spec or plan the brief
+   asks for goes in a file under `tmp/loop/`, and you report its path: the coordinator
+   posts it, since the spec lives on the issue. Your job ends at the push: don't wait for
+   CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
+   the worktree you are given, then `mise run check` and push the same way.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
