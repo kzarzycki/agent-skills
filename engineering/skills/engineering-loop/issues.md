@@ -24,8 +24,8 @@ that acts on the state it finds.
   policy in loop.md, and how, is SKILL.md, Approvals and proof.
 
 The `triage` skill's roles map as needs-triage = no state label, needs-info =
-`needs-owner`, ready-for-agent = `approved:spec`, which only the spec approval adds (the
-owner's, or the coordinator's for a spec the policy covers): a `ready-for-agent` label that
+`needs-owner`, ready-for-agent = `approved:spec`, which only the owner adds (a spec the
+policy covers needs no label, since the gate reads the policy): a `ready-for-agent` label that
 `to-spec` or `to-tickets` would set is not added, since a label without its approval would
 read as approved.
 
@@ -85,7 +85,7 @@ report it and carry on.
 |---|---|---|
 | `Intent` | filed, no state label | whoever files it |
 | `Needs owner` | it has `needs-owner` | whoever parks it |
-| `Ready` | it has `approved:spec` | the spec step, or the owner approving |
+| `Ready` | it has `approved:spec`, or loop.md's policy covers its spec | the spec step, or the owner approving |
 | `Build` | its draft PR is open | the coordinator |
 | `Verify` | the verifier has the PR | the coordinator |
 | `Done` | closed | whoever closes it |

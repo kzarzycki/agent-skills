@@ -216,13 +216,11 @@ def policy(loop: str | None, point: str) -> bool:
 
 
 def risk_rules(loop: str | None) -> list[str]:
-    """loop.md's risk conditions: each `risk:` line, and each `merge:` or `spec:` line that is no policy line, read
-    as a `risk:` rule until the project rewrites it."""
-    return [
-        text
-        for rule, text in rules(loop or "")
-        if rule in ("risk", "merge", "spec") and not is_policy(text)
-    ]
+    """loop.md's risk conditions: each `risk:` line, and each `merge:` line that is no policy line, read as a `risk:`
+    rule until the project rewrites it. A `spec:` condition counts only beside `spec: auto unless risk`: without
+    that line the owner approves every spec already, so a legacy `spec: always` holds no merge."""
+    legacy = ("risk", "merge", "spec") if policy(loop, "spec") else ("risk", "merge")
+    return [text for rule, text in rules(loop or "") if rule in legacy and not is_policy(text)]
 
 
 def practice_plans(loop: str) -> bool:
@@ -377,7 +375,7 @@ def approvals(where: str, node: dict[str, Any], point: str, value: str) -> list[
         stale = any(record.get("by") == "owner" for record in records(node, point))
         found.append(
             f"{where} has no `Approved: {point}` record by the owner"
-            + (f" for its current {point}: approve again" if stale else "")
+            + (f" for its current {point}: the owner approves it again" if stale else "")
         )
     if f"approved:{point}" not in names(node):
         found.append(f"{where} lacks the `approved:{point}` label")
@@ -387,7 +385,9 @@ def approvals(where: str, node: dict[str, Any], point: str, value: str) -> list[
 def spec_policy(issue: dict[str, Any]) -> bool:
     """Whether `spec: auto unless risk` approves the issue's spec: a bug; a follow-up an agent raised (a
     `Found while #n` line in its body); or a native sub-issue of an epic with the owner's current spec record and
-    `approved:spec`, opened by someone with write access."""
+    `approved:spec`, opened by someone with write access. An epic is never covered: the owner approves it."""
+    if "epic" in names(issue):
+        return False
     if "bug" in names(issue) or FOUND_WHILE.search(QUOTED.sub("", issue.get("body") or "")):
         return True
     parent = issue.get("parent")

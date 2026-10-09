@@ -308,6 +308,9 @@ def test_loop_md_rules_and_practice_are_read_from_their_sections() -> None:
     ]
     assert not approvals.practice_plans(LOOP)
     assert approvals.practice_plans("## Practice\n\n- Plan: writing-plans\n")
+    # without the spec policy the owner approves every spec, so a legacy `spec:` line holds no merge
+    legacy = "## Approvals\n\n- spec: always\n- merge: path `.github/**`\n"
+    assert approvals.risk_rules(legacy) == ["path `.github/**`"]
 
 
 @pytest.mark.parametrize(
@@ -362,7 +365,7 @@ def test_a_spec_edited_after_its_approval_needs_approving_again() -> None:
     edited = approved(1, "web")
     edited["lastEditedAt"] = "2026-10-02T14:35:27Z"
     assert approvals.proofs("build", pull(), [edited], LOOP) == [
-        "#1 has no `Approved: spec` record by the owner for its current spec: approve again"
+        "#1 has no `Approved: spec` record by the owner for its current spec: the owner approves it again"
     ]
 
 
@@ -2140,6 +2143,9 @@ def writers(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         ),
         (issue(1, "enhancement", body="- Found while #12, a follow-up\n"), True),
         (issue(1, "enhancement", body="An example: `Found while #12`\n"), False),
+        (issue(1, "enhancement", body="The template:\n\n```\nFound while #12\n```\n"), False),
+        (issue(1, "enhancement", body="`Found while #12` is the line.\n"), False),
+        (issue(1, "bug", "epic"), False),
         (issue(1, "enhancement", body="It was found while #12 ran.\n"), False),
         (story(epic("approved:spec")), True),
         (story(epic("approved:spec"), author="drive-by"), False),
@@ -2154,6 +2160,9 @@ def writers(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         "follow-up",
         "follow-up-in-a-list",
         "quoted-follow-up",
+        "fenced-follow-up",
+        "line-start-quoted-follow-up",
+        "bug-epic",
         "mid-line-follow-up",
         "writers-story",
         "non-writers-story",
