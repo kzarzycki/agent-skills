@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 - 2026-10-09
 
 Approvals come only from people, and risk is defined in one place (#121).
 
@@ -18,10 +18,10 @@ Approvals come only from people, and risk is defined in one place (#121).
   for the owner's `approved:merge`, and the wait line says why. `merge: auto unless risk`
   states the default. When the gate infers high risk, `check merge` and `land` add
   `risk:high` to the PR; a failure to add it is reported, never fatal.
-- Migration: a `merge: <condition>` or `spec: <condition>` line reads as a `risk:` rule
-  until the project rewrites it, so its paths still hold merges for the owner. A legacy
-  `spec:` rule no longer asks for the owner's spec approval on its own, since every spec
-  outside the policy does.
+- Migration: a `merge: <condition>` line reads as a `risk:` rule until the project
+  rewrites it, so its paths still hold merges for the owner. A `spec: <condition>` line
+  reads as one only beside `spec: auto unless risk`; without that line the owner approves
+  every spec already, so a legacy `spec: always` holds no merge.
 
 ## 0.14.0 - 2026-10-09
 
