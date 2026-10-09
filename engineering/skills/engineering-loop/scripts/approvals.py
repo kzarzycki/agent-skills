@@ -30,8 +30,7 @@ reviews, a review counting only when its body starts `Verifier (<family>), pass 
 PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; no unresolved
-review thread; and no review whose latest state is `CHANGES_REQUESTED`. A PR by a bot a `bot:` line names (below)
-needs no verifier review when every file it changes matches that line's condition. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
 `CI: none` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
@@ -86,7 +85,8 @@ so is each `merge:` line with a condition in place of a policy, until the projec
 condition beside `spec: auto unless risk` (without that line the owner approves every spec, so it holds no merge). A
 `plan: <condition>` line asks for the owner's plan approval. A `bot: <login> <condition>` line, such as
 `bot: dependabot[bot] path uv.lock or path package-lock.json`, lets that bot's PR merge without a verifier review
-when each file it changes matches the condition on its path; without one, every PR needs the review. A condition the gate can read is `always`, `size:L`
+when every commit is the bot's and each file it changes, none renamed or copied, matches the condition on its path
+(exempt); without one, every PR needs the review. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
 glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
 condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
