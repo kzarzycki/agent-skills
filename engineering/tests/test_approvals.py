@@ -1966,6 +1966,26 @@ def test_land_refuses_a_missing_proof_and_never_marks_the_pr_ready(
     assert line in lines
 
 
+def test_an_unreadable_cap_line_is_refused_before_any_proof_and_before_ready(
+    landing: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A PR the risk rule already holds never reached the cap, so `check merge` printed its proofs and passed or
+    waited, and `land` marked the draft ready. The bad `cap:` line now comes first, alone, and nothing reaches GitHub.
+    """
+    (tmp_path / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE + "- cap: 3 passes\n")
+    refused = ["loop.md has a `cap:` line that is not `cap: <n>`: write it as `- cap: <n>`"]
+    risky = pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high", *OWNED))
+    risky["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
+    risky["isDraft"] = True
+    landing["pull"] = risky
+    assert landed(capsys, landing) == (1, refused, [])
+    unverified = pull(files=(".github/ci.yml",), labels=("risk:high",))
+    unverified["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
+    landing["pull"] = unverified
+    assert approvals.main(["check", "merge", "7"]) == 1
+    assert (capsys.readouterr().out.splitlines(), landing["calls"]) == (refused, [])
+
+
 def test_land_says_a_merged_pr_is_merged_and_refuses_a_closed_one(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
