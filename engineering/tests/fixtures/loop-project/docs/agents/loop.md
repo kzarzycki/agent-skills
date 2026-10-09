@@ -6,6 +6,8 @@
 
 ## Approvals
 
-- spec: size:L or larger, or component `api`
-- merge: path `billing/**`
-- merge: a change that can place live orders
+- spec: auto unless risk
+- merge: auto unless risk
+- risk: size:L or larger, or component `api`
+- risk: path `billing/**`
+- merge: path `.github/**`

@@ -31,7 +31,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines and `risk:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -98,49 +98,69 @@ merging or state-keeping is overridden, because two writers of one state drift a
 
 ### Approvals and proof
 
-The coordinator approves the spec and the plan itself with
-`python3 scripts/approvals.py approve <spec|plan> <issue> --by coordinator`: the spec once
-it meets its contract, the plan once it covers the spec. The verifier only gives the
-verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts as a PR review on
-the commit it reviewed. Each
-approval is a comment `approvals.py` reads, tied to the spec's or plan's last edit as
-GitHub's edit history shows it, so a later edit needs approving again, plus the
-`approved:<point>` label. The merge approval is the gates themselves: every verifier review
-on the newest pass's commit satisfied with no blocker or major open, that commit covering
-the head that lands, every review thread resolved, no review requesting changes, and the
-base's required checks green. A same-family pass counts, its heading saying so. A loop.md § Approvals `merge:` rule adds the owner's
+Only people approve: the owner, or a teammate where loop.md asks for one. No agent writes
+an approval record, since an agent approving its own work is no approval; where nobody
+was asked, the authority is the owner's standing policy in loop.md § Approvals, which
+`approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
+`python3 scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
+owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
+a later edit needs approving again, plus the `approved:<point>` label. A re-approval says
+what changed and minimizes the records it supersedes as outdated. The verifier only gives
+the verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts as a PR
+review on the commit it reviewed.
+
+loop.md § Approvals holds the policy, one line each:
+
+- `spec: auto unless risk` approves by policy, with no record or label, the spec of a
+  `bug`, of an issue whose body has a `Found while #<n>` line (a follow-up an agent
+  raised, Triage), or of a native sub-issue of an epic the owner approved (their current
+  record and `approved:spec`), opened by an account with write access to the repo. Any
+  other spec, a new epic for one, needs the owner's approval; without the line, every
+  spec does.
+- `merge: auto unless risk`: the gates are the merge approval of a change that is not high
+  risk, as they are without the line.
+- `risk: <condition>`, one rule per line: what is high risk here, by path, area or kind,
+  such as `risk: path .github/**` or `risk: size:L or larger, or component billing`.
+  `approvals.py` judges a condition on the labels of the PR and its issues (size,
+  component, category; `always` matches everything) and the PR's files (`path <glob>`); a
+  condition it can't read matches, since nothing else would enforce it. A `merge:` line
+  with a condition in place of the policy reads as a `risk:` rule until the project
+  rewrites it, and so does a `spec:` condition beside `spec: auto unless risk`; without
+  that line the owner approves every spec, so a `spec:` condition holds no merge.
+- `plan: <condition>` asks for the owner's approval of a matching plan.
+
+A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
+matches, or the cap was reached with a blocker or major open (The cap). A high-risk spec
+covered by policy is still built and PR'd; its merge waits for the owner's
 `approved:merge` label on the PR, asked for once `check` is green on the head: it counts
 only when added after that head's push, and a push removes it, so it never covers code the
-owner did not see. A re-approval says what changed and
-minimizes the records it supersedes as outdated. A change to an approved spec's scope or
-acceptance is a decision the owner never saw: remove `approved:spec`, add `needs-owner`
-with a one-line comment saying what changed, and stop until they approve. A wording fix
-keeps the label and needs only `approve` again, which still asks the person a loop.md §
-Approvals rule names, since `approvals.py` can't tell wording from scope. `mise run loop:approvals
-build` before building and `mise run loop:approvals merge` before merging check every proof
-(`scripts/approvals.py` lists them); `merge` exits 3 while it waits for `check` or the
-owner's label, and 1 when a proof is missing. An agent merges only with `python3
-scripts/approvals.py land <pr>` (the project's `loop:land` task): it runs every merge proof,
-marks a draft ready and waits for the CI that starts, and on a ready PR merges it pinned to
-its head, or turns on auto-merge while only required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand, because
-`land` is what refuses a PR whose proof is missing. A repo without `docs/agents/loop.md` has
-no rules: `land` there needs each named issue to carry `approved:spec` and not
-`needs-owner`, and the PR's own proofs.
+owner did not see. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
+the merge approval is the gates themselves: every verifier review on the newest pass's
+commit satisfied with no blocker or major open, that commit covering the head that lands,
+every review thread resolved, no review requesting changes, and the base's required checks
+green. A same-family pass counts, its heading saying so.
 
-loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
-line, `<spec|plan|merge>: <condition>`, such as `spec: size:L or larger, or component
-billing` or `merge: path .github/**`. `approvals.py` judges a condition on what the issue
-carries (size, component, category; `always` matches everything), and a `merge:` one also on
-the PR's labels and files (`path <glob>`); a spec or plan rule never reads a path, since it
-comes before the change. A `merge:` condition `approvals.py` can't read asks for the label,
-since nothing else would enforce it. When a spec or plan rule matches,
-`approve` leaves the label off, adds `needs-owner`, and you stop: a person approves by
-adding `approved:<point>`, by saying so in the session, or, for a spec on a repo with a
-board, by moving the issue to `Ready` while it has `needs-owner` (`python3
-scripts/board.py column <issue>` prints `Ready`), and then you run `approve`
-with `--by owner`. A condition `approvals.py` can't read is yours alone to judge. A rule GitHub
-can enforce, such as a required review or a code owner, belongs in branch protection or
-`CODEOWNERS`, which the loop obeys and never overrides.
+When a spec or plan needs the owner, add `needs-owner`, comment what to approve, and stop:
+a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
+on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`python3
+scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
+which records their word, adds the label and removes `needs-owner`. A change to an
+approved spec's scope or acceptance is a decision the owner never saw: remove
+`approved:spec`, add `needs-owner` with a one-line comment saying what changed, and stop
+until they approve. A spec the owner approved and then edited for wording needs their
+`approve` again, since `approvals.py` can't tell wording from scope; one covered by policy
+needs nothing. `mise run loop:approvals build` before building and `mise run
+loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
+them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
+is missing. An agent merges only with `python3 scripts/approvals.py land <pr>` (the
+project's `loop:land` task): it runs every merge proof, marks a draft ready and waits for
+the CI that starts, and on a ready PR merges it pinned to its head, or turns on auto-merge
+while only required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand,
+because `land` is what refuses a PR whose proof is missing. A repo without
+`docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
+`approved:spec` and not `needs-owner`, and the PR's own proofs. A rule GitHub can enforce,
+such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
+which the loop obeys and never overrides.
 
 ## Roles
 
@@ -253,8 +273,8 @@ angles run as native subagents, never as full harness sessions.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open and
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr>`, which
   marks it ready and merges it, or turns on auto-merge. The PR merges only when the newest
-  verdict covers the head that lands, the required checks are green there, and, where a
-  `merge:` rule asks or the cap was hit (The cap), the owner's `approved:merge` label is on.
+  verdict covers the head that lands, the required checks are green there, and, where the
+  change is high risk (Approvals and proof), the owner's `approved:merge` label is on.
   The verdict's commit is the head itself: any commit after it, a merge of main included,
   needs a verifier pass first, and a triage or comment is no verdict.
 

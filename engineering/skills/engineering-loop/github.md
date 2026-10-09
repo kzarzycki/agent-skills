@@ -20,6 +20,12 @@ inside the repository: it infers the repo from the remote.
   `gh api graphql -f p=<parent id> -f s=<sub-issue id> -f query='mutation($p:ID!,$s:ID!){addSubIssue(input:{issueId:$p,subIssueId:$s}){subIssue{parent{number}}}}'`.
   Already that parent: done. Another parent: it belongs to that epic; `replaceParent:true`
   moves it only when that one is wrong.
+- Write access, which `spec: auto unless risk` asks of a sub-issue's author: GitHub's
+  collaborator permission, `gh api 'repos/{owner}/{repo}/collaborators/<login>/permission' --jq .permission`,
+  is `admin`, `maintain` or `write`. It covers access through a team, which an issue's
+  `author_association` does not.
+- Risk, on an issue or a PR: `gh api 'repos/{owner}/{repo}/issues/<number>/labels' -f 'labels[]=risk:high'`,
+  the call `approvals.py` makes, which creates the label where the repo has none.
 - Epic: `gh issue edit <number> --add-label epic`, after
   `gh label create epic --color 8250DF --description "An outcome the owner tracks; its work items are sub-issues"`
   when the repo has no such label.

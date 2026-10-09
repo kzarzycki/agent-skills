@@ -44,6 +44,16 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
 
 
+@pytest.fixture(autouse=True)
+def added(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str, bool]]:
+    """Every label approvals.py adds or removes, instead of making the call; `github` records them with the rest."""
+    calls: list[tuple[int, str, bool]] = []
+    monkeypatch.setattr(
+        approvals, "label", lambda number, name, add: calls.append((number, name, add))
+    )
+    return calls
+
+
 def problems(issues: list[dict[str, Any]]) -> list[str]:
     return approvals.problems(issues, approvals.label_names(TRACKER))
 
@@ -93,13 +103,9 @@ def record(point: str, by: str, **fields: str) -> str:
     )
 
 
-def approved(
-    number: int, *labels: str, owner: bool = False, body: str = "the spec"
-) -> dict[str, Any]:
-    """A specced issue whose spec the coordinator, and the owner when asked, approved."""
-    comments = (record("spec", "coordinator", spec=AS_WRITTEN),) + (
-        (record("spec", "owner", spec=AS_WRITTEN),) if owner else ()
-    )
+def approved(number: int, *labels: str, body: str = "the spec") -> dict[str, Any]:
+    """A specced issue whose spec the owner approved."""
+    comments = (record("spec", "owner", spec=AS_WRITTEN),)
     return issue(number, "size:S", "approved:spec", *labels, body=body, comments=comments)
 
 
@@ -164,6 +170,9 @@ def verdict_on(
 
 VERDICT = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
 OWNED = ("approved:merge",)
+HELD = "PR #7 waits for the owner's `approved:merge` label, since it is high risk: "
+BILLING = HELD + "it matches a risk rule (path `billing/**`)"
+GITHUB = HELD + "it matches a risk rule (path `.github/**`)"
 
 
 def merge(pr: dict[str, Any], issues: list[dict[str, Any]], loop: str = LOOP) -> list[str]:
@@ -211,7 +220,7 @@ def test_an_approved_spec_with_a_size_is_ready_without_ready_for_agent() -> None
 def test_an_issue_without_approved_spec_is_not_ready() -> None:
     intent = issue(2, "chore", "agents", "size:XS", "ready-for-agent")
     assert problems([intent]) + approvals.proofs("build", pull(), [intent], LOOP) == [
-        "#2 has no `Approved: spec` record by the coordinator",
+        "#2 has no `Approved: spec` record by the owner",
         "#2 lacks the `approved:spec` label",
     ]
 
@@ -283,12 +292,25 @@ def test_the_body_names_its_closing_issues(body: str, numbers: list[int]) -> Non
 
 def test_loop_md_rules_and_practice_are_read_from_their_sections() -> None:
     assert approvals.rules(LOOP) == [
-        ("spec", "size:L or larger, or component `api`"),
-        ("merge", "path `billing/**`"),
-        ("merge", "a change that can place live orders"),
+        ("spec", "auto unless risk"),
+        ("merge", "auto unless risk"),
+        ("risk", "size:L or larger, or component `api`"),
+        ("risk", "path `billing/**`"),
+        ("merge", "path `.github/**`"),
+    ]
+    assert approvals.policy(LOOP, "spec") and approvals.policy(LOOP, "merge")
+    assert not approvals.policy("## Approvals\n\n- spec: always\n", "spec")
+    # the policy lines are no conditions; a legacy `merge:` or `spec:` condition is a risk rule
+    assert approvals.risk_rules(LOOP) == [
+        "size:L or larger, or component `api`",
+        "path `billing/**`",
+        "path `.github/**`",
     ]
     assert not approvals.practice_plans(LOOP)
     assert approvals.practice_plans("## Practice\n\n- Plan: writing-plans\n")
+    # without the spec policy the owner approves every spec, so a legacy `spec:` line holds no merge
+    legacy = "## Approvals\n\n- spec: always\n- merge: path `.github/**`\n"
+    assert approvals.risk_rules(legacy) == ["path `.github/**`"]
 
 
 @pytest.mark.parametrize(
@@ -327,8 +349,8 @@ def test_an_approved_spec_passes_build() -> None:
 
 
 def test_a_spec_nobody_approved_is_named() -> None:
-    assert approvals.proofs("build", pull(), [specced(1, "bug")], LOOP) == [
-        "#1 has no `Approved: spec` record by the coordinator",
+    assert approvals.proofs("build", pull(), [specced(1, "bug")], "") == [
+        "#1 has no `Approved: spec` record by the owner",
         "#1 lacks the `approved:spec` label",
     ]
 
@@ -343,15 +365,19 @@ def test_a_spec_edited_after_its_approval_needs_approving_again() -> None:
     edited = approved(1, "web")
     edited["lastEditedAt"] = "2026-10-02T14:35:27Z"
     assert approvals.proofs("build", pull(), [edited], LOOP) == [
-        "#1 has no `Approved: spec` record by the coordinator for its current spec: approve again"
+        "#1 has no `Approved: spec` record by the owner for its current spec: the owner approves it again"
     ]
 
 
-def test_a_matching_rule_needs_the_owner_too() -> None:
-    assert approvals.proofs("build", pull(), [approved(1, "api")], LOOP) == [
+def test_only_the_owners_record_approves_a_spec_and_no_coordinators_is_asked_for() -> None:
+    """`check` and `land` read the owner's record alone: an agent's record approves nothing."""
+    agents = issue(
+        1, "size:S", "approved:spec", comments=(record("spec", "coordinator", spec=AS_WRITTEN),)
+    )
+    assert approvals.proofs("build", pull(), [agents], "") == [
         "#1 has no `Approved: spec` record by the owner"
     ]
-    assert approvals.proofs("build", pull(), [approved(1, "api", owner=True)], LOOP) == []
+    assert approvals.proofs("build", pull(), [approved(1, "api")], "") == []
 
 
 def test_a_spec_in_a_comment_is_the_one_approved() -> None:
@@ -360,7 +386,7 @@ def test_a_spec_in_a_comment_is_the_one_approved() -> None:
     edited = "2026-10-02T11:00:00Z"
     comments = (
         note(spec, lastEditedAt=edited),
-        record("spec", "coordinator", spec="as edited 2026-10-02 11:00:00 UTC"),
+        record("spec", "owner", spec="as edited 2026-10-02 11:00:00 UTC"),
     )
     tool_owned = issue(1, *labels, body="a tool's body", comments=comments)
     assert approvals.proofs("build", pull(), [tool_owned], LOOP) == []
@@ -389,8 +415,9 @@ def test_a_due_plan_needs_its_comment_and_approval() -> None:
     )
     planned = approved(1, "web")
     planned["comments"]["nodes"].append(note("## Plan\n\n1. slice"))
-    assert approvals.proofs("build", pull(), [planned], "") == [
-        "#1 has no `Approved: plan` record by the coordinator",
+    assert approvals.proofs("build", pull(), [planned], "") == []  # no agent approves a plan either
+    assert approvals.proofs("build", pull(), [planned], "## Approvals\n\n- plan: always\n") == [
+        "#1 has no `Approved: plan` record by the owner",
         "#1 lacks the `approved:plan` label",
     ]
 
@@ -414,15 +441,12 @@ def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
         return code, capsys.readouterr().out.splitlines()
 
     monkeypatch.chdir(PROJECT)
-    running = pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
+    running = pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),), files=("billing/a.py",))
     assert gated(running) == (
         approvals.WAITING,
-        [
-            "PR #7: `check` is IN_PROGRESS on the head commit",
-            "PR #7 waits for the owner's `approved:merge` label",
-        ],
+        ["PR #7: `check` is IN_PROGRESS on the head commit", BILLING],
     )
-    assert gated(pull(reviews=(VERDICT,), labels=OWNED)) == (0, [])
+    assert gated(pull(reviews=(VERDICT,), labels=OWNED, files=("billing/a.py",))) == (0, [])
     assert gated(pull(labels=OWNED, checks=(("check", "IN_PROGRESS"),))) == (
         1,
         [
@@ -435,16 +459,17 @@ def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
 def test_a_label_added_before_the_heads_push_is_no_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stale = pull(reviews=(VERDICT,), labels=OWNED, labeled="2026-10-01T09:59:59Z")
+    billing = ("billing/a.py",)
+    stale = pull(reviews=(VERDICT,), labels=OWNED, labeled="2026-10-01T09:59:59Z", files=billing)
     assert merge(stale, [approved(1, "web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
-    same_second = pull(reviews=(VERDICT,), labels=OWNED, labeled=PUSHED)
+    same_second = pull(reviews=(VERDICT,), labels=OWNED, labeled=PUSHED, files=billing)
     assert merge(same_second, [approved(1, "web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: None)
-    assert merge(pull(reviews=(VERDICT,), labels=OWNED), [approved(1, "web")]) == [
+    assert merge(pull(reviews=(VERDICT,), labels=OWNED, files=billing), [approved(1, "web")]) == [
         f"PR #7: GitHub lists no push of the head {HEAD}, so `approved:merge` can't be dated after it"
     ]
 
@@ -594,22 +619,22 @@ def test_a_path_rule_on_the_spec_is_left_to_the_loop() -> None:
 
 
 def test_a_pr_without_its_proof_names_each_missing_one() -> None:
-    bare = pull(body="## Evidence\n\n## Summary\n", checks=(("check", "FAILURE"),))
+    bare = pull(
+        body="## Evidence\n\n## Summary\n", checks=(("check", "FAILURE"),), files=("billing/a.py",)
+    )
     assert merge(bare, [approved(1, "web")]) == [
         "PR #7: its body has no `## Evidence` section with content",
         "PR #7: no verifier review posted (approvals.py verdict)",
         "PR #7: `check` is FAILURE on the head commit",
-        "PR #7 waits for the owner's `approved:merge` label",
+        BILLING,
     ]
     assert "PR #7: no `check` on the head commit yet" in merge(pull(checks=()), [], "")
 
 
-def test_a_merge_rule_in_loop_md_asks_for_the_owners_label() -> None:
+def test_a_legacy_merge_rule_in_loop_md_reads_as_a_risk_rule() -> None:
     rule = "## Approvals\n\n- merge: path `billing/**`\n"
     billing = pull(files=("billing/invoice.py",), reviews=(VERDICT,))
-    assert merge(billing, [approved(1, "web")], rule) == [
-        "PR #7 waits for the owner's `approved:merge` label"
-    ]
+    assert merge(billing, [approved(1, "web")], rule) == [BILLING]
     assert merge(pull(files=("web/app.ts",), reviews=(VERDICT,)), [approved(1, "web")], rule) == []
     billing["labels"]["nodes"] = [{"name": "approved:merge"}]
     billing["timelineItems"]["nodes"] = [
@@ -709,7 +734,9 @@ def test_an_exact_revert_still_needs_check_and_the_merge_approval(
     unapproved = revert_pr(body="Reverts #1\n\n## Evidence\n\n#1 set the wrong rate.\n")
     assert gated(monkeypatch, capsys, "merge", unapproved) == (
         approvals.WAITING,
-        ["PR #2 waits for the owner's `approved:merge` label"],
+        [
+            "PR #2 waits for the owner's `approved:merge` label, since it is high risk: it matches a risk rule (path `billing/**`)"
+        ],
     )
     bare = revert_pr(body="Reverts #1\n", labels=OWNED)
     assert gated(monkeypatch, capsys, "merge", bare) == (
@@ -895,93 +922,72 @@ def github(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     return calls
 
 
-def test_the_coordinator_approves_a_spec_no_rule_holds(
+def test_the_owners_approval_is_recorded_labelled_and_clears_needs_owner(
     github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(approvals, "issue_node", lambda _n: specced(1, "bug"))
-    assert approvals.main(["approve", "spec", "1", "--by", "coordinator"]) == 0
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: specced(1, "bug", "needs-owner"))
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
     assert github == [
-        ("comment", 1, f"Approved: spec\nBy: coordinator\nSpec: {AS_WRITTEN}\n"),
+        ("comment", 1, f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"),
         ("label", 1, "approved:spec", True),
+        ("label", 1, "needs-owner", False),
     ]
 
 
-def test_a_rule_leaves_the_label_to_the_owner(
-    github: list[tuple[Any, ...]],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+def test_approve_refuses_the_coordinator(
+    github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(
-        approvals, "issue_node", lambda _n: specced(1, "bug", "size:XL", "approved:spec")
-    )
-    assert approvals.main(["approve", "spec", "1", "--by", "coordinator"]) == 0
-    assert github[1:] == [("label", 1, "approved:spec", False), ("label", 1, "needs-owner", True)]
-    assert "stop until they add `approved:spec`" in capsys.readouterr().out
-    github.clear()
-    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
-    assert github[1:] == [("label", 1, "approved:spec", True), ("label", 1, "needs-owner", False)]
+    with pytest.raises(SystemExit) as exited:
+        approvals.main(["approve", "spec", "1", "--by", "coordinator"])
+    assert exited.value.code == 2
+    assert "invalid choice: 'coordinator'" in capsys.readouterr().err
+    assert github == []
 
 
-def test_a_re_approval_says_why_and_minimizes_what_it_supersedes(
+def test_a_re_approval_says_why_and_minimizes_every_record_it_supersedes(
     github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    stale = note(record("spec", "coordinator", spec=AS_WRITTEN))
+    agents = note(record("spec", "coordinator", spec=AS_WRITTEN))
     owners = note(record("spec", "owner", spec=AS_WRITTEN))
     edited = specced(1, "bug", "size:XL")
-    edited["comments"]["nodes"] = [stale, owners]
+    edited["comments"]["nodes"] = [agents, owners]
     edited["lastEditedAt"] = "2026-10-02T14:35:27Z"
     monkeypatch.setattr(approvals, "issue_node", lambda _n: edited)
-    assert approvals.main(["approve", "spec", "1", "--by", "coordinator"]) == 0
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
     assert github[:3] == [
         (
             "comment",
             1,
             (
-                "Approved: spec\nBy: coordinator\nSpec: as edited 2026-10-02 14:35:27 UTC\n"
+                "Approved: spec\nBy: owner\nSpec: as edited 2026-10-02 14:35:27 UTC\n"
                 "The spec changed after the last approval, so it was checked again.\n"
             ),
         ),
-        ("minimize", stale["id"]),
+        ("minimize", agents["id"]),
         ("minimize", owners["id"]),
     ]
-
-
-def test_another_approvers_record_of_the_same_version_stays_open(
-    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    coordinators = note(record("spec", "coordinator", spec=AS_WRITTEN))
-    repeated = note(record("spec", "owner", spec=AS_WRITTEN))
-    done = specced(1, "bug", "size:XL")
-    done["comments"]["nodes"] = [coordinators, repeated]
-    monkeypatch.setattr(approvals, "issue_node", lambda _n: done)
-    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
-    assert github[:2] == [
-        ("comment", 1, f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"),
-        ("minimize", repeated["id"]),
-    ]
-    assert ("minimize", coordinators["id"]) not in github
 
 
 def test_a_comment_gate_py_cannot_or_need_not_minimize_is_left_alone(
     github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     theirs = note(
-        record("spec", "coordinator", spec="as written 2026-09-01 09:00:00 UTC"),
+        record("spec", "owner", spec="as written 2026-09-01 09:00:00 UTC"),
         viewerCanMinimize=False,
     )
     hidden = note(
-        record("spec", "coordinator", spec="as written 2026-09-02 09:00:00 UTC"), isMinimized=True
+        record("spec", "owner", spec="as written 2026-09-02 09:00:00 UTC"), isMinimized=True
     )
     old = specced(1, "bug")
     old["comments"]["nodes"] = [theirs, hidden]
     monkeypatch.setattr(approvals, "issue_node", lambda _n: old)
-    assert approvals.main(["approve", "spec", "1", "--by", "coordinator"]) == 0
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
     assert [call for call in github if call[0] == "minimize"] == []
 
 
 def test_merge_is_no_approve_point(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exited:
-        approvals.main(["approve", "merge", "7", "--by", "coordinator"])
+        approvals.main(["approve", "merge", "7", "--by", "owner"])
     assert exited.value.code == 2
     assert "invalid choice: 'merge'" in capsys.readouterr().err
 
@@ -1290,7 +1296,7 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
     assert verified(open_at_cap, pass6) == []
     assert capped(open_at_cap, pass6) == [
         (
-            "PR #7 waits for the owner's `approved:merge` label: a verifier review at the cap (pass 5) or later"
+            HELD + "a verifier review at the cap (pass 5) or later"
             " left a core finding open, so the owner decides"
         )
     ]
@@ -1335,7 +1341,7 @@ def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() ->
     assert capped(major, later) == []
     assert capped(major, later, loop="- cap: 3\n") == [
         (
-            "PR #7 waits for the owner's `approved:merge` label: a verifier review at the cap (pass 3) or later"
+            HELD + "a verifier review at the cap (pass 3) or later"
             " left a core finding open, so the owner decides"
         )
     ]
@@ -1414,12 +1420,17 @@ def test_a_merge_path_rule_asks_for_the_label_only_on_a_pr_touching_its_path() -
             pr["files"]["totalCount"] = total
         return approvals.waits(pr, [approved(1, "web")], loop)
 
-    asked = ["PR #7 waits for the owner's `approved:merge` label"]
-    assert waits(GITHUB_RULE, ".github/ci.yml") == asked
+    unjudged = HELD + "a risk rule the gate can't judge holds until a person does"
+    assert waits(GITHUB_RULE, ".github/ci.yml") == [GITHUB]
     assert waits(GITHUB_RULE, "README.md") == []
-    assert waits(GITHUB_RULE, "README.md", total=101) == asked  # files the gate can't read
-    assert waits("## Approvals\n\n- merge: a schema change\n", "README.md") == asked
-    assert waits("## Approvals\n\n- merge: component `web`\n", "README.md") == asked
+    # files the gate can't read
+    assert waits(GITHUB_RULE, "README.md", total=101) == [f"{unjudged} (path `.github/**`)"]
+    assert waits("## Approvals\n\n- risk: a schema change\n", "README.md") == [
+        f"{unjudged} (a schema change)"
+    ]
+    assert waits("## Approvals\n\n- merge: component `web`\n", "README.md") == [
+        HELD + "it matches a risk rule (component `web`)"
+    ]
     assert waits("## Approvals\n\n- merge: category ops\n", "README.md") == []
 
 
@@ -1572,7 +1583,7 @@ def test_land_turns_on_auto_merge_while_required_checks_are_pending(
         ({"auto": False}, "PR #7: `check` is IN_PROGRESS on the head commit"),
         ({"rulesets": []}, "PR #7: `check` is IN_PROGRESS on the head commit"),
         ({"state": "FAILURE"}, "PR #7: `check` is FAILURE on the head commit"),
-        ({"files": (".github/ci.yml",)}, "PR #7 waits for the owner's `approved:merge` label"),
+        ({"files": (".github/ci.yml",)}, GITHUB),
     ],
 )
 def test_land_waits_without_auto_merge_where_github_would_not_hold_the_merge(
@@ -1742,7 +1753,7 @@ def test_land_never_reruns_the_approvals_run_on_a_failed_proof(
             "PR #7: `check` is IN_PROGRESS on the head commit",
         ),
         ({"checks": ()}, "PR #7: no `check` on the head commit yet"),
-        ({"files": (".github/ci.yml",)}, "PR #7 waits for the owner's `approved:merge` label"),
+        ({"files": (".github/ci.yml",)}, GITHUB),
         (
             {"state": "PENDING", "auto": False},
             "PR #7: `loop:approvals` is PENDING on the head commit",
@@ -1883,7 +1894,7 @@ def test_a_run_from_a_subdirectory_reads_the_checkouts_loop_files(
     agents = repo / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
-    (agents / "loop.md").write_text("## Approvals\n\n- spec: always\n")
+    (agents / "loop.md").write_text("## Practice\n\n- Plan: writing-plans\n")
     (repo / "src").mkdir()
     pr = pull()
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
@@ -1892,7 +1903,7 @@ def test_a_run_from_a_subdirectory_reads_the_checkouts_loop_files(
     monkeypatch.chdir(repo / "src")
     assert (approvals.main(["check", "build", "7"]), capsys.readouterr().out) == (
         1,
-        "#1 has no `Approved: spec` record by the owner\n",
+        "#1 has no `## Plan` comment, and one is due\n",
     )
 
 
@@ -2087,3 +2098,236 @@ def test_a_change_the_status_config_hides_still_records_nothing(
     assert approvals.main(["local-ci", "7"]) == 1
     assert github == []
     assert "the tree has changes" in capsys.readouterr().out
+
+
+# --- the owner's policy: specs approved and merges landed without an agent's approval ---
+
+POLICY = "## Approvals\n\n- spec: auto unless risk\n- merge: auto unless risk\n- risk: path `billing/**`\n"
+EDITED = "2026-10-02T14:35:27Z"
+
+
+def epic(*labels: str, by: str = "owner", **fields: Any) -> dict[str, Any]:
+    """An epic as an issue's GraphQL `parent`, with `by`'s spec record of its first version."""
+    found = issue(9, "enhancement", *labels, comments=(record("spec", by, spec=AS_WRITTEN),))
+    return {**found, **fields}
+
+
+def story(
+    parent: dict[str, Any], author: str | None = "worker", body: str = "the spec"
+) -> dict[str, Any]:
+    """A native sub-issue of `parent`, opened by `author`, with no approval of its own."""
+    found = issue(1, "enhancement", "web", "size:S", body=body)
+    return {**found, "parent": parent, "author": {"login": author} if author else None}
+
+
+@pytest.fixture
+def writers(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """`worker` can write to the repo and nobody else can; the logins asked about."""
+    asked: list[str] = []
+
+    def writer(login: str) -> bool:
+        asked.append(login)
+        return login == "worker"
+
+    monkeypatch.setattr(approvals, "writer", writer)
+    return asked
+
+
+@pytest.mark.parametrize(
+    ("spec", "covered"),
+    [
+        (issue(1, "bug"), True),
+        (
+            issue(1, "enhancement", body="The rate.\n\nFound while #12 reviewing the invoice.\n"),
+            True,
+        ),
+        (issue(1, "enhancement", body="- Found while #12, a follow-up\n"), True),
+        (issue(1, "enhancement", body="An example: `Found while #12`\n"), False),
+        (issue(1, "enhancement", body="The template:\n\n```\nFound while #12\n```\n"), False),
+        (issue(1, "enhancement", body="`Found while #12` is the line.\n"), False),
+        (issue(1, "bug", "epic"), False),
+        (issue(1, "enhancement", body="It was found while #12 ran.\n"), False),
+        (story(epic("approved:spec")), True),
+        (story(epic("approved:spec"), author="drive-by"), False),
+        (story(epic("approved:spec"), author=None), False),
+        (story(epic()), False),
+        (story(epic("approved:spec", by="coordinator")), False),
+        (story(epic("approved:spec", lastEditedAt=EDITED)), False),
+        (issue(1, "enhancement", "epic"), False),
+    ],
+    ids=[
+        "bug",
+        "follow-up",
+        "follow-up-in-a-list",
+        "quoted-follow-up",
+        "fenced-follow-up",
+        "line-start-quoted-follow-up",
+        "bug-epic",
+        "mid-line-follow-up",
+        "writers-story",
+        "non-writers-story",
+        "ghost-authors-story",
+        "story-of-an-epic-without-approved-spec",
+        "story-of-an-epic-only-an-agent-approved",
+        "story-of-an-epic-edited-since",
+        "new-epic",
+    ],
+)
+def test_spec_policy_covers_a_bug_a_follow_up_and_a_writers_story_of_an_approved_epic(
+    writers: list[str], spec: dict[str, Any], covered: bool
+) -> None:
+    assert approvals.spec_policy(spec) is covered
+    assert "parent {" in approvals.ISSUE and "author { login }" in approvals.ISSUE
+
+
+def test_a_spec_policy_covers_needs_no_record_or_label_and_one_it_does_not_needs_the_owner(
+    writers: list[str],
+) -> None:
+    bug, child, new_epic = (
+        specced(1, "bug"),
+        story(epic("approved:spec")),
+        specced(3, "enhancement", "epic"),
+    )
+    assert approvals.proofs("build", pull(), [bug, child], POLICY) == []
+    assert approvals.proofs("build", pull(), [new_epic], POLICY) == [
+        "#3 has no `Approved: spec` record by the owner",
+        "#3 lacks the `approved:spec` label",
+    ]
+    # without the policy line, a bug is the owner's to approve like any spec
+    assert approvals.proofs(
+        "build", pull(), [bug], "## Approvals\n\n- risk: path `billing/**`\n"
+    ) == [
+        "#1 has no `Approved: spec` record by the owner",
+        "#1 lacks the `approved:spec` label",
+    ]
+    assert problems([specced(1, "bug", "needs-owner")]) == ["#1 waits for the owner (needs-owner)"]
+
+
+def test_a_policy_line_is_no_condition_so_a_low_risk_pr_waits_for_nothing() -> None:
+    done = pull(reviews=(VERDICT,), files=("app.py",))
+    assert merge(done, [specced(1, "bug")], POLICY) == []
+    assert approvals.risk(done, [specced(1, "bug")], POLICY) is None
+
+
+def test_a_low_risk_agent_pr_lands_with_no_approval_record_and_no_label(
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    added: list[tuple[int, str, bool]],
+) -> None:
+    Path("docs/agents/loop.md").write_text(LOOP)
+    follow_up = issue(
+        1, "enhancement", "web", "size:S", body="The fix.\n\nFound while #5 landing.\n"
+    )
+    landing["pull"]["closingIssuesReferences"]["nodes"] = [follow_up]
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+    assert added == []
+
+
+@pytest.mark.parametrize(
+    ("labels", "issue_labels", "files", "why"),
+    [
+        (("risk:high",), (), ("app.py",), "`risk:high` is on PR #7"),
+        ((), ("risk:high",), ("app.py",), "`risk:high` is on #1"),
+        ((), (), ("billing/a.py",), "it matches a risk rule (path `billing/**`)"),
+        (
+            (),
+            ("size:XL",),
+            ("app.py",),
+            "it matches a risk rule (size:L or larger, or component `api`)",
+        ),
+    ],
+    ids=["label-on-the-pr", "label-on-its-issue", "risk-path", "legacy-spec-size-rule"],
+)
+def test_a_high_risk_merge_waits_for_the_owner_and_says_why(
+    labels: tuple[str, ...], issue_labels: tuple[str, ...], files: tuple[str, ...], why: str
+) -> None:
+    loop = POLICY + "- spec: size:L or larger, or component `api`\n"
+    found = approved(1, "web", *issue_labels)
+    assert merge(pull(reviews=(VERDICT,), labels=labels, files=files), [found], loop) == [
+        HELD + why
+    ]
+    signed = pull(reviews=(VERDICT,), labels=(*labels, *OWNED), files=files)
+    assert merge(signed, [found], loop) == []
+
+
+def test_land_adds_risk_high_when_it_infers_high_risk_and_holds_for_the_owner(
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    added: list[tuple[int, str, bool]],
+) -> None:
+    landing["pull"]["files"]["nodes"] = [{"path": ".github/ci.yml"}]
+    assert landed(capsys, landing) == (approvals.WAITING, [GITHUB], [])
+    assert added == [(7, "risk:high", True)]
+    added.clear()
+    landing["pull"]["labels"]["nodes"] = [{"name": "risk:high"}]
+    landed(capsys, landing)
+    assert added == []  # already on the PR
+    signed = pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high", *OWNED))
+    signed["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
+    landing["pull"] = signed
+    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+
+
+def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reported_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    added: list[tuple[int, str, bool]],
+) -> None:
+    at_cap = verdict_on(
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+    )
+    pr = pull(
+        reviews=(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")), files=("app.py",)
+    )
+    pr["closingIssuesReferences"]["nodes"] = [approved(1, "web", "bug")]
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.chdir(PROJECT)
+    capped_line = (
+        HELD
+        + "a verifier review at the cap (pass 5) or later left a core finding open, so the owner decides"
+    )
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert capsys.readouterr().out.splitlines() == [capped_line]
+    assert added == [(7, "risk:high", True)]
+
+    def refused(number: int, name: str, add: bool) -> None:
+        raise subprocess.CalledProcessError(
+            1, "gh", stderr="gh: Resource not accessible by integration (HTTP 403)\n"
+        )
+
+    monkeypatch.setattr(approvals, "label", refused)
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert capsys.readouterr().out.splitlines() == [
+        capped_line,
+        "PR #7: could not add `risk:high` (gh: Resource not accessible by integration (HTTP 403)): add it by hand",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answer", "can"),
+    [
+        ("admin\n", True),
+        ("maintain\n", True),
+        ("write\n", True),
+        ("read\n", False),
+        ("none\n", False),
+        (None, False),
+    ],
+)
+def test_write_access_is_githubs_collaborator_permission(
+    monkeypatch: pytest.MonkeyPatch, answer: str | None, can: bool
+) -> None:
+    asked: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        asked.append(args)
+        if answer is None:
+            raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)\n")
+        return answer
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    assert approvals.writer("worker") is can
+    assert asked == [
+        ("api", "repos/{owner}/{repo}/collaborators/worker/permission", "--jq", ".permission")
+    ]

@@ -17,7 +17,8 @@ UI, and delegate the rest.
    skill from SKILL.md's Practice, in rounds, each question with your recommendation);
    otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
-   `--by owner` records it and removes the label. Each state change here and below also moves the ticket on
+   `--by owner` records their word and removes the label. You never approve anything
+   yourself: an approval is a person's word or the owner's policy in loop.md. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
 2. **Spec.** Write the spec into the intent's issue with the Spec skill (SKILL.md,
@@ -25,14 +26,22 @@ UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Add the size label, then approve the spec (SKILL.md, Approvals and proof):
-   its `approved:spec` is the ready state (board: `Ready`). An epic's stories are filed as
-   its sub-issues, each with its spec, before you ask for the epic's approval, and the
-   request lists them: every epic and story has its own owner approval, and none inherits
-   another's. When loop.md § Practice names a plan skill,
-   write the plan with it next, as a `## Plan` comment on the issue, and approve it too.
-   When `approve` says a person must approve as well, comment what to approve (board:
-   `Needs owner`) and stop. Otherwise carry on: the owner reads it when they like.
+   references. Add the size label, then check who approves it (SKILL.md, Approvals and
+   proof). A spec loop.md's `spec: auto unless risk` covers (a bug, a `Found while #n`
+   follow-up, a sub-issue of an approved epic opened by a writer) is approved by that
+   policy: it gets no label and no record, since the gate reads the policy and an
+   `approved:spec` an agent added would read as the owner's; move it to `Ready` on the
+   board and carry on; the owner reads it when they
+   like. Any other spec waits for the owner: add `needs-owner`, comment what to approve
+   (board: `Needs owner`), and stop until they approve (step 1); their `approved:spec` is
+   the ready state (board: `Ready`). An epic's stories are filed as its sub-issues, each
+   with its spec, before you ask for the epic's approval, and the request lists them: under
+   the policy the owner's approval of the epic covers the stories filed by a writer, and
+   without it each story needs its own. When loop.md § Practice names a plan skill, write
+   the plan with it next, as a `## Plan` comment on the issue; where a loop.md `plan:` rule
+   matches, it waits for the owner the same way. At triage, add `risk:high` to an issue
+   whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
+   `priority:`).
 3. **Branch and notes.** Cut the PR branch off a freshly fetched `origin/main`, or, one
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
@@ -102,9 +111,10 @@ UI, and delegate the rest.
      changes touch no file the PR changes and no merge check (a `check:` task, a tool it
      runs, or the lint, type or test configuration), that pass is the short delta pass.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
-     `## Evidence`. Where a loop.md `merge:` rule asks, the merge approval is also the
-     owner's `approved:merge` label on the head that lands (SKILL.md, Approvals and proof);
-     you never add it.
+     `## Evidence`. Where the change is high risk, the merge approval is also the owner's
+     `approved:merge` label on the head that lands (SKILL.md, Approvals and proof); you
+     never add it. `land` adds `risk:high` to the PR when it infers the risk, and a failure
+     to add it is reported, not fatal.
    - Run `python3 scripts/approvals.py land <pr>` (the project's `mise run loop:land <pr>`)
      once no local objection is left: `mise run check` passed on the head, the newest
      verifier review, satisfied with no core finding open, covers it, and every review
@@ -133,7 +143,7 @@ UI, and delegate the rest.
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
-   - Where a `merge:` rule asks for the owner's label, ask only once `check` is green on the
+   - Where a high-risk change waits for the owner's label, ask only once `check` is green on the
      head (with `CI: none`, once `python3 scripts/approvals.py local-ci <pr>` has recorded a
      pass on that head), so they never approve a head CI could still reject: when `land`
      exits 3 with only the owner's label left, give the owner the PR link and ask for
