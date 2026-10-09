@@ -20,11 +20,65 @@ inside the repository: it infers the repo from the remote.
   `gh api graphql -f p=<parent id> -f s=<sub-issue id> -f query='mutation($p:ID!,$s:ID!){addSubIssue(input:{issueId:$p,subIssueId:$s}){subIssue{parent{number}}}}'`.
   Already that parent: done. Another parent: it belongs to that epic; `replaceParent:true`
   moves it only when that one is wrong.
+- Write access, which `spec: auto unless risk` asks of a sub-issue's author: GitHub's
+  collaborator permission, `gh api 'repos/{owner}/{repo}/collaborators/<login>/permission' --jq .permission`,
+  is `admin`, `maintain` or `write`. It covers access through a team, which an issue's
+  `author_association` does not.
+- Risk, on an issue or a PR: `gh api 'repos/{owner}/{repo}/issues/<number>/labels' -f 'labels[]=risk:high'`,
+  the call `approvals.py` makes, which creates the label where the repo has none.
 - Epic: `gh issue edit <number> --add-label epic`, after
   `gh label create epic --color 8250DF --description "An outcome the owner tracks; its work items are sub-issues"`
   when the repo has no such label.
 
 Pull requests are not a triage request surface.
+
+## Labels
+
+`python3 scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
+prints the same plan and writes nothing. Run it by hand, `--dry-run` first: the project's
+`mise run setup:github` runs it only once project-templates wires it in. Its docstring says what it does, in order. The calls it makes:
+
+- Rename in place, so every open and closed issue and PR keeps the label and its timeline
+  shows no remove and add: `gh api -X PATCH 'repos/{owner}/{repo}/labels/<old>' -f new_name=<new>`
+  (`gh label edit <old> --name <new>` is the same call). GitHub refuses a new name that
+  exists, so a fold adds the new label to each carrier and removes the old, then deletes it.
+- Who carries a label, open and closed, issues and PRs:
+  `gh api --paginate -X GET 'repos/{owner}/{repo}/issues' -f labels=<name> -f state=all -f per_page=100 --jq '.[].number'`.
+  A label any issue or PR carries is never deleted, since that loses who had it.
+
+## Assignee
+
+The calls behind issues.md, Assignee. `python3 scripts/approvals.py check build <pr>` reads
+who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
+assigned to anyone else, and, once every build proof holds, assigns the approver where no
+one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
+on the issue as the record that the loop made the assignment; when that comment is refused
+it says so and leaves the issue unassigned. When you park an issue (`needs-owner`) or drop
+it, run `python3 scripts/approvals.py release <issue>`: it removes an assignee that record
+names, unless someone assigned them again after the loop did, and keeps any other. Assign by hand
+only a person: `gh issue edit <number> --add-assignee <login>`.
+
+## Review trail
+
+The calls behind SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
+from the remote.
+
+- Post a pass: `python3 scripts/approvals.py verdict <pr> <report>`. It posts one review
+  on the report's `Head:` commit, event `COMMENT`, because GitHub refuses
+  `REQUEST_CHANGES` and `APPROVE` on your own PR. One comment whose path or line is outside
+  the PR's diff at that commit refuses the whole review (422, `Path could not be resolved`
+  or `Line could not be resolved`), so `verdict` moves a line to the nearest diff line and
+  puts a finding whose file is outside the diff in the body.
+- List the threads, each with the id to resolve it and its first comment's id to reply:
+  `gh api graphql -F o='{owner}' -F r='{repo}' -F n=<pr> -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:1){nodes{databaseId body}}}}}}}'`.
+- Reply on a thread: `gh api 'repos/{owner}/{repo}/pulls/<pr>/comments/<first comment databaseId>/replies' -f body="Fixed in <sha>."`
+- Resolve it with the triage's reason, `ADDRESSED`, `WONT_FIX` or `INVALID` (SKILL.md,
+  Review trail on the PR): `gh api graphql -f t=<thread id> -f r=ADDRESSED -f query='mutation($t:ID!,$r:PullRequestReviewThreadResolutionReason){resolveReviewThread(input:{threadId:$t,resolutionReason:$r}){thread{isResolved}}}'`.
+  GitHub keeps no readable reason, so the reply says why.
+- Dismiss a review, only as SKILL.md, Review trail on the PR allows:
+  `gh api -X PUT 'repos/{owner}/{repo}/pulls/<pr>/reviews/<id>/dismissals' -f message="<the owner's ask, quoted>" -f event=DISMISS`.
+- `gh pr create --draft` needs a commit the base lacks: before anything is built, push an
+  empty one (`git commit --allow-empty -m "<spec title>"`), which the squash drops.
 
 ## Board
 
@@ -33,7 +87,10 @@ A GitHub Projects board linked to the repo (the `github-project-board-setup` ski
 progress fields shown). `python3 scripts/board.py <issue> <column>` adds the
 issue when it is missing and sets its column; it is the only thing that moves a ticket, so
 the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
-created through the API.
+created through the API. Its views show the Assignees field next to Status, so the board
+shows whose each ticket is. `python3 scripts/board.py column <issue>` prints the later of the
+issue's board column and the one its labels give, so an issue with `approved:spec` reads
+`Ready` even when its move failed or the repo has no board.
 
 ## Publish an issue batch
 

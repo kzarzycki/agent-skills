@@ -9,13 +9,17 @@ python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <repor
 
 Run it from the worktree the child works in, because the script makes its current
 directory the session's workspace. The report path goes under `tmp/loop/` in that
-worktree: a child is prompted for every file it reads outside its workspace, nobody
-answers, and the script refuses such a path. Titles look like `s120-parser-worker`,
+worktree: outside its workspace a Codex child's sandbox refuses the write and a Claude Code
+child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
+such a path. Titles look like `s120-parser-worker`,
 `s120-verifier-p1`. The brief file holds only the task specifics; the script writes it,
 under a fixed preamble (owner-authorized imperative, the role file, long commands in the
 foreground, write the report to the path, reply with only the path), to `<report>.brief`
-and sends the child one line naming that file. Exit 0 prints the report path. Exit 1
-prints the reason and the child's last message. With a verifier's role file, the report
+and sends the child one line naming that file. Build the brief with a quoted heredoc
+(`<<'EOF'`): an unquoted one runs each backticked name as a command, and the script
+refuses a brief left with an empty `` `` `` span. Exit 0 prints the report path. Exit 1
+prints the reason and the child's last message; for a session that failed, also its
+`last_task_error` and its runner log. With a verifier's role file, the report
 counts only once it has its `SATISFIED:` line, so a report written in stages does not end
 the wait early. Sessions are filed under the Omnigent project named like the repo, when
 one exists; `OMNIGENT_PROJECT` overrides the name.
@@ -26,16 +30,23 @@ owner only when neither settles it, then run
 `python3 scripts/omnigent_agent.py send <session> <answer-file> <report>` in the
 background. It continues the same session while its cache is warm and waits as `run`
 does; add `--verdict` when the child is a verifier, because `send` and `wait` are not
-given the role. Exit 4 means the answer did not land, usually because Omnigent reaped the
-runner (idle over an hour): start a fresh run whose brief carries the question and the
-answer.
+given the role. A child still in a turn gets the answer at its next tool boundary; until
+then `send` reports it queued and waits, and a rerun of the same `send` waits for the
+first copy instead of delivering a second. A report left from the earlier turn does not
+end the wait: only one written after the send counts. A session whose runner Omnigent
+reaped (idle over an hour) is revived in place first (`retry_session`, operating-omnigent
+skill), keeping its conversation. Exit 4 means the revive failed or the answer did not
+land: start a fresh run whose brief carries the question and the answer.
 
 **Follow-ups** (a fix pass, a rebase) are a fresh run whose brief points at the earlier
 report: after an idle hour the cache is cold, so the report is cheaper than the old
-transcript, and a send to a reaped session answers `queued` and never arrives.
+transcript. A `run` may reuse the report path: a report already there counts only once
+rewritten after the launch. `start` refuses one, since the `wait` after it has no launch
+time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
-`OMNIGENT_MODEL_CLAUDE`), else its harness's default.
+`OMNIGENT_MODEL_CLAUDE`), else its harness's default; a Codex verifier's default is
+`gpt-6.1-sol`, so it does not inherit `~/.codex/config.toml`'s model.
 
 **Same-family verifier.** Pass `--author <claude|codex>` when starting a verifier. When
 it matches the verifier's family the script refuses unless `--same-family` is given; the
@@ -44,6 +55,22 @@ brief stays silent about it, and the PR body says `verifier: same family`.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
+**A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
+failure (a timeout on a loaded server, a killed background command) while the child works
+on. Read the child's status first (the session id is the first line `run` printed, else
+its title under your session's children); while it is running, or idle with its report
+still to come, re-attach with `wait <session> <report>`, adding `--verdict` for a verifier
+so a report written in stages does not end it early. `wait` has no launch time, so on a
+path a pass before already wrote it returns that report at once: check the report's time
+against the run's start before taking it. Start a second only for a child that failed or
+is gone: two children on one item write the same branch.
+
+**Whoever starts a worker collects it.** Omnigent files every child under the runner's
+primary session, so a fork's or a worker's own children notify the coordinator, not the
+session that started them. A session that starts workers keeps each one's background
+`run`, or a `watch <session>...` on them, and reads their reports before it reports
+itself; it does not end its work while one is still out.
+
 What the script guards against, so do not hand-roll it with `sys_session_*`:
 
 - A child created with a queued first message can stay idle for good (history holds only
@@ -51,18 +78,62 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   then sends.
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
-  abandons the session and retries once with a fresh one.
+  abandons the session and retries once with a fresh one. A create that fails (a timeout
+  on a loaded server) may still have made the session, so the script looks for its title
+  among the parent's children made since, and briefs that one instead of a second.
+- A loaded server times out reads while the child works on. Every `GET` is retried on a
+  timeout or reset, with backoff; a `POST` never is, since it may have taken effect.
 - A child that reads its brief as pasted text asks for a go-ahead, so the brief is a file
   and the message is one line. One that runs a command in the background ends its turn
-  "waiting" and never reports; the preamble covers that. `wait` fails when the turn ends
-  without a report, when the child is blocked on an approval prompt (it prints the
+  "waiting" and never reports; the preamble covers that, and the first turn that ends
+  without a report or a question gets one nudge to finish in the foreground and write the
+  report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
   prompt), or after `--timeout` (default 3h), so the coordinator still wakes.
 
 **Children are your sub-agents.** Run from an Omnigent session, the script creates each
 child under that runner's primary session (the coordinator), so the owner's sidebar shows
 only coordinators. When a child's turn ends, Omnigent wakes you with "sub-agent …
 finished … Call sys_read_inbox". Don't read the inbox; end your turn. The background
-command's exit carries the result, with its checks.
+command's exit carries the result, with its checks. A child no `run`, `send` or `wait` is
+waiting on (its command died, or it was started elsewhere) still wakes only that untitled
+notice, so keep `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the
+background for it.
+
+**Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
+run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
+approval prompt or fails, printing for each the id, title, `turn ended`,
+`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A chief
+of staff watches its coordinators this way: a top-level session tells nobody when its
+turn ends or it blocks, and the UI's "Completed" reaches no agent. Handle what it printed,
+then start `watch` again. States a session is already in when `watch` starts are not news,
+except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
+every few seconds; the session stream pushes the same changes faster but per session and
+without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
+API: a person approves it in the UI, so a watched prompt still waits for one.
+
+**Finished sessions.** `run` and `wait` archive the session whose report or verdict they
+return, which ends its agent process and keeps its transcript; a session that asked a
+question stays, since the answer goes to it. `python3 scripts/omnigent_agent.py reap
+[<session>...] [--children <parent>]` archives every finished one (not running, no prompt or
+input waiting) and prints which it kept. It cannot tell an idle child whose report is still
+to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
+which archives it on return, never reaped. Run `reap --children
+"$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` only once every child's report is in or the child is
+given up, as the last step before your own report. Never `DELETE` a session: it erases the
+transcript.
+
+**Permission prompts.** Worktrees go inside the project, in a gitignored `.worktrees/<branch>`
+(loop.md § Worktree), and a child's worktree goes inside the worktree of the agent that starts
+it: a coordinator working in `.worktrees/<pr-branch>` cuts each child's at `.worktrees/<branch>`
+there, which the same tracked `.gitignore` keeps out of its tree. An agent's workspace is the
+directory it was started in, so its reads in its own worktree and its children's never prompt,
+in any harness; its writes there follow the permission mode (Codex's workspace-write allows
+them). Outside it, Claude Code prompts for a read, or denies it in auto mode (`cd <sibling>; grep ...` or a plain
+`cat <sibling>/f`), which nobody answers, and Codex's workspace-write sandbox refuses a write.
+No allow rule stands in for the layout: a project rule `Read(/../**)` or `Read(../**)` never
+matches a sibling, an absolute `//…` or `~/…` rule names one machine's layout, and a project's
+rules are ignored in a workspace nobody has trusted. Nor does an Omnigent policy: its native
+hook maps ALLOW to no opinion, so Claude Code's own prompt still runs.
 
 **List:** `sys_session_list`. **Close:** `sys_session_close`; where it refuses with
 `session_not_a_sub_agent`, leave the finished session idle.
