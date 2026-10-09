@@ -4,6 +4,7 @@
     python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
+    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -18,6 +19,10 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
 a prompt or fails, printing each one's id, title, that change and its last message; it is how a
 coordinator or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
+``run`` and ``wait`` archive the session whose report or verdict they return, not one that asked a
+question; ``reap`` archives each finished one (not running, no prompt or input waiting) and keeps
+the rest; it cannot tell a child still owing its report from a finished one, so it runs once every
+report is in. Archive keeps the transcript; nothing here deletes a session.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -263,8 +268,24 @@ class Omnigent:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
         return self.call("GET", f"/v1/sessions/{sid}")
 
-    def delete(self, sid: str) -> None:
-        self.call("DELETE", f"/v1/sessions/{sid}")
+    def archive(self, sid: str) -> None:
+        """Archive ``sid``: hidden, transcript kept, agent process ended. Never DELETE, which
+        erases the transcript.
+
+        Archiving stops the runner bound to the session, and a sub-agent shares its parent's
+        runner, so archiving it alone takes the parent down too. A sub-agent's terminals are
+        ended first (its agent process), then its runner unbound (``""`` clears), then it is
+        archived. A top-level session has its own runner, which the archive ends with it.
+        """
+        if self.info(sid).get("parent_session_id"):
+            try:
+                terminals = self.call("GET", f"/v1/sessions/{sid}/resources/terminals")
+                for t in terminals.get("data", []):
+                    self.call("DELETE", f"/v1/sessions/{sid}/resources/terminals/{t['id']}")
+            except Fail as e:  # the unbind below still keeps the parent's runner safe
+                print(f"session {sid}: ending its terminal failed: {e}", file=sys.stderr)
+            self.call("PATCH", f"/v1/sessions/{sid}", {"runner_id": ""})
+        self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True})
 
     def find(self, title: str, after: float) -> str | None:
         """The parent's child called ``title`` created at or after ``after`` (epoch seconds): the
@@ -443,7 +464,7 @@ def start(
     attempts: int = 2,
     model: str | None = None,
 ) -> tuple[str, list[str]]:
-    """Return the confirmed session id and any abandoned sessions whose delete failed."""
+    """Return the confirmed session id and any abandoned sessions whose archive failed."""
     if span := EMPTY_SPAN.search(brief):
         line = brief[: span.start()].count("\n") + 1
         raise Fail(
@@ -466,7 +487,7 @@ def start(
 
     def abandon(sid: str) -> None:
         try:
-            og.delete(sid)
+            og.archive(sid)
         except Fail as e:
             survivors.append(sid)
             print(f"abandoned session {sid} survives: {e}", file=sys.stderr)
@@ -582,6 +603,37 @@ def wait(
     return str(report)
 
 
+def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[str]:
+    """Archive each finished session of ``sessions`` and, with ``parent``, of its sub-agents:
+    not running, no prompt waiting and no input pending. Return a line per session saying which.
+
+    An idle child whose report is still to come looks finished here too, so reap only once the
+    reports are in; a child whose ``run`` died is re-attached with ``wait``, which archives it."""
+    lines = []
+    for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
+        info = og.info(sid)
+        status = str(info.get("status"))
+        if info.get("archived"):
+            continue
+        if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
+            busy = (
+                "blocked on a prompt"
+                if prompts_of(info)
+                else status
+                if status in RUNNING
+                else "input pending"
+            )
+            lines.append(f"{sid} {info.get('title') or ''}: kept ({busy})")
+            continue
+        try:
+            og.archive(sid)
+        except Fail as e:  # one refused archive leaves the rest to reap
+            lines.append(f"{sid} {info.get('title') or ''}: archive failed: {e}")
+            continue
+        lines.append(f"{sid} {info.get('title') or ''}: archived ({status})")
+    return lines
+
+
 def observe(
     og: Omnigent, sid: str, idle_since: dict[str, tuple], baseline: bool = False
 ) -> tuple[tuple, str]:
@@ -657,6 +709,15 @@ def watch(
         time.sleep(POLL_SECONDS)
 
 
+def archive_delivered(og: Omnigent, sid: str) -> None:
+    """Archive a session whose report or verdict came back: the UI shows it done, and its agent
+    process frees the runner's file descriptors. A failed archive is reported, not fatal."""
+    try:
+        og.archive(sid)
+    except Fail as e:
+        print(f"session {sid} delivered but was not archived: {e}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -692,6 +753,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("watch")
     p.add_argument("sessions", nargs="*")
     p.add_argument("--children", metavar="PARENT", help="also watch this session's sub-agents")
+    p = sub.add_parser("reap")
+    p.add_argument("sessions", nargs="*")
+    p.add_argument("--children", metavar="PARENT", help="also reap this session's sub-agents")
     p = sub.add_parser("wait")
     p.add_argument("session")
     p.add_argument("report", type=Path)
@@ -702,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
-        if p.prog.split()[-1] != "start":
+        if p.prog.split()[-1] not in ("start", "reap"):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
     args = ap.parse_args(argv)
     try:
@@ -712,8 +776,14 @@ def main(argv: list[str] | None = None) -> int:
                 raise Fail("watch needs a session or --children <parent>")
             print("\n".join(watch(og, args.sessions, args.children, args.timeout)))
             return 0
+        if args.cmd == "reap":
+            if not args.sessions and not args.children:
+                raise Fail("reap needs a session or --children <parent>")
+            print("\n".join(reap(og, args.sessions, args.children)))
+            return 0
         if args.cmd == "wait":
             print(wait(og, args.session, args.report.resolve(), args.timeout, args.verdict))
+            archive_delivered(og, args.session)
             return 0
         report = args.report.resolve()
         # The child's workspace is this directory; outside it a Codex sandbox refuses the write and
@@ -766,6 +836,7 @@ def main(argv: list[str] | None = None) -> int:
         print(sid, flush=True)
         if args.cmd == "run":
             print(wait(og, sid, report, args.timeout, verifier, launched))
+            archive_delivered(og, sid)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0

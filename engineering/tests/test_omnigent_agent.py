@@ -34,7 +34,7 @@ class FakeOmnigent:
         self.held: list[tuple[str, str, int]] = []
         self.posts = 0
         self.sessions: dict[str, list[dict]] = {}
-        self.deleted: list[str] = []
+        self.archived: list[str] = []
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
@@ -96,10 +96,10 @@ class FakeOmnigent:
         status = "running" if pending else self.final
         return {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
 
-    def delete(self, sid: str) -> None:
-        if "delete" in self.fail:
-            raise omnigent_agent.Fail(f"DELETE {sid}: HTTP 503")
-        self.deleted.append(sid)
+    def archive(self, sid: str) -> None:
+        if "archive" in self.fail:
+            raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
+        self.archived.append(sid)
 
 
 @pytest.fixture(autouse=True)
@@ -131,7 +131,7 @@ def test_start_abandons_deaf_session_and_retries(tmp_path: Path) -> None:
         "s1",
         [],
     )
-    assert og.deleted == ["s0"]
+    assert og.archived == ["s0"]
 
 
 def test_start_fails_after_two_deaf_sessions(tmp_path: Path) -> None:
@@ -252,11 +252,11 @@ def test_wait_keeps_waiting_through_launch_idle(
         omnigent_agent.wait(og, sid, tmp_path / "r.md")
 
 
-def test_failed_delete_is_reported_and_retry_proceeds(
+def test_failed_archive_is_reported_and_retry_proceeds(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(deaf={0})
-    og.fail.add("delete")
+    og.fail.add("archive")
     assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0) == (
         "s1",
         ["s0"],
@@ -264,19 +264,19 @@ def test_failed_delete_is_reported_and_retry_proceeds(
     assert "abandoned session s0 survives" in capsys.readouterr().err
 
 
-def test_send_failure_after_create_deletes_session(tmp_path: Path) -> None:
+def test_send_failure_after_create_archives_session(tmp_path: Path) -> None:
     og = FakeOmnigent()
     og.fail.add("send")
     with pytest.raises(omnigent_agent.Fail, match="s0: POST events: HTTP 503"):
         omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
-    assert og.deleted == ["s0"]
+    assert og.archived == ["s0"]
 
 
 def test_main_exits_nonzero_when_abandoned_session_survives(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent(deaf={0})
-    og.fail.add("delete")
+    og.fail.add("archive")
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
@@ -327,13 +327,13 @@ def test_stalled_server_timeout_reaches_cleanup(
 
     class Local(omnigent_agent.Omnigent):
         def __init__(self, base: str) -> None:
-            self.base, self._token, self.deleted = base, "synthetic", []
+            self.base, self._token, self.archived = base, "synthetic", []
 
         def create(self, agent: str, title: str, model: str | None = None) -> str:
             return "s0"
 
-        def delete(self, sid: str) -> None:
-            self.deleted.append(sid)
+        def archive(self, sid: str) -> None:
+            self.archived.append(sid)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Stall)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -342,7 +342,7 @@ def test_stalled_server_timeout_reaches_cleanup(
         monkeypatch.setattr(omnigent_agent, "HTTP_SECONDS", 0.05)
         with pytest.raises(omnigent_agent.Fail, match="s0: POST .*TimeoutError"):
             omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
-        assert og.deleted == ["s0"]
+        assert og.archived == ["s0"]
     finally:
         server.shutdown()
 
@@ -366,13 +366,13 @@ def test_stalled_error_body_reaches_cleanup(
 
     class Local(omnigent_agent.Omnigent):
         def __init__(self, base: str) -> None:
-            self.base, self._token, self.deleted = base, "synthetic", []
+            self.base, self._token, self.archived = base, "synthetic", []
 
         def create(self, agent: str, title: str, model: str | None = None) -> str:
             return "s0"
 
-        def delete(self, sid: str) -> None:
-            self.deleted.append(sid)
+        def archive(self, sid: str) -> None:
+            self.archived.append(sid)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), StallBody)
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -381,7 +381,7 @@ def test_stalled_error_body_reaches_cleanup(
         monkeypatch.setattr(omnigent_agent, "HTTP_SECONDS", 0.05)
         with pytest.raises(omnigent_agent.Fail, match="s0: POST .*HTTP 503"):
             omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
-        assert og.deleted == ["s0"]
+        assert og.archived == ["s0"]
     finally:
         server.shutdown()
 
@@ -762,7 +762,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     titles: list[str] = []
     create = og.create
     og.create = lambda agent, title, model=None: titles.append(title) or create(agent, title)  # type: ignore[method-assign]
-    og.fail.add("delete")
+    og.fail.add("archive")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert titles == ["t", "t-r2"]
 
@@ -1155,3 +1155,104 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     assert omnigent_agent.watch(og, ["a"], timeout=5) == [
         "a t-a: blocked on a prompt: Claude wants to call **Bash**\nlast message: (none)"
     ]
+
+
+def test_a_sub_agent_is_unbound_from_the_shared_runner_before_it_is_archived(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple] = []
+    parents = {"kid": "coord", "top": None}
+
+    def call(self, method: str, path: str, body: object = None) -> object:
+        calls.append((method, path, body))
+        sid = path.split("/")[3]
+        if method == "GET" and path.endswith("/resources/terminals"):
+            return {"data": [{"id": "terminal_claude_main"}]}
+        return {"parent_session_id": parents[sid]} if method == "GET" else {}
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.archive("kid")
+    assert [c for c in calls if c[0] != "GET"] == [
+        ("DELETE", "/v1/sessions/kid/resources/terminals/terminal_claude_main", None),
+        ("PATCH", "/v1/sessions/kid", {"runner_id": ""}),  # else the archive stops coord's runner
+        ("PATCH", "/v1/sessions/kid", {"archived": True}),
+    ]
+    calls.clear()
+    og.archive("top")  # its own runner: the archive ends it
+    assert [c for c in calls if c[0] != "GET"] == [
+        ("PATCH", "/v1/sessions/top", {"archived": True})
+    ]
+
+
+def test_reap_archives_finished_children_and_keeps_the_busy_ones() -> None:
+    prompt = {"elicitation_id": "e1", "params": {"message": "Claude wants to call **Bash**"}}
+    states = {
+        "idle": {"status": "idle"},
+        "failed": {"status": "failed"},
+        "running": {"status": "running"},
+        "blocked": {"status": "idle", "pending_elicitations": [prompt]},
+        "queued": {"status": "idle", "pending_inputs": [{"content": []}]},
+        "gone": {"status": "idle", "archived": True},
+    }
+    og = FakeOmnigent()
+    og.info = lambda s: dict(states[s], title=f"t-{s}")  # type: ignore[method-assign]
+    og.children = lambda p: list(states)  # type: ignore[attr-defined]
+    lines = omnigent_agent.reap(og, [], parent="p")
+    assert og.archived == ["idle", "failed"]
+    assert lines == [
+        "idle t-idle: archived (idle)",
+        "failed t-failed: archived (failed)",
+        "running t-running: kept (running)",
+        "blocked t-blocked: kept (blocked on a prompt)",
+        "queued t-queued: kept (input pending)",
+    ]
+
+
+def test_reap_goes_on_past_an_archive_that_fails() -> None:
+    og = FakeOmnigent()
+    og.info = lambda s: {"status": "idle", "title": f"t-{s}"}  # type: ignore[method-assign]
+    archive = og.archive
+
+    def refuse_a(s: str) -> None:
+        if s == "a":
+            raise omnigent_agent.Fail("PATCH a: HTTP 503")
+        archive(s)
+
+    og.archive = refuse_a  # type: ignore[method-assign]
+    assert omnigent_agent.reap(og, ["a", "b"]) == [
+        "a t-a: archive failed: PATCH a: HTTP 503",
+        "b t-b: archived (idle)",
+    ]
+    assert og.archived == ["b"]
+
+
+def test_run_archives_on_its_report_but_not_on_a_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    info = og.info
+    og.info = lambda s: ((tmp_path / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    assert (
+        omnigent_agent.main(["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]) == 0
+    )
+    assert og.archived == ["s0"]
+    og.info = lambda s: ((tmp_path / "q.md.question").write_text("which?"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t2", "b.md", "q.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == omnigent_agent.ASKED
+    assert og.archived == ["s0"]  # the answer goes to s1
+
+
+def test_wait_archives_the_session_whose_report_it_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    sid = og.create("claude", "t")
+    (tmp_path / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+    assert og.archived == [sid]
