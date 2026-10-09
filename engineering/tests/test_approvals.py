@@ -1441,9 +1441,15 @@ BOTS = LOOP + "- bot: dependabot[bot] path uv.lock or path `**/package.json`\n"
 UNREVIEWED = ["PR #7: no verifier review posted (approvals.py verdict)"]
 
 
-def authored(login: str | None) -> dict[str, Any]:
-    """A commit on the PR as GraphQL's `authored` returns it, by `login` (None: no GitHub account)."""
-    return {"commit": {"authors": {"nodes": [{"user": {"login": login} if login else None}]}}}
+def authored(login: str | None, committer: str | None = None) -> dict[str, Any]:
+    """A commit on the PR as GraphQL's `authored` returns it, by `login` (None: no GitHub account), committed by
+    `committer` (None: no account, as GitHub's web-flow committer on a bot's own commits)."""
+    return {
+        "commit": {
+            "authors": {"nodes": [{"user": {"login": login} if login else None}]},
+            "committer": {"user": {"login": committer} if committer else None},
+        }
+    }
 
 
 @pytest.mark.parametrize(
@@ -1497,6 +1503,12 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
         "nodes": [{"user": {"login": "dependabot[bot]"}}] * 5,
     }
     assert gate(shared) == UNREVIEWED
+    rebased = made()
+    rebased["authored"]["nodes"] = [authored("dependabot[bot]", committer="worker")]
+    assert gate(rebased) == UNREVIEWED  # a person's rebase keeps the bot as author
+    signed = made()
+    signed["authored"]["nodes"] = [authored("dependabot[bot]", committer="dependabot[bot]")]
+    assert gate(signed) == []
     assert approvals.risk_rules(BOTS) == approvals.risk_rules(LOOP)  # a bot line is no risk rule
 
 

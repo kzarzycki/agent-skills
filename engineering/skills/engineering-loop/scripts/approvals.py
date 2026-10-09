@@ -85,8 +85,9 @@ so is each `merge:` line with a condition in place of a policy, until the projec
 condition beside `spec: auto unless risk` (without that line the owner approves every spec, so it holds no merge). A
 `plan: <condition>` line asks for the owner's plan approval. A `bot: <login> <condition>` line, such as
 `bot: dependabot[bot] path uv.lock or path package-lock.json`, lets that bot's PR merge without a verifier review
-when every commit is the bot's and each file it changes, none renamed or copied, matches the condition on its path
-(exempt); without one, every PR needs the review. A condition the gate can read is `always`, `size:L`
+when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it
+changes, none renamed or copied, matches the condition on its path (exempt); without one, every PR needs the
+review. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
 glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
 condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
@@ -153,7 +154,7 @@ PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body b
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
-  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} }} }} }}
+  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
@@ -302,8 +303,9 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     """Whether the PR needs no verifier review: its author is a bot a loop.md `bot: <login> <condition>` line names,
     and every file it changes matches that line's condition on its path alone (lock and manifest files). GitHub's
     GraphQL spells a bot's login without the `[bot]` REST and the line write, so both compare without it; a person
-    can't hold a bot's login, so the author's type is checked too. Every commit must be the bot's alone, since a
-    person's push to its branch is a change no verifier saw. A renamed or copied file refuses it, since GraphQL
+    can't hold a bot's login, so the author's type is checked too. Every commit's authors must be the bot, and its
+    committer the bot or no account (GitHub's web-flow committer on the bot's own commits), since a person's push
+    or rebase of its branch is a change no verifier saw. A renamed or copied file refuses it, since GraphQL
     gives only the new path, which may hide code moved onto a lock file's name. No line, more files or commits than the gate reads, or
     a condition it can't read: no exemption."""
     author, files = pull.get("author") or {}, paths(pull)
@@ -322,6 +324,9 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
         logins = [((a.get("user") or {}).get("login") or "") for a in authors["nodes"]]
         if not logins or (authors.get("totalCount") or 0) > len(logins):
             return False
+        committer = ((node["commit"].get("committer") or {}).get("user") or {}).get("login")
+        if committer is not None:
+            logins.append(committer)
         if any(name.removesuffix("[bot]").lower() != login for name in logins):
             return False
     lines = [text.partition(" ") for rule, text in rules(loop or "") if rule == "bot"]

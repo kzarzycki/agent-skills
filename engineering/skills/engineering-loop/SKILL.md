@@ -132,9 +132,10 @@ loop.md § Approvals holds the policy, one line each:
 - `plan: <condition>` asks for the owner's approval of a matching plan.
 - `bot: <login> <condition>`, such as `bot: dependabot[bot] path uv.lock or path
   pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
-  bot's and every file it changes, none renamed or copied, matches the condition on its
-  path, since no verifier runs on a bot's PR; anything else needs the review as usual.
-  Without the line, every PR needs one.
+  bot's (its authors, and its committer unless that is no account) and every file it
+  changes, none renamed or copied, matches the condition on its path, since no verifier
+  runs on a bot's PR; anything else needs the review as usual. Without the line, every PR
+  needs one.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
 matches, or the cap was reached with a blocker or major open (The cap). A high-risk spec
