@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Approvals come only from people, and risk is defined in one place (#121).
+
+- `approvals.py approve` takes only `--by owner`: a person's record, written on their
+  word. `check` and `land` no longer ask for a coordinator record, and an agent's earlier
+  record approves nothing. Without a loop.md policy line every spec needs the owner's
+  current record and `approved:spec`; a plan needs them only where a `plan:` rule asks.
+- loop.md § Approvals `spec: auto unless risk` approves by policy, with no record or
+  label, the spec of a `bug`, of an issue with a `Found while #<n>` line, or of a native
+  sub-issue of an epic with the owner's current approval, opened by an account whose
+  collaborator permission is admin, maintain or write. `needs-owner` still blocks.
+- `risk: <condition>` lines define high risk, with the conditions `merge:` rules had. A
+  change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
+  matches, or the cap was reached with a core finding open; only then does the merge wait
+  for the owner's `approved:merge`, and the wait line says why. `merge: auto unless risk`
+  states the default. When the gate infers high risk, `check merge` and `land` add
+  `risk:high` to the PR; a failure to add it is reported, never fatal.
+- Migration: a `merge: <condition>` or `spec: <condition>` line reads as a `risk:` rule
+  until the project rewrites it, so its paths still hold merges for the owner. A legacy
+  `spec:` rule no longer asks for the owner's spec approval on its own, since every spec
+  outside the policy does.
+
 ## 0.14.0 - 2026-10-09
 
 - `scripts/gate.py` and `approvals.py record-check`, the old names kept through 0.13, are gone:

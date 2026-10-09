@@ -16,17 +16,18 @@ that acts on the state it finds.
 - **No state label:** an intent that needs triage: the owner's loose idea, bug or
   feedback, an agent's first write for a request, or what a PR leaves unfixed.
 - **`needs-owner`:** waiting for the owner: a decision research can't settle (the
-  questions are a comment), a step only they can take, or an approval loop.md §
-  Approvals requires.
+  questions are a comment), a step only they can take, or their approval of a spec or
+  plan loop.md's policy does not cover.
 - **`approved:spec`:** ready: the spec is written into that same issue and approved
   (SKILL.md, Approvals and proof). Where a tool owns an issue's body, the spec is a comment
-  headed `## Spec`. The spec step sets the size label and approves; who else approves, and
-  how, is SKILL.md, Approvals and proof.
+  headed `## Spec`. The spec step sets the size label; who approves, the owner or their
+  policy in loop.md, and how, is SKILL.md, Approvals and proof.
 
 The `triage` skill's roles map as needs-triage = no state label, needs-info =
-`needs-owner`, ready-for-agent = `approved:spec`, which only the spec approval adds: a
-`ready-for-agent` label that `to-spec` or `to-tickets` would set is not added, since a
-label without its approval record would read as approved.
+`needs-owner`, ready-for-agent = `approved:spec`, which only the spec approval adds (the
+owner's, or the coordinator's for a spec the policy covers): a `ready-for-agent` label that
+`to-spec` or `to-tickets` would set is not added, since a label without its approval would
+read as approved.
 
 ## Labels
 
@@ -42,11 +43,16 @@ label without its approval record would read as approved.
   modules, one worker; `size:L` several workers or slices in one PR; `size:XL` too big
   for one spec: split it, or run it as a wayfinder map.
 
-- **Approval**, `approved:spec` and `approved:plan` on the issue: added with an approval
-  (SKILL.md, Approvals and proof), last when a person must approve, so adding it is how they
-  approve. `approved:merge` on the PR is the owner's merge approval, asked for only where a
-  loop.md § Approvals `merge:` rule says so (elsewhere the gates are the approval), added by
-  them once `check` is green on the head and removed by a push.
+- **Approval**, `approved:spec` and `approved:plan` on the issue: added with the owner's
+  approval (SKILL.md, Approvals and proof), so adding it is how they approve, or as the
+  ready state of a spec loop.md's policy covers. `approved:merge` on the PR is the owner's
+  merge approval, asked for only when the change is high risk (elsewhere the gates are the
+  approval), added by them once `check` is green on the head and removed by a push.
+- **Risk**, `risk:high` on an issue or PR: its consequences need the owner at merge (money,
+  data, security, another team's contract). A person sets it, or the coordinator at
+  triage, and `approvals.py` adds it to a PR when a loop.md `risk:` rule matches or the cap
+  was reached with a core finding open. It names consequences, not urgency: how soon a
+  thing matters is a `priority:` label, which the gate never reads.
 
 A wayfinder map or ticket carries its `wayfinder:` label instead of a category, and no
 component or size: it resolves a decision, not a change.
