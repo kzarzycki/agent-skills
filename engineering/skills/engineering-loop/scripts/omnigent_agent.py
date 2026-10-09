@@ -21,7 +21,8 @@ a prompt or fails, printing each one's id, title, that change and its last messa
 coordinator or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
 ``run`` and ``wait`` archive the session whose report or verdict they return, not one that asked a
 question; ``reap`` archives each finished one (not running, no prompt or input waiting) and keeps
-the rest. Archive keeps the transcript; nothing here deletes a session.
+the rest; it cannot tell a child still owing its report from a finished one, so it runs once every
+report is in. Archive keeps the transcript; nothing here deletes a session.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -604,7 +605,10 @@ def wait(
 
 def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[str]:
     """Archive each finished session of ``sessions`` and, with ``parent``, of its sub-agents:
-    not running, no prompt waiting and no input pending. Return a line per session saying which."""
+    not running, no prompt waiting and no input pending. Return a line per session saying which.
+
+    An idle child whose report is still to come looks finished here too, so reap only once the
+    reports are in; a child whose ``run`` died is re-attached with ``wait``, which archives it."""
     lines = []
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
         info = og.info(sid)

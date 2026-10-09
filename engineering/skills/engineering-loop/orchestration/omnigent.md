@@ -115,9 +115,12 @@ API: a person approves it in the UI, so a watched prompt still waits for one.
 return, which ends its agent process and keeps its transcript; a session that asked a
 question stays, since the answer goes to it. `python3 scripts/omnigent_agent.py reap
 [<session>...] [--children <parent>]` archives every finished one (not running, no prompt or
-input waiting) and prints which it kept: run it with `--children
-"$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` when a run's command died, and before your own report.
-Never `DELETE` a session: it erases the transcript.
+input waiting) and prints which it kept. It cannot tell an idle child whose report is still
+to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
+which archives it on return, never reaped. Run `reap --children
+"$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` only once every child's report is in or the child is
+given up, as the last step before your own report. Never `DELETE` a session: it erases the
+transcript.
 
 **Permission prompts.** Worktrees go inside the project, in a gitignored `.worktrees/<branch>`
 (loop.md § Worktree), and a child's worktree goes inside the worktree of the agent that starts
