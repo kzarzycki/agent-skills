@@ -1341,7 +1341,7 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
     assert capped(open_at_cap, pass6) == [
         (
             HELD + "a verifier review at the cap (pass 5) or later"
-            " left a core finding open, so the owner decides"
+            " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
     assert capped(open_at_cap, pass6, labels=OWNED) == []
@@ -1386,7 +1386,7 @@ def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() ->
     assert capped(major, later, loop="- cap: 3\n") == [
         (
             HELD + "a verifier review at the cap (pass 3) or later"
-            " left a core finding open, so the owner decides"
+            " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
 
@@ -2431,7 +2431,7 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     monkeypatch.chdir(PROJECT)
     capped_line = (
         HELD
-        + "a verifier review at the cap (pass 5) or later left a core finding open, so the owner decides"
+        + "a verifier review at the cap (pass 5) or later was not satisfied or left a blocker or major open, so the owner decides"
     )
     assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
     assert capsys.readouterr().out.splitlines() == [capped_line]

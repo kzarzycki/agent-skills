@@ -34,8 +34,8 @@ review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it 
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
 `CI: none` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below), or a review at the cap or later that left a core finding open
-(`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
+PR or an issue it names, a risk rule matching (below), or a review at the cap or later not satisfied or
+with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
 failure to add it and carrying on. A push removes the label (the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
 GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
@@ -351,7 +351,8 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
     """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (risk_rules)
     matching the labels of the PR and its issues and the PR's files, where a condition the gate can't read matches,
-    since nothing else would enforce it; or a review at the cap left a core finding open (capped)."""
+    since nothing else would enforce it; or a review at the cap was not satisfied or left a blocker or major open
+    (capped)."""
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
@@ -366,7 +367,7 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
             return f"a risk rule the gate can't judge holds until a person does ({condition})"
     limit = cap(loop)
     if capped(pull, limit):
-        return f"a verifier review at the cap (pass {limit}) or later left a core finding open, so the owner decides"
+        return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
     return None
 
 
