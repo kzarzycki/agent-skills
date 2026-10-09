@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- No fix lands without review (#116). `approvals.py land` merges only a head with a
+  satisfied verifier review on that exact commit: any commit after the verdict, a merge of
+  main included, needs a verifier pass of its own. A head that only took in main's changes
+  to other files is no longer covered.
+- The cap is defined once, in SKILL.md § The cap: 5 passes by default, or a project's own
+  through a loop.md line `cap: <n>`, which `approvals.py` reads too. When a review at the
+  cap or later left a blocker or major open, the owner decides: a fix and one pass past
+  the cap, scoped to the open items, or leaving the code untouched. `land` holds such a PR
+  for the owner's `approved:merge` label, added after the head's push. When the cap's last
+  pass leaves only minor or edge findings, they go to the ledger and an issue, and the PR
+  lands with no owner stop.
+
 ## 0.13.1 - 2026-10-09
 
 - `approvals.py land` reruns a stale `loop:approvals`. Resolving a review thread starts no

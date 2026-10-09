@@ -1,6 +1,6 @@
 ---
 name: engineering-loop
-description: The engineering loop, run for every change that will land as a PR, however small - intent, a spec the owner reads, build, gates, proof, an independent verifier, triage, the three-pass cap and autonomous landing. Use from the owner's request onward, when working or verifying part of one, or when deciding whether a finding is worth fixing.
+description: The engineering loop, run for every change that will land as a PR, however small - intent, a spec the owner reads, build, gates, proof, an independent verifier, triage, the pass cap and autonomous landing. Use from the owner's request onward, when working or verifying part of one, or when deciding whether a finding is worth fixing.
 ---
 
 # Engineering loop
@@ -19,7 +19,7 @@ owner asks for that change, and the PR body says so.
 | **Build.** Workers, or the coordinator when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
 | **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
-| **Verify.** A verifier from the other model family, three passes at most. | the author's blind spots |
+| **Verify.** A verifier from the other model family, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
 
 ## What the project states
@@ -31,7 +31,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals; In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -255,11 +255,9 @@ angles run as native subagents, never as full harness sessions.
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr>`, which
   marks it ready and merges it, or turns on auto-merge. The PR merges only when the newest
   verdict covers the head that lands, the required checks are green there, and, where a
-  `merge:` rule asks, the owner's `approved:merge` label is on. `land` checks the file half
-  of coverage: the reviewed head, plus only commits that touch no file the PR changes. A
-  merge of main that changes a merge check (a `check:` task, a tool it runs, the lint, type
-  or test configuration) still gets a fresh verifier pass first, which is your step
-  (`coordinator.md` step 8), since the gate can't tell such a change.
+  `merge:` rule asks or the cap was hit (The cap), the owner's `approved:merge` label is on.
+  The verdict's commit is the head itself: any commit after it, a merge of main included,
+  needs a verifier pass first, and a triage or comment is no verdict.
 
 ## Triage
 
@@ -306,11 +304,20 @@ A rejected finding is not real, so it gets no issue.
 
 ## The cap
 
-Pass 1 reviews the PR's full diff; passes 2 and 3 review the diff since the previous
-report and rerun its repros. After pass 3, fix the open core items, ledger the edge
-items and reject the theoretical ones. The fixes then get a delta check on the fixed
-head, not a pass 4 review: the verifier reruns its repro files against the change since
-pass 3's head and posts the result with `approvals.py verdict`, since `land` merges only
-a head a verifier review covers. Then land.
-The one stop: a core item still open after pass 3 means the fix keeps regressing, so it
-goes to the owner as a question about the design, not a pass 4.
+The cap is 5 passes, unless the project's loop.md sets its own with a line `cap: <n>`.
+Every other file says "the cap", so this is the one place to change it, and
+`approvals.py` reads the same value. Pass 1 reviews the PR's full diff; each later pass
+up to the cap reviews the diff since the previous report and reruns its repros. No fix
+lands without review: every head that lands has a satisfied verdict on that exact head,
+so any commit after the last verdict, a merge of main included, gets a verifier pass of
+its own.
+
+- **The last pass under the cap leaves a blocker or major open:** stop and ask the owner,
+  since the fix keeps regressing and only they decide what happens next. They have two
+  options. One is a fix followed by one pass past the cap, scoped to the open items. The
+  other is leaving the code untouched, and parking or closing the PR. You never fix and
+  land on your own call: `land` holds such a PR for the owner's `approved:merge` label,
+  added after the head's push.
+- **The last pass under the cap leaves only minor or edge findings open:** ledger them and
+  file their issue (Triage), leave the code untouched, and land on the satisfied verdict.
+  There is no owner stop.

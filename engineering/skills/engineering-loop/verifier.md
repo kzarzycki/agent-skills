@@ -37,9 +37,10 @@ yourself, keeping standards and spec as separate axes.
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
   formatting and code-review's smell baseline are notes, not findings.
 - **Work the given priorities first.**
-- **Passes 2 and 3:** the coordinator gives you the previous report. Review the diff since
-  its head, rerun each of its repros and mark it FIXED, NOT FIXED or ACCEPTED, with the
-  evidence line. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
+- **Every pass after the first:** the coordinator gives you the previous report. Review
+  the diff since its head, rerun each of its repros and mark it FIXED, NOT FIXED or
+  ACCEPTED, with the evidence line. A pass past the cap, which only the owner asks for,
+  reviews only the fix of the items the cap's last pass left open. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),

@@ -105,6 +105,12 @@ MERGE_LABEL = "approved:merge"
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
+# The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
+# its default in SKILL.md § The cap, a project's own in a loop.md line `cap: <n>`.
+CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
+CAP_LINE = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?`?cap:[ \t]*(\d+)`?[ \t]*$", re.MULTILINE | re.IGNORECASE
+)
 NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 PULL = f"""number author {{ login }} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
@@ -415,21 +421,16 @@ def proofs(
     return found
 
 
-def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
-    """One line per reason the verifier's PR reviews (a body starting `Verifier (<family>), pass <n>`, by the PR's
-    author or the account running this, since anyone can review a public repo) let nothing land: one on the newest
-    pass's commit with that commit's highest pass number (a mixed PR's two verifiers share one, and a later pass on
-    the same commit supersedes an earlier one) is not satisfied, or has a blocker or a major open, or that commit is
-    older than the head and the commits since change a file the PR changes (touched_since). A head that
-    only took in main's changes to other files needs no further pass (coordinator.md step 8); a pass on a later
-    commit supersedes those on an earlier one. ponytail: no bot-PR exemption (#106: an allow-listed bot's lock- or
-    manifest-only PR passes without a verifier); add it with the allow-list when a project lands bot PRs."""
+def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
+    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:` lines: a body
+    starting `Verifier (<family>), pass <n>`, by the PR's author or the account running this, since anyone can review
+    a public repo. A string names why none can be read."""
     reviews = pull["reviews"]
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
-        return [f"{where} has more than {len(reviews['nodes'])} reviews: the gate reads one page"]
-    passes = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
-    trusted = {(pull.get("author") or {}).get("login"), viewer() if passes else None} - {None}
-    verdicts = [
+        return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
+    found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
+    trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
+    return [
         (
             ((review.get("commit") or {}).get("oid") or "").lower(),
             int(PASS.match(review["body"])[2]),
@@ -439,49 +440,76 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
                 if key.strip() in ("VERDICT", "SATISFIED")
             },
         )
-        for review in passes
+        for review in found
         if (review.get("author") or {}).get("login") in trusted
     ]
+
+
+def counts(lines: dict[str, str]) -> tuple[int, int] | None:
+    """A verdict's blocker and major counts; None when its `VERDICT:` line lacks one."""
+    found = [
+        re.search(rf"(\d+)\s+{kind}s?\b", lines.get("VERDICT", "")) for kind in ("blocker", "major")
+    ]
+    return None if None in found else (int(found[0][1]), int(found[1][1]))
+
+
+def held(lines: dict[str, str]) -> bool:
+    """Whether a verdict is satisfied with no blocker or major open."""
+    return lines.get("SATISFIED", "").lower().split()[:1] == ["yes"] and counts(lines) == (0, 0)
+
+
+def cap(loop: str | None) -> int:
+    """The project's cap: its loop.md `cap: <n>` line, else SKILL.md's default."""
+    skill = Path(__file__).resolve().parents[1] / "SKILL.md"
+    found = CAP_LINE.search(loop or "") or CAP_DEFAULT.search(skill.read_text())
+    if found is None:
+        raise Refused("SKILL.md § The cap names no default (`The cap is <n> passes`)")
+    return int(found[1])
+
+
+def capped(pull: dict[str, Any], limit: int) -> bool:
+    """Whether a verifier review at the cap (pass `limit`) or later left a blocker or major open, or was not
+    satisfied: the owner then decides between a fix with one scoped pass more and leaving the code untouched."""
+    found = passes(pull)
+    return not isinstance(found, str) and any(
+        number >= limit and not held(lines) for _, number, lines in found
+    )
+
+
+def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
+    """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
+    since every commit after a verdict needs one of its own, or on its commit the highest pass (a mixed PR's two
+    verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
+    blocker or a major open. A triage or comment is no verdict. ponytail: no bot-PR exemption (#106: an
+    allow-listed bot's lock- or manifest-only PR passes without a verifier); add it with the allow-list when a
+    project lands bot PRs."""
+    verdicts = passes(pull)
+    if isinstance(verdicts, str):
+        return [f"{where} {verdicts}"]
     if not verdicts:
         return [f"{where}: no verifier review posted (approvals.py verdict)"]
     head = verdicts[-1][0]
     on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
     last = max(number for number, _ in on_head)
     same = [lines for number, lines in on_head if number == last]
-    counts = [
-        [
-            re.search(rf"(\d+)\s+{kind}s?\b", lines.get("VERDICT", ""))
-            for kind in ("blocker", "major")
-        ]
-        for lines in same
-    ]
-    if (
-        not head
-        or any(None in pair for pair in counts)
-        or any("SATISFIED" not in lines for lines in same)
-    ):
+    if not head or any(counts(lines) is None or "SATISFIED" not in lines for lines in same):
         return [
             f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
         ]
     found = []
+    if pull["headRefOid"].lower() != head:
+        found.append(
+            f"{where}: the newest verifier review is on {head}, not on the head {pull['headRefOid']}:"
+            " every commit after a verdict needs a verdict of its own"
+        )
     if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):
         found.append(f"{where}: a verifier review on {head} is not satisfied: fix and verify again")
-    blocker, major = (sum(int(pair[kind].group(1)) for pair in counts) for kind in (0, 1))
+    pairs = [pair for pair in map(counts, same) if pair is not None]
+    blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
     if blocker or major:
         found.append(
             f"{where}: the verifier reviews on {head} have {blocker} blocker and {major} major open: fix and verify again"
         )
-    if pull["headRefOid"].lower() != head:
-        since = touched_since(pull, head)
-        if since is None:
-            found.append(
-                f"{where}: the newest verifier review is on {head}, and GitHub can't compare it with the head: verify the head"
-            )
-        elif since:
-            changed = ", ".join(f"`{path}`" for path in since)
-            found.append(
-                f"{where}: the newest verifier review is on {head}, and later commits change {changed}: verify the change since"
-            )
     return found
 
 
@@ -525,13 +553,20 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while a `merge:` rule asks (merge_asked) and the owner's `approved:merge` label is not on the PR, added
-    after the head's push. `pushed(pull)` is when the head was pushed (default: GitHub's repository activity)."""
+    """A line while a `merge:` rule asks (merge_asked), or the cap was hit (capped), and the owner's `approved:merge`
+    label is not on the PR, added after the head's push. `pushed(pull)` is when the head was pushed (default: GitHub's repository activity)."""
     where, found = f"PR #{pull['number']}", []
-    if not merge_asked(pull, issues, loop):
+    limit = cap(loop)
+    hit = capped(pull, limit)
+    if not hit and not merge_asked(pull, issues, loop):
         return found
     if MERGE_LABEL not in names(pull):
-        return found + [f"{where} waits for the owner's `{MERGE_LABEL}` label"]
+        why = (
+            f": a verifier review at the cap (pass {limit}) or later left a core finding open, so the owner decides"
+            if hit
+            else ""
+        )
+        return found + [f"{where} waits for the owner's `{MERGE_LABEL}` label{why}"]
     added = max(
         (
             event["createdAt"]
@@ -820,32 +855,6 @@ def merge_base(base: str, head: str) -> str:
     return gh(
         "api", f"repos/{{owner}}/{{repo}}/compare/{base}...{head}", "--jq", ".merge_base_commit.sha"
     ).strip()
-
-
-def compared(base: str, head: str) -> set[str] | None:
-    """The paths GitHub's compare of `base...head` changes, a rename by both names; None at the 300 files it lists.
-    ponytail: one compare; read the commits' own files when a PR outgrows it."""
-    out = gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/compare/{base}...{head}",
-        "--jq",
-        "(.files | length), (.files[] | .filename, .previous_filename // empty)",
-    ).splitlines()
-    return None if int(out[0]) >= 300 else set(out[1:])
-
-
-def touched_since(pull: dict[str, Any], reviewed: str) -> list[str] | None:
-    """The files the PR changes, at `reviewed` or at its head, that the commits after `reviewed` change, sorted; None
-    when GitHub can't say (a commit it no longer has, or more files than it lists)."""
-    now = paths(pull)
-    try:
-        then = compared(pull["baseRefOid"], reviewed)
-        later = compared(reviewed, pull["headRefOid"])
-    except subprocess.CalledProcessError:
-        return None
-    if now is None or then is None or later is None:
-        return None
-    return sorted((then | set(now)) & later)
 
 
 def required_checks(base: str) -> set[str]:
