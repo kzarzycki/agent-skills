@@ -621,7 +621,11 @@ def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[s
             )
             lines.append(f"{sid} {info.get('title') or ''}: kept ({busy})")
             continue
-        og.archive(sid)
+        try:
+            og.archive(sid)
+        except Fail as e:  # one refused archive leaves the rest to reap
+            lines.append(f"{sid} {info.get('title') or ''}: archive failed: {e}")
+            continue
         lines.append(f"{sid} {info.get('title') or ''}: archived ({status})")
     return lines
 

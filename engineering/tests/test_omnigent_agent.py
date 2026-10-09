@@ -1209,6 +1209,24 @@ def test_reap_archives_finished_children_and_keeps_the_busy_ones() -> None:
     ]
 
 
+def test_reap_goes_on_past_an_archive_that_fails() -> None:
+    og = FakeOmnigent()
+    og.info = lambda s: {"status": "idle", "title": f"t-{s}"}  # type: ignore[method-assign]
+    archive = og.archive
+
+    def refuse_a(s: str) -> None:
+        if s == "a":
+            raise omnigent_agent.Fail("PATCH a: HTTP 503")
+        archive(s)
+
+    og.archive = refuse_a  # type: ignore[method-assign]
+    assert omnigent_agent.reap(og, ["a", "b"]) == [
+        "a t-a: archive failed: PATCH a: HTTP 503",
+        "b t-b: archived (idle)",
+    ]
+    assert og.archived == ["b"]
+
+
 def test_run_archives_on_its_report_but_not_on_a_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
