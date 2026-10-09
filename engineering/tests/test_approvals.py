@@ -204,7 +204,13 @@ def merge(pr: dict[str, Any], issues: list[dict[str, Any]], loop: str = LOOP) ->
 
 def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections() -> None:
     assert approvals.label_names(TRACKER) == {
-        "category": {"kind:bug", "kind:enhancement", "kind:chore", "kind:documentation", "kind:ops"},
+        "category": {
+            "kind:bug",
+            "kind:enhancement",
+            "kind:chore",
+            "kind:documentation",
+            "kind:ops",
+        },
         "component": {"area:agents", "area:api", "area:web"},
         "size": {"size:XS", "size:S", "size:M", "size:L", "size:XL"},
     }

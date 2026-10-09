@@ -88,6 +88,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Repo:
         {
             "bug": ("d73a4a", "Something isn't working"),
             "chore": ("ededed", ""),
+            # already there, so `chore` folds into it: the fold path
+            "kind:chore": labels.LOOP_LABELS["kind:chore"],
             "documentation": ("0075ca", "Improvements or additions to documentation"),
             "api": ("ededed", ""),
             "frontend": ("ededed", ""),
@@ -110,7 +112,7 @@ def test_a_run_renames_in_place_folds_creates_and_deletes_only_what_nothing_carr
     assert out[:5] == [
         "rename frontend to area:web",
         "rename bug to kind:bug",
-        "rename chore to kind:chore",
+        "fold chore into kind:chore on 1 issue(s) or PR(s)",
         "rename documentation to kind:documentation",
         "rename api to area:api",
     ]
@@ -157,7 +159,7 @@ def test_gh_failing_exits_1_with_its_reason(monkeypatch: pytest.MonkeyPatch, rep
     assert labels.main([]) == 1
 
 
-def test_the_tracker_can_send_documentation_elsewhere_before_the_loops_fold() -> None:
+def test_the_tracker_can_send_documentation_elsewhere_before_the_loops_rename() -> None:
     tracker = "## Extra categories\n\n- `docs`: only docs change.\n\n## Renamed labels\n\n- `documentation` -> `kind:docs`\n"
     actions, _ = labels.plan({"documentation": ("0075ca", "")}, tracker)
     assert actions[0] == ("rename", "documentation", "kind:docs", "")
