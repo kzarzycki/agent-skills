@@ -103,3 +103,218 @@ run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/
 
 [tasks.test]
 run = "uv run pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts"
+
+[tasks."setup:dev"]
+description = "Installs the Python dependencies from uv.lock; fails on a stale lock instead of rewriting it."
+run = "uv sync --locked"
+
+# The merge checks: every check: task but check:all is a part, and CI runs each as its own
+# job named after it (mise run ci:parts). Add a part here and CI runs it.
+[tasks.check]
+description = "Runs every check: part: the set to run before every push."
+depends = ["check:*"]
+
+[tasks."check:all"]
+description = "Runs every check: part: the list GitHub and the merge queue run."
+depends = ["check:*"]
+
+[tasks."check:test"]
+description = "Runs the test task: every test but the live-agent ones (engineering's package tests included), then ruff."
+depends = ["test"]
+
+[tasks."check:vendor"]
+description = "Runs vendor-engineering-check: the generated engineering skills match the lock, overlays and provenance."
+depends = ["vendor-engineering-check"]
+
+[tasks."check:whitespace"]
+description = "Fails on a whitespace error the branch adds since its base (git diff --check)."
+run = '''
+# The branch's base: origin/$BASE_REF (default main).
+# CI passes a 40-hex commit instead: on a push the commit before it, in a merge queue the queue's base.
+ref="${BASE_REF:-main}"
+if [ "$(( $(printf %s "$ref" | wc -c) ))" -eq 40 ] && [ -z "$(printf %s "$ref" | tr -d 0-9a-f)" ]; then base="$ref"; else base="origin/$ref"; fi
+git diff --check "$base...HEAD"
+'''
+
+[tasks."ci:parts"]
+description = "Prints the check: parts this change needs, for CI's matrix."
+# A part with a key in .github/check-paths.yml runs only when its filter matched: CHANGES is the
+# keys that matched, as JSON (dorny/paths-filter's `changes`). Without CHANGES every part runs.
+# In GitHub Actions it also writes the list to the step's output and summary.
+run = '''
+mise tasks ls --json | python3 -c '
+import json, os, re, sys
+from pathlib import Path
+
+parts = sorted(t["name"] for t in json.load(sys.stdin) if t["name"].startswith("check:") and t["name"] != "check:all")
+paths = Path(".github/check-paths.yml")
+key = re.compile(r"^[\x22\x27]?(check:[\w:-]+)[\x22\x27]?[ \t]*:(?:[ \t]|$)", re.MULTILINE)
+filtered = set(key.findall(paths.read_text())) if paths.exists() else set()
+changes = os.environ.get("CHANGES")
+matched = set(json.loads(changes or "[]")) if changes is not None else set(filtered)
+run = [part for part in parts if part not in filtered or part in matched]
+skipped = [part for part in parts if part not in run]
+print(json.dumps(run))
+for part in skipped:
+    print(f"skipped {part}: its filter in {paths} matched no changed file", file=sys.stderr)
+if os.environ.get("GITHUB_OUTPUT"):
+    with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+        out.write(f"parts={json.dumps(run)}\n")
+if os.environ.get("GITHUB_STEP_SUMMARY"):
+    with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as out:
+        out.write("".join(f"- `{part}`: runs\n" for part in run))
+        out.write("".join(f"- `{part}`: skipped, its path filter matched no change\n" for part in skipped))
+'
+'''
+
+[tasks."ci:check"]
+description = "CI's aggregate check: fails unless the plan and every part passed, naming each failed part and the command that reruns it."
+# PLAN and PARTS are the plan and matrix jobs' results. A failed part names its own command,
+# so it reruns alone.
+run = '''
+if [ "${PLAN:-}" = success ] && [ "${PARTS:-}" = success ]; then echo "every check: part passed"; exit 0; fi
+echo "::error::plan: ${PLAN:-unknown}, parts: ${PARTS:-unknown}"
+failed="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | .name')" || failed=""
+for part in $failed; do
+  case "$part" in check:*) echo "::error::$part failed; rerun it with: mise run $part" ;; esac
+done
+exit 1
+'''
+[tasks."loop:approvals"]
+alias = "gate"
+description = "Checks the loop's proofs on GitHub: approved spec, verdict, Evidence, merge approval. merge exits 3 while it waits for check, or for the owner's approved:merge on a high-risk PR."
+usage = '''
+arg "<point>" help="build or merge"
+arg "[pr]" help="the PR number; default: this branch's PR"
+'''
+# Add the project's own checks as more lines; the task stops at the first that fails.
+# The pack's source copy, not the installed one: .agents/skills holds the release apm.yml pins, which may predate it.
+run = [
+  'python3 engineering/skills/engineering-loop/scripts/approvals.py check "${usage_point}" ${usage_pr:-}',
+]
+
+[tasks."loop:land"]
+description = "The one way an agent lands a PR: every merge proof, then ready and a squash merge pinned to the head, or auto-merge while required checks are pending. Exits 0 merged or auto-merge on, 1 on a missing proof, 3 while it waits."
+usage = '''
+arg "<pr>" help="the PR number"
+'''
+run = 'python3 engineering/skills/engineering-loop/scripts/approvals.py land "${usage_pr}"'
+
+[tasks."ci:approvals"]
+description = "CI's approvals step: posts loop:approvals merge's result as the loop:approvals commit status on the PR head (pending while it waits); success on a merge-queue commit; a push removes approved:merge first; on success turns on auto-merge at the head unless the PR has a request."
+# A job ends only as success or failure, and GitHub counts a skipped job as passed, so the
+# result is a commit status, which main's ruleset requires. The workflow sets EVENT, ACTION,
+# PR, QUEUE_HEAD and RUN_URL.
+run = '''
+post() {
+  gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$1" -f state="$2" -f context=loop:approvals \
+    -f description="$(printf '%s' "$3" | cut -c1-140)" -f target_url="$RUN_URL" >/dev/null
+  echo "loop:approvals: $2 on $1: $3"
+}
+if [ "$EVENT" = merge_group ]; then
+  # A PR is queued only with the status green on its head, so the queue's commit passes.
+  post "$QUEUE_HEAD" success "checked on the PR before it was queued"
+  exit 0
+fi
+[ -n "${PR:-}" ] || { echo "ci:approvals: no PR for this run; nothing to post"; exit 0; }
+pull="$(gh pr view "$PR" --json headRefOid,isDraft,author,autoMergeRequest --jq '[.headRefOid, .isDraft, .author.login, .autoMergeRequest != null] | @tsv')"
+head="$(printf '%s' "$pull" | cut -f1)"
+if [ "$(printf '%s' "$pull" | cut -f2)" = true ]; then echo "ci:approvals: PR #$PR is a draft; nothing to post"; exit 0; fi
+if [ "$(printf '%s' "$pull" | cut -f3)" = "app/dependabot" ]; then
+  post "$head" success "a dependabot update carries no loop proofs"
+  exit 0
+fi
+if [ "$ACTION" = synchronize ]; then
+  # The label never covers a head the owner didn't see. A 404 means it was not on the PR.
+  out="$(gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/approved:merge" 2>&1)" || case "$out" in
+    *"HTTP 404"*) ;;
+    *) post "$head" failure "could not remove approved:merge after the push"; echo "ci:approvals: could not remove approved:merge: $out" >&2; exit 1 ;;
+  esac
+fi
+code=0
+out="$(mise run --quiet --skip-tools loop:approvals merge "$PR")" || code=$?
+printf '%s\n' "$out"
+first="$(printf '%s\n' "$out" | sed -n 1p)"
+case "$code" in
+  0) post "$head" success "${first:-every proof holds}" ;;
+  3) post "$head" pending "$first"; exit 0 ;;
+  *) post "$head" failure "${first:-loop:approvals exited $code}"; exit 1 ;;
+esac
+# Every proof holds on a ready PR (a draft returned above), so a PR made ready by hand lands with no agent
+# action. A request already there is left alone. The merge this makes starts main's push workflows only
+# when the workflow runs with a GitHub App's token (APPROVALS_APP_CLIENT_ID), not with github.token.
+# Pinned to the head the proofs covered; gh merges at once when nothing is pending.
+if [ "$(printf '%s' "$pull" | cut -f4)" = true ]; then echo "ci:approvals: PR #$PR already has auto-merge on; left as is"; exit 0; fi
+gh pr merge "$PR" --auto --squash --match-head-commit "$head" || {
+  echo "::error::ci:approvals: could not turn on auto-merge for PR #$PR at $head; loop:approvals is still success, so mise run loop:land $PR lands it"
+  exit 1
+}
+'''
+
+[tasks."setup:github"]
+alias = "merge-queue"
+description = "Writes GitHub settings (the ruleset, qualify dropped from main's classic required checks, auto-merge, head branch deletion), then syncs the labels with the pack's labels.py, from the repo's files; runs no checks. --dry-run prints the label plan and writes nothing; --revert deletes the ruleset."
+usage = '''
+flag "--revert" help="Delete the loop-merge-queue ruleset; the repository settings are restored with the command apply printed"
+flag "--dry-run" help="Print what labels.py would change; write nothing to GitHub (no ruleset, settings or labels)"
+'''
+# The task owns only the ruleset named loop-merge-queue and never reads or changes another one:
+# GitHub layers every active ruleset on a branch, so the repo's own rules keep applying.
+# The ruleset requires CI's `check` job and the `loop:approvals` status by name: rename one, update
+# the ruleset, rerun this.
+run = '''
+command -v gh >/dev/null || { echo "error: gh is required; install the GitHub CLI and run 'gh auth login'" >&2; exit 127; }
+# The labels are the pack's: labels.py is their one definition, read from docs/agents/issue-tracker.md.
+labels=engineering/skills/engineering-loop/scripts/labels.py
+# Checked before any write, so a missing skill never leaves the ruleset applied and the labels not.
+if [ "${usage_revert:-false}" = true ]; then
+  if [ "${usage_dry_run:-false}" = true ]; then echo "error: --dry-run and --revert cannot be combined" >&2; exit 2; fi
+elif [ ! -f "$labels" ]; then
+  echo "setup:github: the engineering-loop skill is not installed; run mise run agent:sync and commit its output" >&2
+  exit 1
+elif [ "${usage_dry_run:-false}" = true ]; then
+  echo "dry run: the ruleset and repository settings are left as they are"
+  exec python3 "$labels" --dry-run
+fi
+id="$(gh api --paginate 'repos/{owner}/{repo}/rulesets' --jq '.[] | select(.source_type == "Repository" and .name == "loop-merge-queue") | .id')"
+if [ "${usage_revert:-false}" = true ]; then
+  if [ -z "$id" ]; then echo "no loop-merge-queue ruleset: nothing to revert"; exit 0; fi
+  # A 404 means another run deleted it first: the revert is done either way.
+  out="$(gh api -X DELETE "repos/{owner}/{repo}/rulesets/$id" 2>&1)" || case "$out" in *"HTTP 404"*) ;; *) echo "$out" >&2; exit 1 ;; esac
+  echo "deleted ruleset loop-merge-queue ($id)"
+  exit 0
+fi
+if [ -n "$id" ]; then
+  gh api -X PUT "repos/{owner}/{repo}/rulesets/$id" --input .github/rulesets/main.json --jq '"updated ruleset loop-merge-queue (\(.id))"'
+else
+  gh api -X POST 'repos/{owner}/{repo}/rulesets' --input .github/rulesets/main.json --jq '"created ruleset loop-merge-queue (\(.id))"'
+fi
+# main's classic branch protection required `qualify` before the ruleset existed; the ruleset's
+# `check` replaces it, so main requires exactly `check` and `loop:approvals`. Only that context
+# goes: status-check protection and the rest of the classic protection stay. A second run finds
+# no `qualify` and skips this.
+classic='repos/{owner}/{repo}/branches/main/protection/required_status_checks/contexts'
+if gh api "$classic" --jq '.[]' 2>/dev/null | grep -qx qualify; then
+  gh api -X DELETE "$classic" -f 'contexts[]=qualify' >/dev/null
+  echo "removed qualify from main's classic required status checks; restore: gh api -X POST '$classic' -f 'contexts[]=qualify'"
+fi
+# Auto-merge lets a ready PR merge once its checks pass; GitHub deletes the merged head branch.
+auto="$(gh api 'repos/{owner}/{repo}' --jq .allow_auto_merge)"
+delete="$(gh api 'repos/{owner}/{repo}' --jq .delete_branch_on_merge)"
+gh api -X PATCH 'repos/{owner}/{repo}' -F allow_auto_merge=true -F delete_branch_on_merge=true >/dev/null
+echo "allow_auto_merge was $auto, delete_branch_on_merge was $delete, both now true; restore: gh api -X PATCH 'repos/{owner}/{repo}' -F allow_auto_merge=$auto -F delete_branch_on_merge=$delete"
+echo "revert the ruleset: mise run setup:github --revert"
+# The approvals workflow's token: a merge it makes starts main's push workflows only with an App's.
+if gh api 'repos/{owner}/{repo}/actions/variables/APPROVALS_APP_CLIENT_ID' >/dev/null 2>&1; then
+  if gh api 'repos/{owner}/{repo}/actions/secrets/APPROVALS_APP_PRIVATE_KEY' >/dev/null 2>&1; then
+    echo "approvals workflow: runs with the GitHub App APPROVALS_APP_CLIENT_ID names"
+  else
+    echo "approvals workflow: APPROVALS_APP_CLIENT_ID is set but the secret APPROVALS_APP_PRIVATE_KEY is not, so every run fails; set it"
+  fi
+else
+  echo "approvals workflow: runs with github.token, so a merge it makes starts no push workflow on main;" \
+    "to change that, set the repo variable APPROVALS_APP_CLIENT_ID and the secret APPROVALS_APP_PRIVATE_KEY for a GitHub App" \
+    "with Contents, Pull requests and Commit statuses write and Issues, Checks and Actions read, installed on this repo"
+fi
+python3 "$labels"
+'''
