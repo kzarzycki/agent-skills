@@ -153,6 +153,7 @@ PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body b
   files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
+  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
@@ -301,12 +302,24 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     """Whether the PR needs no verifier review: its author is a bot a loop.md `bot: <login> <condition>` line names,
     and every file it changes matches that line's condition on its path alone (lock and manifest files). GitHub's
     GraphQL spells a bot's login without the `[bot]` REST and the line write, so both compare without it; a person
-    can't hold a bot's login, so the author's type is checked too. No line, more files than the gate reads, or a
-    condition it can't read: no exemption."""
+    can't hold a bot's login, so the author's type is checked too. Every commit must be the bot's alone, since a
+    person's push to its branch is a change no verifier saw. No line, more files or commits than the gate reads, or
+    a condition it can't read: no exemption."""
     author, files = pull.get("author") or {}, paths(pull)
     if author.get("__typename") != "Bot" or not files:
         return False
     login = (author.get("login") or "").removesuffix("[bot]").lower()
+    commits = pull.get("authored") or {}
+    nodes = commits.get("nodes") or []
+    if not nodes or (commits.get("totalCount") or 0) > len(nodes):
+        return False
+    for node in nodes:
+        authors = node["commit"]["authors"]
+        logins = [((a.get("user") or {}).get("login") or "") for a in authors["nodes"]]
+        if not logins or (authors.get("totalCount") or 0) > len(logins):
+            return False
+        if any(name.removesuffix("[bot]").lower() != login for name in logins):
+            return False
     lines = [text.partition(" ") for rule, text in rules(loop or "") if rule == "bot"]
     return any(
         name.strip("`").removesuffix("[bot]").lower() == login

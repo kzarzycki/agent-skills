@@ -1441,14 +1441,24 @@ BOTS = LOOP + "- bot: dependabot[bot] path uv.lock or path `**/package.json`\n"
 UNREVIEWED = ["PR #7: no verifier review posted (approvals.py verdict)"]
 
 
+def authored(login: str | None) -> dict[str, Any]:
+    """A commit on the PR as GraphQL's `authored` returns it, by `login` (None: no GitHub account)."""
+    return {"commit": {"authors": {"nodes": [{"user": {"login": login} if login else None}]}}}
+
+
 @pytest.mark.parametrize(
     "login", ["dependabot", "dependabot[bot]"]
 )  # GraphQL's spelling, and REST's
 def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(login: str) -> None:
     def bot(
-        files: tuple[str, ...], who: str = login, kind: str = "Bot", loop: str = BOTS
+        files: tuple[str, ...],
+        who: str = login,
+        kind: str = "Bot",
+        loop: str = BOTS,
+        commits: tuple[str | None, ...] = ("dependabot[bot]",),
     ) -> list[str]:
         pr = {**pull(files=files), "author": {"__typename": kind, "login": who}}
+        pr["authored"] = {"nodes": [authored(by) for by in commits]}
         return approvals.proofs("merge", pr, [], loop)
 
     assert bot(("uv.lock", "web/package.json")) == []
@@ -1457,9 +1467,14 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
     assert bot(("uv.lock",), kind="User") == UNREVIEWED  # a person is never the bot
     assert bot(("uv.lock",), loop=LOOP) == UNREVIEWED  # no `bot:` line: no exemption
     assert bot(()) == UNREVIEWED
+    assert bot(("uv.lock",), commits=("dependabot", "dependabot[bot]")) == []
+    assert bot(("uv.lock",), commits=("dependabot[bot]", "worker")) == UNREVIEWED  # a person's push
+    assert bot(("uv.lock",), commits=(None,)) == UNREVIEWED  # an author GitHub ties to no account
+    assert bot(("uv.lock",), commits=()) == UNREVIEWED
     unread = BOTS.replace("path uv.lock or", "lock files or path uv.lock or")
     assert bot(("uv.lock",), loop=unread) == UNREVIEWED  # a condition the gate can't read
     crowded = {**pull(files=("uv.lock",) * 100), "author": {"__typename": "Bot", "login": login}}
+    crowded["authored"] = {"nodes": [authored("dependabot[bot]")]}
     crowded["files"]["totalCount"] = 101  # past the one page of files the gate reads
     assert approvals.proofs("merge", crowded, [], BOTS) == UNREVIEWED
     assert approvals.risk_rules(BOTS) == approvals.risk_rules(LOOP)  # a bot line is no risk rule
