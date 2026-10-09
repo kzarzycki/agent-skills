@@ -161,3 +161,38 @@ def test_the_tracker_can_send_documentation_elsewhere_before_the_loops_fold() ->
     actions, _ = labels.plan({"documentation": ("0075ca", "")}, tracker)
     assert actions[0] == ("rename", "documentation", "kind:docs", "")
     assert ("create", "kind:chore", *labels.LOOP_LABELS["kind:chore"]) in actions
+
+
+def test_a_label_whose_name_has_a_comma_is_kept_never_deleted_or_folded(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # GitHub reads `labels=blocked, upstream` as two labels an issue must both carry, so no count can be trusted
+    (tmp_path / "docs" / "agents" / "issue-tracker.md").write_text(
+        TRACKER + "- `p1, customer` becomes `area:web`\n"
+    )
+    repo.labels |= {"blocked, upstream": ("ededed", ""), "p1, customer": ("ededed", "")}
+    assert labels.main([]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "kept blocked, upstream: a name with a comma can't be counted, so it may be in use\n" in out
+    )
+    assert (
+        "kept p1, customer: a name with a comma can't be counted, so it may be in use; fold it into area:web by hand\n"
+        in out
+    )
+    assert {"blocked, upstream", "p1, customer"} <= set(repo.labels)
+    assert not [write for write in repo.writes if "," in write[1]]
+
+
+def test_dependabots_label_is_never_renamed_even_when_a_component_shares_its_name(
+    repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "docs" / "agents" / "issue-tracker.md").write_text(
+        TRACKER.replace("## Extra labels", "- `python`: the Python package.\n\n## Extra labels")
+    )
+    assert labels.main([]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "create area:python" in out and not [
+        line for line in out if line.startswith(("rename python", "fold python"))
+    ]
+    assert repo.labels["python"] == ("2b67c6", "Pull requests that update Python code")

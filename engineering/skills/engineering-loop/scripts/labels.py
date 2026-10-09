@@ -3,17 +3,19 @@
 
     python3 scripts/labels.py [--dry-run]
 
-Run in the checkout; the project's `mise run setup:github` runs it. One line per change, then one per label it keeps:
+Run in the project's checkout, from the installed engineering-loop skill, `--dry-run` first. The project's
+`mise run setup:github` runs it only once project-templates wires it in. One line per change, then one per label it keeps:
 
 - Renames first, in place (`PATCH labels/<old>`), so every open and closed issue and PR keeps its label: the
   tracker's `## Renamed labels` map, then the loop's own (`bug`, `enhancement` and `chore` to their `kind:` names,
   `documentation` folded into `kind:chore`), then each component's and extra category's bare name to its `area:` or
-  `kind:` label. A rename whose new name already exists is a fold: each issue or PR with the old label gets the new
+  `kind:` label. Dependabot's labels are never renamed or folded. A rename whose new name already exists is a fold: each issue or PR with the old label gets the new
   one and loses the old, then the old is deleted. An old name the repo lacks is skipped, so the map can stay.
 - Then it creates every listed label it lacks and updates one whose colour or description differs. A tracker item's
   description is its text after the name, cut to GitHub's 100 characters.
 - Then each unlisted label: deleted when no issue or PR, open or closed, carries it, else kept and reported with its
-  count, since deleting it would lose who had it. Dependabot's are kept, since it recreates them and its PRs use them.
+  count, since deleting it would lose who had it. A label whose name has a comma is kept and reported, never
+  deleted or folded, since its carriers can't be counted. Dependabot's are kept, since it recreates them and its PRs use them.
 
 A second run changes nothing. `--dry-run` reads the same and writes nothing. Without docs/agents/issue-tracker.md it
 refuses, since nothing would say which labels are the repo's. Exit 1 with gh's reason. Stdlib only.
@@ -133,7 +135,8 @@ def plan(existing: dict[str, tuple[str, str]], tracker: str) -> tuple[list[Actio
     and the unlisted labels left after them, which sync() deletes only when nothing carries them."""
     labels, actions = dict(existing), []
     for old, new in renames(tracker):
-        if old not in labels:
+        # Dependabot's own label stays as it is, even when a component shares its name (`python`): that gets a new label
+        if old not in labels or dependabot(old, labels[old][1]):
             continue
         actions.append(("fold" if new in labels else "rename", old, new, ""))
         kept = labels.pop(old)
@@ -165,8 +168,8 @@ def existing() -> dict[str, tuple[str, str]]:
 
 
 def carriers(name: str) -> list[int]:
-    """Every issue and PR, open or closed, that carries the label. ponytail: a name with a comma can't be asked for,
-    since GitHub splits the filter on commas; it reads as carried by none."""
+    """Every issue and PR, open or closed, that carries the label. A name with a comma can't be asked for, since
+    GitHub reads the filter as a list of labels an issue must all carry, so sync() keeps such a label (UNCOUNTED)."""
     out = gh(
         "api",
         "--paginate",
@@ -185,6 +188,11 @@ def carriers(name: str) -> list[int]:
     return [int(number) for number in out.split()]
 
 
+# ponytail: a name with a comma is kept, never counted; count it with GraphQL `label(name:) { issues { totalCount } }`
+# (and `pullRequests`) if a repo needs one deleted or folded
+UNCOUNTED = "a name with a comma can't be counted, so it may be in use"
+
+
 def labelled(name: str) -> str:
     return f"repos/{{owner}}/{{repo}}/labels/{quote(name, safe='')}"
 
@@ -200,6 +208,8 @@ def sync(dry_run: bool) -> int:
             if not dry_run:
                 gh("api", "-X", "PATCH", labelled(name), "-f", f"new_name={value}", "--silent")
             print(f"{would}rename {name} to {value}")
+        elif verb == "fold" and "," in name:
+            print(f"kept {name}: {UNCOUNTED}; fold it into {value} by hand")
         elif verb == "fold":
             numbers = carriers(name)
             if not dry_run:
@@ -218,6 +228,9 @@ def sync(dry_run: bool) -> int:
                     gh("api", "-X", "PATCH", labelled(name), *fields)
             print(f"{would}{verb} {name}")
     for name in unlisted:
+        if "," in name:
+            print(f"kept {name}: {UNCOUNTED}")
+            continue
         numbers = carriers(name)
         if numbers:
             print(f"kept {name}: {len(numbers)} issue(s) or PR(s) carry it")

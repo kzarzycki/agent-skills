@@ -34,9 +34,9 @@ Pull requests are not a triage request surface.
 
 ## Labels
 
-`python3 scripts/labels.py` syncs the repo's labels with issues.md, Labels, and the
-project's `mise run setup:github` runs it; `--dry-run` prints the same plan and writes
-nothing. Its docstring says what it does, in order. The calls it makes:
+`python3 scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
+prints the same plan and writes nothing. Run it by hand, `--dry-run` first: the project's
+`mise run setup:github` runs it only once project-templates wires it in. Its docstring says what it does, in order. The calls it makes:
 
 - Rename in place, so every open and closed issue and PR keeps the label and its timeline
   shows no remove and add: `gh api -X PATCH 'repos/{owner}/{repo}/labels/<old>' -f new_name=<new>`
@@ -51,10 +51,11 @@ nothing. Its docstring says what it does, in order. The calls it makes:
 The calls behind issues.md, Assignee. `python3 scripts/approvals.py check build <pr>` reads
 who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
 assigned to anyone else, and, once every build proof holds, assigns the approver where no
-one is and the PR its issue's assignees, commenting `Assigned: @<login>` on the issue as the
-record that the loop made the assignment. When you park an issue (`needs-owner`) or drop
+one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
+on the issue as the record that the loop made the assignment; when that comment is refused
+it says so and leaves the issue unassigned. When you park an issue (`needs-owner`) or drop
 it, run `python3 scripts/approvals.py release <issue>`: it removes an assignee that record
-names, unless someone assigned them again after it, and keeps any other. Assign by hand
+names, unless someone assigned them again after the loop did, and keeps any other. Assign by hand
 only a person: `gh issue edit <number> --add-assignee <login>`.
 
 ## Review trail

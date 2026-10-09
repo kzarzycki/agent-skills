@@ -343,15 +343,22 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
 
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
     """Building starts: assign each issue no one holds to its spec's approver, with a record that the loop did
-    (release reads it), and give the PR its issues' assignees. A line when GitHub refuses, never a failure, since an
-    assignee says who the issue belongs to and gates nothing past `check build`."""
+    (release reads it), and give the PR its issues' assignees. The record comes first, so a refused comment leaves no
+    assignment release would read as a person's. A line when GitHub refuses, never a failure, since an assignee says
+    who the issue belongs to and gates nothing past `check build`."""
     found, held = [], set()
     for issue in issues:
         number, owners = issue["number"], assignees(issue)
         if not owners and (login := approver(issue)):
             try:
-                assign(number, login, add=True)
                 comment(number, f"{ASSIGNED}{login}\nBy: loop\nPR: #{pull['number']}\n")
+            except subprocess.CalledProcessError as exc:
+                found.append(
+                    f"#{number}: did not assign @{login}: could not record the claim ({(exc.stderr or '').strip() or exc})"
+                )
+                continue
+            try:
+                assign(number, login, add=True)
             except subprocess.CalledProcessError as exc:
                 found.append(
                     f"#{number}: could not assign @{login} ({(exc.stderr or '').strip() or exc})"
@@ -370,8 +377,10 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
 
 
 def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
-    """Whether the loop's claim() made `login` the issue's assignee: its record names them, and no assignment of
-    them came after the record, which would be a person claiming it again."""
+    """Whether the loop's claim() made `login` the issue's assignee: its record names them, and the loop's own
+    assignment, the first of them at or after the record, is the last; a later one is a person claiming it again.
+    ponytail: when the assignment itself was refused, a person's later assignment reads as the loop's; claim()
+    reported that refusal, and removing the approver on parking is undone by assigning them again."""
     recorded = [
         note["createdAt"]
         for note in notes(issue)
@@ -383,9 +392,9 @@ def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
         event
         for event in events(issue, "AssignedEvent")
         if ((event.get("assignee") or {}).get("login") == login)
-        and (event.get("createdAt") or "") > max(recorded)  # ISO 8601 in UTC, so it orders as text
+        and (event.get("createdAt") or "") >= max(recorded)  # ISO 8601 in UTC, so it orders as text
     ]
-    return not later
+    return len(later) <= 1
 
 
 def release(number: int) -> int:

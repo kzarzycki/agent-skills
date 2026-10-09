@@ -56,8 +56,9 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
   merge queue, requiring exactly two checks, `check` and `loop:approvals`. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
-  leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
-  labels with `scripts/labels.py` (github.md, Labels).
+  leaves untouched, and reverting deletes only it. Once project-templates wires it in,
+  `setup:github` also syncs the repo's labels with `scripts/labels.py`; until then run
+  that by hand (github.md, Labels).
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs

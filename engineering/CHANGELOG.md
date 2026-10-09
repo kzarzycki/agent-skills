@@ -8,16 +8,19 @@ assignee says whose an issue is (#103).
 - Categories are `kind:bug`, `kind:enhancement` and `kind:chore`; `documentation` folds
   into `kind:chore`. A component's label is `area:<name>`, an extra category's
   `kind:<name>`. `approvals.py` reads only these names, and loop.md conditions
-  (`component billing`, `category bug`) match them. Migration: run `scripts/labels.py`
-  (the project's `setup:github`) before upgrading, since the old names no longer count.
+  (`component billing`, `category bug`) match them. Migration, since the old names no
+  longer count: upgrade the pack, run `python3 scripts/labels.py --dry-run` from the
+  installed engineering-loop skill in the project's checkout, then without the flag, then
+  rerun `approvals.py check`. `setup:github` runs the sync only once project-templates
+  wires it in, a follow-up.
 - `scripts/labels.py [--dry-run]` syncs the repo's labels with the loop's set and
   `docs/agents/issue-tracker.md`: renames in place (the loop's map, the tracker's new
   `## Renamed labels`, and each bare component name), creates and updates the listed
-  labels, deletes an unlisted one only when no issue or PR carries it, and keeps
-  Dependabot's.
+  labels, deletes an unlisted one only when no issue or PR carries it, and never renames,
+  folds or deletes Dependabot's or one whose name has a comma.
 - `approvals.py check build` refuses an issue assigned to anyone but its spec's approver;
   once every build proof holds it assigns the approver where no one is, and the PR its
-  issue's assignees. `approvals.py release <issue>` removes, on parking or dropping, only
+  issue's assignees, recording each assignment in a comment first. `approvals.py release <issue>` removes, on parking or dropping, only
   an assignee the loop added.
 
 ## 0.15.0 - 2026-10-09

@@ -2440,8 +2440,8 @@ def test_building_assigns_the_approver_only_when_no_one_is_and_the_pr_follows(
     claimed = held(approved(2), "ann", events=(labelled("ann"),))
     assert approvals.claim(pull(), [free, claimed]) == []
     assert assigned == [
-        (1, "ann", True),
         (1, "Assigned: @ann\nBy: loop\nPR: #7\n"),
+        (1, "ann", True),
         (7, "ann", True),
     ]
     assigned.clear()
@@ -2466,7 +2466,7 @@ def test_check_build_claims_only_once_every_proof_holds(
         held(specced(1, "kind:bug"))
     ]  # the policy approves a bug
     assert approvals.main(["check", "build", "7"]) == 0
-    assert assigned[0] == (1, "loop", True)
+    assert (1, "loop", True) in assigned
     capsys.readouterr()
 
 
@@ -2478,6 +2478,19 @@ def test_a_refused_assignment_is_reported_and_never_blocks(monkeypatch: pytest.M
     assert approvals.claim(pull(), [held(approved(1), events=(labelled("ann"),))]) == [
         "#1: could not assign @ann (Validation Failed)"
     ]
+
+
+def test_a_refused_record_leaves_the_issue_unassigned_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, assigned: list[tuple[Any, ...]]
+) -> None:
+    def refuse(number: int, body: str) -> None:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: issue is locked")
+
+    monkeypatch.setattr(approvals, "comment", refuse)
+    assert approvals.claim(pull(), [held(approved(1), events=(labelled("ann"),))]) == [
+        "#1: did not assign @ann: could not record the claim (HTTP 403: issue is locked)"
+    ]
+    assert assigned == []  # no assignment release would read as a person's
 
 
 def test_parking_removes_only_the_assignee_the_loop_added(
@@ -2495,13 +2508,17 @@ def test_parking_removes_only_the_assignee_the_loop_added(
             "ann",
             events=(assigned_event("ann", PUSHED), assigned_event("ann", later)),
         ),  # unassigned, then claimed again by the owner
+        4: held(
+            issue(4, comments=(by_loop,)), "ann", events=(assigned_event("ann", LABELED),)
+        ),  # the loop's assignment, a moment after its record
     }
     monkeypatch.setattr(approvals, "issue_node", found.__getitem__)
     for number in found:
         assert approvals.main(["release", str(number)]) == 0
-    assert assigned == [(1, "ann", False)]
+    assert assigned == [(1, "ann", False), (4, "ann", False)]
     assert capsys.readouterr().out.splitlines() == [
         "#1: removed @ann, whom the loop assigned",
         "#2: kept @ann, whose claim it is",
         "#3: kept @ann, whose claim it is",
+        "#4: removed @ann, whom the loop assigned",
     ]
