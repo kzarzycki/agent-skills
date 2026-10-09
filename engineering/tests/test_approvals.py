@@ -1302,6 +1302,17 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
     ]
 
 
+@pytest.mark.parametrize(
+    ("counts", "satisfied"),
+    [("0 blocker, 1 major, 0 minor", "yes"), ("0 blocker, 0 major, 0 minor", "no")],
+)
+def test_a_review_at_the_cap_holds_on_a_core_finding_or_on_not_being_satisfied(
+    counts: str, satisfied: str
+) -> None:
+    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading="Verifier (claude), pass 5")
+    assert capped(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")) != []
+
+
 def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> None:
     minors = verdict_on(HEAD, "0 blocker, 0 major, 3 minor", heading="Verifier (claude), pass 5")
     assert capped(minors) == []
@@ -1314,6 +1325,10 @@ def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> No
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
     assert approvals.cap(None) == approvals.cap("- spec: always\n") == 5  # SKILL.md § The cap
     assert approvals.cap("## Loop\n\n- cap: 3\n") == approvals.cap("`cap: 3`") == 3
+    assert approvals.cap("- cap: 3 (reviews are expensive here)\n") == 3
+    for unread in ("- cap: 3 passes\n", "- Cap: three\n"):
+        with pytest.raises(approvals.Refused, match="not `cap: <n>`"):
+            approvals.cap(unread)
     major = verdict_on(
         OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 3"
     )

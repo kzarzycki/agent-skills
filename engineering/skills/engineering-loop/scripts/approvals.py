@@ -21,11 +21,12 @@ approval record. Without docs/agents/issue-tracker.md no label's shape is checke
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
 PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
-pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head, or an earlier one where
-no commit since changes a file the PR changes (at that commit or now; only a merge of main came in); no unresolved
+pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
+commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
-`CI: none` in loop.md, a `local-ci` pass on the head instead), and, where a `merge:` rule asks, for the owner's
+`CI: none` in loop.md, a `local-ci` pass on the head instead), and, where a `merge:` rule asks or a review at the
+cap or later left a core finding open (`cap`, SKILL.md § The cap), for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. A push removes the label (the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
 GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
@@ -109,8 +110,11 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # its default in SKILL.md § The cap, a project's own in a loop.md line `cap: <n>`.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
 CAP_LINE = re.compile(
-    r"^[ \t]*(?:[-*][ \t]+)?`?cap:[ \t]*(\d+)`?[ \t]*$", re.MULTILINE | re.IGNORECASE
+    r"^[ \t]*(?:[-*][ \t]+)?`?cap:[ \t]*(\d+)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
 )
+# any line setting the cap, so one CAP_LINE can't read fails closed instead of falling back to the default
+CAP_ANY = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?cap:", re.MULTILINE | re.IGNORECASE)
 NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 ISSUE = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 PULL = f"""number author {{ login }} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
@@ -459,9 +463,13 @@ def held(lines: dict[str, str]) -> bool:
 
 
 def cap(loop: str | None) -> int:
-    """The project's cap: its loop.md `cap: <n>` line, else SKILL.md's default."""
+    """The project's cap: its loop.md `cap: <n>` line (a note in parentheses may follow), else SKILL.md's default. A
+    `cap:` line it can't read is refused, since falling back would hold nothing at the project's cap."""
+    found = CAP_LINE.search(loop or "")
+    if found is None and CAP_ANY.search(loop or ""):
+        raise Refused("loop.md has a `cap:` line that is not `cap: <n>`: write it as `- cap: <n>`")
     skill = Path(__file__).resolve().parents[1] / "SKILL.md"
-    found = CAP_LINE.search(loop or "") or CAP_DEFAULT.search(skill.read_text())
+    found = found or CAP_DEFAULT.search(skill.read_text())
     if found is None:
         raise Refused("SKILL.md § The cap names no default (`The cap is <n> passes`)")
     return int(found[1])
