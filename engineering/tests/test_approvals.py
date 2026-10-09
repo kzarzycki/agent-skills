@@ -1457,6 +1457,11 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
     assert bot(("uv.lock",), kind="User") == UNREVIEWED  # a person is never the bot
     assert bot(("uv.lock",), loop=LOOP) == UNREVIEWED  # no `bot:` line: no exemption
     assert bot(()) == UNREVIEWED
+    unread = BOTS.replace("path uv.lock or", "lock files or path uv.lock or")
+    assert bot(("uv.lock",), loop=unread) == UNREVIEWED  # a condition the gate can't read
+    crowded = {**pull(files=("uv.lock",) * 100), "author": {"__typename": "Bot", "login": login}}
+    crowded["files"]["totalCount"] = 101  # past the one page of files the gate reads
+    assert approvals.proofs("merge", crowded, [], BOTS) == UNREVIEWED
     assert approvals.risk_rules(BOTS) == approvals.risk_rules(LOOP)  # a bot line is no risk rule
 
 
