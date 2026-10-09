@@ -1,12 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 - 2026-10-09
 
 Labels as code: `area:` and `kind:` labels, synced with in-place renames, and the
 assignee says whose an issue is (#103).
 
-- Categories are `kind:bug`, `kind:enhancement` and `kind:chore`; `documentation` folds
-  into `kind:chore`. A component's label is `area:<name>`, an extra category's
+- Categories are `kind:bug`, `kind:enhancement`, `kind:chore` and `kind:documentation`;
+  `documentation` is renamed to `kind:documentation`. A component's label is `area:<name>`, an extra category's
   `kind:<name>`. `approvals.py` reads only these names, and loop.md conditions
   (`component billing`, `category bug`) match them. Migration, since the old names no
   longer count: upgrade the pack, run `python3 scripts/labels.py --dry-run` from the

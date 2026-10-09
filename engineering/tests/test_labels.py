@@ -111,14 +111,15 @@ def test_a_run_renames_in_place_folds_creates_and_deletes_only_what_nothing_carr
         "rename frontend to area:web",
         "rename bug to kind:bug",
         "rename chore to kind:chore",
-        "fold documentation into kind:chore on 1 issue(s) or PR(s)",
+        "rename documentation to kind:documentation",
         "rename api to area:api",
     ]
     assert out[-2:] == ["delete question", "kept wontfix: 1 issue(s) or PR(s) carry it"]
     # a rename is one PATCH, never a delete and a create, so every issue keeps its label
     assert ("PATCH", "repos/{owner}/{repo}/labels/bug", "new_name=kind:bug") in repo.writes
     assert repo.carried["kind:bug"] == [1, 4] and repo.carried["area:api"] == [1]
-    assert sorted(repo.carried["kind:chore"]) == [2, 3] and "documentation" not in repo.labels
+    assert repo.carried["kind:chore"] == [2] and repo.carried["kind:documentation"] == [3]
+    assert "documentation" not in repo.labels
     assert set(repo.labels) == set(labels.wanted(TRACKER)) | {"wontfix", "dependencies", "python"}
     assert repo.labels["area:api"] == (labels.AREA, "the HTTP service.")
     assert repo.labels["size:XS"] == labels.LOOP_LABELS["size:XS"]

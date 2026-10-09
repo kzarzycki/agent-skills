@@ -34,8 +34,8 @@ read as approved.
 
 - **Category**, exactly one, set by whoever files the issue and corrected at triage:
   `kind:bug` (something a user or the pipeline hits is wrong), `kind:enhancement` (new or
-  improved behaviour), `kind:chore` (tooling, CI, agent configuration or docs only; no
-  behaviour changes), or `kind:<name>` for one of the project's extra categories.
+  improved behaviour), `kind:chore` (tooling, CI or agent configuration only; no
+  behaviour changes), `kind:documentation` (docs only), or `kind:<name>` for one of the project's extra categories.
 - **Component**, at least one, set with the category: where the change lands,
   `area:<name>` for a name on the project's list.
 - **Size**, exactly one, set by the spec step, once the code has been read. It is
@@ -74,8 +74,8 @@ list item per label, its old name then its new, both in backticks:
 - `frontend` becomes `area:web`
 ```
 
-The loop's own renames need no line: `bug`, `enhancement` and `chore` become their `kind:`
-names, `documentation` folds into `kind:chore`, and a listed component's or extra category's
+The loop's own renames need no line: `bug`, `enhancement`, `chore` and `documentation`
+become their `kind:` names, and a listed component's or extra category's
 bare name becomes its label. A line stays harmless once its old name is gone.
 
 ## Assignee
