@@ -5,7 +5,7 @@ is done on a tracker is its realization file, read in place: [github.md](github.
 GitHub, with the issue-batch protocol `to-tickets` and `wayfinder` publish through. The
 project's `docs/agents/issue-tracker.md` names that file in one line,
 `Tracker: GitHub (engineering-loop's github.md)`, and adds only its own facts: Components,
-Never on GitHub, and optionally Extra labels and Extra categories.
+Never on GitHub, and optionally Extra labels, Extra categories and Renamed labels.
 
 ## States
 
@@ -23,7 +23,8 @@ that acts on the state it finds.
   headed `## Spec`. The spec step sets the size label; who approves, the owner or their
   policy in loop.md, and how, is SKILL.md, Approvals and proof.
 
-The `triage` skill's roles map as needs-triage = no state label, needs-info =
+The `triage` skill's categories map as bug = `kind:bug` and enhancement = `kind:enhancement`,
+and its roles as needs-triage = no state label, needs-info =
 `needs-owner`, ready-for-agent = `approved:spec`, which only the owner adds (a spec the
 policy covers needs no label, since the gate reads the policy): a `ready-for-agent` label that
 `to-spec` or `to-tickets` would set is not added, since a label without its approval would
@@ -32,11 +33,11 @@ read as approved.
 ## Labels
 
 - **Category**, exactly one, set by whoever files the issue and corrected at triage:
-  `bug` (something a user or the pipeline hits is wrong), `enhancement` (new or improved
-  behaviour), `documentation` (only docs change), `chore` (tooling, CI, agent
-  configuration; no behaviour changes), or one of the project's extra categories.
-- **Component**, at least one, set with the category: where the change lands, from the
-  project's list.
+  `kind:bug` (something a user or the pipeline hits is wrong), `kind:enhancement` (new or
+  improved behaviour), `kind:chore` (tooling, CI, agent configuration or docs only; no
+  behaviour changes), or `kind:<name>` for one of the project's extra categories.
+- **Component**, at least one, set with the category: where the change lands,
+  `area:<name>` for a name on the project's list.
 - **Size**, exactly one, set by the spec step, once the code has been read. It is
   the size of the change, not a time estimate, and an intent has none: `size:XS` one line
   or one config value; `size:S` one module, the coordinator builds it; `size:M` several
@@ -58,8 +59,38 @@ A wayfinder map or ticket carries its `wayfinder:` label instead of a category, 
 component or size: it resolves a decision, not a change.
 
 Label names are the loop's fixed set here plus the project's `docs/agents/issue-tracker.md`
-(Components, Extra categories); the scripts read them from these two places only
-(`scripts/approvals.py`, `label_names`).
+(Components, Extra categories, Extra labels); the scripts read them from these two places only
+(`scripts/approvals.py`, `label_names`). The tracker file and loop.md's conditions name a
+component or category bare (`billing`) or in full (`area:billing`); both mean the label.
+
+The repo's labels are synced from the same two places (github.md, Labels): every listed
+label exists, an unlisted one goes once nothing carries it, and a renamed one is renamed in
+place, so every issue keeps it. Renamed labels in the tracker file is the rename map, one
+list item per label, its old name then its new, both in backticks:
+
+```markdown
+## Renamed labels
+
+- `frontend` becomes `area:web`
+```
+
+The loop's own renames need no line: `bug`, `enhancement` and `chore` become their `kind:`
+names, `documentation` folds into `kind:chore`, and a listed component's or extra category's
+bare name becomes its label. A line stays harmless once its old name is gone.
+
+## Assignee
+
+The assignee says whose issue it is; who is working on it shows in its board column.
+
+- Assigning only claims an issue: the owner may assign themself to hold one for later. The
+  go-ahead is still `approved:spec` or the owner's ask, never the assignment.
+- Someone else's issue is theirs: the loop never builds an issue assigned to anyone but
+  the person who approved its spec, and `approvals.py check build` refuses one.
+- When building starts and no one is assigned, the loop assigns the approver, and the PR
+  gets its issue's assignee (`check build` does both, github.md, Assignee).
+- Parked or dropped, the loop removes only an assignment it made; a claim the owner made
+  stays.
+- Agents are never assignees, since the column, not the assignee, says which agent is on it.
 
 ## Epics
 
@@ -77,7 +108,7 @@ under its epic.
 
 ## Board
 
-The board shows every ticket in its loop stage, and every epic with its progress; the
+The board shows every ticket in its loop stage with its assignee, and every epic with its progress; the
 realization file says how a ticket moves. The labels stay the state: when a move fails,
 report it and carry on.
 

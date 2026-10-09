@@ -32,6 +32,31 @@ inside the repository: it infers the repo from the remote.
 
 Pull requests are not a triage request surface.
 
+## Labels
+
+`python3 scripts/labels.py` syncs the repo's labels with issues.md, Labels, and the
+project's `mise run setup:github` runs it; `--dry-run` prints the same plan and writes
+nothing. Its docstring says what it does, in order. The calls it makes:
+
+- Rename in place, so every open and closed issue and PR keeps the label and its timeline
+  shows no remove and add: `gh api -X PATCH 'repos/{owner}/{repo}/labels/<old>' -f new_name=<new>`
+  (`gh label edit <old> --name <new>` is the same call). GitHub refuses a new name that
+  exists, so a fold adds the new label to each carrier and removes the old, then deletes it.
+- Who carries a label, open and closed, issues and PRs:
+  `gh api --paginate -X GET 'repos/{owner}/{repo}/issues' -f labels=<name> -f state=all -f per_page=100 --jq '.[].number'`.
+  A label any issue or PR carries is never deleted, since that loses who had it.
+
+## Assignee
+
+The calls behind issues.md, Assignee. `python3 scripts/approvals.py check build <pr>` reads
+who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
+assigned to anyone else, and, once every build proof holds, assigns the approver where no
+one is and the PR its issue's assignees, commenting `Assigned: @<login>` on the issue as the
+record that the loop made the assignment. When you park an issue (`needs-owner`) or drop
+it, run `python3 scripts/approvals.py release <issue>`: it removes an assignee that record
+names, unless someone assigned them again after it, and keeps any other. Assign by hand
+only a person: `gh issue edit <number> --add-assignee <login>`.
+
 ## Review trail
 
 The calls behind SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
@@ -61,7 +86,8 @@ A GitHub Projects board linked to the repo (the `github-project-board-setup` ski
 progress fields shown). `python3 scripts/board.py <issue> <column>` adds the
 issue when it is missing and sets its column; it is the only thing that moves a ticket, so
 the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
-created through the API. `python3 scripts/board.py column <issue>` prints the later of the
+created through the API. Its views show the Assignees field next to Status, so the board
+shows whose each ticket is. `python3 scripts/board.py column <issue>` prints the later of the
 issue's board column and the one its labels give, so an issue with `approved:spec` reads
 `Ready` even when its move failed or the repo has no board.
 
