@@ -54,7 +54,8 @@ UI, and delegate the rest.
    and start it
    with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
-   earlier commits rather than copying them. Choose its model by the item (SKILL.md,
+   earlier commits rather than copying them. The brief asks for no PR and no posted spec:
+   both are yours (worker.md, Gates and push). Choose its model by the item (SKILL.md,
    Models).
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new

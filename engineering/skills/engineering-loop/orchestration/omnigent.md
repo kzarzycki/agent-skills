@@ -55,6 +55,22 @@ brief stays silent about it, and the PR body says `verifier: same family`.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
+**A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
+failure (a timeout on a loaded server, a killed background command) while the child works
+on. Read the child's status first (the session id is the first line `run` printed, else
+its title under your session's children); while it is running, or idle with its report
+still to come, re-attach with `wait <session> <report>`, adding `--verdict` for a verifier
+so a report written in stages does not end it early. `wait` has no launch time, so on a
+path a pass before already wrote it returns that report at once: check the report's time
+against the run's start before taking it. Start a second only for a child that failed or
+is gone: two children on one item write the same branch.
+
+**Whoever starts a worker collects it.** Omnigent files every child under the runner's
+primary session, so a fork's or a worker's own children notify the coordinator, not the
+session that started them. A session that starts workers keeps each one's background
+`run`, or a `watch <session>...` on them, and reads their reports before it reports
+itself; it does not end its work while one is still out.
+
 What the script guards against, so do not hand-roll it with `sys_session_*`:
 
 - A child created with a queued first message can stay idle for good (history holds only
