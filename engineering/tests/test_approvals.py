@@ -204,7 +204,13 @@ def merge(pr: dict[str, Any], issues: list[dict[str, Any]], loop: str = LOOP) ->
 
 def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections() -> None:
     assert approvals.label_names(TRACKER) == {
-        "category": {"kind:bug", "kind:enhancement", "kind:chore", "kind:ops"},
+        "category": {
+            "kind:bug",
+            "kind:enhancement",
+            "kind:chore",
+            "kind:documentation",
+            "kind:ops",
+        },
         "component": {"area:agents", "area:api", "area:web"},
         "size": {"size:XS", "size:S", "size:M", "size:L", "size:XL"},
     }
@@ -253,7 +259,7 @@ def test_every_closing_issue_specced_lands() -> None:
 
 def test_a_specced_issue_without_exactly_one_category_is_named() -> None:
     found = problems([specced(1), specced(2, "kind:bug", "kind:chore")])
-    categories = "kind:bug, kind:chore, kind:enhancement, kind:ops"
+    categories = "kind:bug, kind:chore, kind:documentation, kind:enhancement, kind:ops"
     assert found == [
         f"#1 needs exactly one category label ({categories}), has 0",
         f"#2 needs exactly one category label ({categories}), has 2",

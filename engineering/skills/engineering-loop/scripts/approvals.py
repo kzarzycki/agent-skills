@@ -108,7 +108,7 @@ from typing import Any, Callable
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
 BUG, EPIC = "kind:bug", "epic"
-CATEGORIES = {BUG, "kind:enhancement", "kind:chore"}
+CATEGORIES = {BUG, "kind:enhancement", "kind:chore", "kind:documentation"}
 # a component's label is `area:<name>` and a category's `kind:<name>`; the docs name them bare or in full (qualified)
 PREFIXES = {"component": "area:", "category": "kind:"}
 SIZE_ORDER = ["size:XS", "size:S", "size:M", "size:L", "size:XL"]

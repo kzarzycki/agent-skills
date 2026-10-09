@@ -8,7 +8,7 @@ Run in the project's checkout, from the installed engineering-loop skill, `--dry
 
 - Renames first, in place (`PATCH labels/<old>`), so every open and closed issue and PR keeps its label: the
   tracker's `## Renamed labels` map, then the loop's own (`bug`, `enhancement` and `chore` to their `kind:` names,
-  `documentation` folded into `kind:chore`), then each component's and extra category's bare name to its `area:` or
+  `documentation` to `kind:documentation`), then each component's and extra category's bare name to its `area:` or
   `kind:` label. Dependabot's labels are never renamed or folded. A rename whose new name already exists is a fold: each issue or PR with the old label gets the new
   one and loses the old, then the old is deleted. An old name the repo lacks is skipped, so the map can stay.
 - Then it creates every listed label it lacks and updates one whose colour or description differs. A tracker item's
@@ -67,7 +67,8 @@ LOOP_LABELS = {
     EPIC: ("8250df", "An outcome the owner tracks; its work items are sub-issues"),
     BUG: ("d73a4a", "Something a user or the pipeline hits is wrong"),
     "kind:enhancement": ("a2eeef", "New or improved behaviour"),
-    "kind:chore": ("c5def5", "Tooling, CI, agent configuration or docs; no behaviour changes"),
+    "kind:chore": ("c5def5", "Tooling, CI or agent configuration; no behaviour changes"),
+    "kind:documentation": ("0075ca", "Docs only; no behaviour changes"),
     "size:XS": ("ededed", "One line or one config value"),
     "size:S": ("ededed", "One module"),
     "size:M": ("ededed", "Several modules"),
@@ -80,7 +81,7 @@ LOOP_RENAMES = [
     ("bug", BUG),
     ("enhancement", "kind:enhancement"),
     ("chore", "kind:chore"),
-    ("documentation", "kind:chore"),
+    ("documentation", "kind:documentation"),
 ]
 AREA, KIND, EXTRA = "1d76db", "c5def5", "ededed"
 
