@@ -27,8 +27,9 @@ the CLI. Without `omnigent` on PATH, use
 
 ```python
 import urllib.request, json
+
 g = lambda p: urllib.request.urlopen("http://127.0.0.1:6767" + p, timeout=5)
-g("/health").read()   # {"status":"ok"}: the server is alive
+g("/health").read()  # {"status":"ok"}: the server is alive
 ```
 
 - `/health` unreachable: the server is down; `omnigent server start`.

@@ -1187,24 +1187,6 @@ def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
 OLD = "c" * 40
 
 
-def answer_compares(answers: dict[str, list[str]], args: tuple[str, ...]) -> str:
-    """GitHub's compare of `base...head` as `compared`'s --jq prints it, from the paths a test set; a 404 otherwise."""
-    found = re.fullmatch(r"repos/\{owner\}/\{repo\}/compare/(\w+\.\.\.\w+)", args[1])
-    assert found and args[2] == "--jq", args
-    if found.group(1) not in answers:
-        raise subprocess.CalledProcessError(1, "gh", stderr="gh: No commit found (HTTP 404)\n")
-    listed = answers[found.group(1)]
-    return "".join(f"{line}\n" for line in [str(len(listed)), *listed])
-
-
-@pytest.fixture
-def compares(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[str]]:
-    """The paths each `base...head` compare changes, by `base...head`; a test fills it."""
-    answers: dict[str, list[str]] = {}
-    monkeypatch.setattr(approvals, "gh", lambda *args, data=None: answer_compares(answers, args))
-    return answers
-
-
 def verified(
     *reviews: dict[str, Any], files: tuple[str, ...] = ("app.py",), **fields: Any
 ) -> list[str]:
@@ -1283,35 +1265,80 @@ def test_a_later_pass_on_the_same_commit_supersedes_an_earlier_one() -> None:
     ]
 
 
-def test_a_review_on_an_older_commit_covers_a_merge_of_main_that_touches_no_pr_file(
-    compares: dict[str, list[str]],
-) -> None:
-    compares[f"{BASE}...{OLD}"] = ["app.py"]
-    compares[f"{OLD}...{HEAD}"] = ["README.md", "docs/guide.md"]
-    assert verified(verdict_on(OLD)) == []
+def test_a_review_on_an_older_commit_never_covers_the_head() -> None:
+    """Every commit after a verdict needs one of its own, a merge of main that touches no PR file included."""
+    line = (
+        f"PR #7: the newest verifier review is on {OLD}, not on the head {HEAD}:"
+        " every commit after a verdict needs a verdict of its own"
+    )
+    assert verified(verdict_on(OLD)) == [line]
+    assert verified(verdict_on(OLD), files=("README.md",)) == [line]
+    # a comment after the verdict is no verdict
+    assert verified(verdict_on(OLD), comments=("Triaged: fixed in the head, lands.",)) == [line]
 
 
-def test_a_review_on_an_older_commit_whose_later_commits_touch_a_pr_file_does_not_cover_it(
-    compares: dict[str, list[str]],
-) -> None:
-    compares[f"{BASE}...{OLD}"] = ["app.py", "old.py"]
-    compares[f"{OLD}...{HEAD}"] = ["README.md", "app.py", "old.py"]
-    # old.py the PR changed at the reviewed commit, and a later commit took the change back out
-    assert verified(verdict_on(OLD)) == [
-        f"PR #7: the newest verifier review is on {OLD}, and later commits change `app.py`, `old.py`: verify the change since"
+def capped(*reviews: dict[str, Any], loop: str = "- spec: always\n", **fields: Any) -> list[str]:
+    """owner_waits on a project whose loop.md has no `merge:` rule: only the cap asks for the owner's label."""
+    return approvals.owner_waits(pull(reviews=reviews, files=("app.py",), **fields), [], loop)
+
+
+def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass() -> None:
+    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their label."""
+    open_at_cap = verdict_on(
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
+    )
+    pass6 = verdict_on(HEAD, heading="Verifier (claude), pass 6")
+    assert verified(open_at_cap, pass6) == []
+    assert capped(open_at_cap, pass6) == [
+        (
+            "PR #7 waits for the owner's `approved:merge` label: a verifier review at the cap (pass 5) or later"
+            " left a core finding open, so the owner decides"
+        )
     ]
-    assert verified(verdict_on("d" * 40)) == [
-        f"PR #7: the newest verifier review is on {'d' * 40}, and GitHub can't compare it with the head: verify the head"
+    assert capped(open_at_cap, pass6, labels=OWNED) == []
+    stale = capped(open_at_cap, pass6, labels=OWNED, labeled="2026-10-01T09:00:00Z")
+    assert stale == [
+        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
 
 
-def test_a_compare_past_the_300_files_github_lists_does_not_cover_the_head(
-    compares: dict[str, list[str]],
+@pytest.mark.parametrize(
+    ("counts", "satisfied"),
+    [("0 blocker, 1 major, 0 minor", "yes"), ("0 blocker, 0 major, 0 minor", "no")],
+)
+def test_a_review_at_the_cap_holds_on_a_core_finding_or_on_not_being_satisfied(
+    counts: str, satisfied: str
 ) -> None:
-    compares[f"{BASE}...{OLD}"] = ["app.py"]
-    compares[f"{OLD}...{HEAD}"] = [f"vendor/{n}.py" for n in range(300)]
-    assert verified(verdict_on(OLD)) == [
-        f"PR #7: the newest verifier review is on {OLD}, and GitHub can't compare it with the head: verify the head"
+    at_cap = verdict_on(OLD, counts, satisfied=satisfied, heading="Verifier (claude), pass 5")
+    assert capped(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")) != []
+
+
+def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> None:
+    minors = verdict_on(HEAD, "0 blocker, 0 major, 3 minor", heading="Verifier (claude), pass 5")
+    assert capped(minors) == []
+    early = verdict_on(
+        OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 4"
+    )
+    assert capped(early, verdict_on(HEAD, heading="Verifier (claude), pass 5")) == []
+
+
+def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
+    assert approvals.cap(None) == approvals.cap("- spec: always\n") == 5  # SKILL.md § The cap
+    assert approvals.cap("## Loop\n\n- cap: 3\n") == approvals.cap("`cap: 3`") == 3
+    assert approvals.cap("- cap: 3 (reviews are expensive here)\n") == 3
+    for unread in ("- cap: 3 passes\n", "- Cap: three\n"):
+        with pytest.raises(approvals.Refused, match="not `cap: <n>`"):
+            approvals.cap(unread)
+    major = verdict_on(
+        OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 3"
+    )
+    later = verdict_on(HEAD, heading="Verifier (claude), pass 4")
+    assert capped(major, later) == []
+    assert capped(major, later, loop="- cap: 3\n") == [
+        (
+            "PR #7 waits for the owner's `approved:merge` label: a verifier review at the cap (pass 3) or later"
+            " left a core finding open, so the owner decides"
+        )
     ]
 
 
@@ -1404,7 +1431,7 @@ def test_a_merge_path_rule_asks_for_the_label_only_on_a_pr_touching_its_path() -
 def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`land` in a checkout with the fixture's tracker and a `merge: path .github/**` rule, against a stubbed GitHub:
     the PR (one approved issue, a verdict on the head, `check` green, a draft), the checks the base's rulesets and
-    branch protection require, whether the repo allows auto-merge, compares; `calls` holds each `gh pr` command."""
+    branch protection require, whether the repo allows auto-merge; `calls` holds each `gh pr` command."""
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
@@ -1416,7 +1443,6 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "rulesets": ["check"],
         "protection": [],
         "auto": True,
-        "compares": {},
         "calls": [],
         "run": {"status": "completed", "url": "https://github.com/o/r/actions/runs/12345"},
     }
@@ -1438,7 +1464,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return "".join(f"{name}\n" for name in state["protection"])
         if args[1:] == ("repos/{owner}/{repo}", "--jq", ".allow_auto_merge"):
             return f"{str(state['auto']).lower()}\n"
-        return answer_compares(state["compares"], args)
+        raise AssertionError(args)
 
     monkeypatch.setattr(approvals, "gh", gh)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
@@ -1779,7 +1805,10 @@ def test_land_says_so_when_the_approvals_status_names_no_run(
         ),
         (
             {"reviews": (verdict_on(OLD),)},
-            f"PR #7: the newest verifier review is on {OLD}, and later commits change `app.py`: verify the change since",
+            (
+                f"PR #7: the newest verifier review is on {OLD}, not on the head {HEAD}:"
+                " every commit after a verdict needs a verdict of its own"
+            ),
         ),
         (
             {"latest": ("CHANGES_REQUESTED",)},
@@ -1796,7 +1825,6 @@ def test_land_says_so_when_the_approvals_status_names_no_run(
 def test_land_refuses_a_missing_proof_and_never_marks_the_pr_ready(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str], change: dict[str, Any], line: str
 ) -> None:
-    landing["compares"].update({f"{BASE}...{OLD}": ["app.py"], f"{OLD}...{HEAD}": ["app.py"]})
     found = change.pop("issue", approved(1, "web", "bug"))
     pr = pull(**{"reviews": (VERDICT,), "files": ("app.py",), **change})
     pr["closingIssuesReferences"]["nodes"] = [found]
@@ -1804,14 +1832,6 @@ def test_land_refuses_a_missing_proof_and_never_marks_the_pr_ready(
     code, lines, calls = landed(capsys, landing)
     assert (code, calls) == (1, [])
     assert line in lines
-
-
-def test_land_merges_on_a_verdict_whose_head_only_main_came_in_after(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["compares"].update({f"{BASE}...{OLD}": ["app.py"], f"{OLD}...{HEAD}": ["README.md"]})
-    landing["pull"]["reviews"]["nodes"] = [verdict_on(OLD)]
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
 
 
 def test_land_says_a_merged_pr_is_merged_and_refuses_a_closed_one(

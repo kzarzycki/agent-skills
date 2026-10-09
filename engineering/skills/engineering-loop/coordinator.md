@@ -97,14 +97,10 @@ UI, and delegate the rest.
    - Fetch, then merge `origin/main` in only when GitHub requires it: `gh pr view <pr> --json
      mergeStateStatus` is `DIRTY` (a conflict) or `BEHIND` (main requires an up-to-date
      branch). A merge queue tests the PR on top of main anyway, so a merge there only costs
-     a CI run. When you do merge it in, rerun the gates. A fresh verifier
-     reviews the merge first (step 7) only when main's changes touch a file the PR changes
-     (`git diff --name-only <old base> origin/main` against
-     `git diff --name-only origin/main...HEAD`) or change a merge check (a `check:` task, a
-     tool it runs, or the lint, type or test configuration). `land` enforces only the first
-     half, refusing a verdict whose later commits touch a PR file; the merge-check half is
-     yours, since the gate can't tell such a change. Otherwise the rerun gates are
-     the review.
+     a CI run. When you do merge it in, rerun the gates and get a verifier pass on the
+     merge (step 7), since `land` merges only a head with a verdict of its own. When main's
+     changes touch no file the PR changes and no merge check (a `check:` task, a tool it
+     runs, or the lint, type or test configuration), that pass is the short delta pass.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where a loop.md `merge:` rule asks, the merge approval is also the
      owner's `approved:merge` label on the head that lands (SKILL.md, Approvals and proof);
@@ -215,4 +211,6 @@ or sleep: every check re-reads your whole context. Read the report file a reply 
 not logs or scrollback. A child nothing waits on reaches you only through the untitled
 inbox notice, so watch your children as the orchestration file says (Omnigent: `watch`).
 
-A core finding still open after pass 3 goes to the owner and stops the landing.
+A core finding still open at the cap goes to the owner and stops the landing: offer a fix
+with one pass past the cap, scoped to the open items, or leaving the code untouched
+(SKILL.md, The cap). Make no fix until they choose.
