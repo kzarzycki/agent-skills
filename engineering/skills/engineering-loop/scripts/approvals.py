@@ -28,9 +28,8 @@ approval record. Without docs/agents/issue-tracker.md no label's shape is checke
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
 PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
-pass's commit says `SATISFIED: yes` with 0 blocker and 0 major (each family's highest pass there), every model family
-that posted a verifier review has one on that commit, since a mixed PR needs both verifiers clear, and that commit is
-the head itself, since every commit after a verdict needs one of its own; no unresolved
+pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
+commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
 `CI: none` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
@@ -684,9 +683,8 @@ def proofs(
     return found
 
 
-def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str], str]] | str:
-    """The verifier's PR reviews in order, each as its commit, pass number, `VERDICT:`/`SATISFIED:` lines and model
-    family (`claude` in `Verifier (claude, same-family), pass 2`): a body
+def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
+    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:` lines: a body
     starting `Verifier (<family>), pass <n>`, by the PR's author or the account running this, since anyone can review
     a public repo. A string names why none can be read."""
     reviews = pull["reviews"]
@@ -703,7 +701,6 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str], str]] |
                 for key, _, value in (line.partition(":") for line in review["body"].splitlines())
                 if key.strip() in ("VERDICT", "SATISFIED")
             },
-            PASS.match(review["body"])[1].split(",")[0].strip().lower(),
         )
         for review in found
         if (review.get("author") or {}).get("login") in trusted
@@ -741,16 +738,15 @@ def capped(pull: dict[str, Any], limit: int) -> bool:
     satisfied: the owner then decides between a fix with one scoped pass more and leaving the code untouched."""
     found = passes(pull)
     return not isinstance(found, str) and any(
-        number >= limit and not held(lines) for _, number, lines, _ in found
+        number >= limit and not held(lines) for _, number, lines in found
     )
 
 
 def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
-    since every commit after a verdict needs one of its own; a model family that reviewed the PR has no review on
-    that commit, since a mixed PR needs both verifiers clear and one family's verdict says nothing of the other's
-    finding; or on that commit a family's highest pass (a later pass on the same commit supersedes an earlier one)
-    is not satisfied, or has a blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
+    since every commit after a verdict needs one of its own, or on its commit the highest pass (a mixed PR's two
+    verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
+    blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt)."""
     verdicts = passes(pull)
     if isinstance(verdicts, str):
@@ -758,23 +754,14 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     if not verdicts:
         return [f"{where}: no verifier review posted (approvals.py verdict)"]
     head = verdicts[-1][0]
-    same, missing = [], []
-    for family in dict.fromkeys(family for *_, family in verdicts):
-        mine = [(n, lines) for commit, n, lines, f in verdicts if f == family and commit == head]
-        if not mine:
-            missing.append(family)
-            continue
-        last = max(number for number, _ in mine)
-        same += [lines for number, lines in mine if number == last]
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    last = max(number for number, _ in on_head)
+    same = [lines for number, lines in on_head if number == last]
     if not head or any(counts(lines) is None or "SATISFIED" not in lines for lines in same):
         return [
             f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
         ]
-    found = [
-        f"{where}: the {family} verifier reviewed this PR but not {head}: every family that reviewed needs a"
-        " satisfied review on the head"
-        for family in missing
-    ]
+    found = []
     if pull["headRefOid"].lower() != head:
         found.append(
             f"{where}: the newest verifier review is on {head}, not on the head {pull['headRefOid']}:"

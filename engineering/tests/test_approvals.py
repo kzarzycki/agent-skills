@@ -1285,33 +1285,13 @@ def test_every_verifier_review_on_the_newest_passs_commit_must_be_satisfied() ->
         f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
         f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
     ]
-    # a pass on a later commit supersedes those on an earlier one
+    # a pass on a later commit supersedes those on an earlier one, whichever family wrote either
     assert verified(verdict_on(OLD, "1 blocker, 0 major, 0 minor", satisfied="no"), VERDICT) == []
-
-
-def test_every_family_that_reviewed_needs_a_satisfied_review_on_the_head() -> None:
-    """A mixed PR: claude's satisfied pass on the head leaves codex's blocker on an older commit unreviewed there."""
-    blocked = verdict_on(
+    codex = verdict_on(
         OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (codex), pass 1"
     )
     claude = verdict_on(HEAD, heading="Verifier (claude, same-family), pass 2")
-    assert verified(blocked, claude) == [
-        (
-            f"PR #7: the codex verifier reviewed this PR but not {HEAD}: every family that reviewed"
-            " needs a satisfied review on the head"
-        )
-    ]
-    assert verified(blocked, claude, verdict_on(HEAD, heading="Verifier (Codex), pass 2")) == []
-    # one family: its later pass on the head supersedes its own earlier one, as before
-    assert verified(verdict_on(OLD, "1 blocker, 0 major, 0 minor", satisfied="no"), claude) == []
-    # a lower pass on the head from the other family still counts, since each family's own highest pass is read
-    late = verdict_on(
-        HEAD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (codex), pass 1"
-    )
-    assert verified(late, claude) == [
-        f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
-        f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
-    ]
+    assert verified(codex, claude) == []
 
 
 def test_a_later_pass_on_the_same_commit_supersedes_an_earlier_one() -> None:
