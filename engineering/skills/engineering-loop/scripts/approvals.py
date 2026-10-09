@@ -150,7 +150,7 @@ ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENT
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
 PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
-  files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
+  files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} }} }} }}
@@ -303,10 +303,14 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     and every file it changes matches that line's condition on its path alone (lock and manifest files). GitHub's
     GraphQL spells a bot's login without the `[bot]` REST and the line write, so both compare without it; a person
     can't hold a bot's login, so the author's type is checked too. Every commit must be the bot's alone, since a
-    person's push to its branch is a change no verifier saw. No line, more files or commits than the gate reads, or
+    person's push to its branch is a change no verifier saw. A renamed or copied file refuses it, since GraphQL
+    gives only the new path, which may hide code moved onto a lock file's name. No line, more files or commits than the gate reads, or
     a condition it can't read: no exemption."""
     author, files = pull.get("author") or {}, paths(pull)
-    if author.get("__typename") != "Bot" or not files:
+    renamed = any(
+        file.get("changeType") in ("RENAMED", "COPIED") for file in pull["files"]["nodes"]
+    )
+    if author.get("__typename") != "Bot" or not files or renamed:
         return False
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}

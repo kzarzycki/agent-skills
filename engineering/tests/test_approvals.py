@@ -1467,6 +1467,12 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
     assert bot(("uv.lock",), kind="User") == UNREVIEWED  # a person is never the bot
     assert bot(("uv.lock",), loop=LOOP) == UNREVIEWED  # no `bot:` line: no exemption
     assert bot(()) == UNREVIEWED
+    moved = {**pull(files=("uv.lock",)), "author": {"__typename": "Bot", "login": login}}
+    moved["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    moved["files"]["nodes"][0]["changeType"] = (
+        "RENAMED"  # app.py moved onto uv.lock: GraphQL shows only uv.lock
+    )
+    assert approvals.proofs("merge", moved, [], BOTS) == UNREVIEWED
     assert bot(("uv.lock",), commits=("dependabot", "dependabot[bot]")) == []
     assert bot(("uv.lock",), commits=("dependabot[bot]", "worker")) == UNREVIEWED  # a person's push
     assert bot(("uv.lock",), commits=(None,)) == UNREVIEWED  # an author GitHub ties to no account
