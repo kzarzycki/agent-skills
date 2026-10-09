@@ -1437,6 +1437,29 @@ def test_an_unresolved_review_thread_lets_nothing_land() -> None:
     assert verified(VERDICT, threads=(True, True)) == []
 
 
+BOTS = LOOP + "- bot: dependabot[bot] path uv.lock or path `**/package.json`\n"
+UNREVIEWED = ["PR #7: no verifier review posted (approvals.py verdict)"]
+
+
+@pytest.mark.parametrize(
+    "login", ["dependabot", "dependabot[bot]"]
+)  # GraphQL's spelling, and REST's
+def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(login: str) -> None:
+    def bot(
+        files: tuple[str, ...], who: str = login, kind: str = "Bot", loop: str = BOTS
+    ) -> list[str]:
+        pr = {**pull(files=files), "author": {"__typename": kind, "login": who}}
+        return approvals.proofs("merge", pr, [], loop)
+
+    assert bot(("uv.lock", "web/package.json")) == []
+    assert bot(("uv.lock", "app.py")) == UNREVIEWED  # code needs a review as usual
+    assert bot(("uv.lock",), who="renovate") == UNREVIEWED  # a bot the line doesn't name
+    assert bot(("uv.lock",), kind="User") == UNREVIEWED  # a person is never the bot
+    assert bot(("uv.lock",), loop=LOOP) == UNREVIEWED  # no `bot:` line: no exemption
+    assert bot(()) == UNREVIEWED
+    assert approvals.risk_rules(BOTS) == approvals.risk_rules(LOOP)  # a bot line is no risk rule
+
+
 def test_more_reviews_or_threads_than_one_page_is_refused() -> None:
     crowded = pull(reviews=(VERDICT,), threads=(True,))
     crowded["reviews"]["totalCount"] = 101

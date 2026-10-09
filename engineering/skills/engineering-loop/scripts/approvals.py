@@ -30,7 +30,8 @@ reviews, a review counting only when its body starts `Verifier (<family>), pass 
 PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; no unresolved
-review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+review thread; and no review whose latest state is `CHANGES_REQUESTED`. A PR by a bot a `bot:` line names (below)
+needs no verifier review when every file it changes matches that line's condition. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
 `CI: none` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
@@ -83,7 +84,9 @@ is still built; its merge waits for the owner. `merge: auto unless risk` says th
 change that is not high risk, which also holds without the line. Each `risk: <condition>` line is a risk rule, and
 so is each `merge:` line with a condition in place of a policy, until the project rewrites it, and each `spec:`
 condition beside `spec: auto unless risk` (without that line the owner approves every spec, so it holds no merge). A
-`plan: <condition>` line asks for the owner's plan approval. A condition the gate can read is `always`, `size:L`
+`plan: <condition>` line asks for the owner's plan approval. A `bot: <login> <condition>` line, such as
+`bot: dependabot[bot] path uv.lock or path package-lock.json`, lets that bot's PR merge without a verifier review
+when each file it changes matches the condition on its path; without one, every PR needs the review. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
 glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
 condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
@@ -146,7 +149,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""number author {{ login }} {ASSIGNEES} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -234,9 +237,9 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 def rules(loop: str) -> list[tuple[str, str]]:
-    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan`, `merge` and `risk`."""
+    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan`, `merge`, `risk` and `bot`."""
     return re.findall(
-        r"^[ \t]*[-*] +(spec|plan|merge|risk):[ \t]*(.+?)[ \t]*$",
+        r"^[ \t]*[-*] +(spec|plan|merge|risk|bot):[ \t]*(.+?)[ \t]*$",
         section(loop, "Approvals"),
         re.MULTILINE,
     )
@@ -292,6 +295,24 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
         if hit:
             return True
     return None if unread else False
+
+
+def exempt(pull: dict[str, Any], loop: str | None) -> bool:
+    """Whether the PR needs no verifier review: its author is a bot a loop.md `bot: <login> <condition>` line names,
+    and every file it changes matches that line's condition on its path alone (lock and manifest files). GitHub's
+    GraphQL spells a bot's login without the `[bot]` REST and the line write, so both compare without it; a person
+    can't hold a bot's login, so the author's type is checked too. No line, more files than the gate reads, or a
+    condition it can't read: no exemption."""
+    author, files = pull.get("author") or {}, paths(pull)
+    if author.get("__typename") != "Bot" or not files:
+        return False
+    login = (author.get("login") or "").removesuffix("[bot]").lower()
+    lines = [text.partition(" ") for rule, text in rules(loop or "") if rule == "bot"]
+    return any(
+        name.strip("`").removesuffix("[bot]").lower() == login
+        and all(matches(condition, set(), [path]) is True for path in files)
+        for name, _, condition in lines
+    )
 
 
 def owner_needed(point: str, loop_rules: list[tuple[str, str]], labels: set[str]) -> bool:
@@ -621,7 +642,7 @@ def proofs(
     evidence = section(pull["body"] or "", "Evidence")
     if not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
-    if revert is None:
+    if revert is None and not exempt(pull, loop):
         found += reviewed(where, pull)
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
@@ -703,9 +724,8 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
     since every commit after a verdict needs one of its own, or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
-    blocker or a major open. A triage or comment is no verdict. ponytail: no bot-PR exemption (#106: an
-    allow-listed bot's lock- or manifest-only PR passes without a verifier); add it with the allow-list when a
-    project lands bot PRs."""
+    blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
+    needs none (exempt)."""
     verdicts = passes(pull)
     if isinstance(verdicts, str):
         return [f"{where} {verdicts}"]
