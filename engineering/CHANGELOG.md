@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.0 - 2026-10-09
 
 A bot's lock- or manifest-only PR merges without a verifier review (#106).
 
@@ -21,7 +21,8 @@ A bot's lock- or manifest-only PR merges without a verifier review (#106).
   marks no draft ready. Before, a PR a risk rule or `risk:high` already held never read
   the cap, so `check merge` printed its proofs and `land` marked the draft ready.
 - The cap hold (0.14.0) applies when a verifier review at the cap or later left a
-  blocker or major open, and also when it says `SATISFIED: no` with none open.
+  blocker or major open, and also when it says `SATISFIED: no` with none open; the hold
+  line says "was not satisfied or left a blocker or major open".
 
 ## 0.16.0 - 2026-10-09
 
