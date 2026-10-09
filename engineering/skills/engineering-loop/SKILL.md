@@ -32,7 +32,7 @@ question for the owner, not a guess:
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines and `risk:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
-| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels and Extra categories | Intent, Spec, Land |
+| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels, Extra categories and Renamed labels | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
 ### Adopting the loop
@@ -56,7 +56,9 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
   merge queue, requiring exactly two checks, `check` and `loop:approvals`. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
-  leaves untouched, and reverting deletes only it.
+  leaves untouched, and reverting deletes only it. Once project-templates wires it in,
+  `setup:github` also syncs the repo's labels with `scripts/labels.py`; until then run
+  that by hand (github.md, Labels).
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
@@ -112,7 +114,7 @@ review on the commit it reviewed.
 loop.md § Approvals holds the policy, one line each:
 
 - `spec: auto unless risk` approves by policy, with no record or label, the spec of a
-  `bug`, of an issue whose body has a `Found while #<n>` line (a follow-up an agent
+  `kind:bug`, of an issue whose body has a `Found while #<n>` line (a follow-up an agent
   raised, Triage), or of a native sub-issue of an epic the owner approved (their current
   record and `approved:spec`), opened by an account with write access to the repo. Any
   other spec, a new epic for one, needs the owner's approval; without the line, every

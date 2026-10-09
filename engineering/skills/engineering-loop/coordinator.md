@@ -18,7 +18,10 @@ UI, and delegate the rest.
    otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
-   yourself: an approval is a person's word or the owner's policy in loop.md. Each state change here and below also moves the ticket on
+   yourself: an approval is a person's word or the owner's policy in loop.md. An issue
+   assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
+   you park an issue (`needs-owner`) or drop it, run `python3 scripts/approvals.py release
+   <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
 2. **Spec.** Write the spec into the intent's issue with the Spec skill (SKILL.md,
@@ -46,7 +49,9 @@ UI, and delegate the rest.
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
    that closes the spec with the branch's first push (github.md, Review trail; board:
-   `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. Keep one scratchpad markdown for the run: the work items and what
+   `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
+   that exit it assigns the issue's approver where no one is assigned, and the PR its
+   issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR

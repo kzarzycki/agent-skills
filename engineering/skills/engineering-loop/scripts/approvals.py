@@ -6,6 +6,7 @@
     python3 scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     python3 scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
+    python3 scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
@@ -15,7 +16,13 @@ those tasks.
 exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its spec approved: the
 owner's current record and `approved:spec`, unless loop.md's `spec: auto unless risk` covers it (below). A `## Plan`
 comment needs the same where a `plan:` rule asks, and is due with a `Plan:` line in loop.md § Practice. Category,
-component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`).
+component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`): a category is
+`kind:<name>`, a component `area:<name>`, whether the tracker file and loop.md's conditions name it bare or in full.
+`check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
+or for a spec the policy approves the account running this), since an assignee says whose the issue is. When every
+build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
+the PR its issues' assignees, reporting a refusal and carrying on. `release` removes an assignee that record names,
+unless someone assigned them again after it, and keeps every other: a claim a person made stays.
 A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the verifier's PR
@@ -100,7 +107,10 @@ from typing import Any, Callable
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
-CATEGORIES = {"bug", "enhancement", "documentation", "chore"}
+BUG, EPIC = "kind:bug", "epic"
+CATEGORIES = {BUG, "kind:enhancement", "kind:chore"}
+# a component's label is `area:<name>` and a category's `kind:<name>`; the docs name them bare or in full (qualified)
+PREFIXES = {"component": "area:", "category": "kind:"}
 SIZE_ORDER = ["size:XS", "size:S", "size:M", "size:L", "size:XL"]
 SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
@@ -127,9 +137,16 @@ CAP_LINE = re.compile(
 CAP_ANY = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?cap:", re.MULTILINE | re.IGNORECASE)
 NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
 SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-# an issue with its author and its native parent (an epic), which spec_policy() reads
-ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }}"
-PULL = f"""number author {{ login }} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+ASSIGNEES = "assignees(first: 10) { nodes { login } }"
+# who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
+EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT]) { nodes { __typename
+  ... on LabeledEvent { createdAt actor { __typename login } label { name } }
+  ... on AssignedEvent { createdAt assignee { ... on User { login } ... on Bot { login } } } } }"""
+# an issue with its author and its native parent (an epic), which spec_policy() reads, its assignees and events
+ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
+# the first line of the record claim() leaves when it assigns an issue, which release() reads
+ASSIGNED = "Assigned: @"
+PULL = f"""number author {{ login }} {ASSIGNEES} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -181,18 +198,37 @@ def section(text: str, heading: str) -> str:
     return found.group(1) if found else ""
 
 
+def items(tracker: str, heading: str) -> dict[str, str]:
+    """The first backticked name of each list item under `## <heading>`, with the text after it (`**`, `:` and the
+    surrounding space dropped)."""
+    return {
+        name: text.strip()
+        for name, text in re.findall(
+            r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`\**:?[ \t]*(.*)$",
+            section(tracker, heading),
+            re.MULTILINE,
+        )
+    }
+
+
 def listed(tracker: str, heading: str) -> set[str]:
     """The first backticked name of each list item under `## <heading>`."""
-    return set(
-        re.findall(r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`", section(tracker, heading), re.MULTILINE)
-    )
+    return set(items(tracker, heading))
+
+
+def qualified(kind: str, name: str) -> str:
+    """A component's or category's label: `billing` and `area:billing` both name `area:billing`."""
+    prefix = PREFIXES[kind.lower()]
+    return prefix + name.removeprefix(prefix)
 
 
 def label_names(tracker: str) -> dict[str, set[str]]:
-    """The loop's label rule: each kind's names, the loop's fixed set plus docs/agents/issue-tracker.md's."""
+    """The loop's label rule: each kind's names, the loop's fixed set plus docs/agents/issue-tracker.md's, a
+    component as `area:<name>` and a category as `kind:<name>`."""
     return {
-        "category": CATEGORIES | listed(tracker, "Extra categories"),
-        "component": listed(tracker, "Components"),
+        "category": CATEGORIES
+        | {qualified("category", name) for name in listed(tracker, "Extra categories")},
+        "component": {qualified("component", name) for name in listed(tracker, "Components")},
         "size": SIZES,
     }
 
@@ -247,7 +283,7 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
                 labels & set(SIZE_ORDER[index:] if larger else SIZE_ORDER[index : index + 1])
             )
         elif kind:
-            hit = name in labels
+            hit = qualified(kind, name) in labels
         elif glob:
             unread |= paths is None
             hit = any(fnmatch.fnmatch(path, glob) for path in paths or [])
@@ -303,6 +339,74 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
             f"PR #{pull['number']}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
         ]
     return []
+
+
+def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
+    """Building starts: assign each issue no one holds to its spec's approver, with a record that the loop did
+    (release reads it), and give the PR its issues' assignees. The record comes first, so a refused comment leaves no
+    assignment release would read as a person's. A line when GitHub refuses, never a failure, since an assignee says
+    who the issue belongs to and gates nothing past `check build`."""
+    found, held = [], set()
+    for issue in issues:
+        number, owners = issue["number"], assignees(issue)
+        if not owners and (login := approver(issue)):
+            try:
+                comment(number, f"{ASSIGNED}{login}\nBy: loop\nPR: #{pull['number']}\n")
+            except subprocess.CalledProcessError as exc:
+                found.append(
+                    f"#{number}: did not assign @{login}: could not record the claim ({(exc.stderr or '').strip() or exc})"
+                )
+                continue
+            try:
+                assign(number, login, add=True)
+            except subprocess.CalledProcessError as exc:
+                found.append(
+                    f"#{number}: could not assign @{login} ({(exc.stderr or '').strip() or exc})"
+                )
+                continue
+            owners = {login}
+        held |= owners
+    for login in sorted(held - assignees(pull)):
+        try:
+            assign(pull["number"], login, add=True)
+        except subprocess.CalledProcessError as exc:
+            found.append(
+                f"PR #{pull['number']}: could not assign @{login} ({(exc.stderr or '').strip() or exc})"
+            )
+    return found
+
+
+def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
+    """Whether the loop's claim() made `login` the issue's assignee: its record names them, and the loop's own
+    assignment, the first of them at or after the record, is the last; a later one is a person claiming it again.
+    ponytail: when the assignment itself was refused, a person's later assignment reads as the loop's; claim()
+    reported that refusal, and removing the approver on parking is undone by assigning them again."""
+    recorded = [
+        note["createdAt"]
+        for note in notes(issue)
+        if note["body"].strip().split("\n", 1)[0].strip() == f"{ASSIGNED}{login}"
+    ]
+    if not recorded:
+        return False
+    later = [
+        event
+        for event in events(issue, "AssignedEvent")
+        if ((event.get("assignee") or {}).get("login") == login)
+        and (event.get("createdAt") or "") >= max(recorded)  # ISO 8601 in UTC, so it orders as text
+    ]
+    return len(later) <= 1
+
+
+def release(number: int) -> int:
+    """Parked or dropped: remove each assignee the loop added (assigned_by_loop), and keep a claim a person made."""
+    issue = issue_node(number)
+    for login in sorted(assignees(issue)):
+        if assigned_by_loop(issue, login):
+            assign(number, login, add=False)
+            print(f"#{number}: removed @{login}, whom the loop assigned")
+        else:
+            print(f"#{number}: kept @{login}, whose claim it is")
+    return 0
 
 
 def version(holder: dict[str, Any]) -> str:
@@ -387,9 +491,9 @@ def spec_policy(issue: dict[str, Any]) -> bool:
     """Whether `spec: auto unless risk` approves the issue's spec: a bug; a follow-up an agent raised (a
     `Found while #n` line in its body); or a native sub-issue of an epic with the owner's current spec record and
     `approved:spec`, opened by someone with write access. An epic is never covered: the owner approves it."""
-    if "epic" in names(issue):
+    if EPIC in names(issue):
         return False
-    if "bug" in names(issue) or FOUND_WHILE.search(QUOTED.sub("", issue.get("body") or "")):
+    if BUG in names(issue) or FOUND_WHILE.search(QUOTED.sub("", issue.get("body") or "")):
         return True
     parent = issue.get("parent")
     if not parent or READY not in names(parent):
@@ -398,6 +502,51 @@ def spec_policy(issue: dict[str, Any]) -> bool:
         return False
     login = (issue.get("author") or {}).get("login")
     return bool(login) and writer(login)
+
+
+def assignees(node: dict[str, Any]) -> set[str]:
+    return {user["login"] for user in (node.get("assignees") or {}).get("nodes", [])}
+
+
+def events(node: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    """The node's timeline events of `kind` (`LabeledEvent`, `AssignedEvent`), oldest first."""
+    found = [
+        event
+        for event in (node.get("timelineItems") or {}).get("nodes", [])
+        if event.get("__typename") == kind
+    ]
+    return sorted(found, key=lambda event: event.get("createdAt") or "")
+
+
+def approver(issue: dict[str, Any]) -> str | None:
+    """Who approved the issue's spec: the person who last added `approved:spec`, or, for a spec loop.md's policy
+    approves (no label), the account running the loop, whose policy it is. None for a bot, since an agent is never an
+    assignee."""
+    added = [
+        event
+        for event in events(issue, "LabeledEvent")
+        if (event.get("label") or {}).get("name") == READY
+    ]
+    if not added:
+        return viewer()
+    actor = added[-1].get("actor") or {}
+    return actor.get("login") if actor.get("__typename") == "User" else None
+
+
+def others(issue: dict[str, Any]) -> str | None:
+    """A line when the issue is assigned to anyone but its spec's approver: an assignee is who the issue belongs to,
+    so the loop never builds someone else's. None when it is assigned to no one or to the approver alone."""
+    held = assignees(issue)
+    if not held:
+        return None
+    login = approver(issue)
+    if held <= {login}:
+        return None
+    who = ", ".join(f"@{name}" for name in sorted(held))
+    return (
+        f"#{issue['number']} is assigned to {who}, not to its approver {f'@{login}' if login else '(a person)'}"
+        " alone: someone else's issue is theirs, so the loop leaves it"
+    )
 
 
 def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) -> list[str]:
@@ -449,6 +598,8 @@ def proofs(
     auto = policy(loop, "spec")
     for issue in issues:
         labels = names(issue)
+        if point == "build" and (line := others(issue)):
+            found.append(line)
         if any(label.startswith("wayfinder:") for label in labels):
             continue
         where = f"#{issue['number']}"
@@ -1006,6 +1157,18 @@ def label(number: int, name: str, add: bool) -> None:
             raise
 
 
+def assign(number: int, login: str, add: bool) -> None:
+    """Add or remove an assignee of an issue or PR; GitHub ignores an absent one."""
+    gh(
+        "api",
+        *(() if add else ("-X", "DELETE")),
+        f"repos/{{owner}}/{{repo}}/issues/{number}/assignees",
+        "-f",
+        f"assignees[]={login}",
+        "--silent",
+    )
+
+
 def comment(number: int, body: str) -> None:
     gh(
         "api",
@@ -1112,7 +1275,8 @@ def check(point: str, pr: int | None) -> int:
     pull = pull_request(pr)
     found, issues = gated(point, pull, tracker, loop)
     waiting = waits(pull, issues, loop) if point == "merge" else []
-    for line in found + waiting + (flag(pull, issues, loop) if point == "merge" else []):
+    after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
+    for line in found + waiting + after:
         print(line)
     return 1 if found else WAITING if waiting else 0
 
@@ -1417,6 +1581,8 @@ def main(argv: list[str]) -> int:
     recording.add_argument("pr", type=int)
     landing = commands.add_parser("land")
     landing.add_argument("pr", type=int)
+    releasing = commands.add_parser("release")
+    releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
     try:
         if args.command == "check":
@@ -1427,6 +1593,8 @@ def main(argv: list[str]) -> int:
             return local_ci(args.pr)
         if args.command == "land":
             return land(args.pr)
+        if args.command == "release":
+            return release(args.issue)
         return verdict(args.pr, args.report)
     except Refused as exc:
         print(exc)

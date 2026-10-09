@@ -47,11 +47,11 @@ FIRST_COLUMN_OPTION_ID=$(jq -r '.fields[]|select(.name=="Status").options[0].id'
 
 No other field is needed. A separate loop-position field (`Phase`) next to `Status` has to be updated in step with it and goes stale the first time one update is missed; a `Kind` field repeats the labels.
 
-The built-in "Parent issue" and "Sub-issues progress" fields show where a ticket belongs and how far its epic is, but a view shows only the fields in its visible list. Show them on the first view, and add an Epics view filtered to `label:epic`. `visibleFieldIds` replaces the list, in order, so name every field the view should show:
+The built-in "Assignees" field shows whose a ticket is, and "Parent issue" and "Sub-issues progress" show where it belongs and how far its epic is, but a view shows only the fields in its visible list. Show them on the first view, and add an Epics view filtered to `label:epic`. `visibleFieldIds` replaces the list, in order, so name every field the view should show:
 
 ```bash
 P=$(gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{fields(first:50){nodes{... on ProjectV2FieldCommon{id name}}} views(first:1){nodes{id}}}}}' -q .data.node)
-SHOW=(); for n in Title Status Labels "Parent issue" "Sub-issues progress"; do
+SHOW=(); for n in Title Status Assignees Labels "Parent issue" "Sub-issues progress"; do
   SHOW+=(-f "f[]=$(jq -r --arg n "$n" '.fields.nodes[]|select(.name==$n).id' <<<"$P")"); done
 EPICS=$(gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2View(input:{projectId:$p,name:"Epics",layout:TABLE_LAYOUT}){projectV2View{id}}}' -q .data.createProjectV2View.projectV2View.id)
 gh api graphql -f v="$(jq -r '.views.nodes[0].id' <<<"$P")" "${SHOW[@]}" -f query='mutation($v:ID!,$f:[ID!]){updateProjectV2View(input:{viewId:$v,configuration:{visibleFieldIds:$f}}){projectV2View{name}}}'
@@ -63,6 +63,8 @@ A view's name, layout, filter and visible fields are all the API sets (`UpdatePr
 A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off (`workflows{nodes{name enabled}}` on the project shows it; only "Auto-add sub-issues to project" is on), and the API cannot switch them on. Until someone enables "Item closed" in the web UI, nothing moves a closed issue to `Done`: the loop sets `Done` itself at the step that closes the issue.
 
 ### 3. Labels
+
+On a repo the engineering loop runs, skip this step: the loop's label sync (engineering-loop's `github.md`, Labels) owns the labels and its names (`kind:bug`, `approved:spec`) replace these, so labels made here would only be deleted or renamed by its next run.
 
 ```bash
 for l in "epic|8250DF|An outcome the owner tracks; its work items are sub-issues" \
