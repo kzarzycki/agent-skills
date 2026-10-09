@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 - 2026-10-09
 
+- `scripts/gate.py` and `approvals.py record-check`, the old names kept through 0.13, are gone:
+  run `approvals.py` and `approvals.py local-ci`.
 - No fix lands without review (#116). `approvals.py land` merges only a head with a
   satisfied verifier review on that exact commit: any commit after the verdict, a merge of
   main included, needs a verifier pass of its own. A head that only took in main's changes

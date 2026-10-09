@@ -125,8 +125,7 @@ marks a draft ready and waits for the CI that starts, and on a ready PR merges i
 its head, or turns on auto-merge while only required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand, because
 `land` is what refuses a PR whose proof is missing. A repo without `docs/agents/loop.md` has
 no rules: `land` there needs each named issue to carry `approved:spec` and not
-`needs-owner`, and the PR's own proofs. `scripts/gate.py` and `local-ci`'s old name
-`record-check` still run until 0.14.0.
+`needs-owner`, and the PR's own proofs.
 
 loop.md § Approvals adds a person's approval, never in place of the loop's: one rule per
 line, `<spec|plan|merge>: <condition>`, such as `spec: size:L or larger, or component
