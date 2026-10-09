@@ -83,7 +83,11 @@ is still built; its merge waits for the owner. `merge: auto unless risk` says th
 change that is not high risk, which also holds without the line. Each `risk: <condition>` line is a risk rule, and
 so is each `merge:` line with a condition in place of a policy, until the project rewrites it, and each `spec:`
 condition beside `spec: auto unless risk` (without that line the owner approves every spec, so it holds no merge). A
-`plan: <condition>` line asks for the owner's plan approval. A condition the gate can read is `always`, `size:L`
+`plan: <condition>` line asks for the owner's plan approval. A `bot: <login> <condition>` line, such as
+`bot: dependabot[bot] path uv.lock or path package-lock.json`, lets that bot's PR merge without a verifier review
+when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it
+changes, none renamed or copied, matches the condition on its path (exempt); without one, every PR needs the
+review. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
 glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
 condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
@@ -146,10 +150,11 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""number author {{ login }} {ASSIGNEES} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
-  files(first: 100) {{ totalCount nodes {{ path }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
+PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+  files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
+  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
@@ -234,9 +239,9 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 def rules(loop: str) -> list[tuple[str, str]]:
-    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan`, `merge` and `risk`."""
+    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan`, `merge`, `risk` and `bot`."""
     return re.findall(
-        r"^[ \t]*[-*] +(spec|plan|merge|risk):[ \t]*(.+?)[ \t]*$",
+        r"^[ \t]*[-*] +(spec|plan|merge|risk|bot):[ \t]*(.+?)[ \t]*$",
         section(loop, "Approvals"),
         re.MULTILINE,
     )
@@ -292,6 +297,44 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
         if hit:
             return True
     return None if unread else False
+
+
+def exempt(pull: dict[str, Any], loop: str | None) -> bool:
+    """Whether the PR needs no verifier review: its author is a bot a loop.md `bot: <login> <condition>` line names,
+    and every file it changes matches that line's condition on its path alone (lock and manifest files). GitHub's
+    GraphQL spells a bot's login without the `[bot]` REST and the line write, so both compare without it; a person
+    can't hold a bot's login, so the author's type is checked too. Every commit's authors must be the bot, and its
+    committer the bot or no account (GitHub's web-flow committer on the bot's own commits), since a person's push
+    or rebase of its branch is a change no verifier saw. A renamed or copied file refuses it, since GraphQL
+    gives only the new path, which may hide code moved onto a lock file's name. No line, more files or commits than the gate reads, or
+    a condition it can't read: no exemption."""
+    author, files = pull.get("author") or {}, paths(pull)
+    renamed = any(
+        file.get("changeType") in ("RENAMED", "COPIED") for file in pull["files"]["nodes"]
+    )
+    if author.get("__typename") != "Bot" or not files or renamed:
+        return False
+    login = (author.get("login") or "").removesuffix("[bot]").lower()
+    commits = pull.get("authored") or {}
+    nodes = commits.get("nodes") or []
+    if not nodes or (commits.get("totalCount") or 0) > len(nodes):
+        return False
+    for node in nodes:
+        authors = node["commit"]["authors"]
+        logins = [((a.get("user") or {}).get("login") or "") for a in authors["nodes"]]
+        if not logins or (authors.get("totalCount") or 0) > len(logins):
+            return False
+        committer = ((node["commit"].get("committer") or {}).get("user") or {}).get("login")
+        if committer is not None:
+            logins.append(committer)
+        if any(name.removesuffix("[bot]").lower() != login for name in logins):
+            return False
+    lines = [text.partition(" ") for rule, text in rules(loop or "") if rule == "bot"]
+    return any(
+        name.strip("`").removesuffix("[bot]").lower() == login
+        and all(matches(condition, set(), [path]) is True for path in files)
+        for name, _, condition in lines
+    )
 
 
 def owner_needed(point: str, loop_rules: list[tuple[str, str]], labels: set[str]) -> bool:
@@ -621,7 +664,7 @@ def proofs(
     evidence = section(pull["body"] or "", "Evidence")
     if not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
-    if revert is None:
+    if revert is None and not exempt(pull, loop):
         found += reviewed(where, pull)
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
@@ -703,9 +746,8 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
     since every commit after a verdict needs one of its own, or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
-    blocker or a major open. A triage or comment is no verdict. ponytail: no bot-PR exemption (#106: an
-    allow-listed bot's lock- or manifest-only PR passes without a verifier); add it with the allow-list when a
-    project lands bot PRs."""
+    blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
+    needs none (exempt)."""
     verdicts = passes(pull)
     if isinstance(verdicts, str):
         return [f"{where} {verdicts}"]

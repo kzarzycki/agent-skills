@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+A bot's lock- or manifest-only PR merges without a verifier review (#106).
+
+- loop.md § Approvals takes `bot: <login> <condition>`, such as
+  `bot: dependabot[bot] path uv.lock or path pyproject.toml`. `check merge` and `land`
+  waive the verifier review for a PR that bot opened when every file it changes matches
+  the condition on its path and every commit is the bot's (authors, and a committer that is the bot or no account);
+  any other file, a renamed or copied one, or a person's commit or rebase needs the review as usual. Without the line, no PR is
+  exempt. The login matches with or without `[bot]`, and only a bot account.
+- The verifier resolves no review thread.
+
 ## 0.16.0 - 2026-10-09
 
 Labels as code: `area:` and `kind:` labels, synced with in-place renames, and the

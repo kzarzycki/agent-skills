@@ -1437,6 +1437,81 @@ def test_an_unresolved_review_thread_lets_nothing_land() -> None:
     assert verified(VERDICT, threads=(True, True)) == []
 
 
+BOTS = LOOP + "- bot: dependabot[bot] path uv.lock or path `**/package.json`\n"
+UNREVIEWED = ["PR #7: no verifier review posted (approvals.py verdict)"]
+
+
+def authored(login: str | None, committer: str | None = None) -> dict[str, Any]:
+    """A commit on the PR as GraphQL's `authored` returns it, by `login` (None: no GitHub account), committed by
+    `committer` (None: no account, as GitHub's web-flow committer on a bot's own commits)."""
+    return {
+        "commit": {
+            "authors": {"nodes": [{"user": {"login": login} if login else None}]},
+            "committer": {"user": {"login": committer} if committer else None},
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    "login", ["dependabot", "dependabot[bot]"]
+)  # GraphQL's spelling, and REST's
+def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(login: str) -> None:
+    def made(
+        files: tuple[str, ...] = ("uv.lock",),
+        who: str = login,
+        kind: str = "Bot",
+        commits: tuple[str | None, ...] = ("dependabot[bot]",),
+    ) -> dict[str, Any]:
+        pr = {**pull(files=files), "author": {"__typename": kind, "login": who}}
+        pr["authored"] = {"nodes": [authored(by) for by in commits]}
+        return pr
+
+    def bot(*files: str, loop: str = BOTS, **fields: Any) -> list[str]:
+        return approvals.proofs("merge", made(files or ("uv.lock",), **fields), [], loop)
+
+    def gate(pr: dict[str, Any]) -> list[str]:
+        return approvals.proofs("merge", pr, [], BOTS)
+
+    assert bot("uv.lock", "web/package.json") == []
+    assert bot("uv.lock", "app.py") == UNREVIEWED  # code needs a review as usual
+    assert bot(who="renovate") == UNREVIEWED  # a bot the line doesn't name
+    assert bot(kind="User") == UNREVIEWED  # a person is never the bot
+    assert bot(loop=LOOP) == UNREVIEWED  # no `bot:` line: no exemption
+    assert approvals.proofs("merge", made(files=()), [], BOTS) == UNREVIEWED
+    assert bot(commits=("dependabot", "dependabot[bot]")) == []
+    assert bot(commits=("dependabot[bot]", "worker")) == UNREVIEWED  # a person's push
+    assert bot(commits=(None,)) == UNREVIEWED  # an author GitHub ties to no account
+    assert bot(commits=()) == UNREVIEWED
+    unread = BOTS.replace("path uv.lock or", "lock files or path uv.lock or")
+    assert bot(loop=unread) == UNREVIEWED  # a condition the gate can't read
+    for change in (
+        "RENAMED",
+        "COPIED",
+    ):  # app.py moved or copied onto uv.lock: GraphQL shows only uv.lock
+        moved = made()
+        moved["files"]["nodes"][0]["changeType"] = change
+        assert gate(moved) == UNREVIEWED
+    crowded = made(files=("uv.lock",) * 100)
+    crowded["files"]["totalCount"] = 101  # past the one page of files the gate reads
+    assert gate(crowded) == UNREVIEWED
+    long = made(commits=("dependabot[bot]",) * 100)
+    long["authored"]["totalCount"] = 101  # past the one page of commits the gate reads
+    assert gate(long) == UNREVIEWED
+    shared = made()
+    shared["authored"]["nodes"][0]["commit"]["authors"] = {
+        "totalCount": 6,  # a sixth co-author past the five the gate reads
+        "nodes": [{"user": {"login": "dependabot[bot]"}}] * 5,
+    }
+    assert gate(shared) == UNREVIEWED
+    rebased = made()
+    rebased["authored"]["nodes"] = [authored("dependabot[bot]", committer="worker")]
+    assert gate(rebased) == UNREVIEWED  # a person's rebase keeps the bot as author
+    signed = made()
+    signed["authored"]["nodes"] = [authored("dependabot[bot]", committer="dependabot[bot]")]
+    assert gate(signed) == []
+    assert approvals.risk_rules(BOTS) == approvals.risk_rules(LOOP)  # a bot line is no risk rule
+
+
 def test_more_reviews_or_threads_than_one_page_is_refused() -> None:
     crowded = pull(reviews=(VERDICT,), threads=(True,))
     crowded["reviews"]["totalCount"] = 101

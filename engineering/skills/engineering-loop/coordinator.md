@@ -174,7 +174,8 @@ UI, and delegate the rest.
      thread with the SHA and resolved (`worker.md`, Trail), and a verifier pass (step 7)
      before `land` runs again. Never cascade a fix down a stack or re-prove a merge
      order: a merge queue tests each PR on top of main, and a PR stacked on this one moves
-     onto main when it lands (SKILL.md, Stacks are one deep).
+     onto main when it lands (SKILL.md, Stacks are one deep). Dismiss a teammate's review
+     requesting changes only as SKILL.md, Review trail on the PR allows (github.md, Review trail).
    - Closing keywords fire only on a PR merged into the default branch, and GitHub misses
      some even there. They stay on the PR that carries the work: a stacked PR keeps its own
      `Closes` and lands itself once retargeted onto main. Copy them to its base only when
