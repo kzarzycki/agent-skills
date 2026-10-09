@@ -11,6 +11,9 @@ A bot's lock- or manifest-only PR merges without a verifier review (#106).
   any other file, a renamed or copied one, or a person's commit or rebase needs the review as usual. Without the line, no PR is
   exempt. The login matches with or without `[bot]`, and only a bot account.
 - The verifier resolves no review thread.
+- A mixed PR lands only when every model family that posted a verifier review has a
+  satisfied review on the head (#118): one family's satisfied pass on the head no longer
+  hides the other's blocker on an older commit.
 
 ## 0.16.0 - 2026-10-09
 

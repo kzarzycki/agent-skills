@@ -144,7 +144,9 @@ covered by policy is still built and PR'd; its merge waits for the owner's
 only when added after that head's push, and a push removes it, so it never covers code the
 owner did not see. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
 the merge approval is the gates themselves: every verifier review on the newest pass's
-commit satisfied with no blocker or major open, that commit covering the head that lands,
+commit satisfied with no blocker or major open, every model family that reviewed the PR
+reviewed on that commit (a mixed PR needs both verifiers clear on the head), that commit
+covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks
 green. A same-family pass counts, its heading saying so.
 
