@@ -18,9 +18,9 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    leaves its work on the branch. The coordinator merges your branch and opens the PR: a
    brief that asks for a PR means push the branch and report it. A spec or plan the brief
    asks for goes in a file under `tmp/loop/`, and you report its path: the coordinator
-   posts it, since the spec lives on the issue. Your job ends at the push: don't wait for CI. A brief
-   that is a failing CI log is a check red after the PR went ready: fix it in the worktree
-   you are given, then `mise run check` and push the same way.
+   posts it, since the spec lives on the issue. Your job ends at the push: don't wait for
+   CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
+   the worktree you are given, then `mise run check` and push the same way.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or

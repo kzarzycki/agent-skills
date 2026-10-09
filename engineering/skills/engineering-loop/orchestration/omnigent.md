@@ -59,8 +59,11 @@ elsewhere.
 failure (a timeout on a loaded server, a killed background command) while the child works
 on. Read the child's status first (the session id is the first line `run` printed, else
 its title under your session's children); while it is running, or idle with its report
-still to come, re-attach with `wait <session> <report>`. Start a second only for a child
-that failed or is gone: two children on one item write the same branch.
+still to come, re-attach with `wait <session> <report>`, adding `--verdict` for a verifier
+so a report written in stages does not end it early. `wait` has no launch time, so on a
+path a pass before already wrote it returns that report at once: check the report's time
+against the run's start before taking it. Start a second only for a child that failed or
+is gone: two children on one item write the same branch.
 
 **Whoever starts a worker collects it.** Omnigent files every child under the runner's
 primary session, so a fork's or a worker's own children notify the coordinator, not the
