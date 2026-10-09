@@ -1450,39 +1450,53 @@ def authored(login: str | None) -> dict[str, Any]:
     "login", ["dependabot", "dependabot[bot]"]
 )  # GraphQL's spelling, and REST's
 def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(login: str) -> None:
-    def bot(
-        files: tuple[str, ...],
+    def made(
+        files: tuple[str, ...] = ("uv.lock",),
         who: str = login,
         kind: str = "Bot",
-        loop: str = BOTS,
         commits: tuple[str | None, ...] = ("dependabot[bot]",),
-    ) -> list[str]:
+    ) -> dict[str, Any]:
         pr = {**pull(files=files), "author": {"__typename": kind, "login": who}}
         pr["authored"] = {"nodes": [authored(by) for by in commits]}
-        return approvals.proofs("merge", pr, [], loop)
+        return pr
 
-    assert bot(("uv.lock", "web/package.json")) == []
-    assert bot(("uv.lock", "app.py")) == UNREVIEWED  # code needs a review as usual
-    assert bot(("uv.lock",), who="renovate") == UNREVIEWED  # a bot the line doesn't name
-    assert bot(("uv.lock",), kind="User") == UNREVIEWED  # a person is never the bot
-    assert bot(("uv.lock",), loop=LOOP) == UNREVIEWED  # no `bot:` line: no exemption
-    assert bot(()) == UNREVIEWED
-    moved = {**pull(files=("uv.lock",)), "author": {"__typename": "Bot", "login": login}}
-    moved["authored"] = {"nodes": [authored("dependabot[bot]")]}
-    moved["files"]["nodes"][0]["changeType"] = (
-        "RENAMED"  # app.py moved onto uv.lock: GraphQL shows only uv.lock
-    )
-    assert approvals.proofs("merge", moved, [], BOTS) == UNREVIEWED
-    assert bot(("uv.lock",), commits=("dependabot", "dependabot[bot]")) == []
-    assert bot(("uv.lock",), commits=("dependabot[bot]", "worker")) == UNREVIEWED  # a person's push
-    assert bot(("uv.lock",), commits=(None,)) == UNREVIEWED  # an author GitHub ties to no account
-    assert bot(("uv.lock",), commits=()) == UNREVIEWED
+    def bot(*files: str, loop: str = BOTS, **fields: Any) -> list[str]:
+        return approvals.proofs("merge", made(files or ("uv.lock",), **fields), [], loop)
+
+    def gate(pr: dict[str, Any]) -> list[str]:
+        return approvals.proofs("merge", pr, [], BOTS)
+
+    assert bot("uv.lock", "web/package.json") == []
+    assert bot("uv.lock", "app.py") == UNREVIEWED  # code needs a review as usual
+    assert bot(who="renovate") == UNREVIEWED  # a bot the line doesn't name
+    assert bot(kind="User") == UNREVIEWED  # a person is never the bot
+    assert bot(loop=LOOP) == UNREVIEWED  # no `bot:` line: no exemption
+    assert approvals.proofs("merge", made(files=()), [], BOTS) == UNREVIEWED
+    assert bot(commits=("dependabot", "dependabot[bot]")) == []
+    assert bot(commits=("dependabot[bot]", "worker")) == UNREVIEWED  # a person's push
+    assert bot(commits=(None,)) == UNREVIEWED  # an author GitHub ties to no account
+    assert bot(commits=()) == UNREVIEWED
     unread = BOTS.replace("path uv.lock or", "lock files or path uv.lock or")
-    assert bot(("uv.lock",), loop=unread) == UNREVIEWED  # a condition the gate can't read
-    crowded = {**pull(files=("uv.lock",) * 100), "author": {"__typename": "Bot", "login": login}}
-    crowded["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    assert bot(loop=unread) == UNREVIEWED  # a condition the gate can't read
+    for change in (
+        "RENAMED",
+        "COPIED",
+    ):  # app.py moved or copied onto uv.lock: GraphQL shows only uv.lock
+        moved = made()
+        moved["files"]["nodes"][0]["changeType"] = change
+        assert gate(moved) == UNREVIEWED
+    crowded = made(files=("uv.lock",) * 100)
     crowded["files"]["totalCount"] = 101  # past the one page of files the gate reads
-    assert approvals.proofs("merge", crowded, [], BOTS) == UNREVIEWED
+    assert gate(crowded) == UNREVIEWED
+    long = made(commits=("dependabot[bot]",) * 100)
+    long["authored"]["totalCount"] = 101  # past the one page of commits the gate reads
+    assert gate(long) == UNREVIEWED
+    shared = made()
+    shared["authored"]["nodes"][0]["commit"]["authors"] = {
+        "totalCount": 6,  # a sixth co-author past the five the gate reads
+        "nodes": [{"user": {"login": "dependabot[bot]"}}] * 5,
+    }
+    assert gate(shared) == UNREVIEWED
     assert approvals.risk_rules(BOTS) == approvals.risk_rules(LOOP)  # a bot line is no risk rule
 
 
