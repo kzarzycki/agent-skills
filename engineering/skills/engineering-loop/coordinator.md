@@ -31,11 +31,12 @@ UI, and delegate the rest.
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
    references. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec loop.md's `spec: auto unless risk` covers (a bug, a `Found while #n`
-   follow-up, a sub-issue of an approved epic opened by a writer) is approved by that
-   policy: it gets no label and no record, since the gate reads the policy and an
-   `approved:spec` an agent added would read as the owner's; move it to `Ready` on the
-   board and carry on; the owner reads it when they
-   like. Any other spec waits for the owner: add `needs-owner`, comment what to approve
+   follow-up, a sub-issue of an approved epic opened by a writer), or `spec: auto` covers
+   (any spec a writer opened that no risk rule matches, SKILL.md, Approvals and proof, judged on the issue's labels
+   and the paths the spec says it changes), is approved by that policy: it gets no label
+   and no record, since the gate reads the policy and an `approved:spec` an agent added
+   would read as the owner's; move it to `Ready` on the board and carry on; the owner
+   reads it when they like. Any other spec waits for the owner: add `needs-owner`, comment what to approve
    (board: `Needs owner`), and stop until they approve (step 1); their `approved:spec` is
    the ready state (board: `Ready`). An epic's stories are filed as its sub-issues, each
    with its spec, before you ask for the epic's approval, and the request lists them: under

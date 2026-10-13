@@ -2437,6 +2437,85 @@ def test_a_spec_policy_covers_needs_no_record_or_label_and_one_it_does_not_needs
     ]
 
 
+AUTO = "## Approvals\n\n- spec: auto\n- risk: component `api`\n- risk: path `billing/**`\n"
+
+
+def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
+    return {**found, "author": {"login": author}}
+
+
+def test_spec_auto_is_a_policy_and_a_spec_condition_beside_it_a_risk_rule() -> None:
+    assert approvals.spec_auto(AUTO) and not approvals.policy(AUTO, "spec")
+    assert not approvals.spec_auto(POLICY)
+    assert approvals.risk_rules(AUTO + "- spec: size:XL\n") == [
+        "component `api`",
+        "path `billing/**`",
+        "size:XL",
+    ]
+
+
+def test_spec_auto_approves_every_spec_a_writer_opened_but_one_a_risk_rule_holds(
+    writers: list[str],
+) -> None:
+    feature, new_epic = (
+        by("worker", specced(1, "kind:enhancement")),
+        by("worker", specced(3, "kind:enhancement", "epic")),
+    )
+    # risk:high holds the merge, not the spec
+    marked = by("worker", specced(5, "kind:bug", "risk:high"))
+    assert approvals.proofs("build", pull(), [feature, new_epic, marked], AUTO) == []
+    held, outsider = (
+        by("worker", specced(4, "kind:enhancement", "area:api")),
+        by("drive-by", specced(6, "kind:bug")),
+    )
+    assert approvals.holds(pull(), [feature, held, outsider], AUTO) == [
+        "#4: its spec is the owner's to approve under `spec: auto`, since it matches a risk rule (component `api`)",
+        "#6: its spec is the owner's to approve under `spec: auto`, since its author @drive-by can't write to the repo",
+    ]
+    assert approvals.proofs("build", pull(), [held, outsider], AUTO) == [
+        "#4 has no `Approved: spec` record by the owner",
+        "#4 lacks the `approved:spec` label",
+        "#6 has no `Approved: spec` record by the owner",
+        "#6 lacks the `approved:spec` label",
+    ]
+    # the owner's approval lets a held spec build
+    owned = by("worker", approved(4, "kind:enhancement", "area:api"))
+    assert approvals.proofs("build", pull(), [owned], AUTO) == []
+
+
+def test_under_spec_auto_a_file_the_spec_did_not_foresee_holds_the_spec(
+    writers: list[str],
+) -> None:
+    feature = by("worker", specced(1, "kind:enhancement"))
+    pushed = pull(files=("app.py", "billing/a.py"))
+    assert approvals.holds(pushed, [feature], AUTO) == [
+        "#1: its spec is the owner's to approve under `spec: auto`, since it matches a risk rule (path `billing/**`)"
+    ]
+    assert approvals.proofs("build", pushed, [feature], AUTO) == [
+        "#1 has no `Approved: spec` record by the owner",
+        "#1 lacks the `approved:spec` label",
+    ]
+    # a PR label counts too, and a rule the gate can't read holds
+    assert approvals.holds(pull(labels=("area:api",)), [feature], AUTO)
+    vague = AUTO + "- risk: anything touching money\n"
+    assert approvals.holds(pull(), [feature], vague) == [
+        "#1: its spec is the owner's to approve under `spec: auto`, since a risk rule the gate can't judge holds until a person does (anything touching money)"
+    ]
+
+
+def test_under_spec_auto_a_risk_rule_holds_no_merge_but_risk_high_and_the_cap_do(
+    writers: list[str],
+) -> None:
+    owned = by("worker", approved(1, "kind:enhancement", "area:web"))
+    done = pull(reviews=(VERDICT,), files=("billing/a.py",))
+    assert merge(done, [owned], AUTO) == []
+    assert approvals.risk(done, [owned], AUTO) is None
+    marked = pull(reviews=(VERDICT,), files=("billing/a.py",), labels=("risk:high",))
+    assert approvals.risk(marked, [owned], AUTO) == "`risk:high` is on PR #7"
+    # the same PR beside `spec: auto unless risk` waits for the owner's merge label
+    assert approvals.risk(done, [owned], POLICY) == "it matches a risk rule (path `billing/**`)"
+
+
 def test_a_policy_line_is_no_condition_so_a_low_risk_pr_waits_for_nothing() -> None:
     done = pull(reviews=(VERDICT,), files=("app.py",))
     assert merge(done, [specced(1, "kind:bug")], POLICY) == []
