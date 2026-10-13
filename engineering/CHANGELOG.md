@@ -14,6 +14,9 @@ The owner signs off a landed change in use where loop.md asks for it.
 - After landing, an `Implements` issue moves to the new board column `Sign-off`, between
   `Verify` and `Done`, and the owner closes it once they have tried it
   (issues.md, Sign-off). `board.py column` orders it there.
+- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
+  queue (#137): the same ruleset without the queue, and `land` merges directly or by
+  auto-merge.
 
 ## 0.17.0 - 2026-10-09
 
