@@ -111,8 +111,8 @@ UI, and delegate the rest.
    waits for the landing rule (SKILL.md):
    - Fetch, then merge `origin/main` in only when GitHub requires it: `gh pr view <pr> --json
      mergeStateStatus` is `DIRTY` (a conflict) or `BEHIND` (main requires an up-to-date
-     branch). A merge queue tests the PR on top of main anyway, so a merge there only costs
-     a CI run. When you do merge it in, rerun the gates and get a verifier pass on the
+     branch). A merge queue, where the repo has one, tests the PR on top of main anyway, so a
+     merge there only costs a CI run. When you do merge it in, rerun the gates and get a verifier pass on the
      merge (step 7), since `land` merges only a head with a verdict of its own. When main's
      changes touch no file the PR changes and no merge check (a `check:` task, a tool it
      runs, or the lint, type or test configuration), that pass is the short delta pass.
@@ -174,7 +174,8 @@ UI, and delegate the rest.
      so CI skips the half-done fix, then each fix its own pushed commit, replied on its
      thread with the SHA and resolved (`worker.md`, Trail), and a verifier pass (step 7)
      before `land` runs again. Never cascade a fix down a stack or re-prove a merge
-     order: a merge queue tests each PR on top of main, and a PR stacked on this one moves
+     order: CI tests each PR on top of main (a merge queue, or a ruleset requiring an
+     up-to-date branch), main's push run catches the rest (step 9), and a PR stacked on this one moves
      onto main when it lands (SKILL.md, Stacks are one deep). Dismiss a teammate's review
      requesting changes only as SKILL.md, Review trail on the PR allows (github.md, Review trail).
    - Closing keywords fire only on a PR merged into the default branch, and GitHub misses
