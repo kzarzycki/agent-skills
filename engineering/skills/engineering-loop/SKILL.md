@@ -56,7 +56,12 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   commit, and removes `approved:merge` on a push;
 - `.github/check-paths.yml`: each part's path filter;
 - `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
-  merge queue, requiring exactly two checks, `check` and `loop:approvals`. `mise run
+  merge queue, requiring exactly two checks, `check` and `loop:approvals`. A repo that can't
+  have a merge queue (one a user owns) gets the same ruleset with squash merges and no
+  queue, and `land` merges its PRs directly or by auto-merge. Nothing then tests a PR on
+  top of main unless the ruleset requires an up-to-date branch, the project's choice: each
+  PR behind main costs a merge, a gate run and a verifier pass, and without it a break on
+  main is reverted first (Rules for every role, Revert first). `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
   leaves untouched, and reverting deletes only it. Once project-templates wires it in,
   `setup:github` also syncs the repo's labels with `scripts/labels.py`; until then run

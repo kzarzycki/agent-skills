@@ -11,6 +11,9 @@ A project may let a person work outside the loop (`Opt-out: allowed`).
   `land` prints the same line and exits 1, so the loop never merges it or turns auto-merge
   on. A developer opts out with `Engineering loop: off` in their personal instructions.
   Without the line nothing changes (#134).
+- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
+  queue (#137): the same ruleset without the queue, and `land` merges directly or by
+  auto-merge.
 
 ## 0.17.0 - 2026-10-09
 
