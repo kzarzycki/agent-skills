@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+A project may let a person work outside the loop (`Opt-out: allowed`).
+
+- With the line `Opt-out: allowed` in loop.md, `check merge` reads a PR with no loop trail
+  (no verifier review, no owner's spec record or `approved:spec` on an issue it links, no
+  `Reverts #<n>` line, not an exempt bot PR) as outside the loop: one line saying so, exit
+  0, so the approvals workflow posts success and its owner merges it their usual way.
+  `land` refuses it, so the loop never merges it or turns auto-merge on. Without the line
+  nothing changes.
+
 ## 0.17.0 - 2026-10-09
 
 A bot's lock- or manifest-only PR merges without a verifier review (#106).
