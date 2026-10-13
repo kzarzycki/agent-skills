@@ -677,7 +677,7 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     `approved:spec` is proofs()'s line."""
     if not issues:
         return [
-            "the PR names no issue: it needs a `Closes #<spec>`, `Implements #<spec>` or `Part of #<spec>` line for an approved spec"
+            "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an approved spec"
         ]
     found = []
     for issue in issues:

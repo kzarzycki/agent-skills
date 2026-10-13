@@ -219,7 +219,7 @@ def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections()
 
 def test_a_pr_that_closes_no_issue_skipped_the_spec() -> None:
     assert problems([]) == [
-        "the PR names no issue: it needs a `Closes #<spec>`, `Implements #<spec>` or `Part of #<spec>` line for an approved spec"
+        "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an approved spec"
     ]
 
 
@@ -785,6 +785,14 @@ def test_a_signoff_rule_the_gate_cant_read_asks_for_the_signoff() -> None:
     )
 
 
+def test_signoff_always_asks_for_implements_and_a_rule_matching_nothing_asks_for_none() -> None:
+    web = approved(1, "area:web")
+    assert approvals.linked(linking("Closes"), [web], LOOP + "- signoff: always\n")[0].startswith(
+        "#1 waits for the owner's sign-off after landing"
+    )
+    assert approvals.linked(linking("Closes"), [web], LOOP + "- signoff: component nothing\n") == []
+
+
 def test_a_wayfinder_ticket_and_a_repo_without_loop_md_are_not_checked() -> None:
     ticket = issue(58, "wayfinder:task", "approved:spec", "area:web")
     assert approvals.linked(linking("Closes", 58), [ticket], SIGNOFF) == []
@@ -905,7 +913,7 @@ def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
                 " inverse of #1, 0 missing. It needs every proof of any PR"
             ),
             (
-                "the PR names no issue: it needs a `Closes #<spec>`, `Implements #<spec>` or `Part of #<spec>` line for an"
+                "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an"
                 " approved spec"
             ),
             "PR #3: no verifier review posted (approvals.py verdict)",
