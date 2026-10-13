@@ -32,6 +32,16 @@ inside the repository: it infers the repo from the remote.
 
 Pull requests are not a triage request surface.
 
+## Posting under a person's account
+
+Anything an agent writes under a person's GitHub account (an issue, a comment, a PR body,
+a reply) opens with the line `> 🤖 AI`, so readers can tell the agent's words from the
+person's own; words the person dictated verbatim go after the block, outside it. The records
+`approvals.py` posts (`Approved:`, `Assigned:`, `Local check passed`, the verifier's review)
+keep their format, since their first lines already say who wrote them and the gate parses
+them. A `## Spec` or `## Plan` comment may open with the marker: `approvals.py` skips that
+leading line when it reads the heading.
+
 ## Labels
 
 `python3 scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
