@@ -14,6 +14,11 @@ A project may let a person work outside the loop (`Opt-out: allowed`).
 - SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
   queue (#137): the same ruleset without the queue, and `land` merges directly or by
   auto-merge.
+- `docs/agents/issue-tracker.md` takes an optional `## Board` mapping loop columns to the
+  board's, one list item each, such as ``- `Build` is `In progress` ``; several loop columns
+  may share one board column (#135). `board.py <issue> <column>` takes the loop's name and
+  sets the mapped board column, and `board.py column` prints the loop's name, the earliest
+  of those sharing the board's status. Without the section nothing changes.
 
 ## 0.17.0 - 2026-10-09
 
