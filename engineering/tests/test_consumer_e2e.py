@@ -52,6 +52,12 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
         "GIT_COMMITTER_NAME": "Package Test",
         "GIT_COMMITTER_EMAIL": "package-test@example.invalid",
         "GIT_CONFIG_NOSYSTEM": "1",
+        # no background repack of a fixture repo while a local clone copies its loose objects (#144)
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "maintenance.auto",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "gc.auto",
+        "GIT_CONFIG_VALUE_1": "0",
     }
 
 
