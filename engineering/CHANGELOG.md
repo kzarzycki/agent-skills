@@ -43,6 +43,19 @@ The owner approves only the critical specs (`spec: auto`, #133).
   so no `approved:merge` wait comes from it; `risk:high` and the cap still hold the merge.
   `spec: auto unless risk` keeps its meaning.
 
+The owner signs off a landed change in use where loop.md asks for it.
+
+- loop.md § Approvals takes `signoff: <condition>` lines, read and judged as `risk:` rules
+  are. The spec records `Sign-off: owner` or `Sign-off: none`; `owner` asks for a sign-off
+  where no rule does, and `none` never waives a matching rule.
+- `Implements #<n>` is a PR link that leaves the issue open, like `Part of`. Where loop.md
+  has a `signoff:` line, `check merge` and `land` need `Implements` for an issue that waits
+  for a sign-off and a closing keyword for any other (`Part of` suits both). Without the
+  line nothing changes.
+- After landing, an `Implements` issue moves to the new board column `Sign-off`, between
+  `Verify` and `Done`, and the owner closes it once they have tried it
+  (issues.md, Sign-off). `board.py column` orders it there.
+
 ## 0.17.0 - 2026-10-09
 
 A bot's lock- or manifest-only PR merges without a verifier review (#106).

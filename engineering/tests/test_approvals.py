@@ -307,12 +307,26 @@ def test_a_tracker_file_without_components_says_so() -> None:
         ("Use ``` inline.\nCloses #15\n```\ncode\n```\nRun `a` then\nFixes:\t#16\n`b`", [15, 16]),
         ("Fix #7\nfixed #8\nresolve #9\nresolves #10", [7, 8, 9, 10]),
         ("Part of #11\npart of: #12; departs of #13, part #14", [11, 12]),
+        ("Implements #20\nimplements: #21; reimplements #22, implement #23", [20, 21]),
         ("", []),
         ("See #12; follows #13. Discloses #14, prefix #15, closes owner/repo#16, closes#17", []),
     ],
 )
 def test_the_body_names_its_closing_issues(body: str, numbers: list[int]) -> None:
     assert approvals.named(body) == numbers
+
+
+def test_each_link_keeps_its_kind_and_a_closing_keyword_wins() -> None:
+    body = (
+        "Implements #1\nPart of #2\nCloses #3\nPart of #4, implements #4\nImplements #5\nfixes #5"
+    )
+    assert approvals.links(body) == {
+        1: approvals.IMPLEMENTS,
+        2: approvals.PART,
+        3: approvals.CLOSES,
+        4: approvals.IMPLEMENTS,
+        5: approvals.CLOSES,
+    }
 
 
 # --- approval rules ---
@@ -690,6 +704,109 @@ def test_a_legacy_merge_rule_in_loop_md_reads_as_a_risk_rule() -> None:
         {"createdAt": LABELED, "label": {"name": "approved:merge"}}
     ]
     assert merge(billing, [approved(1, "area:web")], rule) == []
+
+
+# --- sign-off: the owner checks a landed change in use ---
+
+SIGNOFF = LOOP + "- signoff: component `web` or path `app/**`\n"
+LANDED = pull(reviews=(VERDICT,), labels=OWNED)
+
+
+def linking(keyword: str, number: int = 1, files: tuple[str, ...] = ()) -> dict[str, Any]:
+    return pull(
+        body=f"{keyword} #{number}\n\n## Evidence\n\nlog line\n",
+        reviews=(VERDICT,),
+        labels=OWNED,
+        files=files,
+    )
+
+
+def test_signoff_rules_are_read_from_approvals() -> None:
+    assert approvals.rules(SIGNOFF)[-1] == ("signoff", "component `web` or path `app/**`")
+    assert approvals.risk_rules(SIGNOFF) == approvals.risk_rules(LOOP)
+
+
+def test_without_a_signoff_line_any_link_lands_as_today() -> None:
+    for keyword in ("Closes", "Implements", "Part of"):
+        assert merge(linking(keyword), [approved(1, "area:web")]) == []
+    owner = approved(1, "area:web", body="the spec\n\nSign-off: owner\n")
+    assert merge(linking("Closes"), [owner]) == []
+
+
+def test_an_issue_a_signoff_rule_matches_is_implemented_not_closed() -> None:
+    web = approved(1, "area:web")
+    assert merge(linking("Implements"), [web], SIGNOFF) == []
+    assert merge(linking("Part of"), [web], SIGNOFF) == []
+    assert merge(linking("Closes"), [web], SIGNOFF) == [
+        (
+            "#1 waits for the owner's sign-off after landing, since it matches a sign-off rule"
+            " (component `web` or path `app/**`): the PR says `Implements #1`, which leaves it open,"
+            " not a closing keyword"
+        )
+    ]
+    # GitHub's own link, with no line in the body, closes the issue on merge
+    assert merge(LANDED, [web], SIGNOFF)[0].startswith("#1 waits for the owner's sign-off")
+    # the PR's files and labels count, as for a risk rule
+    api = approved(1, "area:api")
+    assert approvals.linked(linking("Implements", files=("app/main.swift",)), [api], SIGNOFF) == []
+    assert approvals.linked(linking("Implements", files=("api/a.py",)), [api], SIGNOFF) != []
+
+
+def test_an_issue_no_signoff_rule_matches_is_closed() -> None:
+    api = approved(1, "area:api")
+    assert approvals.linked(linking("Closes"), [api], SIGNOFF) == []
+    assert approvals.linked(linking("Part of"), [api], SIGNOFF) == []
+    assert approvals.linked(linking("Implements"), [api], SIGNOFF) == [
+        (
+            "#1 needs no sign-off (no sign-off rule matches): the PR says `Closes #1`, since"
+            " `Implements` would leave it open for a sign-off nobody asked for"
+        )
+    ]
+
+
+def test_the_spec_asks_for_a_signoff_and_never_waives_a_rule() -> None:
+    owner = approved(1, "area:api", body="the spec\n\n- **Sign-off:** owner\n")
+    assert approvals.linked(linking("Implements"), [owner], SIGNOFF) == []
+    assert approvals.linked(linking("Closes"), [owner], SIGNOFF) == [
+        (
+            "#1 waits for the owner's sign-off after landing, since its spec says `Sign-off: owner`:"
+            " the PR says `Implements #1`, which leaves it open, not a closing keyword"
+        )
+    ]
+    waived = approved(1, "area:web", body="the spec\n\nSign-off: none\n")
+    assert approvals.linked(linking("Implements"), [waived], SIGNOFF) == []
+    none = approved(1, "area:api", body="the spec\n\nSign-off: none\n")
+    assert approvals.linked(linking("Implements"), [none], SIGNOFF) == [
+        (
+            "#1 needs no sign-off (no sign-off rule matches and its spec says `Sign-off: none`): the PR"
+            " says `Closes #1`, since `Implements` would leave it open for a sign-off nobody asked for"
+        )
+    ]
+    quoted = approved(1, "area:api", body="the spec\n\n`Sign-off: owner` is an example\n")
+    assert approvals.linked(linking("Closes"), [quoted], SIGNOFF) == []
+
+
+def test_a_signoff_rule_the_gate_cant_read_asks_for_the_signoff() -> None:
+    vague = LOOP + "- signoff: anything a user sees\n"
+    assert approvals.linked(linking("Implements"), [approved(1, "area:api")], vague) == []
+    assert approvals.linked(linking("Closes"), [approved(1, "area:api")], vague)[0].startswith(
+        "#1 waits for the owner's sign-off after landing, since a sign-off rule the gate can't"
+        " judge holds until a person does (anything a user sees)"
+    )
+
+
+def test_signoff_always_asks_for_implements_and_a_rule_matching_nothing_asks_for_none() -> None:
+    web = approved(1, "area:web")
+    assert approvals.linked(linking("Closes"), [web], LOOP + "- signoff: always\n")[0].startswith(
+        "#1 waits for the owner's sign-off after landing"
+    )
+    assert approvals.linked(linking("Closes"), [web], LOOP + "- signoff: component nothing\n") == []
+
+
+def test_a_wayfinder_ticket_and_a_repo_without_loop_md_are_not_checked() -> None:
+    ticket = issue(58, "wayfinder:task", "approved:spec", "area:web")
+    assert approvals.linked(linking("Closes", 58), [ticket], SIGNOFF) == []
+    assert approvals.proofs("merge", linking("Closes"), [approved(1, "area:web")], None) == []
 
 
 # --- an exact revert ---

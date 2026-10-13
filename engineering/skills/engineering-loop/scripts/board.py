@@ -14,7 +14,8 @@ blocks a ticket. Needs the `project` token scope (`gh auth refresh -s project`).
 
 `column` prints the loop's column: the later of the one its board column shows (the earliest loop column mapped to it) and the one its labels give (issues.md, Board:
 `needs-owner` is `Needs owner`, `approved:spec` is `Ready`, neither is `Intent`), since the labels are the state and a
-board move may have failed. A board column no loop column maps to and the loop does not name is printed as is.
+board move may have failed. A board column no loop column maps to and the loop does not name is printed as is. `Sign-off` is a landed change
+whose issue stays open for the owner's check in use (`Implements #n`), so it comes after `Verify` and before `Done`.
 """
 
 from __future__ import annotations
@@ -100,7 +101,7 @@ def move(issue: int, column: str) -> None:
 
 
 # the loop's columns in stage order (issues.md, Board)
-COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Done"]
+COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Sign-off", "Done"]
 # a § Board list item: the loop column, then the board's, each the first backticked name on its side
 MAPPED = re.compile(r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`[^`\n]*`([^`\n]+)`", re.MULTILINE)
 

@@ -89,6 +89,15 @@ def test_the_owner_moving_a_parked_spec_to_ready_shows() -> None:
     assert board.column_of(_repo(["P"], [("P", "Ready")], ("needs-owner",))) == "Ready"
 
 
+def test_a_landed_change_waiting_for_its_signoff_reads_after_verify() -> None:
+    assert board.column_of(_repo(["P"], [("P", "Sign-off")], ("approved:spec",))) == "Sign-off"
+    assert (
+        board.COLUMNS.index("Verify")
+        < board.COLUMNS.index("Sign-off")
+        < board.COLUMNS.index("Done")
+    )
+
+
 def test_a_board_column_the_loop_does_not_name_is_printed_as_is() -> None:
     assert board.column_of(_repo(["P"], [("P", "Backlog")], ("approved:spec",))) == "Backlog"
 
@@ -121,9 +130,9 @@ def test_the_tracker_maps_loop_columns_to_board_columns() -> None:
 def test_column_reads_a_shared_board_column_as_its_earliest_loop_column() -> None:
     mapped = board.mapping(MAPPED)
     assert board.column_of(_repo(["P"], [("P", "In progress")]), mapped) == "Build"
-    # the labels still win over an earlier column, and an unmapped status is printed as is
+    # the labels still win over an earlier column, a mapped `Sign-off` reads back, and an unmapped status is printed as is
     assert board.column_of(_repo(["P"], [("P", "Intent")], ("approved:spec",)), mapped) == "Ready"
-    assert board.column_of(_repo(["P"], [("P", "In review")]), mapped) == "In review"
+    assert board.column_of(_repo(["P"], [("P", "In review")]), mapped) == "Sign-off"
     assert board.column_of(_repo(["P"], [("P", "Backlog")]), mapped) == "Backlog"
     # without a mapping nothing changes
     assert board.column_of(_repo(["P"], [("P", "Verify")])) == "Verify"

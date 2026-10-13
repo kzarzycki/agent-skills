@@ -120,4 +120,19 @@ report it and carry on.
 | `Ready` | it has `approved:spec`, or loop.md's policy covers its spec | the spec step, or the owner approving |
 | `Build` | its draft PR is open | the coordinator |
 | `Verify` | the verifier has the PR | the coordinator |
+| `Sign-off` | its PR merged with `Implements #<n>`, and it waits for the owner to check it in use | the coordinator, after landing |
 | `Done` | closed | whoever closes it |
+
+## Sign-off
+
+Where loop.md has `signoff:` rules and they, or the spec's `Sign-off: owner` line, ask for
+it, a person
+checks the merged change in the running product before its issue counts as done, since
+gates and the verifier prove the code, not how it feels in use. The PR links the issue with
+`Implements #<n>` (SKILL.md, Approvals and proof), so the merge leaves it open; the
+coordinator moves it to `Sign-off` with a comment naming the merge and the spec's
+acceptance examples to try. Without a `signoff:` line nothing waits for a sign-off, and
+`Implements` is a link like `Part of`. The owner signs off by closing it (`Done`). What they find
+wrong is a new intent with a `Found while #<n>` line, or a revert when the change itself is
+wrong (SKILL.md, Revert first). An epic stays open while any sub-issue waits for its
+sign-off.
