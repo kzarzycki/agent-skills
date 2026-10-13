@@ -130,9 +130,9 @@ def test_the_tracker_maps_loop_columns_to_board_columns() -> None:
 def test_column_reads_a_shared_board_column_as_its_earliest_loop_column() -> None:
     mapped = board.mapping(MAPPED)
     assert board.column_of(_repo(["P"], [("P", "In progress")]), mapped) == "Build"
-    # the labels still win over an earlier column, and an unmapped status is printed as is
+    # the labels still win over an earlier column, a mapped `Sign-off` reads back, and an unmapped status is printed as is
     assert board.column_of(_repo(["P"], [("P", "Intent")], ("approved:spec",)), mapped) == "Ready"
-    assert board.column_of(_repo(["P"], [("P", "In review")]), mapped) == "In review"
+    assert board.column_of(_repo(["P"], [("P", "In review")]), mapped) == "Sign-off"
     assert board.column_of(_repo(["P"], [("P", "Backlog")]), mapped) == "Backlog"
     # without a mapping nothing changes
     assert board.column_of(_repo(["P"], [("P", "Verify")])) == "Verify"
