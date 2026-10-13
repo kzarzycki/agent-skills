@@ -20,6 +20,18 @@ A project may let a person work outside the loop (`Opt-out: allowed`).
   sets the mapped board column, and `board.py column` prints the loop's name, the earliest
   of those sharing the board's status. Without the section nothing changes.
 
+Practices proven in a project's local workflow, now the loop's.
+
+- A child that idles saying it is waiting gets a background wait from the coordinator on
+  its process or log, which asks for the report when it fires; a worker never ends a turn
+  on a wait (coordinator.md, Waiting; worker.md).
+- Every proof log starts with `git rev-parse HEAD` and the command that produced it, and
+  the verifier treats a proof whose SHA isn't the reviewed head as missing
+  (worker.md, Report; verifier.md).
+- Anything an agent writes under a person's GitHub account opens with `> 🤖 AI`; the
+  records `approvals.py` posts keep their format, and its `## Spec`/`## Plan` lookup skips
+  a leading marker line (github.md, Posting under a person's account).
+
 ## 0.17.0 - 2026-10-09
 
 A bot's lock- or manifest-only PR merges without a verifier review (#106).

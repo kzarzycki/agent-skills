@@ -490,9 +490,13 @@ def bodies(node: dict[str, Any]) -> list[str]:
 
 
 def headed(node: dict[str, Any], heading: str) -> dict[str, Any] | None:
-    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`."""
+    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`.
+    A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
     found = [
-        note for note in notes(node) if note["body"].strip().split("\n", 1)[0].rstrip() == heading
+        note
+        for note in notes(node)
+        if re.sub(r"\A\s*> 🤖 AI[ \t]*\n\s*", "", note["body"]).strip().split("\n", 1)[0].rstrip()
+        == heading
     ]
     return found[-1] if found else None
 
