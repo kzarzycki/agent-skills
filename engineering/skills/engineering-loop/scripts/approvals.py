@@ -39,6 +39,12 @@ with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers 
 failure to add it and carrying on. A push removes the label (the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
 GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
+With the line `Opt-out: allowed` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
+left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
+`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
+workflow posts success and its author merges it their usual way; `land` prints the same line and exits 1, so the
+loop never merges it or turns auto-merge on for it. Risk rules and `risk:high` hold no such PR. `check build` is
+unchanged. A spec a policy covers is no trail, since under `spec: auto` every issue is covered.
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
 PR when one fails. A draft it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing
 about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
@@ -175,6 +181,8 @@ CONDITION = re.compile(
 )
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
+# loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
+OPT_OUT = r"^[ \t]*(?:[-*][ \t]+)?`?Opt-out:[ \t]*allowed`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
@@ -793,6 +801,31 @@ def no_ci(loop: str | None) -> bool:
     return re.search(NO_CI, loop or "", re.MULTILINE | re.IGNORECASE) is not None
 
 
+def opted_out(loop: str | None) -> bool:
+    return re.search(OPT_OUT, loop or "", re.MULTILINE | re.IGNORECASE) is not None
+
+
+def outside(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `Opt-out: allowed`. A trail
+    is a verifier review (passes), an `Approved: spec` record or `approved:spec` on an issue it links, a `Reverts #<n>`
+    line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `spec: auto` every issue is covered,
+    so a person who opted out could never link one."""
+    if not opted_out(loop):
+        return None
+    found = passes(pull)
+    if (isinstance(found, str) or found) or exempt(pull, loop):
+        return None
+    if REVERTS.search(QUOTED.sub("", pull["body"] or "")):
+        return None
+    for issue in closing_issues(pull):
+        if READY in names(issue) or records(issue, "spec"):
+            return None
+    return (
+        f"PR #{pull['number']} is outside the loop (loop.md `Opt-out: allowed`, no verifier review, spec approval,"
+        " revert or bot exemption): its author merges it"
+    )
+
+
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
     `CI: none` a local-ci pass."""
@@ -1317,6 +1350,9 @@ def check(point: str, pr: int | None) -> int:
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
+    if point == "merge" and (why := outside(pull, loop)):
+        print(why)
+        return 0
     found, issues = gated(point, pull, tracker, loop)
     waiting = waits(pull, issues, loop) if point == "merge" else []
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
@@ -1339,6 +1375,9 @@ def land(pr: int) -> int:
         return 0
     if pull["state"] != "OPEN":
         raise Refused(f"{where} is closed: nothing to land")
+    if why := outside(pull, loop):
+        # land is the loop's merge: auto-merge on a PR no verifier saw would merge it on CI alone
+        raise Refused(why)
     found, issues = gated("merge", pull, tracker, loop)
     if found:  # never ready on a missing proof: ready starts CI and, with auto-merge, the merge
         for line in found:
