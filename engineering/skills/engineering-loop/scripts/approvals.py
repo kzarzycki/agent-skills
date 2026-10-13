@@ -49,7 +49,9 @@ unchanged. A spec a policy covers is no trail, since under `spec: auto` every is
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
 PR when one fails. A draft it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing
 about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
-protection; a base requiring none requires every check on the head green). With every required check
+protection; a base requiring none requires every check on the head green). A private repo on GitHub's free plan
+has neither, nor auto-merge: GitHub's 403 on its rules reads as none required, and `land` says GitHub enforces nothing
+there, so its proofs are the only gate. With every required check
 green and the label where the change is high risk: `gh pr merge --squash --match-head-commit <head>`, exit 0. While only
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
 exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
@@ -1292,15 +1294,28 @@ def merge_base(base: str, head: str) -> str:
     ).strip()
 
 
+# GitHub's answer to a rules read on a private repo of a free plan
+PLAN_LIMIT = "Upgrade to GitHub Pro"
+
+
 def required_checks(base: str) -> set[str]:
-    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's."""
-    rulesets = gh(
-        "api",
-        "--paginate",
-        f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
-        "--jq",
-        '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context',
-    )
+    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's. A private
+    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises."""
+    try:
+        rulesets = gh(
+            "api",
+            "--paginate",
+            f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
+            "--jq",
+            '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context',
+        )
+    except subprocess.CalledProcessError as error:
+        if "(HTTP 403)" not in (error.stderr or "") or PLAN_LIMIT not in error.stderr:
+            raise
+        print(
+            f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
+        )
+        rulesets = ""
     protection = gh(
         "api",
         f"repos/{{owner}}/{{repo}}/branches/{base}",

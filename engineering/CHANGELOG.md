@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+`land` works on a private repo on GitHub's free plan (#145).
+
+- GitHub answers the rules read there with a 403 naming its plan: `land` reads that as no
+  required checks, merges pinned to the head once its proofs hold, never asks for
+  auto-merge, and says GitHub enforces nothing on the base. Any other error still fails.
+
 A project may let a person work outside the loop (`Opt-out: allowed`).
 
 - With the line `Opt-out: allowed` in loop.md, `check merge` reads a PR with no loop trail
