@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+A project may let a person work outside the loop (`Opt-out: allowed`).
+
+- With the line `Opt-out: allowed` in loop.md, `check merge` reads a PR with no loop trail
+  (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links,
+  no `Reverts #<n>` line, not an exempt bot PR) as outside the loop: one line saying so,
+  exit 0, so the approvals workflow posts success and its author merges it their usual way.
+  `land` prints the same line and exits 1, so the loop never merges it or turns auto-merge
+  on. A developer opts out with `Engineering loop: off` in their personal instructions.
+  Without the line nothing changes (#134).
+- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
+  queue (#137): the same ruleset without the queue, and `land` merges directly or by
+  auto-merge.
+- `docs/agents/issue-tracker.md` takes an optional `## Board` mapping loop columns to the
+  board's, one list item each, such as ``- `Build` is `In progress` ``; several loop columns
+  may share one board column (#135). `board.py <issue> <column>` takes the loop's name and
+  sets the mapped board column, and `board.py column` prints the loop's name, the earliest
+  of those sharing the board's status. Without the section nothing changes.
+
 Practices proven in a project's local workflow, now the loop's.
 
 - A child that idles saying it is waiting gets a background wait from the coordinator on
@@ -13,9 +31,6 @@ Practices proven in a project's local workflow, now the loop's.
 - Anything an agent writes under a person's GitHub account opens with `> 🤖 AI`; the
   records `approvals.py` posts keep their format, and its `## Spec`/`## Plan` lookup skips
   a leading marker line (github.md, Posting under a person's account).
-- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
-  queue (#137): the same ruleset without the queue, and `land` merges directly or by
-  auto-merge.
 
 ## 0.17.0 - 2026-10-09
 

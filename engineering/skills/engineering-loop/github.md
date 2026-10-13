@@ -99,8 +99,25 @@ issue when it is missing and sets its column; it is the only thing that moves a 
 the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
 created through the API. Its views show the Assignees field next to Status, so the board
 shows whose each ticket is. `python3 scripts/board.py column <issue>` prints the later of the
-issue's board column and the one its labels give, so an issue with `approved:spec` reads
-`Ready` even when its move failed or the repo has no board.
+loop column the issue's board column shows and the one its labels give, so an issue with `approved:spec` reads
+`Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
+
+A board with other column names, or one column for several loop columns, maps them in the
+project's `docs/agents/issue-tracker.md` under an optional `## Board`, one list item per
+mapping, the loop column first and the board's second, both in backticks:
+
+```markdown
+## Board
+
+- `Build` is `In progress`
+- `Verify` is `In progress`
+```
+
+A loop column the section does not name keeps its own name. `board.py <issue> <column>` sets
+the mapped board column; a name that is no loop column goes as is. Where several loop columns
+share a board column, `column` reads it as the earliest of them, since the board can't tell
+them apart: the labels still say `Ready`, and an open PR says it is past it. A board status
+nothing maps and the loop does not name prints as is. Without the section nothing changes.
 
 ## Publish an issue batch
 
