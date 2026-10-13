@@ -61,7 +61,10 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   queue, and `land` merges its PRs directly or by auto-merge. Nothing then tests a PR on
   top of main unless the ruleset requires an up-to-date branch, the project's choice: each
   PR behind main costs a merge, a gate run and a verifier pass, and without it a break on
-  main is reverted first (Rules for every role, Revert first). `mise run
+  main is reverted first (Rules for every role, Revert first). A private repo on GitHub's
+  free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
+  applied: `land` reads no required checks there, merges directly once its proofs hold, and
+  says GitHub enforces nothing, since its proofs are the only gate. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
   leaves untouched, and reverting deletes only it. Once project-templates wires it in,
   `setup:github` also syncs the repo's labels with `scripts/labels.py`; until then run
