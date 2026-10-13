@@ -32,6 +32,16 @@ inside the repository: it infers the repo from the remote.
 
 Pull requests are not a triage request surface.
 
+## Posting under a person's account
+
+Anything an agent writes under a person's GitHub account (an issue, a comment, a PR body,
+a reply) opens with the line `> 🤖 AI`, so readers can tell the agent's words from the
+person's own; words the person dictated verbatim go after the block, outside it. The records
+`approvals.py` posts (`Approved:`, `Assigned:`, `Local check passed`, the verifier's review)
+keep their format, since their first lines already say who wrote them and the gate parses
+them. A `## Spec` or `## Plan` comment may open with the marker: `approvals.py` skips that
+leading line when it reads the heading.
+
 ## Labels
 
 `python3 scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
@@ -89,8 +99,25 @@ issue when it is missing and sets its column; it is the only thing that moves a 
 the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
 created through the API. Its views show the Assignees field next to Status, so the board
 shows whose each ticket is. `python3 scripts/board.py column <issue>` prints the later of the
-issue's board column and the one its labels give, so an issue with `approved:spec` reads
-`Ready` even when its move failed or the repo has no board.
+loop column the issue's board column shows and the one its labels give, so an issue with `approved:spec` reads
+`Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
+
+A board with other column names, or one column for several loop columns, maps them in the
+project's `docs/agents/issue-tracker.md` under an optional `## Board`, one list item per
+mapping, the loop column first and the board's second, both in backticks:
+
+```markdown
+## Board
+
+- `Build` is `In progress`
+- `Verify` is `In progress`
+```
+
+A loop column the section does not name keeps its own name. `board.py <issue> <column>` sets
+the mapped board column; a name that is no loop column goes as is. Where several loop columns
+share a board column, `column` reads it as the earliest of them, since the board can't tell
+them apart: the labels still say `Ready`, and an open PR says it is past it. A board status
+nothing maps and the loop does not name prints as is. Without the section nothing changes.
 
 ## Publish an issue batch
 

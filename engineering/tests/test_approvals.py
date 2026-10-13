@@ -423,6 +423,16 @@ def test_a_spec_in_a_comment_is_the_one_approved() -> None:
     assert approvals.proofs("build", pull(), [tool_owned], LOOP) == []
 
 
+def test_a_leading_ai_marker_line_is_skipped_when_reading_a_heading() -> None:
+    notes = [
+        "> 🤖 AI\n\n## Spec\n\nthe marked spec",
+        "> 🤖 AI\n\n## Specification notes\n\nnot a spec",
+    ]
+    found = approvals.headed(issue(1, comments=notes), "## Spec")
+    assert found is not None and found["body"].endswith("the marked spec")
+    assert approvals.headed(issue(1, comments=notes[1:]), "## Spec") is None
+
+
 def test_a_heading_is_the_comments_whole_first_line() -> None:
     notes = (
         "## Spec\n\nthe old spec",

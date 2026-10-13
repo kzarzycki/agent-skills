@@ -20,12 +20,19 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    asks for goes in a file under `tmp/loop/`, and you report its path: the coordinator
    posts it, since the spec lives on the issue. Your job ends at the push: don't wait for
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
-   the worktree you are given, then `mise run check` and push the same way.
+   the worktree you are given, then `mise run check` and push the same way. A command too
+   long for one turn runs in the foreground with a long timeout, or in the background behind
+   one wait that ends on every outcome (success, failure, the process gone); never end a
+   turn saying you are waiting, since nothing wakes you and the coordinator reads silence
+   as work.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
    rejecting a finding is triage, the coordinator's.
-4. **Report.** Clean up what you started (servers, temporary files), then write your
+4. **Report.** Every log or capture you hand over as proof (a gate run, a repro, a drive
+   of the instance) starts with the output of `git rev-parse HEAD` and the command that
+   produced it, since a proof of another commit says nothing about the one under review.
+   Clean up what you started (servers, temporary files), then write your
    report to a file and send the coordinator its path: the branch and head SHA, the gate
    exit codes, the model you ran on, anything left out and why, and what you tried and
    dropped. A follow-up starts fresh from this report, not your transcript. If you're

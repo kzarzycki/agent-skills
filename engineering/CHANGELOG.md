@@ -14,6 +14,23 @@ A project may let a person work outside the loop (`Opt-out: allowed`).
 - SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
   queue (#137): the same ruleset without the queue, and `land` merges directly or by
   auto-merge.
+- `docs/agents/issue-tracker.md` takes an optional `## Board` mapping loop columns to the
+  board's, one list item each, such as ``- `Build` is `In progress` ``; several loop columns
+  may share one board column (#135). `board.py <issue> <column>` takes the loop's name and
+  sets the mapped board column, and `board.py column` prints the loop's name, the earliest
+  of those sharing the board's status. Without the section nothing changes.
+
+Practices proven in a project's local workflow, now the loop's.
+
+- A child that idles saying it is waiting gets a background wait from the coordinator on
+  its process or log, which asks for the report when it fires; a worker never ends a turn
+  on a wait (coordinator.md, Waiting; worker.md).
+- Every proof log starts with `git rev-parse HEAD` and the command that produced it, and
+  the verifier treats a proof whose SHA isn't the reviewed head as missing
+  (worker.md, Report; verifier.md).
+- Anything an agent writes under a person's GitHub account opens with `> 🤖 AI`; the
+  records `approvals.py` posts keep their format, and its `## Spec`/`## Plan` lookup skips
+  a leading marker line (github.md, Posting under a person's account).
 
 The owner approves only the critical specs (`spec: auto`, #133).
 

@@ -59,6 +59,10 @@ yourself, keeping standards and spec as separate axes.
   also restores a file the change added or deleted. A test that still passes guards
   nothing: report it as a major. Then check that `git status --porcelain` matches what it
   showed at the start.
+- **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
+  that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
+  missing proof: report it against the claim it was meant to back, since evidence of another
+  commit proves nothing about this one.
 - **Gates and repros:** you may run `mise run check`. Leave every repro as a runnable file
   beside the report (the gitignored `tmp/loop/`), never in a tracked path, and name it in
   the report.
