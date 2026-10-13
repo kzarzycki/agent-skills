@@ -13,6 +13,9 @@ Practices proven in a project's local workflow, now the loop's.
 - Anything an agent writes under a person's GitHub account opens with `> 🤖 AI`; the
   records `approvals.py` posts keep their format, and its `## Spec`/`## Plan` lookup skips
   a leading marker line (github.md, Posting under a person's account).
+- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
+  queue (#137): the same ruleset without the queue, and `land` merges directly or by
+  auto-merge.
 
 ## 0.17.0 - 2026-10-09
 
