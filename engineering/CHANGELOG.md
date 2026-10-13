@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+A project may let a person work outside the loop (`Opt-out: allowed`).
+
+- With the line `Opt-out: allowed` in loop.md, `check merge` reads a PR with no loop trail
+  (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links,
+  no `Reverts #<n>` line, not an exempt bot PR) as outside the loop: one line saying so,
+  exit 0, so the approvals workflow posts success and its author merges it their usual way.
+  `land` prints the same line and exits 1, so the loop never merges it or turns auto-merge
+  on. A developer opts out with `Engineering loop: off` in their personal instructions.
+  Without the line nothing changes (#134).
+- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
+  queue (#137): the same ruleset without the queue, and `land` merges directly or by
+  auto-merge.
+- `docs/agents/issue-tracker.md` takes an optional `## Board` mapping loop columns to the
+  board's, one list item each, such as ``- `Build` is `In progress` ``; several loop columns
+  may share one board column (#135). `board.py <issue> <column>` takes the loop's name and
+  sets the mapped board column, and `board.py column` prints the loop's name, the earliest
+  of those sharing the board's status. Without the section nothing changes.
+
+Practices proven in a project's local workflow, now the loop's.
+
+- A child that idles saying it is waiting gets a background wait from the coordinator on
+  its process or log, which asks for the report when it fires; a worker never ends a turn
+  on a wait (coordinator.md, Waiting; worker.md).
+- Every proof log starts with `git rev-parse HEAD` and the command that produced it, and
+  the verifier treats a proof whose SHA isn't the reviewed head as missing
+  (worker.md, Report; verifier.md).
+- Anything an agent writes under a person's GitHub account opens with `> 🤖 AI`; the
+  records `approvals.py` posts keep their format, and its `## Spec`/`## Plan` lookup skips
+  a leading marker line (github.md, Posting under a person's account).
+
+The owner approves only the critical specs (`spec: auto`, #133).
+
+- loop.md § Approvals takes `spec: auto`: every spec a writer opened, epics included, is
+  approved by policy, except one a risk rule matches (a `risk:` line, or a conditional
+  `merge:` or `spec:` line), which waits for the owner's
+  record and `approved:spec`. The gate judges the rules on the labels of the issue and the
+  PR and the PR's files (at `check build` the files pushed so far), and `check` says which
+  rule holds the spec. Under `spec: auto` a risk rule holds the spec instead of the merge,
+  so no `approved:merge` wait comes from it; `risk:high` and the cap still hold the merge.
+  `spec: auto unless risk` keeps its meaning.
+
 The owner signs off a landed change in use where loop.md asks for it.
 
 - loop.md § Approvals takes `signoff: <condition>` lines, read and judged as `risk:` rules
@@ -14,9 +55,6 @@ The owner signs off a landed change in use where loop.md asks for it.
 - After landing, an `Implements` issue moves to the new board column `Sign-off`, between
   `Verify` and `Done`, and the owner closes it once they have tried it
   (issues.md, Sign-off). `board.py column` orders it there.
-- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
-  queue (#137): the same ruleset without the queue, and `land` merges directly or by
-  auto-merge.
 
 ## 0.17.0 - 2026-10-09
 

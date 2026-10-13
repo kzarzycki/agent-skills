@@ -14,7 +14,7 @@ those tasks.
 
 `check build` needs every issue the PR closes to be free of `needs-owner`, with exactly one category, a component and
 exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its spec approved: the
-owner's current record and `approved:spec`, unless loop.md's `spec: auto unless risk` covers it (below). A `## Plan`
+owner's current record and `approved:spec`, unless loop.md's `spec: auto unless risk` or `spec: auto` covers it (below). A `## Plan`
 comment needs the same where a `plan:` rule asks, and is due with a `Plan:` line in loop.md § Practice. Category,
 component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`): a category is
 `kind:<name>`, a component `area:<name>`, whether the tracker file and loop.md's conditions name it bare or in full.
@@ -35,11 +35,17 @@ review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it 
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
 `CI: none` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below), or a review at the cap or later not satisfied or
+PR or an issue it names, a risk rule matching (below) unless under `spec: auto`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
 failure to add it and carrying on. A push removes the label (the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
 GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
+With the line `Opt-out: allowed` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
+left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
+`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
+workflow posts success and its author merges it their usual way; `land` prints the same line and exits 1, so the
+loop never merges it or turns auto-merge on for it. Risk rules and `risk:high` hold no such PR. `check build` is
+unchanged. A spec a policy covers is no trail, since under `spec: auto` every issue is covered.
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
 PR when one fails. A draft it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing
 about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
@@ -80,10 +86,15 @@ loop.md § Approvals holds the owner's standing policy, one `- <point>: <text>` 
 approves by policy, with no record or label, the spec of an issue that is a bug, carries a `Found while #<n>` line in
 its body (a follow-up an agent raised), or is a native sub-issue of an epic with the owner's current spec record and
 `approved:spec`, opened by an account GitHub's collaborator permission gives admin, maintain or write. A high-risk one
-is still built; its merge waits for the owner. `merge: auto unless risk` says the gates are the merge approval of a
+is still built; its merge waits for the owner. `spec: auto` approves every spec the same way, epics included,
+except one a risk rule matches on the labels of the issue and the PR and the PR's files (at `check build` the files
+pushed so far), or one opened by an account without write access: those need the owner's record and label, and
+`check` says why. Under `spec: auto` a risk rule holds the spec instead of the merge, since the owner approved the
+change before it was built; `risk:high` and the cap still hold the merge. `merge: auto unless risk` says the gates are the merge approval of a
 change that is not high risk, which also holds without the line. Each `risk: <condition>` line is a risk rule, and
 so is each `merge:` line with a condition in place of a policy, until the project rewrites it, and each `spec:`
-condition beside `spec: auto unless risk` (without that line the owner approves every spec, so it holds no merge). A
+condition beside `spec: auto unless risk` or `spec: auto` (without either the owner approves every spec, so it
+holds nothing). A
 `plan: <condition>` line asks for the owner's plan approval. A `bot: <login> <condition>` line, such as
 `bot: dependabot[bot] path uv.lock or path package-lock.json`, lets that bot's PR merge without a verifier review
 when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it
@@ -187,6 +198,8 @@ CONDITION = re.compile(
 )
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
+# loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
+OPT_OUT = r"^[ \t]*(?:[-*][ \t]+)?`?Opt-out:[ \t]*allowed`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
@@ -272,22 +285,37 @@ def rules(loop: str) -> list[tuple[str, str]]:
     )
 
 
-def is_policy(condition: str) -> bool:
-    """Whether a `spec:` or `merge:` line's text is the policy `auto unless risk`, not a condition."""
-    return condition.strip(" .`").lower() == "auto unless risk"
+# each point's policy lines, as opposed to conditions
+POLICIES = {"spec": ("auto unless risk", "auto"), "merge": ("auto unless risk",)}
 
 
-def policy(loop: str | None, point: str) -> bool:
-    """Whether loop.md § Approvals has the line `<point>: auto unless risk`."""
-    return any(rule == point and is_policy(text) for rule, text in rules(loop or ""))
+def is_policy(condition: str, point: str) -> bool:
+    """Whether a `spec:` or `merge:` line's text is one of that point's policies (POLICIES), not a condition."""
+    return condition.strip(" .`").lower() in POLICIES.get(point, ())
+
+
+def policy(loop: str | None, point: str, text: str = "auto unless risk") -> bool:
+    """Whether loop.md § Approvals has the line `<point>: <text>`."""
+    return any(
+        rule == point and condition.strip(" .`").lower() == text
+        for rule, condition in rules(loop or "")
+    )
+
+
+def spec_auto(loop: str | None) -> bool:
+    """Whether loop.md § Approvals has `spec: auto`, under which a risk rule holds the spec instead of the merge."""
+    return policy(loop, "spec", "auto")
 
 
 def risk_rules(loop: str | None) -> list[str]:
     """loop.md's risk conditions: each `risk:` line, and each `merge:` line that is no policy line, read as a `risk:`
-    rule until the project rewrites it. A `spec:` condition counts only beside `spec: auto unless risk`: without
-    that line the owner approves every spec already, so a legacy `spec: always` holds no merge."""
-    legacy = ("risk", "merge", "spec") if policy(loop, "spec") else ("risk", "merge")
-    return [text for rule, text in rules(loop or "") if rule in legacy and not is_policy(text)]
+    rule until the project rewrites it. A `spec:` condition counts only beside `spec: auto unless risk` or
+    `spec: auto`: without either the owner approves every spec already, so a legacy `spec: always` holds nothing."""
+    specs = policy(loop, "spec") or spec_auto(loop)
+    legacy = ("risk", "merge", "spec") if specs else ("risk", "merge")
+    return [
+        text for rule, text in rules(loop or "") if rule in legacy and not is_policy(text, rule)
+    ]
 
 
 def practice_plans(loop: str) -> bool:
@@ -373,23 +401,32 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
     return None if (files.get("totalCount") or 0) > len(found) else found
 
 
+def ruled(labels: set[str], files: list[str] | None, loop: str | None) -> str | None:
+    """Why a risk rule (risk_rules) holds on these labels and files, or None; a condition the gate can't read
+    matches, since nothing else would enforce it."""
+    for condition in risk_rules(loop):
+        hit = matches(condition, labels, files)
+        if hit:
+            return f"it matches a risk rule ({condition})"
+        if hit is None:
+            return f"a risk rule the gate can't judge holds until a person does ({condition})"
+    return None
+
+
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
-    """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (risk_rules)
-    matching the labels of the PR and its issues and the PR's files, where a condition the gate can't read matches,
-    since nothing else would enforce it; or a review at the cap was not satisfied or left a blocker or major open
-    (capped)."""
+    """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
+    labels of the PR and its issues and the PR's files, except under `spec: auto`, where the rule holds the spec
+    instead (spec_hold) and the owner approved the change before it was built; or a review at the cap was not
+    satisfied or left a blocker or major open (capped)."""
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
-    labels = names(pull).union(*(names(issue) for issue in issues))
-    for condition in risk_rules(loop):
-        hit = matches(condition, labels, paths(pull))
-        if hit:
-            return f"it matches a risk rule ({condition})"
-        if hit is None:
-            return f"a risk rule the gate can't judge holds until a person does ({condition})"
+    if not spec_auto(loop):
+        labels = names(pull).union(*(names(issue) for issue in issues))
+        if why := ruled(labels, paths(pull), loop):
+            return why
     limit = cap(loop)
     if capped(pull, limit):
         return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
@@ -560,9 +597,13 @@ def bodies(node: dict[str, Any]) -> list[str]:
 
 
 def headed(node: dict[str, Any], heading: str) -> dict[str, Any] | None:
-    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`."""
+    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`.
+    A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
     found = [
-        note for note in notes(node) if note["body"].strip().split("\n", 1)[0].rstrip() == heading
+        note
+        for note in notes(node)
+        if re.sub(r"\A\s*> 🤖 AI[ \t]*\n\s*", "", note["body"]).strip().split("\n", 1)[0].rstrip()
+        == heading
     ]
     return found[-1] if found else None
 
@@ -624,6 +665,32 @@ def spec_policy(issue: dict[str, Any]) -> bool:
         return False
     login = (issue.get("author") or {}).get("login")
     return bool(login) and writer(login)
+
+
+def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
+    """Why `spec: auto` leaves the issue's spec to the owner, or None when the policy approves it: a risk rule (ruled)
+    on the labels of the issue and the PR and the files pushed so far, so a file the spec didn't foresee still reaches
+    the owner; or an author without write access, since anyone who can open an issue would otherwise have their own
+    spec approved."""
+    if why := ruled(names(issue) | names(pull), paths(pull), loop):
+        return why
+    login = (issue.get("author") or {}).get("login")
+    if not (login and writer(login)):
+        return f"its author {f'@{login}' if login else '(no account)'} can't write to the repo"
+    return None
+
+
+def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """A line per issue whose spec `spec: auto` leaves to the owner (spec_hold), approved or not, so a gate run says
+    why that spec needed them and its merge waits for no `approved:merge`."""
+    if not spec_auto(loop):
+        return []
+    return [
+        f"#{issue['number']}: its spec is the owner's to approve under `spec: auto`, since {why}"
+        for issue in issues
+        if not any(label.startswith("wayfinder:") for label in names(issue))
+        and (why := spec_hold(pull, issue, loop))
+    ]
 
 
 def assignees(node: dict[str, Any]) -> set[str]:
@@ -715,9 +782,10 @@ def proofs(
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without docs/agents/loop.md (`loop` None) an issue needs only the
     `approved:spec` label; with it, the owner's record and the label, unless `spec: auto unless risk` covers it
-    (spec_policy). A plan needs them where a `plan:` rule asks. What the merge waits for is waits()'s."""
+    (spec_policy) or `spec: auto` does (spec_hold). A plan needs them where a `plan:` rule asks. What the merge
+    waits for is waits()'s."""
     loop_rules, found = rules(loop or ""), []
-    auto = policy(loop, "spec")
+    auto, every = policy(loop, "spec"), spec_auto(loop)
     for issue in issues:
         labels = names(issue)
         if point == "build" and (line := others(issue)):
@@ -729,7 +797,7 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        if not (auto and spec_policy(issue)):
+        if not (every and spec_hold(pull, issue, loop) is None or auto and spec_policy(issue)):
             found += approvals(where, issue, "spec", version(spec_holder(issue)))
         plan = headed(issue, "## Plan")
         if plan is not None:
@@ -871,6 +939,31 @@ def waits(
 
 def no_ci(loop: str | None) -> bool:
     return re.search(NO_CI, loop or "", re.MULTILINE | re.IGNORECASE) is not None
+
+
+def opted_out(loop: str | None) -> bool:
+    return re.search(OPT_OUT, loop or "", re.MULTILINE | re.IGNORECASE) is not None
+
+
+def outside(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `Opt-out: allowed`. A trail
+    is a verifier review (passes), an `Approved: spec` record or `approved:spec` on an issue it links, a `Reverts #<n>`
+    line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `spec: auto` every issue is covered,
+    so a person who opted out could never link one."""
+    if not opted_out(loop):
+        return None
+    found = passes(pull)
+    if (isinstance(found, str) or found) or exempt(pull, loop):
+        return None
+    if REVERTS.search(QUOTED.sub("", pull["body"] or "")):
+        return None
+    for issue in closing_issues(pull):
+        if READY in names(issue) or records(issue, "spec"):
+            return None
+    return (
+        f"PR #{pull['number']} is outside the loop (loop.md `Opt-out: allowed`, no verifier review, spec approval,"
+        " revert or bot exemption): its author merges it"
+    )
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
@@ -1397,10 +1490,13 @@ def check(point: str, pr: int | None) -> int:
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
+    if point == "merge" and (why := outside(pull, loop)):
+        print(why)
+        return 0
     found, issues = gated(point, pull, tracker, loop)
     waiting = waits(pull, issues, loop) if point == "merge" else []
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
-    for line in found + waiting + after:
+    for line in holds(pull, issues, loop) + found + waiting + after:
         print(line)
     return 1 if found else WAITING if waiting else 0
 
@@ -1419,9 +1515,12 @@ def land(pr: int) -> int:
         return 0
     if pull["state"] != "OPEN":
         raise Refused(f"{where} is closed: nothing to land")
+    if why := outside(pull, loop):
+        # land is the loop's merge: auto-merge on a PR no verifier saw would merge it on CI alone
+        raise Refused(why)
     found, issues = gated("merge", pull, tracker, loop)
     if found:  # never ready on a missing proof: ready starts CI and, with auto-merge, the merge
-        for line in found:
+        for line in holds(pull, issues, loop) + found:
             print(line)
         return 1
     for line in flag(pull, issues, loop):

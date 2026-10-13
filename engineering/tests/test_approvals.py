@@ -437,6 +437,16 @@ def test_a_spec_in_a_comment_is_the_one_approved() -> None:
     assert approvals.proofs("build", pull(), [tool_owned], LOOP) == []
 
 
+def test_a_leading_ai_marker_line_is_skipped_when_reading_a_heading() -> None:
+    notes = [
+        "> 🤖 AI\n\n## Spec\n\nthe marked spec",
+        "> 🤖 AI\n\n## Specification notes\n\nnot a spec",
+    ]
+    found = approvals.headed(issue(1, comments=notes), "## Spec")
+    assert found is not None and found["body"].endswith("the marked spec")
+    assert approvals.headed(issue(1, comments=notes[1:]), "## Spec") is None
+
+
 def test_a_heading_is_the_comments_whole_first_line() -> None:
     notes = (
         "## Spec\n\nthe old spec",
@@ -2112,6 +2122,84 @@ def test_land_says_a_merged_pr_is_merged_and_refuses_a_closed_one(
     assert landed(capsys, landing) == (1, ["PR #7 is closed: nothing to land"], [])
 
 
+# --- opt-out: a person keeps their PR out of the loop ---
+
+OPTED = LOOP + "\nOpt-out: allowed\n"
+OUTSIDE = (
+    "PR #7 is outside the loop (loop.md `Opt-out: allowed`, no verifier review, spec approval,"
+    " revert or bot exemption): its author merges it"
+)
+
+
+def gate(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, list[str]]:
+    code = approvals.main(list(argv))
+    return code, capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize(
+    ("line", "allowed"),
+    [
+        ("Opt-out: allowed", True),
+        ("- `Opt-out: allowed` (personal instructions say so)", True),
+        ("Opt-out: allowed for nobody", False),
+        ("Opt-out: no", False),
+    ],
+)
+def test_only_a_bare_opt_out_line_allows_it(line: str, allowed: bool) -> None:
+    assert approvals.opted_out(f"## Owner\n\n{line}\n") is allowed
+
+
+def test_a_pr_with_no_loop_trail_is_outside_the_loop_where_opt_out_is_allowed(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    Path("docs/agents/loop.md").write_text(OPTED)
+    mine = landing["pull"]
+    mine["reviews"]["nodes"] = []
+    mine["closingIssuesReferences"]["nodes"] = [specced(1, "kind:bug")]
+    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    # land never merges it, nor turns auto-merge on: the gate before it is the loop's
+    assert landed(capsys, landing) == (1, [OUTSIDE], [])
+    # risk rules hold no PR outside the loop: the project accepted that with the line
+    mine["labels"]["nodes"].append({"name": "risk:high"})
+    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    # without the line, the same PR fails the gate as before
+    Path("docs/agents/loop.md").write_text(LOOP)
+    code, lines = gate(capsys, "check", "merge", "7")
+    assert code == 1 and "PR #7: no verifier review posted (approvals.py verdict)" in lines
+
+
+@pytest.mark.parametrize("trail", ["review", "spec-record", "approved-spec", "revert"])
+def test_any_loop_trail_keeps_the_pr_in_the_loop(landing: dict[str, Any], trail: str) -> None:
+    mine = landing["pull"]
+    mine["reviews"]["nodes"] = [VERDICT] if trail == "review" else []
+    linked = specced(1, "kind:bug")
+    if trail == "spec-record":
+        linked = issue(1, "kind:bug", comments=(record("spec", "loop", spec="as written x"),))
+    if trail == "approved-spec":
+        linked = specced(1, "kind:bug", "approved:spec")
+    if trail == "revert":
+        mine["body"] = "Reverts #3\n\n## Evidence\n\nwrong\n"
+    mine["closingIssuesReferences"]["nodes"] = [linked]
+    assert approvals.outside(mine, OPTED) is None
+    assert approvals.outside({**mine, "reviews": {"nodes": []}, "body": ""}, LOOP) is None
+
+
+def test_an_exempt_bot_pr_keeps_its_trail() -> None:
+    pr = {**pull(files=("uv.lock",)), "author": {"__typename": "Bot", "login": "dependabot"}}
+    pr["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    assert approvals.outside(pr, BOTS + "Opt-out: allowed\n") is None
+    assert approvals.outside(pr, OPTED) is not None  # no `bot:` line: a person's PR like any other
+
+
+def test_a_policy_covered_spec_is_no_trail(landing: dict[str, Any]) -> None:
+    mine = landing["pull"]
+    mine["reviews"]["nodes"] = []
+    mine["closingIssuesReferences"]["nodes"] = [
+        specced(1, "kind:bug")
+    ]  # `spec: auto unless risk` covers a bug
+    assert approvals.outside(mine, OPTED) == OUTSIDE
+
+
 # --- a repo without the loop's files ---
 
 
@@ -2464,6 +2552,85 @@ def test_a_spec_policy_covers_needs_no_record_or_label_and_one_it_does_not_needs
     assert problems([specced(1, "kind:bug", "needs-owner")]) == [
         "#1 waits for the owner (needs-owner)"
     ]
+
+
+AUTO = "## Approvals\n\n- spec: auto\n- risk: component `api`\n- risk: path `billing/**`\n"
+
+
+def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
+    return {**found, "author": {"login": author}}
+
+
+def test_spec_auto_is_a_policy_and_a_spec_condition_beside_it_a_risk_rule() -> None:
+    assert approvals.spec_auto(AUTO) and not approvals.policy(AUTO, "spec")
+    assert not approvals.spec_auto(POLICY)
+    assert approvals.risk_rules(AUTO + "- spec: size:XL\n") == [
+        "component `api`",
+        "path `billing/**`",
+        "size:XL",
+    ]
+
+
+def test_spec_auto_approves_every_spec_a_writer_opened_but_one_a_risk_rule_holds(
+    writers: list[str],
+) -> None:
+    feature, new_epic = (
+        by("worker", specced(1, "kind:enhancement")),
+        by("worker", specced(3, "kind:enhancement", "epic")),
+    )
+    # risk:high holds the merge, not the spec
+    marked = by("worker", specced(5, "kind:bug", "risk:high"))
+    assert approvals.proofs("build", pull(), [feature, new_epic, marked], AUTO) == []
+    held, outsider = (
+        by("worker", specced(4, "kind:enhancement", "area:api")),
+        by("drive-by", specced(6, "kind:bug")),
+    )
+    assert approvals.holds(pull(), [feature, held, outsider], AUTO) == [
+        "#4: its spec is the owner's to approve under `spec: auto`, since it matches a risk rule (component `api`)",
+        "#6: its spec is the owner's to approve under `spec: auto`, since its author @drive-by can't write to the repo",
+    ]
+    assert approvals.proofs("build", pull(), [held, outsider], AUTO) == [
+        "#4 has no `Approved: spec` record by the owner",
+        "#4 lacks the `approved:spec` label",
+        "#6 has no `Approved: spec` record by the owner",
+        "#6 lacks the `approved:spec` label",
+    ]
+    # the owner's approval lets a held spec build
+    owned = by("worker", approved(4, "kind:enhancement", "area:api"))
+    assert approvals.proofs("build", pull(), [owned], AUTO) == []
+
+
+def test_under_spec_auto_a_file_the_spec_did_not_foresee_holds_the_spec(
+    writers: list[str],
+) -> None:
+    feature = by("worker", specced(1, "kind:enhancement"))
+    pushed = pull(files=("app.py", "billing/a.py"))
+    assert approvals.holds(pushed, [feature], AUTO) == [
+        "#1: its spec is the owner's to approve under `spec: auto`, since it matches a risk rule (path `billing/**`)"
+    ]
+    assert approvals.proofs("build", pushed, [feature], AUTO) == [
+        "#1 has no `Approved: spec` record by the owner",
+        "#1 lacks the `approved:spec` label",
+    ]
+    # a PR label counts too, and a rule the gate can't read holds
+    assert approvals.holds(pull(labels=("area:api",)), [feature], AUTO)
+    vague = AUTO + "- risk: anything touching money\n"
+    assert approvals.holds(pull(), [feature], vague) == [
+        "#1: its spec is the owner's to approve under `spec: auto`, since a risk rule the gate can't judge holds until a person does (anything touching money)"
+    ]
+
+
+def test_under_spec_auto_a_risk_rule_holds_no_merge_but_risk_high_and_the_cap_do(
+    writers: list[str],
+) -> None:
+    owned = by("worker", approved(1, "kind:enhancement", "area:web"))
+    done = pull(reviews=(VERDICT,), files=("billing/a.py",))
+    assert merge(done, [owned], AUTO) == []
+    assert approvals.risk(done, [owned], AUTO) is None
+    marked = pull(reviews=(VERDICT,), files=("billing/a.py",), labels=("risk:high",))
+    assert approvals.risk(marked, [owned], AUTO) == "`risk:high` is on PR #7"
+    # the same PR beside `spec: auto unless risk` waits for the owner's merge label
+    assert approvals.risk(done, [owned], POLICY) == "it matches a risk rule (path `billing/**`)"
 
 
 def test_a_policy_line_is_no_condition_so_a_low_risk_pr_waits_for_nothing() -> None:

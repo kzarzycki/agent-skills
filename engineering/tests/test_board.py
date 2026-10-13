@@ -100,3 +100,53 @@ def test_a_landed_change_waiting_for_its_signoff_reads_after_verify() -> None:
 
 def test_a_board_column_the_loop_does_not_name_is_printed_as_is() -> None:
     assert board.column_of(_repo(["P"], [("P", "Backlog")], ("approved:spec",))) == "Backlog"
+
+
+# --- the tracker file's mapping of loop columns to the board's ---
+
+MAPPED = """# Issue tracker
+
+## Board
+
+- `Build` is `In progress`
+- `Verify` is `In progress`
+- `Sign-off` is `In review`
+
+## Components
+
+- `web`
+"""
+
+
+def test_the_tracker_maps_loop_columns_to_board_columns() -> None:
+    assert board.mapping(MAPPED) == {
+        "Build": "In progress",
+        "Verify": "In progress",
+        "Sign-off": "In review",
+    }
+    assert board.mapping(None) == board.mapping("## Board\n\nNo mapping here.\n") == {}
+
+
+def test_column_reads_a_shared_board_column_as_its_earliest_loop_column() -> None:
+    mapped = board.mapping(MAPPED)
+    assert board.column_of(_repo(["P"], [("P", "In progress")]), mapped) == "Build"
+    # the labels still win over an earlier column, and an unmapped status is printed as is
+    assert board.column_of(_repo(["P"], [("P", "Intent")], ("approved:spec",)), mapped) == "Ready"
+    assert board.column_of(_repo(["P"], [("P", "In review")]), mapped) == "In review"
+    assert board.column_of(_repo(["P"], [("P", "Backlog")]), mapped) == "Backlog"
+    # without a mapping nothing changes
+    assert board.column_of(_repo(["P"], [("P", "Verify")])) == "Verify"
+
+
+def test_a_move_takes_the_loops_name_and_sets_the_mapped_column(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs" / "agents" / "issue-tracker.md").write_text(MAPPED)
+    monkeypatch.setattr(board, "toplevel", lambda: tmp_path)
+    moved: list[tuple[int, str]] = []
+    monkeypatch.setattr(board, "move", lambda issue, column: moved.append((issue, column)))
+    assert [board.main(["5", name]) for name in ("Verify", "Sign-off", "Ready", "Backlog")] == [
+        0
+    ] * 4
+    assert moved == [(5, "In progress"), (5, "In review"), (5, "Ready"), (5, "Backlog")]

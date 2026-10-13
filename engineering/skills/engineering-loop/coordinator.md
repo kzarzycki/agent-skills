@@ -33,11 +33,12 @@ UI, and delegate the rest.
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec loop.md's `spec: auto unless risk` covers (a bug, a `Found while #n`
-   follow-up, a sub-issue of an approved epic opened by a writer) is approved by that
-   policy: it gets no label and no record, since the gate reads the policy and an
-   `approved:spec` an agent added would read as the owner's; move it to `Ready` on the
-   board and carry on; the owner reads it when they
-   like. Any other spec waits for the owner: add `needs-owner`, comment what to approve
+   follow-up, a sub-issue of an approved epic opened by a writer), or `spec: auto` covers
+   (any spec a writer opened that no risk rule matches, SKILL.md, Approvals and proof, judged on the issue's labels
+   and the paths the spec says it changes), is approved by that policy: it gets no label
+   and no record, since the gate reads the policy and an `approved:spec` an agent added
+   would read as the owner's; move it to `Ready` on the board and carry on; the owner
+   reads it when they like. Any other spec waits for the owner: add `needs-owner`, comment what to approve
    (board: `Needs owner`), and stop until they approve (step 1); their `approved:spec` is
    the ready state (board: `Ready`). An epic's stories are filed as its sub-issues, each
    with its spec, before you ask for the epic's approval, and the request lists them: under
@@ -79,7 +80,8 @@ UI, and delegate the rest.
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
 6. **Prove** before review: a worker drives the real thing on the PR branch the way
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
-   reports; you read the report. Green gates are necessary, not sufficient.
+   reports; you read the report. Each proof log names the commit it ran on (worker.md,
+   Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). Commit and push, then start the verifier (SKILL.md) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
@@ -235,6 +237,10 @@ do, end your turn. Don't poll agent lists, logs or panes,
 or sleep: every check re-reads your whole context. Read the report file a reply names,
 not logs or scrollback. A child nothing waits on reaches you only through the untitled
 inbox notice, so watch your children as the orchestration file says (Omnigent: `watch`).
+A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
+has left no report and will not wake itself: arm one background wait on its process or log
+that ends on every terminal state (success, failure, the process gone), e.g.
+`while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
 
 A core finding still open at the cap goes to the owner and stops the landing: offer a fix
 with one pass past the cap, scoped to the open items, or leaving the code untouched

@@ -10,7 +10,9 @@ that lands as a PR runs it, from the owner's request to the merge: tooling, agen
 configuration and files under `~/` too, through the repo that owns them. Each step
 prevents a failure, and leaves proof on GitHub that `approvals.py` checks. Size changes who
 builds and how long the spec is, never which steps run: a step is skipped only when the
-owner asks for that change, and the PR body says so.
+owner asks for that change, and the PR body says so. Where loop.md allows an opt-out, a
+developer whose personal instructions hold the line `Engineering loop: off` works outside
+it (Approvals and proof); no step runs for their changes.
 
 | Step | Prevents |
 |---|---|
@@ -31,8 +33,8 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
-| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels, Extra categories and Renamed labels | Intent, Spec, Land |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records), and `Opt-out: allowed` for a project where a person may work outside the loop (Approvals and proof). | every step but Gates |
+| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels, Extra categories, Renamed labels and Board (the board's own names for the loop's columns) | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
 ### Adopting the loop
@@ -124,6 +126,14 @@ loop.md § Approvals holds the policy, one line each:
   record and `approved:spec`), opened by an account with write access to the repo. Any
   other spec, a new epic for one, needs the owner's approval; without the line, every
   spec does.
+- `spec: auto` approves every spec by policy, epics included, so the owner reads only the
+  critical ones: a spec a risk rule matches, or one opened by an account without write
+  access, since anyone who can open an issue would otherwise approve their own, waits for
+  the owner's record and `approved:spec`. A risk rule then holds the spec instead of the
+  merge: the owner decides while the change is still cheap, and its merge is automatic
+  like any other. `approvals.py` judges the rules on the labels of the issue and the PR
+  and the PR's files, at `check build` the files pushed so far, so a file the spec didn't
+  foresee still reaches the owner before the merge.
 - `merge: auto unless risk`: the gates are the merge approval of a change that is not high
   risk, as they are without the line.
 - `risk: <condition>`, one rule per line: what is high risk here, by path, area or kind,
@@ -132,8 +142,9 @@ loop.md § Approvals holds the policy, one line each:
   component, category; `always` matches everything) and the PR's files (`path <glob>`); a
   condition it can't read matches, since nothing else would enforce it. A `merge:` line
   with a condition in place of the policy reads as a `risk:` rule until the project
-  rewrites it, and so does a `spec:` condition beside `spec: auto unless risk`; without
-  that line the owner approves every spec, so a `spec:` condition holds no merge.
+  rewrites it, and so does a `spec:` condition beside `spec: auto unless risk` or
+  `spec: auto`; without either the owner approves every spec, so a `spec:` condition
+  holds nothing.
 - `plan: <condition>` asks for the owner's approval of a matching plan.
 - `bot: <login> <condition>`, such as `bot: dependabot[bot] path uv.lock or path
   pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
@@ -152,7 +163,7 @@ loop.md § Approvals holds the policy, one line each:
   keyword is checked, and `Implements` is a link like `Part of`.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
-matches, or the cap was reached with a blocker or major open (The cap). A high-risk spec
+matches (unless under `spec: auto`, where it held the spec), or the cap was reached with a blocker or major open (The cap). A high-risk spec
 covered by policy is still built and PR'd; its merge waits for the owner's
 `approved:merge` label on the PR, asked for once `check` is green on the head: it counts
 only when added after that head's push, and a push removes it, so it never covers code the
@@ -183,6 +194,18 @@ because `land` is what refuses a PR whose proof is missing. A repo without
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A rule GitHub can enforce,
 such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
 which the loop obeys and never overrides.
+
+With the line `Opt-out: allowed` in loop.md, a developer may keep their own PRs out of the
+loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
+PR. `check merge` then reads a PR with no loop trail (no verifier review, no
+`Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
+not an exempt bot PR) as outside the loop: it prints one line saying so and exits 0, so the
+`loop:approvals` status is green and the PR's author merges it their usual way, under the
+repo's own rules. `land` prints the same line and exits 1, so no agent merges it or turns
+auto-merge on for it. Risk rules and `risk:high` hold no PR outside the loop; the project
+accepts that by writing the line. A spec a policy covers is no trail, since under
+`spec: auto` every issue is covered. Any trail puts the PR back under every proof. Without
+the line, a PR with no trail fails the gate.
 
 ## Roles
 
