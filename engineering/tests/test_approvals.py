@@ -1715,6 +1715,8 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             state["calls"].append(args)
             return ""
         if args[:2] == ("api", "--paginate") and args[2].endswith("/rules/branches/main"):
+            if isinstance(state["rulesets"], Exception):
+                raise state["rulesets"]
             return "".join(f"{name}\n" for name in state["rulesets"])
         if args[1] == "repos/{owner}/{repo}/branches/main":
             return "".join(f"{name}\n" for name in state["protection"])
@@ -1844,6 +1846,50 @@ def test_land_waits_without_auto_merge_where_github_would_not_hold_the_merge(
     code, lines, calls = landed(capsys, landing)
     assert (code, calls) == (approvals.WAITING, [])
     assert line in lines
+
+
+def rules_error(status: int, message: str) -> subprocess.CalledProcessError:
+    return subprocess.CalledProcessError(
+        1, ("gh", "api"), stderr=f"gh: {message} (HTTP {status})\n"
+    )
+
+
+FREE_PLAN = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+
+
+def test_land_on_a_free_plan_private_repo_merges_at_the_head_and_says_github_enforces_nothing(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub's free plan has no rulesets on a private repo, nor auto-merge: its 403 reads as no required checks."""
+    landing["rulesets"] = rules_error(403, FREE_PLAN)
+    enforces = (
+        "GitHub enforces no rules on main here (its plan has none): land's proofs are the only gate"
+    )
+    assert landed(capsys, landing) == (0, [enforces, f"PR #7 merges at {HEAD}"], [MERGE])
+    # a check still pending waits for the next run, never for auto-merge
+    landing["pull"] = {
+        **landing["pull"],
+        **pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),)),
+    }
+    landing["pull"]["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
+    landing["calls"].clear()
+    code, lines, calls = landed(capsys, landing)
+    assert (code, lines[0], calls) == (approvals.WAITING, enforces, [])
+
+
+@pytest.mark.parametrize(
+    "error",
+    [rules_error(403, "Resource not accessible by integration"), rules_error(404, "Not Found")],
+)
+def test_land_fails_on_any_other_rules_error(
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    error: subprocess.CalledProcessError,
+) -> None:
+    landing["rulesets"] = error
+    code, lines, calls = landed(capsys, landing)
+    assert (code, calls) == (1, [])
+    assert not any("enforces" in line for line in lines)
 
 
 def test_a_base_with_no_required_checks_gets_no_auto_merge_while_a_check_is_pending(
