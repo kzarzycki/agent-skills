@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
+  queue (#137): the same ruleset without the queue, and `land` merges directly or by
+  auto-merge.
+
 ## 0.17.0 - 2026-10-09
 
 A bot's lock- or manifest-only PR merges without a verifier review (#106).
