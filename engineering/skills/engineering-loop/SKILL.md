@@ -11,8 +11,8 @@ configuration and files under `~/` too, through the repo that owns them. Each st
 prevents a failure, and leaves proof on GitHub that `approvals.py` checks. Size changes who
 builds and how long the spec is, never which steps run: a step is skipped only when the
 owner asks for that change, and the PR body says so. Where loop.md allows an opt-out, a
-developer whose personal instructions turn the loop off works outside it (Approvals and
-proof); no step runs for their changes.
+developer whose personal instructions hold the line `Engineering loop: off` works outside
+it (Approvals and proof); no step runs for their changes.
 
 | Step | Prevents |
 |---|---|
@@ -172,15 +172,17 @@ because `land` is what refuses a PR whose proof is missing. A repo without
 such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
 which the loop obeys and never overrides.
 
-With the line `Opt-out: allowed` in loop.md, a person may keep their own PRs out of the
-loop, by a line in their personal instructions and nothing on the PR. `check merge` then
-reads a PR with no loop trail (no verifier review, no owner's spec record or
-`approved:spec` on an issue it links, no `Reverts #<n>` line, not an exempt bot PR) as
-outside the loop: it says so and exits 0, so the `loop:approvals` status is green and the
-PR's owner merges it their usual way, under the repo's own rules. `land` refuses it, so no
-agent merges it or turns auto-merge on for it. A spec a policy covers is no trail, since
-under `spec: auto` every issue is covered. Any trail puts the PR back under every proof.
-Without the line, a PR with no trail fails the gate.
+With the line `Opt-out: allowed` in loop.md, a developer may keep their own PRs out of the
+loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
+PR. `check merge` then reads a PR with no loop trail (no verifier review, no
+`Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
+not an exempt bot PR) as outside the loop: it prints one line saying so and exits 0, so the
+`loop:approvals` status is green and the PR's author merges it their usual way, under the
+repo's own rules. `land` prints the same line and exits 1, so no agent merges it or turns
+auto-merge on for it. Risk rules and `risk:high` hold no PR outside the loop; the project
+accepts that by writing the line. A spec a policy covers is no trail, since under
+`spec: auto` every issue is covered. Any trail puts the PR back under every proof. Without
+the line, a PR with no trail fails the gate.
 
 ## Roles
 

@@ -1999,8 +1999,8 @@ def test_land_says_a_merged_pr_is_merged_and_refuses_a_closed_one(
 
 OPTED = LOOP + "\nOpt-out: allowed\n"
 OUTSIDE = (
-    "PR #7 is outside the loop (loop.md `Opt-out: allowed`): no verifier review, and no issue it"
-    " links has the owner's spec approval, so its owner merges it their usual way"
+    "PR #7 is outside the loop (loop.md `Opt-out: allowed`, no verifier review, spec approval,"
+    " revert or bot exemption): its author merges it"
 )
 
 
@@ -2031,20 +2031,23 @@ def test_a_pr_with_no_loop_trail_is_outside_the_loop_where_opt_out_is_allowed(
     mine["closingIssuesReferences"]["nodes"] = [specced(1, "kind:bug")]
     assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
     # land never merges it, nor turns auto-merge on: the gate before it is the loop's
-    assert landed(capsys, landing) == (1, [f"{OUTSIDE}; land merges only a PR in the loop"], [])
+    assert landed(capsys, landing) == (1, [OUTSIDE], [])
+    # risk rules hold no PR outside the loop: the project accepted that with the line
+    mine["labels"]["nodes"].append({"name": "risk:high"})
+    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
     # without the line, the same PR fails the gate as before
     Path("docs/agents/loop.md").write_text(LOOP)
     code, lines = gate(capsys, "check", "merge", "7")
     assert code == 1 and "PR #7: no verifier review posted (approvals.py verdict)" in lines
 
 
-@pytest.mark.parametrize("trail", ["review", "owner-record", "approved-spec", "revert"])
+@pytest.mark.parametrize("trail", ["review", "spec-record", "approved-spec", "revert"])
 def test_any_loop_trail_keeps_the_pr_in_the_loop(landing: dict[str, Any], trail: str) -> None:
     mine = landing["pull"]
     mine["reviews"]["nodes"] = [VERDICT] if trail == "review" else []
     linked = specced(1, "kind:bug")
-    if trail == "owner-record":
-        linked = issue(1, "kind:bug", comments=(record("spec", "owner", spec="as written x"),))
+    if trail == "spec-record":
+        linked = issue(1, "kind:bug", comments=(record("spec", "loop", spec="as written x"),))
     if trail == "approved-spec":
         linked = specced(1, "kind:bug", "approved:spec")
     if trail == "revert":
@@ -2052,6 +2055,13 @@ def test_any_loop_trail_keeps_the_pr_in_the_loop(landing: dict[str, Any], trail:
     mine["closingIssuesReferences"]["nodes"] = [linked]
     assert approvals.outside(mine, OPTED) is None
     assert approvals.outside({**mine, "reviews": {"nodes": []}, "body": ""}, LOOP) is None
+
+
+def test_an_exempt_bot_pr_keeps_its_trail() -> None:
+    pr = {**pull(files=("uv.lock",)), "author": {"__typename": "Bot", "login": "dependabot"}}
+    pr["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    assert approvals.outside(pr, BOTS + "Opt-out: allowed\n") is None
+    assert approvals.outside(pr, OPTED) is not None  # no `bot:` line: a person's PR like any other
 
 
 def test_a_policy_covered_spec_is_no_trail(landing: dict[str, Any]) -> None:

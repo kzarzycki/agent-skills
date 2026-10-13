@@ -5,11 +5,12 @@
 A project may let a person work outside the loop (`Opt-out: allowed`).
 
 - With the line `Opt-out: allowed` in loop.md, `check merge` reads a PR with no loop trail
-  (no verifier review, no owner's spec record or `approved:spec` on an issue it links, no
-  `Reverts #<n>` line, not an exempt bot PR) as outside the loop: one line saying so, exit
-  0, so the approvals workflow posts success and its owner merges it their usual way.
-  `land` refuses it, so the loop never merges it or turns auto-merge on. Without the line
-  nothing changes.
+  (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links,
+  no `Reverts #<n>` line, not an exempt bot PR) as outside the loop: one line saying so,
+  exit 0, so the approvals workflow posts success and its author merges it their usual way.
+  `land` prints the same line and exits 1, so the loop never merges it or turns auto-merge
+  on. A developer opts out with `Engineering loop: off` in their personal instructions.
+  Without the line nothing changes (#134).
 
 ## 0.17.0 - 2026-10-09
 
