@@ -32,7 +32,7 @@ UI, and delegate the rest.
    references. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec loop.md's `spec: auto unless risk` covers (a bug, a `Found while #n`
    follow-up, a sub-issue of an approved epic opened by a writer), or `spec: auto` covers
-   (any spec a writer opened that no `risk:` rule matches, judged on the issue's labels
+   (any spec a writer opened that no risk rule matches, SKILL.md, Approvals and proof, judged on the issue's labels
    and the paths the spec says it changes), is approved by that policy: it gets no label
    and no record, since the gate reads the policy and an `approved:spec` an agent added
    would read as the owner's; move it to `Ready` on the board and carry on; the owner
