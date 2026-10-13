@@ -89,5 +89,14 @@ def test_the_owner_moving_a_parked_spec_to_ready_shows() -> None:
     assert board.column_of(_repo(["P"], [("P", "Ready")], ("needs-owner",))) == "Ready"
 
 
+def test_a_landed_change_waiting_for_its_signoff_reads_after_verify() -> None:
+    assert board.column_of(_repo(["P"], [("P", "Sign-off")], ("approved:spec",))) == "Sign-off"
+    assert (
+        board.COLUMNS.index("Verify")
+        < board.COLUMNS.index("Sign-off")
+        < board.COLUMNS.index("Done")
+    )
+
+
 def test_a_board_column_the_loop_does_not_name_is_printed_as_is() -> None:
     assert board.column_of(_repo(["P"], [("P", "Backlog")], ("approved:spec",))) == "Backlog"

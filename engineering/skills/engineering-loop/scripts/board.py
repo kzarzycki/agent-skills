@@ -11,7 +11,8 @@ blocks a ticket. Needs the `project` token scope (`gh auth refresh -s project`).
 
 `column` prints the issue's column: the later of its board column and the one its labels give (issues.md, Board:
 `needs-owner` is `Needs owner`, `approved:spec` is `Ready`, neither is `Intent`), since the labels are the state and a
-board move may have failed. A board column the loop does not name is printed as is.
+board move may have failed. A board column the loop does not name is printed as is. `Sign-off` is a landed change
+whose issue stays open for the owner's check in use (`Implements #n`), so it comes after `Verify` and before `Done`.
 """
 
 from __future__ import annotations
@@ -94,7 +95,7 @@ def move(issue: int, column: str) -> None:
 
 
 # the loop's columns in stage order (issues.md, Board)
-COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Done"]
+COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Sign-off", "Done"]
 
 
 def labelled(labels: set[str]) -> str:

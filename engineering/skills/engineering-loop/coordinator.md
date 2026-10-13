@@ -29,7 +29,9 @@ UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Add the size label, then check who approves it (SKILL.md, Approvals and
+   references. Where loop.md has `signoff:` rules, end the spec with a line `Sign-off:
+   owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
+   try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec loop.md's `spec: auto unless risk` covers (a bug, a `Found while #n`
    follow-up, a sub-issue of an approved epic opened by a writer) is approved by that
    policy: it gets no label and no record, since the gate reads the policy and an
@@ -48,7 +50,8 @@ UI, and delegate the rest.
 3. **Branch and notes.** Cut the PR branch off a freshly fetched `origin/main`, or, one
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
-   that closes the spec with the branch's first push (github.md, Review trail; board:
+   that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
+   proof) with the branch's first push (github.md, Review trail; board:
    `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
@@ -181,9 +184,12 @@ UI, and delegate the rest.
      `Closes` and lands itself once retargeted onto main. Copy them to its base only when
      the base actually contains the stacked work (the stack was merged into it), since
      otherwise the base's merge closes issues whose work isn't on main. Once the work is on the default branch, close each issue a PR on the
-     way names with `Closes` (never `Part of`) that is still open
+     way names with `Closes` (never `Part of` or `Implements`) that is still open
      (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
-     When that was an epic's last open sub-issue, close and move the epic the same way.
+     When that was an epic's last open sub-issue, close and move the epic the same way. Each
+     issue it names with `Implements` stays open for the owner's sign-off: move it to
+     `Sign-off` and comment `Landed in #<pr> (<merge sha>); waits for your sign-off in use:`
+     followed by the spec's acceptance examples to try ([issues.md](issues.md), Sign-off).
    - A PR replaced by another: the replacement carries `Closes` for every issue the old
      one closed, so none is left pointing only at a closed PR; close the old one with
      `Replaced by #<n>`.
@@ -215,7 +221,8 @@ UI, and delegate the rest.
    also holds other sessions' worktrees.
 11. **Report** to the owner: the PR and merge SHA, gate exit codes, the acceptance
    examples as checked (with a screenshot when there is something to see), ledger lines
-   added, findings rejected, issues filed, each agent's model, `verifier: same family`
+   added, findings rejected, issues filed, each issue waiting for their sign-off, each
+   agent's model, `verifier: same family`
    when it was, and the main instance's link.
 
 **Waiting.** Results come to you: a subagent's result or a backend's reply arrives as a

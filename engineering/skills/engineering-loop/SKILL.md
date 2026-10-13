@@ -15,7 +15,7 @@ owner asks for that change, and the PR body says so.
 | Step | Prevents |
 |---|---|
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
-| **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it. | a decision the owner never saw |
+| **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the coordinator when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
 | **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
@@ -31,7 +31,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines and `risk:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), and `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records). | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels, Extra categories and Renamed labels | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -136,6 +136,15 @@ loop.md § Approvals holds the policy, one line each:
   changes, none renamed or copied, matches the condition on its path, since no verifier
   runs on a bot's PR; anything else needs the review as usual. Without the line, every PR
   needs one.
+- `signoff: <condition>`, such as `signoff: component ios or component watch`: the owner
+  signs off a matching change in use after it lands, which no gate can do for them. The
+  condition reads as a `risk:` one does, on the labels of the PR and the issue and the PR's
+  files, and one the gate can't read matches. The spec records the outcome in a line
+  `Sign-off: owner` or `Sign-off: none`, and `owner` there asks for it where no rule does.
+  The PR links such an issue with `Implements #<n>`, which GitHub does not close, so the
+  issue stays open for the sign-off, and every other issue with `Closes #<n>`; `Part of
+  #<n>` suits both. `check merge` refuses the wrong keyword. Without a `signoff:` line no
+  keyword is checked, and `Implements` is a link like `Part of`.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
 matches, or the cap was reached with a blocker or major open (The cap). A high-risk spec
@@ -249,7 +258,7 @@ angles run as native subagents, never as full harness sessions.
   waiting isn't possible, and only on a PR already in Land (verdict triaged, waiting for
   CI), because a base still in review changes under its stack and every change cascades.
   Its owner moves the stacked PR onto main the moment its base lands, and it lands itself
-  with its own `Closes`. Anything else waits, or builds
+  with its own `Closes` or `Implements`. Anything else waits, or builds
   on main behind a seam.
 - **Revert first.** When main goes red after a merge, or a merged change proves wrong in
   use, the first fix is a revert PR off main, because a revert returns main to a state

@@ -25,7 +25,8 @@ the PR its issues' assignees, reporting a refusal and carrying on. `release` rem
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
 A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
-`check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the verifier's PR
+`check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
+each issue, where loop.md has `signoff:` rules (below); the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
 PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
@@ -87,7 +88,10 @@ condition beside `spec: auto unless risk` (without that line the owner approves 
 `bot: dependabot[bot] path uv.lock or path package-lock.json`, lets that bot's PR merge without a verifier review
 when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it
 changes, none renamed or copied, matches the condition on its path (exempt); without one, every PR needs the
-review. A condition the gate can read is `always`, `size:L`
+review. A `signoff: <condition>` line says whose change the owner signs off in use after it lands: `check merge` needs
+the PR to link each issue such a rule matches, or whose spec has a line `Sign-off: owner`, with `Implements #<n>`,
+which leaves it open for the sign-off, and every other issue with a closing keyword (`Part of` suits both); without
+a `signoff:` line no keyword is checked and `Implements` is a link like `Part of`. A condition the gate can read is `always`, `size:L`
 (`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
 glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
 condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
@@ -161,10 +165,18 @@ PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body b
     __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
-# GitHub's closing keywords, plus `Part of` for a spec the PR builds on but leaves open; ponytail: same-repo `#n`
+# GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
+# leaves unfinished, and `Implements` for one the owner signs off after landing (`signoff:`). ponytail: same-repo `#n`
 # only, add owner/repo#n and issue URLs when a PR here uses one.
 CLOSING = re.compile(
-    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|part[ \t]+of):?[ \t]+#(\d+)\b", re.IGNORECASE
+    r"\b(?:(close[sd]?|fix(?:e[sd])?|resolve[sd]?)|(part[ \t]+of)|(implements)):?[ \t]+#(\d+)\b",
+    re.IGNORECASE,
+)
+# a link's kind, in the order one wins when a body names an issue twice: GitHub closes on any closing keyword
+CLOSES, IMPLEMENTS, PART = "closes", "implements", "part of"
+# the spec's sign-off record, as a line of its own: `Sign-off: owner` or `Sign-off: none`
+SIGNOFF = re.compile(
+    r"^[ \t>*-]*\**Sign-off\**:?\**[ \t]*`?(owner|none)\b", re.MULTILINE | re.IGNORECASE
 )
 # code and comments: an example, not a closing line
 QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
@@ -190,9 +202,22 @@ APPROVALS = "loop:approvals"
 RUN = re.compile(r"/actions/runs/(\d+)")
 
 
+def links(body: str) -> dict[int, str]:
+    """The issues a PR body names after a closing keyword, `Part of` or `Implements` on the same line, in order, each
+    once, with the link's kind (CLOSES, PART, IMPLEMENTS); a closing keyword wins over the others, since GitHub closes
+    the issue on it whatever else the body says, and `Implements` over `Part of`."""
+    found: dict[int, str] = {}
+    rank = (CLOSES, IMPLEMENTS, PART)
+    for closes, part, implements, number in CLOSING.findall(QUOTED.sub("", body)):
+        kind = CLOSES if closes else IMPLEMENTS if implements else PART
+        previous = found.setdefault(int(number), kind)
+        found[int(number)] = min(previous, kind, key=rank.index)
+    return found
+
+
 def named(body: str) -> list[int]:
-    """The issue numbers a PR body names after a closing keyword or `Part of` on the same line, in order, each once."""
-    return list(dict.fromkeys(int(number) for number in CLOSING.findall(QUOTED.sub("", body))))
+    """The issue numbers a PR body links (links), in order, each once."""
+    return list(links(body))
 
 
 def section(text: str, heading: str) -> str:
@@ -239,9 +264,9 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 def rules(loop: str) -> list[tuple[str, str]]:
-    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan`, `merge`, `risk` and `bot`."""
+    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan`, `merge`, `risk`, `bot` and `signoff`."""
     return re.findall(
-        r"^[ \t]*[-*] +(spec|plan|merge|risk|bot):[ \t]*(.+?)[ \t]*$",
+        r"^[ \t]*[-*] +(spec|plan|merge|risk|bot|signoff):[ \t]*(.+?)[ \t]*$",
         section(loop, "Approvals"),
         re.MULTILINE,
     )
@@ -369,6 +394,59 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     if capped(pull, limit):
         return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
     return None
+
+
+def signoff(
+    pull: dict[str, Any], issue: dict[str, Any], loop: str | None
+) -> tuple[bool, str] | None:
+    """Whether the owner signs the issue's change off in use after it lands, and why; None when loop.md has no
+    `signoff:` line, which leaves every link as it was. A `signoff:` rule is judged as a risk rule is (matches), on the
+    labels of the PR and this issue and the PR's files, and one the gate can't read matches; with no rule matching,
+    the spec's own `Sign-off: owner` line asks for it. A spec's `Sign-off: none` never waives a matching rule, since
+    the rule is the owner's standing word."""
+    conditions = [text for rule, text in rules(loop or "") if rule == "signoff"]
+    if not conditions:
+        return None
+    labels = names(pull) | names(issue)
+    for condition in conditions:
+        hit = matches(condition, labels, paths(pull))
+        if hit:
+            return True, f"it matches a sign-off rule ({condition})"
+        if hit is None:
+            return (
+                True,
+                f"a sign-off rule the gate can't judge holds until a person does ({condition})",
+            )
+    found = SIGNOFF.search(QUOTED.sub("", spec_holder(issue).get("body") or ""))
+    if found and found[1].lower() == "owner":
+        return True, "its spec says `Sign-off: owner`"
+    return False, "no sign-off rule matches" + (
+        " and its spec says `Sign-off: none`" if found else ""
+    )
+
+
+def linked(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """One line per issue the PR links with the wrong keyword for its sign-off (signoff): `Implements #n` when the
+    owner signs the change off after landing, so the merge leaves the issue open for it, and a closing keyword
+    otherwise, so nothing waits for a sign-off nobody asked for. `Part of` suits both, since the issue stays open
+    anyway. An issue GitHub links without a body line closes on merge."""
+    kinds, found = links(pull["body"] or ""), []
+    for issue in issues:
+        judged = signoff(pull, issue, loop)
+        if judged is None or any(label.startswith("wayfinder:") for label in names(issue)):
+            continue
+        number, kind, (needed, why) = issue["number"], kinds.get(issue["number"], CLOSES), judged
+        if needed and kind == CLOSES:
+            found.append(
+                f"#{number} waits for the owner's sign-off after landing, since {why}: the PR says"
+                f" `Implements #{number}`, which leaves it open, not a closing keyword"
+            )
+        elif not needed and kind == IMPLEMENTS:
+            found.append(
+                f"#{number} needs no sign-off ({why}): the PR says `Closes #{number}`, since"
+                " `Implements` would leave it open for a sign-off nobody asked for"
+            )
+    return found
 
 
 def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
@@ -599,7 +677,7 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     `approved:spec` is proofs()'s line."""
     if not issues:
         return [
-            "the PR names no issue: it needs a `Closes #<spec>` or `Part of #<spec>` line for an approved spec"
+            "the PR names no issue: it needs a `Closes #<spec>`, `Implements #<spec>` or `Part of #<spec>` line for an approved spec"
         ]
     found = []
     for issue in issues:
@@ -665,6 +743,8 @@ def proofs(
     evidence = section(pull["body"] or "", "Evidence")
     if not evidence.strip():
         found.append(f"{where}: its body has no `## Evidence` section with content")
+    if loop is not None:
+        found += linked(pull, issues, loop)
     if revert is None and not exempt(pull, loop):
         found += reviewed(where, pull)
     threads = pull["reviewThreads"]
@@ -1171,7 +1251,7 @@ def issue_node(number: int) -> dict[str, Any]:
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
-    """GitHub's closing references plus every `#n` after a closing keyword or `Part of` in the body: GitHub sometimes
+    """GitHub's closing references plus every `#n` after a closing keyword, `Part of` or `Implements` in the body: GitHub sometimes
     never links a closing line, and has no API to set the link."""
     issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
     unlinked = sorted(set(named(pull["body"] or "")) - {issue["number"] for issue in issues})
