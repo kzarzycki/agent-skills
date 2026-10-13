@@ -18,7 +18,8 @@ A project may let a person work outside the loop (`Opt-out: allowed`).
 The owner approves only the critical specs (`spec: auto`, #133).
 
 - loop.md § Approvals takes `spec: auto`: every spec a writer opened, epics included, is
-  approved by policy, except one a `risk:` rule matches, which waits for the owner's
+  approved by policy, except one a risk rule matches (a `risk:` line, or a conditional
+  `merge:` or `spec:` line), which waits for the owner's
   record and `approved:spec`. The gate judges the rules on the labels of the issue and the
   PR and the PR's files (at `check build` the files pushed so far), and `check` says which
   rule holds the spec. Under `spec: auto` a risk rule holds the spec instead of the merge,
