@@ -109,7 +109,8 @@ under its epic.
 ## Board
 
 The board shows every ticket in its loop stage with its assignee, and every epic with its progress; the
-realization file says how a ticket moves. The labels stay the state: when a move fails,
+realization file says how a ticket moves. A project whose board has other names, or one column for
+several of these, maps them in `docs/agents/issue-tracker.md` § Board ([github.md](github.md), Board). The labels stay the state: when a move fails,
 report it and carry on.
 
 | Column | The ticket is here when | Moved by |
