@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+The owner approves only the critical specs (`spec: auto`, #133).
+
+- loop.md § Approvals takes `spec: auto`: every spec a writer opened, epics included, is
+  approved by policy, except one a `risk:` rule matches, which waits for the owner's
+  record and `approved:spec`. The gate judges the rules on the labels of the issue and the
+  PR and the PR's files (at `check build` the files pushed so far), and `check` says which
+  rule holds the spec. Under `spec: auto` a risk rule holds the spec instead of the merge,
+  so no `approved:merge` wait comes from it; `risk:high` and the cap still hold the merge.
+  `spec: auto unless risk` keeps its meaning.
+
 ## 0.17.0 - 2026-10-09
 
 A bot's lock- or manifest-only PR merges without a verifier review (#106).

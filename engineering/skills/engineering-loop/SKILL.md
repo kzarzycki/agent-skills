@@ -119,6 +119,14 @@ loop.md § Approvals holds the policy, one line each:
   record and `approved:spec`), opened by an account with write access to the repo. Any
   other spec, a new epic for one, needs the owner's approval; without the line, every
   spec does.
+- `spec: auto` approves every spec by policy, epics included, so the owner reads only the
+  critical ones: a spec a risk rule matches, or one opened by an account without write
+  access, since anyone who can open an issue would otherwise approve their own, waits for
+  the owner's record and `approved:spec`. A risk rule then holds the spec instead of the
+  merge: the owner decides while the change is still cheap, and its merge is automatic
+  like any other. `approvals.py` judges the rules on the labels of the issue and the PR
+  and the PR's files, at `check build` the files pushed so far, so a file the spec didn't
+  foresee still reaches the owner before the merge.
 - `merge: auto unless risk`: the gates are the merge approval of a change that is not high
   risk, as they are without the line.
 - `risk: <condition>`, one rule per line: what is high risk here, by path, area or kind,
@@ -127,8 +135,9 @@ loop.md § Approvals holds the policy, one line each:
   component, category; `always` matches everything) and the PR's files (`path <glob>`); a
   condition it can't read matches, since nothing else would enforce it. A `merge:` line
   with a condition in place of the policy reads as a `risk:` rule until the project
-  rewrites it, and so does a `spec:` condition beside `spec: auto unless risk`; without
-  that line the owner approves every spec, so a `spec:` condition holds no merge.
+  rewrites it, and so does a `spec:` condition beside `spec: auto unless risk` or
+  `spec: auto`; without either the owner approves every spec, so a `spec:` condition
+  holds nothing.
 - `plan: <condition>` asks for the owner's approval of a matching plan.
 - `bot: <login> <condition>`, such as `bot: dependabot[bot] path uv.lock or path
   pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
@@ -138,7 +147,7 @@ loop.md § Approvals holds the policy, one line each:
   needs one.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
-matches, or the cap was reached with a blocker or major open (The cap). A high-risk spec
+matches (unless under `spec: auto`, where it held the spec), or the cap was reached with a blocker or major open (The cap). A high-risk spec
 covered by policy is still built and PR'd; its merge waits for the owner's
 `approved:merge` label on the PR, asked for once `check` is green on the head: it counts
 only when added after that head's push, and a push removes it, so it never covers code the
