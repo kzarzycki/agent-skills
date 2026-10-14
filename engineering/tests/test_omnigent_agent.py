@@ -1689,3 +1689,37 @@ def test_wait_disarms_on_a_report_or_a_question_and_a_failed_wait_keeps_the_line
     assert omnigent_agent.main(["wait", b, "b.md", *flag]) == omnigent_agent.ASKED
     assert omnigent_agent.main(["wait", c, "c.md", "--timeout", "0", *flag]) == 1
     assert registry.read_text() == f"{c}={tmp_path / 'c.md'}\n"
+
+
+def test_send_arms_only_once_its_message_is_in_the_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Armed before, the report left from the previous brief would count as written and the
+    supervisor would drop the session at once."""
+    monkeypatch.chdir(tmp_path)
+    registry, report = tmp_path / "registry", aged(tmp_path / "r.md", 60)
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    sid = og.create("claude", "t")
+    og.sessions[sid].append(told("brief", 120))
+    (tmp_path / "a.md").write_text("fix it")
+    at_send: list[str] = []
+    stale: list[bool] = []
+    send, info = og.send, og.info
+
+    def sending(s: str, text: str) -> None:
+        at_send.append(registry.read_text() if registry.exists() else "")
+        send(s, text)
+
+    def reporting(s: str) -> dict:
+        if not stale and f"{sid}=" in (registry.read_text() if registry.exists() else ""):
+            since, _ = omnigent_agent.instructed(og.items(sid), "")
+            stale.append(omnigent_agent.written(report, since))  # the supervisor's view once armed
+            report.write_text("fixed")
+        return info(s)
+
+    og.send, og.info = sending, reporting  # type: ignore[method-assign]
+    assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert at_send == [""]
+    assert stale == [False]
