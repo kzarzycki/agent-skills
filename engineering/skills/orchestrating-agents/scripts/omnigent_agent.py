@@ -117,7 +117,7 @@ When done, reply with only the report path.
 LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
-Ask the owner in this session, ending that turn with `USER NEEDED`; park a spec question on its issue with `needs-owner` too.
+The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
 Write your final report to {report}, then reply with only its path.
 
 """

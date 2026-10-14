@@ -978,7 +978,8 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert og.top_level == [True, True]
     text = (tmp_path / "r.md.brief").read_text()
     assert text == omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="") + "do X"
-    assert "owner's own words" in text and "USER NEEDED" in text and "needs-owner" in text
+    assert "owner's own words" in text and "ask them here" in text
+    assert "USER NEEDED" not in text and "needs-owner" not in text
     assert "foreground" in text and f"final report to {tmp_path / 'r.md'}" in text
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Your brief is the file ")

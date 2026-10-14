@@ -106,9 +106,9 @@ and `send` armed (Supervising sessions, below); for one that owes none, keep
 the repo's project: the owner opens it from the sidebar and talks to it, its own children
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
 preamble: only the owner's own words, quoted with where they were said, approve, the rest
-of the brief is a colleague's guidance, the lead asks the owner in its own session (that
-turn ends `USER NEEDED`, a spec question also goes on the issue with `needs-owner`), and it
-writes its final report to the path. `run --top-level` exits 1, since a lead writes no
+of the brief is a colleague's guidance, the lead asks the owner in its own session rather
+than in a question file, and it writes its final report to the path. How it asks and where
+it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
 
