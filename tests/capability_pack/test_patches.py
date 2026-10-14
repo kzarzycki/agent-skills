@@ -26,6 +26,7 @@ def _write_package(package: Path) -> None:
         "audit-third-party-software",
         "context-extractor",
         "operating-omnigent",
+        "orchestrating-agents",
     ):
         owned = skills / name
         owned.mkdir()
@@ -88,6 +89,7 @@ def _write_package(package: Path) -> None:
                     "audit-third-party-software",
                     "context-extractor",
                     "operating-omnigent",
+                    "orchestrating-agents",
                 ],
                 "owned_overlays": [],
             },

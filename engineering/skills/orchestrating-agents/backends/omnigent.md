@@ -8,8 +8,8 @@ python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <repor
 ```
 
 Run it from the worktree the child works in, because the script makes its current
-directory the session's workspace. The report path goes under `tmp/loop/` in that
-worktree: outside its workspace a Codex child's sandbox refuses the write and a Claude Code
+directory the session's workspace. The report path goes in a gitignored directory of that
+workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
 `s120-verifier-p1`. The brief file holds only the task specifics; the script writes it,
@@ -48,9 +48,10 @@ time to compare.
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default; a Codex verifier's default is
 `gpt-6.1-sol`, so it does not inherit `~/.codex/config.toml`'s model.
 
-**Same-family verifier.** Pass `--author <claude|codex>` when starting a verifier. When
-it matches the verifier's family the script refuses unless `--same-family` is given; the
-brief stays silent about it, and the PR body says `verifier: same family`.
+**Author family.** `--author <claude|codex>` names the family that wrote what the child
+reviews. When it matches the child's own family the script refuses unless `--same-family`
+is given, so a reviewer of the author's family is always a deliberate choice. Whether a
+reviewer must be of the other family is the caller's policy.
 
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
@@ -225,13 +226,12 @@ which finishes it on return, never reaped. Run `reap --children
 given up, as the last step before your own report. Never `DELETE` a session: it erases the
 transcript.
 
-**Permission prompts.** Worktrees go inside the project, in a gitignored `.worktrees/<branch>`
-(loop.md § Worktree), and a child's worktree goes inside the worktree of the agent that starts
-it: a lead working in `.worktrees/<pr-branch>` cuts each child's at `.worktrees/<branch>`
-there, which the same tracked `.gitignore` keeps out of its tree. An agent's workspace is the
-directory it was started in, so its reads in its own worktree and its children's never prompt,
-in any harness; its writes there follow the permission mode (Codex's workspace-write allows
-them). Outside it, Claude Code prompts for a read, or denies it in auto mode (`cd <sibling>; grep ...` or a plain
+**Permission prompts.** An agent's workspace is the directory it was started in, so its
+reads there, its children's checkouts included, never prompt, in any harness; its writes
+there follow the permission mode (Codex's workspace-write allows them). So put each child's
+checkout inside the workspace of the agent that starts it, in a directory the project
+gitignores (where and how is the project's: under the engineering loop, loop.md § Worktree),
+and run the child's command from there. Outside it, Claude Code prompts for a read, or denies it in auto mode (`cd <sibling>; grep ...` or a plain
 `cat <sibling>/f`), which nobody answers, and Codex's workspace-write sandbox refuses a write.
 No allow rule stands in for the layout: a project rule `Read(/../**)` or `Read(../**)` never
 matches a sibling, an absolute `//…` or `~/…` rule names one machine's layout, and a project's

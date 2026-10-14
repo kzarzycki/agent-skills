@@ -14,7 +14,7 @@ spec = importlib.util.spec_from_file_location(
     "omnigent_agent",
     Path(__file__).resolve().parents[1]
     / "skills"
-    / "engineering-loop"
+    / "orchestrating-agents"
     / "scripts"
     / "omnigent_agent.py",
 )
