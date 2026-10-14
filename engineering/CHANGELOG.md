@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.2 - 2026-10-14
 
 A finished sub-agent no longer takes its lead down with it (#163).
 
