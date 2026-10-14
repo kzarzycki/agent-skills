@@ -104,3 +104,25 @@ the main checkout current: each live lead (session id, title, report path, what 
 on) and each standing decision the owner gave you. A new chief of staff reads it, restarts
 `watch` and `supervise` over the live leads, and carries on without greeting the owner
 again.
+
+## Memory
+
+`python3 scripts/memory.py recall <query>` and `retain <text>` reach the project's Hindsight
+bank, the one its hooks use, when the machine has Hindsight configured; otherwise each prints
+`memory: not configured` and you work from the board and the handover file alone.
+
+- **Recall** when you start or take over, and on each new ask, with the ask's subject as the
+  query. A remembered preference or decision of the owner's goes into a lead's brief as a
+  standing decision, marked as remembered with its date, so the lead can tell it from the
+  owner's words in this session.
+- **Retain** each preference or standing decision the owner gives you, verbatim with the
+  date, as well as writing it to the handover file. Never retain the state of the work: the
+  board and the leads' reports hold it, and a remembered status goes stale. A retain that
+  exits 1 was not stored; say so in the handover file.
+- Workers and verifiers get no memory: a worker's input is its brief and the spec, and a
+  verifier reading remembered context takes on the author's assumptions (engineering-loop's
+  `verifier.md`). So nothing recalled goes into their briefs. The Hindsight hooks recall into
+  every session on a machine, children included, so leave them off where leads start
+  children; Claude can switch them off for a single session
+  (`--settings '{"env":{"HINDSIGHT_DISABLE_HOOKS":"1"}}'`), and Codex through Omnigent cannot
+  yet.
