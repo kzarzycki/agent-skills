@@ -88,7 +88,9 @@ design, wireframes included for a UI, and delegate the rest.
    number, the priorities for this change, and a report path under `tmp/loop/` in that
    worktree, which the project gitignores: outside its workspace a Codex child's sandbox
    refuses the write and a Claude Code child is prompted for a read (denied in auto mode),
-   which nobody answers. When the change has something to see, first
+   which nobody answers. Name the family that wrote the diff when the backend takes it
+   (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
+   brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report with

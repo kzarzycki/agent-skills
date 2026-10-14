@@ -6,8 +6,8 @@ SKILL.md ("Reports are files") tells every role.
 
 - **Start:** `herdr_link_start` with `name` and `cwd` set to the worktree. Name agents by
   spec, item and role (`s120-parser-worker`, `s120-verifier-p1`: one verifier per pass).
-  An OMP worker takes loop.md's `OMP worker profile: <name>` as `config_agent`, when that
-  line exists; other agents take `kind` and `args`.
+  An OMP worker takes the project's `OMP worker profile: <name>` line (under the engineering
+  loop, in loop.md) as `config_agent`, when that line exists; other agents take `kind` and `args`.
 - **Message:** `herdr_link_send`. The first message is the role file's path plus the
   specifics (spec and item, worktree, branch, base, report path). The agent's reply is
   the path of its report.
