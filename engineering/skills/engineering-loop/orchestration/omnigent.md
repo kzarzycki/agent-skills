@@ -139,11 +139,13 @@ twice, and a missing file empty. Pairs on its command line are added to the file
 prints every line with the local time and, with `--notify`, posts it into that session as
 `Supervisor: <line>`, which wakes the session even with no command of its own running; a
 notify session whose runner was reaped is revived first, since a message to it would never
-arrive. A terminal event (report written, asked, blocked, failed, gave up) drops the session's
-line once posted. A failed post keeps it, and the next poll finds the event again and posts it
-again. An error reading the registry or a session, or posting, goes to stderr once until it
-clears, and a `--timeout` window with no event logs `no event in <n>s: <sessions>`; neither
-stops it, and one session's error skips no other.
+arrive. Lines wait in order until posted, and each poll posts them first, so a failed post
+delays a line but loses none. A terminal event (report written, asked, blocked, failed, gave
+up) drops the session's line once its own line is posted; until then the session is not checked
+again. A restart loses the revive and resume lines still waiting, but finds a terminal event
+again, since its registry line is still there. An error reading the registry or a session, or
+posting, goes to stderr once until it clears, and a `--timeout` window with no event logs
+`no event in <n>s: <sessions>`; neither stops it, and one session's error skips no other.
 
 `run`, `start` and `send` arm the registry named by `--registry`, else
 `$OMNIGENT_SUPERVISE_REGISTRY`: once their message is in the history, they write

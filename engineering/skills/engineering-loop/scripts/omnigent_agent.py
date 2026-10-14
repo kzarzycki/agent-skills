@@ -913,13 +913,18 @@ def supervise_registry(
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. Every line goes to stdout with the local time and, with ``notify``, into that
-    session as ``Supervisor: <line>``. A terminal event drops the session's line, once posted:
-    a failed post is retried at the next poll, which finds the event again. An error is logged to
-    stderr, once until it clears, and never stops the loop; so is ``timeout`` with no event.
+    session as ``Supervisor: <line>``. Lines wait in order until posted, and each poll posts them
+    first, stopping at the first failure. A terminal event drops the session's line once its own
+    line is posted, and a session whose terminal line waits is not checked again. An error is
+    logged to stderr, once until it clears, and never stops the loop; so is ``timeout`` with no
+    event.
     """
     resumed: dict[str, float] = {}
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
-    printed: dict[str, str] = {}  # the event printed per session, until its line is dropped
+    # Each line not yet posted (None once it is), with the session a terminal line drops.
+    # ponytail: in memory, so a restart loses the revive and resume lines waiting in it; a terminal
+    # event keeps its registry line until posted, and the restarted supervisor finds it again.
+    outbox: list[tuple[str | None, str | None]] = []
     window = time.monotonic()
 
     def stamp(line: str) -> str:
@@ -946,11 +951,33 @@ def supervise_registry(
         log("post", None)
         return True
 
-    def say(line: str) -> None:
+    def drop(sid: str) -> bool:
+        try:
+            arm(registry, sid)
+        except OSError as e:
+            log(("drop", sid), f"{registry}: {sid} not dropped: {e}")
+            return False
+        log(("drop", sid), None)
+        resumed.pop(sid, None)
+        return True
+
+    def flush() -> None:
+        while outbox:
+            line, sid = outbox[0]
+            if line is not None and not post(line):
+                return
+            if sid and not drop(sid):
+                outbox[0] = (None, sid)  # posted; only the drop is retried
+                return
+            outbox.pop(0)
+
+    def say(line: str, sid: str | None = None) -> None:
         print(stamp(line), flush=True)
-        post(line)
+        outbox.append((line, sid))
+        flush()
 
     while True:
+        flush()
         try:
             owed, bad = registered(registry)
         except Exception as e:  # noqa: BLE001 - never fatal
@@ -961,6 +988,8 @@ def supervise_registry(
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
         for sid, report in owed.items():
+            if any(s == sid for _, s in outbox):
+                continue  # its event is found; it waits to be posted
             try:
                 event = check(og, sid, report, silent, resumed, say)
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
@@ -970,18 +999,7 @@ def supervise_registry(
             if not event:
                 continue
             window = time.monotonic()
-            if printed.get(sid) != event:
-                print(stamp(event), flush=True)
-                printed[sid] = event
-            if post(event):
-                try:
-                    arm(registry, sid)
-                except OSError as e:
-                    log(("drop", sid), f"{registry}: {sid} not dropped: {e}")
-                    continue
-                log(("drop", sid), None)
-                printed.pop(sid, None)
-                resumed.pop(sid, None)
+            say(event, sid)
         if time.monotonic() - window >= timeout:
             print(
                 stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),

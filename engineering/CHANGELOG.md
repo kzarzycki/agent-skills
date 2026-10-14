@@ -8,8 +8,9 @@ caller (#158).
 - `supervise --registry <file> [--notify <session>]` runs until stopped, re-reading the file's
   `session=report` lines each poll. It prints every line with the local time and, with
   `--notify`, posts it into that session as `Supervisor: <line>`, reviving a reaped one first.
-  A terminal event drops the session's line once posted; a failed post is retried at the next
-  poll. Errors and a quiet `--timeout` window are logged and never stop it.
+  Lines wait in order until posted, so a failed post delays a line but loses none, and a
+  terminal event drops the session's line once its own line is posted. Errors and a quiet
+  `--timeout` window are logged and never stop it.
 - `run`, `start` and `send` arm the registry (`--registry`, else
   `$OMNIGENT_SUPERVISE_REGISTRY`) once their message is in the history; `run`, `send` and
   `wait` disarm it when they return the report or a question.

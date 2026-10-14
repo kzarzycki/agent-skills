@@ -1551,24 +1551,41 @@ def test_a_terminal_event_is_posted_to_the_notify_session_and_drops_only_its_lin
     assert re.fullmatch(f"{STAMP}a t-a: report written: {report}\n", capsys.readouterr().out)
 
 
-def test_a_failed_post_keeps_the_line_and_the_event_is_posted_at_the_next_poll(
+def test_a_failed_post_keeps_the_line_and_the_event_is_posted_once_when_a_post_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     registry = tmp_path / "registry"
     report = aged(tmp_path / "a.md", 10)
     registry.write_text(f"a={report}\n")
     og = Fleet(a=[told("brief", 60)])
-    og.refuse = 1
+    og.refuse = 2
     kept: list[str] = []
     supervised(
-        og, registry, monkeypatch, 2, lambda poll: kept.append(registry.read_text()), notify="cos"
+        og, registry, monkeypatch, 3, lambda poll: kept.append(registry.read_text()), notify="cos"
     )
-    assert kept == [f"a={report}\n"]
+    assert kept == [f"a={report}\n"] * 2
     assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
     assert registry.read_text() == ""
     out, err = capsys.readouterr()
     assert out.count("report written") == 1
     assert re.fullmatch(f"{STAMP}post to cos failed: POST /v1/sessions/cos/events: HTTP 503\n", err)
+
+
+def test_a_revive_line_whose_post_failed_is_posted_at_the_next_poll_before_newer_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    report = tmp_path / "a.md"
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.offline.add("a")
+    og.refuse = 1
+    supervised(og, registry, monkeypatch, 2, lambda poll: report.write_text("x"), notify="cos")
+    assert og.inbox == [
+        ("cos", "Supervisor: a t-a: revived (no live runner)"),
+        ("cos", f"Supervisor: a t-a: report written: {report}"),
+    ]
+    assert registry.read_text() == ""
 
 
 def test_an_error_reading_one_session_is_logged_once_and_the_others_are_still_checked(
