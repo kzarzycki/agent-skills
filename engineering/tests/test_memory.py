@@ -40,6 +40,10 @@ class _Hindsight(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         self.calls.append((self.path, body, self.headers.get("Authorization", "")))
+        if "/banks/coding-agent-new/" in self.path:
+            self.send_response(404)
+            self.end_headers()
+            return
         reply = (
             {"results": [{"text": "owner prefers\n small PRs"}]}
             if self.path.endswith("/recall")
@@ -69,6 +73,8 @@ def test_recall_and_retain_use_the_repo_bank(tmp_path: Path) -> None:
     try:
         recalled = _memory(tmp_path, "recall", "pr", "size", config=config)
         retained = _memory(tmp_path, "retain", "Owner: small PRs", config=config)
+        config["bankIdTemplate"] = "coding-agent-new"
+        empty = _memory(tmp_path, "recall", "pr", config=config)
     finally:
         server.shutdown()
     assert (recalled.returncode, recalled.stdout) == (0, "owner prefers small PRs\n")
@@ -76,7 +82,8 @@ def test_recall_and_retain_use_the_repo_bank(tmp_path: Path) -> None:
         0,
         "memory: retained in coding-agent-my-project\n",
     )
-    (recall_path, recall_body, auth), (retain_path, retain_body, _) = _Hindsight.calls
+    assert (empty.returncode, empty.stdout, empty.stderr) == (0, "", "")
+    (recall_path, recall_body, auth), (retain_path, retain_body, _) = _Hindsight.calls[:2]
     assert recall_path == "/v1/default/banks/coding-agent-my-project/memories/recall"
     assert recall_body["query"] == "pr size" and auth == "Bearer t"
     assert retain_path == "/v1/default/banks/coding-agent-my-project/memories"

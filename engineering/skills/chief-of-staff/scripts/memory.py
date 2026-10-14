@@ -10,7 +10,8 @@ The server and bank come from the Hindsight coding-agents config the hooks use
 the hooks share one bank per repo. ``HINDSIGHT_API_URL`` overrides ``apiUrl``.
 
 With no server configured, or ``disabled``, both commands print ``memory: not configured`` and
-exit 0: the caller then works as it would without memory. An unreachable server is a warning on
+exit 0: the caller then works as it would without memory. A recall from a project with no bank yet
+prints nothing. An unreachable server is a warning on
 stderr and exit 0 for ``recall``, exit 1 for ``retain``, so a decision that was not stored is
 not lost silently.
 """
@@ -95,7 +96,12 @@ def main(argv: list[str]) -> int:
                 {"items": [{"content": text, "context": "chief of staff"}], "async": True},
             )
             print(f"memory: retained in {bank(cfg)}")
-    except (OSError, ValueError, urllib.error.URLError) as e:
+    except urllib.error.HTTPError as e:
+        if command == "recall" and e.code == 404:  # a project's first recall: no bank yet
+            return 0
+        print(f"memory: unavailable ({e})", file=sys.stderr)
+        return 1 if command == "retain" else 0
+    except (OSError, ValueError) as e:
         print(f"memory: unavailable ({e})", file=sys.stderr)
         return 0 if command == "recall" else 1
     return 0
