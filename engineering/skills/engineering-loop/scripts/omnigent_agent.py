@@ -344,6 +344,12 @@ class Omnigent:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
         return [str(c["id"]) for c in page.get("data", [])]
 
+    def active(self, sid: str) -> float:
+        """When any live child of ``sid`` was last updated (archived ones are not listed), else 0.
+        Not ``busy``: a child whose turn end was lost stays busy for good."""
+        page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
+        return max((float(c.get("updated_at") or 0) for c in page.get("data", [])), default=0.0)
+
 
 def parent_id() -> str:
     """The runner's primary session (the coordinator, also when a child runs this), else empty."""
@@ -839,6 +845,11 @@ def check(
     resent = max(resent, resumed.get(sid, 0.0))
     last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
     quiet = time.time() - max(last, resent)
+    if quiet < silent:
+        return "", since
+    # a session waiting on its own worker or verifier writes nothing meanwhile: the subtree's activity
+    # is its liveness too, read only once its own history is quiet
+    quiet = min(quiet, time.time() - og.active(sid))
     if quiet < silent:
         return "", since
     if resent:

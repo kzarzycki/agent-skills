@@ -19,7 +19,9 @@ caller (#158).
 - After a revive, which can drop a session's context, `supervise` sends it one line naming its
   brief files (the registry's, else `<report>.brief`) and the report it owes, in place of
   nothing. Like the resume line, it is no instruction, so a report written for the brief still
-  counts.
+  counts. A failed send of it is tried again at the next look.
+- Silence counts the session's children: a coordinator waiting on its own worker or verifier
+  gets no resume line while a child of it was updated within `--silent-seconds`.
 - A resume line already in the history counts as sent, so a restarted supervisor gives up on a
   session still silent after it instead of sending a second.
 - `orchestration/omnigent.md` shows how to run it detached under launchd or a systemd user

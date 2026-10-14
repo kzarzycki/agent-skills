@@ -128,7 +128,9 @@ session's next look. Like the resume line, it is no instruction, so a
 report written for the brief still counts after it. One with no history item for
 `--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
 it sends the `wait` nudge once as its resume line, whatever its status says
-(`resume line sent`). It prints each of those at once and goes on. It exits 0 with one line
+(`resume line sent`). A session waiting on its own worker or verifier writes nothing meanwhile,
+so a child of it updated within that window (`child_sessions`' `updated_at`) keeps it live:
+silence means the whole subtree is quiet. It prints each of those at once and goes on. It exits 0 with one line
 as soon as a session wrote its report (`report written: <path>`) or a question
 (`asked: <path>`), blocks on a prompt, fails, or is given up on (`gave up`: silent again after
 its resume line, which may sit undelivered behind a stuck step; silent with an input already

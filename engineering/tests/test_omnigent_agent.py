@@ -1266,6 +1266,10 @@ class Owing:
 
     def __init__(self, items: list[dict], *infos: dict) -> None:
         self.items_, self.infos, self.sent, self.retried = items, list(infos), [], []
+        self.kids = 0.0  # when a child of the session was last updated
+
+    def active(self, sid: str) -> float:
+        return self.kids
 
     def info(self, sid: str) -> dict:
         snap = self.infos.pop(0) if len(self.infos) > 1 else self.infos[0]
@@ -1470,9 +1474,13 @@ class Fleet:
 
     def __init__(self, **histories: list[dict]) -> None:
         self.histories, self.reads, self.inbox, self.retried = histories, [], [], []
+        self.kids: dict[str, float] = {}  # when a child of each session was last updated
         self.broken: dict[str, Exception] = {}
         self.offline: set[str] = set()
         self.refuse = 0
+
+    def active(self, sid: str) -> float:
+        return self.kids.get(sid, 0.0)
 
     def info(self, sid: str) -> dict:
         self.reads.append(sid)
@@ -1644,6 +1652,21 @@ def test_a_revive_line_whose_send_failed_is_sent_at_the_next_poll_once_the_runne
     assert [text for sid, text in og.inbox if sid == "a"] == [
         f"Your session was restarted and may have lost its context. Write your report to {report}."
     ]
+
+
+@pytest.mark.parametrize("child_ago", [600, 3600])
+def test_a_session_waiting_on_a_working_child_is_not_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, child_ago: int
+) -> None:
+    """Its own history quiet for an hour: a child updated 10 min ago keeps it live, one quiet for an
+    hour too lets the resume line go."""
+    registry, report = tmp_path / "registry", tmp_path / "a.md"
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 3600)])
+    og.kids["a"] = time.time() - child_ago
+    supervised(og, registry, monkeypatch, 1, silent=1800)
+    sent = [text for sid, text in og.inbox if sid == "a"]
+    assert sent == ([] if child_ago < 1800 else [omnigent_agent.NUDGE.format(report=report)])
 
 
 @pytest.mark.parametrize("brief", [True, False])
