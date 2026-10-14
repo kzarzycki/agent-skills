@@ -49,7 +49,7 @@ in its `AGENTS.md`, for example "Every change that lands as a PR runs the
 The files the loop runs on (CI, git hooks, mise tasks, the ruleset) come
 from kzarzycki/project-templates; the skill's § Adopting the loop lists them.
 
-Each developer picks how agents run with one line in their personal
+Each developer picks how agents run (the `orchestrating-agents` skill) with one line in their personal
 instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
 means native subagents. The verifier comes from the other model family when its
 CLI is installed; otherwise the PR body says `verifier: same family`.
@@ -91,7 +91,8 @@ own release instead of installing the upstream `main` branch directly.
 Three kinds of source ship under `engineering/skills/`:
 
 - Owned skills, edited in place: `audit-third-party-software`,
-  `context-extractor`, `demo`, `engineering-loop`, `operating-omnigent`.
+  `context-extractor`, `demo`, `engineering-loop`, `operating-omnigent`,
+  `orchestrating-agents`.
 - Owned overlays under `overlays/skills/<name>/`, reproduced into
   `skills/<name>/`: every imported skill tuned for current models (listed
   under `owned_overlays` in `upstream.yml`).

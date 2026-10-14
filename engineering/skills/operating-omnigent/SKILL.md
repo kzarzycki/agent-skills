@@ -1,7 +1,7 @@
 ---
 name: operating-omnigent
-description: "Operate a local Omnigent install — crashes, blank UI, restarts, session attach/resume/dispose, process topology — and drive other agents via the sys_* MCP tools."
-when_to_use: "Any omnigent operational question or when spawning/monitoring other agents from inside a turn."
+description: "Operate a local Omnigent install — crashes, blank UI, restarts, session attach/resume/dispose, process topology — and its raw sys_* MCP tools. Starting and collecting agents through a backend is orchestrating-agents'."
+when_to_use: "Any omnigent operational question, or a sys_* call that orchestrating-agents' omnigent_agent.py does not make."
 ---
 
 # Operating Omnigent

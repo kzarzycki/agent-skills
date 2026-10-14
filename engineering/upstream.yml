@@ -15,6 +15,7 @@ owned_skills:
   - demo
   - engineering-loop
   - operating-omnigent
+  - orchestrating-agents
 owned_overlays:
   - source: overlays/skills/ask-matt
     destination: skills/ask-matt

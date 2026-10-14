@@ -69,7 +69,7 @@ design, wireframes included for a UI, and delegate the rest.
    main, unless it is a blocker or major that makes this PR wrong: that one goes on this
    PR's branch (SKILL.md, One concern per PR). Cut
    each worker's branch from the PR branch with loop.md § Worktree, run from your own
-   worktree so the worker's sits inside it (orchestration/omnigent.md, Permission prompts),
+   worktree so the worker's sits inside it (../orchestrating-agents/backends/omnigent.md, Permission prompts),
    and start it
    with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
@@ -88,7 +88,9 @@ design, wireframes included for a UI, and delegate the rest.
    number, the priorities for this change, and a report path under `tmp/loop/` in that
    worktree, which the project gitignores: outside its workspace a Codex child's sandbox
    refuses the write and a Claude Code child is prompted for a read (denied in auto mode),
-   which nobody answers. When the change has something to see, first
+   which nobody answers. Name the family that wrote the diff when the backend takes it
+   (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
+   brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report with
@@ -237,7 +239,7 @@ and a lead that waits through it makes CI the loop's speed. With nothing else to
 do, end your turn. Don't poll agent lists, logs or panes,
 or sleep: every check re-reads your whole context. Read the report file a reply names,
 not logs or scrollback. A child nothing waits on reaches you only through the untitled
-inbox notice, so watch your children as the orchestration file says (Omnigent: `watch`,
+inbox notice, so watch your children as your backend's file in orchestrating-agents says (Omnigent: `watch`,
 and for a child that still owes its report a detached `supervise --registry` that `run` and
 `send` arm). Supervise with a process the host runs, not an in-session background command or
 session cron, which die with your session and lose every wake they owed.

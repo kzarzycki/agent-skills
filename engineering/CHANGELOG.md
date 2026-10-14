@@ -48,6 +48,18 @@ The per-thread role is the lead (#150).
 - `lead.md` opens with one PR per story, as its Branch step and issues.md, Epics already
   said.
 
+Starting and collecting agents is its own skill, `orchestrating-agents` (#151).
+
+- `engineering-loop/orchestration/{native,omnigent,herdr-link}.md` are now
+  `orchestrating-agents/backends/`, and `engineering-loop/scripts/omnigent_agent.py` is
+  `orchestrating-agents/scripts/omnigent_agent.py`: a brief or command that names the old
+  path names the new one. Installed skills are siblings, so from the loop's folder it is
+  `../orchestrating-agents/scripts/omnigent_agent.py`.
+- The backend choice and the "Reports are files" rule moved from the loop's SKILL.md to the
+  new skill, which also states questions as files and that whoever starts a child collects
+  it. The loop keeps its roles and points at the new skill.
+- `operating-omnigent` now covers the Omnigent install and its raw `sys_*` tools only.
+
 ## 0.18.1 - 2026-10-14
 
 `omnigent_agent.py supervise` keeps a stalled session from going unnoticed (#154).
