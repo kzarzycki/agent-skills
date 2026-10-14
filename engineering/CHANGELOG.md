@@ -7,6 +7,8 @@
 - GitHub answers the rules read there with a 403 naming its plan: `land` reads that as no
   required checks, merges pinned to the head once its proofs hold, never asks for
   auto-merge, and says GitHub enforces nothing on the base. Any other error still fails.
+- The consumer e2e test's fixture repos turn off git's auto-maintenance, whose background
+  repack removed loose objects while the local clone copied them (#144).
 
 A project may let a person work outside the loop (`Opt-out: allowed`).
 
