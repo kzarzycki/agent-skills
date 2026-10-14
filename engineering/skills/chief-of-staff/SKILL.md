@@ -57,7 +57,10 @@ its landing order.
   lead reports, asks, blocks, fails or goes silent, even after your session restarts. Keep a
   background `watch <session>...` over the live leads too, for turn endings that owe no report
   (`../orchestrating-agents/backends/omnigent.md`, Watching sessions, Supervising sessions and
-  Running the supervisor detached). Never poll.
+  Running the supervisor detached). Never poll. When your harness refuses to start the
+  detached job (Claude Code's auto mode classes a new launchd job as persistence), never work
+  around it: give the owner the exact command to run once, and until it runs, follow each lead
+  with a background one-shot `supervise <session>=<report>`, which dies with your session.
 
 ## What a lead's turn ending means
 
