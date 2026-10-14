@@ -47,6 +47,13 @@ The per-thread role is the lead (#150).
 - SKILL.md, Roles: a session whose brief names no role is the lead.
 - `lead.md` opens with one PR per story, as its Branch step and issues.md, Epics already
   said.
+- `omnigent_agent.py start --top-level` starts a lead as a top-level session in the repo's
+  project, which the owner opens from the sidebar and whose children report to it, not to
+  the session that started it (#152). Its brief says only the owner's quoted words
+  approve, and it asks the owner in its own session (`USER NEEDED`) instead of writing a
+  question; `run` refuses the flag. Without it, `start` and `run` are unchanged.
+- The one-line message naming a brief file reads "Your brief is the file …", no longer
+  naming the lead as its sender.
 
 Starting and collecting agents is its own skill, `orchestrating-agents` (#151).
 
