@@ -220,9 +220,9 @@ the line, a PR with no trail fails the gate.
 - **Verifier** ([verifier.md](verifier.md)): reviews the PR, drives its instance, and
   leaves the tree as it found it.
 
-Agents are started, messaged, watched and closed with the
-[`orchestrating-agents`](../orchestrating-agents/SKILL.md) skill, which picks the backend
-and holds its rules, reports and questions as files among them. Inside a worker or
+Agents are started, messaged, watched and closed with the `orchestrating-agents` skill
+(`../orchestrating-agents/SKILL.md`), which picks the backend and holds its rules, reports
+and questions as files among them. Inside a worker or
 verifier, review angles run as native subagents, never as full harness sessions.
 
 ## Rules for every role
