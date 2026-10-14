@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+A finished sub-agent no longer takes its lead down with it (#163).
+
+- `run`, `wait`, `reap` and `start`'s abandon path end a sub-agent's terminals and leave it
+  unarchived, where they used to unbind and archive it. The child's turn-end idle bound it
+  back to the parent's runner, and the archive's delayed stop then stopped that shared runner,
+  so the lead was revived without its context (kzarzycki/omnigent#5). A top-level session is
+  archived as before. `reap` prints `archived` or `ended` for each session it finishes.
+
 `omnigent_agent.py supervise --registry` supervises sessions from a process that outlives its
 caller (#158).
 
