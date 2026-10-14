@@ -38,16 +38,21 @@ class FakeOmnigent:
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
+        self.top_level: list[bool] = []  # per create, and per lookup after a failed one
 
-    def create(self, agent: str, title: str, model: str | None = None) -> str:
+    def create(
+        self, agent: str, title: str, model: str | None = None, top_level: bool = False
+    ) -> str:
         sid = f"s{len(self.sessions)}"
+        self.top_level.append(top_level)
         self.sessions[sid] = [{"type": "resource_event"}]
         self.titles[sid] = title
         if "create" in self.fail:  # the server made it; the answer timed out
             raise omnigent_agent.Fail("POST /v1/sessions: TimeoutError: timed out")
         return sid
 
-    def find(self, title: str, after: float) -> str | None:
+    def find(self, title: str, after: float, top_level: bool = False) -> str | None:
+        self.top_level.append(top_level)
         return next((s for s, t in self.titles.items() if t == title), None)
 
     def send(self, sid: str, text: str) -> None:
@@ -329,7 +334,7 @@ def test_stalled_server_timeout_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(self, agent: str, title: str, model: str | None = None) -> str:
+        def create(self, agent: str, title: str, model: str | None = None, top_level: bool = False) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -368,7 +373,7 @@ def test_stalled_error_body_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(self, agent: str, title: str, model: str | None = None) -> str:
+        def create(self, agent: str, title: str, model: str | None = None, top_level: bool = False) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -761,7 +766,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     titles: list[str] = []
     create = og.create
-    og.create = lambda agent, title, model=None: titles.append(title) or create(agent, title)  # type: ignore[method-assign]
+    og.create = lambda agent, title, model=None, top_level=False: titles.append(title) or create(agent, title)  # type: ignore[method-assign]
     og.fail.add("archive")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert titles == ["t", "t-r2"]
@@ -840,7 +845,7 @@ def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_sess
 def test_a_failed_create_with_no_session_made_fails_the_start(tmp_path: Path) -> None:
     og = FakeOmnigent()
     og.fail.add("create")
-    og.find = lambda title, after: None  # type: ignore[method-assign]
+    og.find = lambda title, after, top_level=False: None  # type: ignore[method-assign]
     with pytest.raises(omnigent_agent.Fail, match="start failed: POST /v1/sessions"):
         omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert og.posts == 0
@@ -867,17 +872,132 @@ def test_the_lookup_matches_the_title_under_the_parent_created_after_the_attempt
     assert og.find("t", 100) is None  # top level: no parent to look under
 
 
+def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths: list[str] = []
+
+    def call(self, method: str, path: str, body: object = None) -> object:
+        paths.append(path)
+        if path == "/v1/projects":
+            return {"data": [{"name": "my shop", "id": "p1"}]}
+        return {
+            "data": [
+                {"id": "old", "title": "t", "created_at": 99},
+                {"id": "new", "title": "t", "created_at": 100},
+            ]
+        }
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "coord")
+    og = object.__new__(omnigent_agent.Omnigent)
+    monkeypatch.setenv("OMNIGENT_PROJECT", "my shop")
+    assert og.find("t", 100, top_level=True) == "new"
+    assert paths[-1] == "/v1/sessions?kind=default&project=my%20shop&limit=100"
+    monkeypatch.setenv("OMNIGENT_PROJECT", "no-such-group")  # created unfiled: look there
+    og.find("t", 100, top_level=True)
+    assert paths[-1] == "/v1/sessions?kind=default&project=&limit=100"
+
+
+# The default preamble as it was before --top-level existed: a worker's or verifier's brief.
+DEFAULT_PREAMBLE = """\
+The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
+{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+Write your report to {report}.
+Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
+When done, reply with only the report path.
+
+"""
+
+
+def create_bodies(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        if body is not None:
+            bodies.append(body)
+        return {
+            "/v1/agents": [{"name": omnigent_agent.AGENTS["claude"], "id": "a1"}],
+            "/v1/projects": {"data": [{"name": "shop", "id": "p1"}]},
+        }.get(path, {"id": "s1"})
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.setattr(omnigent_agent, "repo_name", lambda: "shop")
+    monkeypatch.delenv("OMNIGENT_PROJECT", raising=False)
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "coord")
+    return bodies
+
+
+def test_without_top_level_the_create_body_and_brief_are_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bodies = create_bodies(monkeypatch)
+    omnigent_agent.Omnigent().create("claude", "t")
+    assert bodies == [
+        {
+            "agent_id": "a1",
+            "title": "t",
+            "host_id": "h",
+            "workspace": os.getcwd(),
+            "project_id": "p1",
+            "parent_session_id": "coord",
+        }
+    ]
+    assert omnigent_agent.PREAMBLE == DEFAULT_PREAMBLE
+    og = FakeOmnigent()
+    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", "roles/worker.md", 0)
+    assert (tmp_path / "r.md.brief").read_text() == DEFAULT_PREAMBLE.format(
+        report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
+    ) + "do X"
+    assert og.top_level == [False]
+
+
+def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bodies = create_bodies(monkeypatch)
+    omnigent_agent.Omnigent().create("claude", "t", top_level=True)
+    assert "parent_session_id" not in bodies[-1] and bodies[-1]["project_id"] == "p1"
+    og = FakeOmnigent()
+    og.fail.add("create")  # the lookup after a failed create is the top-level one too
+    sid, _ = omnigent_agent.start(
+        og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
+    )
+    assert og.top_level == [True, True]
+    text = (tmp_path / "r.md.brief").read_text()
+    assert text == omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="") + "do X"
+    assert "owner's own words" in text and "USER NEEDED" in text and "needs-owner" in text
+    assert "foreground" in text and f"final report to {tmp_path / 'r.md'}" in text
+    assert "authorized" not in text and "Never address" not in text and ".question" not in text
+    assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Your brief is the file ")
+
+
+def test_run_refuses_top_level_before_a_session_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    argv = ["run", "claude", "t", str(tmp_path / "b.md"), str(tmp_path / "r.md"), "--top-level"]
+    assert omnigent_agent.main(argv) == 1
+    assert not og.sessions and "use start --top-level" in capsys.readouterr().err
+
+
 def test_a_found_session_that_already_has_the_brief_is_not_briefed_twice(tmp_path: Path) -> None:
     og = FakeOmnigent()
     og.fail.add("create")
     find = og.find
 
-    def briefed(title: str, after: float) -> str | None:
+    def briefed(title: str, after: float, top_level: bool = False) -> str | None:
         sid = find(title, after)
         brief = tmp_path / "r.md.brief"
         og.land(
             sid,
-            f"Your brief from the lead is the file {brief}. Read it now and do what it says.",
+            f"Your brief is the file {brief}. Read it now and do what it says.",
         )
         return sid
 
@@ -974,7 +1094,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
+    og.create = lambda a, t, m=None, top=False: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     monkeypatch.chdir(tmp_path)

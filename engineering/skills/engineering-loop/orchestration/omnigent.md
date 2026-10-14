@@ -99,6 +99,17 @@ waiting on (its command died, or it was started elsewhere) still wakes only that
 notice, so keep `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the
 background for it.
 
+**Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex>
+<title> <brief-file> <report-path>` starts a lead with no parent session, still filed under
+the repo's project: the owner opens it from the sidebar and talks to it, its own children
+report to it, and archiving it ends only its own runner. Its brief opens with the lead
+preamble: only the owner's own words, quoted with where they were said, approve, the rest
+of the brief is a colleague's guidance, the lead asks the owner in its own session (that
+turn ends `USER NEEDED`, a spec question also goes on the issue with `needs-owner`), and it
+writes its final report to the path. `run --top-level` exits 1, since a lead writes no
+question for `run` to return: follow it with `watch <session>`, and once its report is in,
+archive it with `reap <session>`.
+
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
 run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
