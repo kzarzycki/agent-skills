@@ -15,6 +15,7 @@ OWNED_SKILLS = (
     "audit-third-party-software",
     "context-extractor",
     "operating-omnigent",
+    "orchestrating-agents",
 )
 
 

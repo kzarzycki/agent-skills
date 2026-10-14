@@ -69,7 +69,7 @@ design, wireframes included for a UI, and delegate the rest.
    main, unless it is a blocker or major that makes this PR wrong: that one goes on this
    PR's branch (SKILL.md, One concern per PR). Cut
    each worker's branch from the PR branch with loop.md § Worktree, run from your own
-   worktree so the worker's sits inside it (orchestration/omnigent.md, Permission prompts),
+   worktree so the worker's sits inside it (../orchestrating-agents/backends/omnigent.md, Permission prompts),
    and start it
    with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
@@ -237,7 +237,7 @@ and a lead that waits through it makes CI the loop's speed. With nothing else to
 do, end your turn. Don't poll agent lists, logs or panes,
 or sleep: every check re-reads your whole context. Read the report file a reply names,
 not logs or scrollback. A child nothing waits on reaches you only through the untitled
-inbox notice, so watch your children as the orchestration file says (Omnigent: `watch`,
+inbox notice, so watch your children as your backend's file in orchestrating-agents says (Omnigent: `watch`,
 and `supervise` for a child that still owes its report).
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
 has left no report and will not wake itself: arm one background wait on its process or log

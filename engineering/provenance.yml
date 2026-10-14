@@ -31,7 +31,7 @@ excluded_skills:
 - setup-matt-pocock-skills
 owned_overlays:
 - path: overlays/skills/ask-matt/SKILL.md
-  sha256: 3a1cf75a84e88e00e6174e361814e601e54a301d6a73a8f088889db032cbdba1
+  sha256: 493e2a1f944bece7b2cf7e7263310b5ae9070e182c970e4a91c66dbbe513627e
   mode: '100644'
 - path: overlays/skills/ask-matt/agents/openai.yaml
   sha256: bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c
@@ -538,7 +538,7 @@ license_files:
   mode: '100644'
 output_files:
 - path: skills/ask-matt/SKILL.md
-  sha256: 3a1cf75a84e88e00e6174e361814e601e54a301d6a73a8f088889db032cbdba1
+  sha256: 493e2a1f944bece7b2cf7e7263310b5ae9070e182c970e4a91c66dbbe513627e
   mode: '100644'
 - path: skills/ask-matt/agents/openai.yaml
   sha256: bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c

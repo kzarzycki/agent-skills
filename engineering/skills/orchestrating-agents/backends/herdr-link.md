@@ -17,4 +17,4 @@ SKILL.md ("Reports are files") tells every role.
 
 A harness without herdr-link uses the `herdr` skill for the same four operations. A
 worker can instead be a native background subagent of your own harness; a verifier only
-when the other family is unavailable (SKILL.md, Independent verification).
+when the other family is unavailable (../engineering-loop/SKILL.md, Independent verification).
