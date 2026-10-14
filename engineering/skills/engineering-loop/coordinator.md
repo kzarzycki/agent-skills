@@ -236,7 +236,8 @@ and a coordinator that waits through it makes CI the loop's speed. With nothing 
 do, end your turn. Don't poll agent lists, logs or panes,
 or sleep: every check re-reads your whole context. Read the report file a reply names,
 not logs or scrollback. A child nothing waits on reaches you only through the untitled
-inbox notice, so watch your children as the orchestration file says (Omnigent: `watch`).
+inbox notice, so watch your children as the orchestration file says (Omnigent: `watch`,
+and `supervise` for a child that still owes its report).
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
 has left no report and will not wake itself: arm one background wait on its process or log
 that ends on every terminal state (success, failure, the process gone), e.g.
