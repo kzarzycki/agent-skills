@@ -2,6 +2,7 @@
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import time
@@ -105,6 +106,7 @@ class FakeOmnigent:
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
 
 
 def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
@@ -1433,3 +1435,257 @@ def test_supervise_wakes_its_caller_before_reviving_another_session(
     assert line == f"a coord: report written: {report}"
     assert og.retried == []
     assert capsys.readouterr().out == f"a coord: report written: {report}\n"
+
+
+def test_supervise_reads_no_other_session_after_a_caller_event(tmp_path: Path) -> None:
+    """#156: the event wakes its caller at once, not after another session's read stalls."""
+    report = aged(tmp_path / "a.md", 10)
+    og = Owing([told("brief", 60)], {})
+    reads: list[str] = []
+    info, items = og.info, og.items
+    og.info = lambda sid: (reads.append(sid), info(sid))[1]  # type: ignore[method-assign]
+    og.items = lambda sid: (reads.append(sid), items(sid))[1]  # type: ignore[method-assign]
+    line = omnigent_agent.supervise(og, {"a": report, "b": tmp_path / "b.md"}, timeout=0)
+    assert line == f"a coord: report written: {report}"
+    assert "b" not in reads
+
+
+def test_a_restarted_supervisor_gives_up_on_a_silence_after_the_resume_line_in_the_history(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "r.md"
+    resume = omnigent_agent.NUDGE.format(report=report)
+    og = Owing([told("brief", 7200), told(resume, 3600)], {"status": "running"})
+    assert (
+        omnigent_agent.supervise(og, {"a": report}, silent=1800, timeout=0)
+        == "a coord: silent 3600s after the resume line; gave up"
+    )
+    assert og.sent == []
+
+
+class Fleet:
+    """Sessions owing reports, each with its own history. A session in ``broken`` raises on every
+    read; one in ``offline`` has no live runner until retried, and a message to it is lost.
+    Messages that land go to ``inbox``; the next ``refuse`` sends fail."""
+
+    def __init__(self, **histories: list[dict]) -> None:
+        self.histories, self.reads, self.inbox, self.retried = histories, [], [], []
+        self.broken: dict[str, Exception] = {}
+        self.offline: set[str] = set()
+        self.refuse = 0
+
+    def info(self, sid: str) -> dict:
+        self.reads.append(sid)
+        if sid in self.broken:
+            raise self.broken[sid]
+        return {"status": "idle", "runner_online": sid not in self.offline, "title": f"t-{sid}"}
+
+    def items(self, sid: str) -> list[dict]:
+        return self.histories.get(sid, [])
+
+    def send(self, sid: str, text: str) -> None:
+        if self.refuse:
+            self.refuse -= 1
+            raise omnigent_agent.Fail(f"POST /v1/sessions/{sid}/events: HTTP 503")
+        if sid not in self.offline:
+            self.inbox.append((sid, text))
+
+    def retry(self, sid: str) -> dict:
+        self.retried.append(sid)
+        self.offline.discard(sid)
+        return {"recovered": True, "recovery": "runner_relaunched"}
+
+
+class Stop(BaseException):
+    """Ends the supervisor's loop: not an Exception, which the loop logs and survives."""
+
+
+def supervised(
+    og: Fleet,
+    registry: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    polls: int,
+    between=lambda poll: None,
+    **kwargs: object,
+) -> None:
+    """Run ``supervise_registry`` for ``polls`` polls, calling ``between`` after each but the last."""
+    count = [0]
+
+    def sleep(_: float) -> None:
+        count[0] += 1
+        if count[0] >= polls:
+            raise Stop
+        between(count[0])
+
+    monkeypatch.setattr(omnigent_agent.time, "sleep", sleep)
+    with pytest.raises(Stop):
+        omnigent_agent.supervise_registry(og, registry, **kwargs)  # type: ignore[arg-type]
+
+
+STAMP = r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d "
+
+
+def test_a_session_added_to_the_registry_between_polls_is_supervised_from_the_next_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")
+    report = aged(tmp_path / "b.md", 10)
+    og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
+    with_b = lambda poll: registry.write_text(registry.read_text() + f"b={report}\n")
+    supervised(og, registry, monkeypatch, 2, with_b)
+    assert og.reads == ["a", "a", "b"]
+    assert re.fullmatch(f"{STAMP}b t-b: report written: {report}\n", capsys.readouterr().out)
+
+
+def test_a_terminal_event_is_posted_to_the_notify_session_and_drops_only_its_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "a.md", 10)
+    registry.write_text(f"# coordinators\na={report}\nb={tmp_path / 'b.md'}\n")
+    og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
+    supervised(og, registry, monkeypatch, 1, notify="cos")
+    assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
+    assert registry.read_text() == f"# coordinators\nb={tmp_path / 'b.md'}\n"
+    assert re.fullmatch(f"{STAMP}a t-a: report written: {report}\n", capsys.readouterr().out)
+
+
+def test_a_failed_post_keeps_the_line_and_the_event_is_posted_at_the_next_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "a.md", 10)
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.refuse = 1
+    kept: list[str] = []
+    supervised(
+        og, registry, monkeypatch, 2, lambda poll: kept.append(registry.read_text()), notify="cos"
+    )
+    assert kept == [f"a={report}\n"]
+    assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
+    assert registry.read_text() == ""
+    out, err = capsys.readouterr()
+    assert out.count("report written") == 1
+    assert re.fullmatch(f"{STAMP}post to cos failed: POST /v1/sessions/cos/events: HTTP 503\n", err)
+
+
+def test_an_error_reading_one_session_is_logged_once_and_the_others_are_still_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "b.md", 10)
+    registry.write_text(f"a={tmp_path / 'a.md'}\njunk\nb={report}\n")
+    og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
+    og.broken["a"] = omnigent_agent.Fail("GET /v1/sessions/a: HTTP 404 Not Found")
+    supervised(og, registry, monkeypatch, 3)
+    assert og.reads.count("a") == 3  # the loop went on
+    assert registry.read_text() == f"a={tmp_path / 'a.md'}\njunk\n"
+    out, err = capsys.readouterr()
+    assert out.count("b t-b: report written") == 1
+    assert err.count("a: GET /v1/sessions/a: HTTP 404 Not Found") == 1
+    assert err.count("'junk': expected <session>=<report>; skipped") == 1
+
+
+def test_a_quiet_timeout_window_is_logged_and_the_loop_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")
+    og = Fleet(a=[told("brief", 60)])
+    supervised(og, registry, monkeypatch, 2, timeout=0)
+    assert og.reads == ["a", "a"]
+    assert re.fullmatch(f"({STAMP}no event in 0s: a\n){{2}}", capsys.readouterr().err)
+
+
+def test_a_notify_session_with_no_live_runner_is_revived_before_the_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "a.md", 10)
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.offline.add("cos")
+    supervised(og, registry, monkeypatch, 1, notify="cos")
+    assert og.retried == ["cos"]
+    assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
+    assert registry.read_text() == ""
+
+
+def test_start_and_run_arm_the_registry_from_the_environment_and_run_disarms_it_on_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    argv = ["start", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert not (tmp_path / "registry").exists()  # no registry configured: nothing armed
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(tmp_path / "registry"))
+    assert (
+        omnigent_agent.main(["start", "claude", "t2", "b.md", "s.md", "--confirm-seconds", "0"])
+        == 0
+    )
+    assert (tmp_path / "registry").read_text() == f"s1={tmp_path / 's.md'}\n"
+    seen: list[str] = []
+    info = og.info
+
+    def reporting(sid: str) -> dict:
+        seen.append((tmp_path / "registry").read_text())
+        (tmp_path / "u.md").write_text("ok")
+        return info(sid)
+
+    og.info = reporting  # type: ignore[method-assign]
+    assert (
+        omnigent_agent.main(["run", "claude", "t3", "b.md", "u.md", "--confirm-seconds", "0"]) == 0
+    )
+    assert seen[0] == f"s1={tmp_path / 's.md'}\ns2={tmp_path / 'u.md'}\n"
+    assert (tmp_path / "registry").read_text() == f"s1={tmp_path / 's.md'}\n"
+
+
+def test_send_arms_the_registry_replacing_the_sessions_line_and_disarms_it_on_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    registry, report = tmp_path / "registry", tmp_path / "r.md"
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    sid = og.create("claude", "t")
+    registry.write_text(f"{sid}={tmp_path / 'old.md'}\nx={tmp_path / 'x.md'}\n")
+    (tmp_path / "a.md").write_text("use main")
+    seen: list[str] = []
+    info = og.info
+
+    def reporting(s: str) -> dict:
+        if f"{sid}={report}" in registry.read_text():
+            seen.append(registry.read_text())
+            report.write_text("ok")
+        return info(s)
+
+    og.info = reporting  # type: ignore[method-assign]
+    assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert seen[0] == f"x={tmp_path / 'x.md'}\n{sid}={report}\n"
+    assert registry.read_text() == f"x={tmp_path / 'x.md'}\n"
+
+
+def test_wait_disarms_on_a_report_or_a_question_and_a_failed_wait_keeps_the_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    registry = tmp_path / "registry"
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    a, b, c = (og.create("claude", t) for t in "abc")
+    registry.write_text(
+        f"{a}={tmp_path / 'a.md'}\n{b}={tmp_path / 'b.md'}\n{c}={tmp_path / 'c.md'}\n"
+    )
+    (tmp_path / "a.md").write_text("ok")
+    (tmp_path / "b.md.question").write_text("which?")
+    flag = ["--registry", str(registry)]
+    assert omnigent_agent.main(["wait", a, "a.md", *flag]) == 0
+    assert omnigent_agent.main(["wait", b, "b.md", *flag]) == omnigent_agent.ASKED
+    assert omnigent_agent.main(["wait", c, "c.md", "--timeout", "0", *flag]) == 1
+    assert registry.read_text() == f"{c}={tmp_path / 'c.md'}\n"
