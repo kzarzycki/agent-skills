@@ -30,13 +30,15 @@ wrote its report or a question, blocks on a prompt, fails, or is given up on (si
 line or with an input undelivered, or a failed revive).
 A report counts once newer than the session's last instruction, so one already written counts at once.
 ``supervise --registry`` runs until stopped: each poll it re-reads the file's ``session=report``
-lines, each optionally followed by the session's brief files after tabs, and checks each session
+lines, each optionally followed by the session's brief files after tabs and a ``verdict`` field
+for a verifier, whose report then counts only with its ``SATISFIED:`` line, and checks each session
 the same way, printing every line with the local time and, with ``--notify``, posting it into that
 session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal event drops the
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
 ``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
-file, ``send`` appending its message file); ``run``, ``send`` and ``wait`` disarm it when they
+file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
+count its report); ``run``, ``send`` and ``wait`` disarm it when they
 return the report or a question.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
 question; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
@@ -102,6 +104,7 @@ REVIVED = "Your session was restarted and may have lost its context."
 # whatever ~/.codex/config.toml sets for interactive use.
 CODEX_VERIFIER_MODEL = "gpt-6.1-sol"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
+VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no runner it could revive
 
 PREAMBLE = """\
@@ -830,8 +833,10 @@ def check(
     unsent: set[str],
     say: Callable[[str], None],
     briefs: list[Path] | None = None,
+    verdict: bool = False,
 ) -> tuple[str, float]:
     """One look at ``sid``, which owes ``report``: the line for its caller when it wrote its report
+    (with ``verdict``, a verifier's, once it has its ``SATISFIED:`` line, as ``wait`` counts it)
     or a question, blocks on a prompt, failed, or is given up on, else empty, with the time of the
     instruction it measured from.
 
@@ -853,7 +858,7 @@ def check(
     since, resent = instructed(items, resume)
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
-    if written(report, since):
+    if written(report, since) and (not verdict or VERDICT.search(report.read_text())):
         return f"{head}: report written: {report}", since
     if written(question_of(report), since):
         return f"{head}: asked: {question_of(report)}", since
@@ -950,26 +955,29 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         return []
 
 
-def entry(line: str) -> tuple[str, Path, list[Path]]:
-    """A registry line: ``session=report``, then the session's brief files, each after a tab."""
-    head, *files = line.split("\t")
+def entry(line: str) -> tuple[str, Path, list[Path], bool]:
+    """A registry line: ``session=report``, then the session's brief files, each after a tab, and
+    whether its report is a verifier's (a ``verdict`` field, which ``run``, ``start`` and ``send``
+    write for one)."""
+    head, *fields = line.split("\t")
     sid, report = pair(head)
-    return sid, report, [Path(f.strip()) for f in files if f.strip()]
+    fields = [f.strip() for f in fields if f.strip()]
+    return sid, report, [Path(f) for f in fields if f != VERDICT_FIELD], VERDICT_FIELD in fields
 
 
-def registered(path: Path) -> tuple[dict[str, tuple[Path, list[Path]]], list[str]]:
-    """The registry's sessions with the reports they owe and their brief files, the last line
+def registered(path: Path) -> tuple[dict[str, tuple[Path, list[Path], bool]], list[str]]:
+    """The registry's sessions with the reports they owe, their brief files and verdict flags, the last line
     winning for a session listed twice, and its malformed lines. Blank lines and ``#`` comments
     are skipped."""
     owed, bad = {}, []
     for line in edit_registry(path):
         if line.strip() and not line.lstrip().startswith("#"):
             try:
-                sid, report, briefs = entry(line)
+                sid, *owes = entry(line)
             except Fail:
                 bad.append(line)
             else:
-                owed[sid] = report, briefs
+                owed[sid] = tuple(owes)
     return owed, bad
 
 
@@ -980,9 +988,10 @@ def arm(
     briefs: list[Path] | None = None,
     then: Path | None = None,
     unless: Callable[[], bool] = lambda: False,
+    verdict: bool = False,
 ) -> None:
-    """Replace ``sid``'s line in the registry with ``sid=report`` and ``briefs``, or with ``report``
-    None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
+    """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
+    the ``verdict`` field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
     goes after the brief files the line had, else after the one ``start`` wrote."""
 
     def names(line: str) -> bool:
@@ -1001,7 +1010,8 @@ def arm(
             except Fail:
                 had = []
             files = [b for b in briefs_for(report, had) if b != then] + [then]
-        return rest + ["\t".join([f"{sid}={report}", *map(str, files)])]
+        flag = [VERDICT_FIELD] if verdict else []
+        return rest + ["\t".join([f"{sid}={report}", *map(str, files), *flag])]
 
     edit_registry(path, edit)
 
@@ -1012,12 +1022,13 @@ def arm_quietly(
     report: Path | None = None,
     briefs: list[Path] | None = None,
     then: Path | None = None,
+    verdict: bool = False,
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
     if path:
         try:
-            arm(path, sid, report, briefs, then)
+            arm(path, sid, report, briefs, then, verdict=verdict)
         except OSError as e:
             print(
                 f"registry {path}: {sid} not {'armed' if report else 'disarmed'}: {e}",
@@ -1121,11 +1132,11 @@ def supervise_registry(
             log("registry", None)
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
-        for sid, (report, briefs) in owed.items():
+        for sid, (report, briefs, verdict) in owed.items():
             if any(e and e[0] == sid for _, e in outbox):
                 continue  # its event is found; it waits to be posted
             try:
-                event, since = check(og, sid, report, silent, resumed, unsent, say, briefs)
+                event, since = check(og, sid, report, silent, resumed, unsent, say, briefs, verdict)
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
                 continue
@@ -1289,7 +1300,9 @@ def main(argv: list[str] | None = None) -> int:
             send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
             # armed once the message is in the history, as start arms: before it, the report or
             # question of the turn before reads as newer than the last instruction
-            arm_quietly(registry, args.session, report, then=args.brief.resolve())
+            arm_quietly(
+                registry, args.session, report, then=args.brief.resolve(), verdict=args.verdict
+            )
             print(wait(og, args.session, report, args.timeout, args.verdict, since))
             arm_quietly(registry, args.session)
             return 0
@@ -1325,7 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
             or (CODEX_VERIFIER_MODEL if verifier and args.agent == "codex" else None),
             top_level=args.top_level,
         )
-        arm_quietly(registry, sid, report, [brief_of(report)])
+        arm_quietly(registry, sid, report, [brief_of(report)], verdict=verifier)
         print(sid, flush=True)
         if args.cmd == "run":
             print(wait(og, sid, report, args.timeout, verifier, launched))

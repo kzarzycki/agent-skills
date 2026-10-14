@@ -1675,6 +1675,23 @@ def test_a_session_added_to_the_registry_between_polls_is_supervised_from_the_ne
     assert re.fullmatch(f"{STAMP}b t-b: report written: {report}\n", capsys.readouterr().out)
 
 
+def test_a_verifier_line_counts_its_report_only_once_it_has_its_satisfied_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "registry"
+    verdict, plain = aged(tmp_path / "v.md", 10), aged(tmp_path / "w.md", 10)
+    for report in (verdict, plain):
+        report.write_text("Head: abc\nVERDICT: approve\n")
+    registry.write_text(f"v={verdict}\tverdict\nw={plain}\n")
+    og = Fleet(v=[told("brief", 60)], w=[told("brief", 60)])
+    finish = lambda poll: verdict.write_text(verdict.read_text() + "SATISFIED: yes\n")
+    supervised(og, registry, monkeypatch, 2, finish)
+    out = capsys.readouterr().out
+    assert re.fullmatch(
+        f"{STAMP}w t-w: report written: {plain}\n{STAMP}v t-v: report written: {verdict}\n", out
+    )
+
+
 def test_a_terminal_event_is_posted_to_the_notify_session_and_drops_only_its_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1876,6 +1893,11 @@ def test_start_and_run_arm_the_registry_with_their_brief_file_and_run_disarms_it
     )
     s1 = f"s1={tmp_path / 's.md'}\t{tmp_path / 's.md.brief'}\n"
     assert (tmp_path / "registry").read_text() == s1
+    verifier = ["start", "codex", "v", "b.md", "v.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main([*verifier, "--role", "verifier.md", "--author", "claude"]) == 0
+    v = f"s2={tmp_path / 'v.md'}\t{tmp_path / 'v.md.brief'}\tverdict\n"
+    assert (tmp_path / "registry").read_text() == s1 + v
+    s1 += v
     seen: list[str] = []
     info = og.info
 
@@ -1888,7 +1910,7 @@ def test_start_and_run_arm_the_registry_with_their_brief_file_and_run_disarms_it
     assert (
         omnigent_agent.main(["run", "claude", "t3", "b.md", "u.md", "--confirm-seconds", "0"]) == 0
     )
-    assert seen[0] == s1 + f"s2={tmp_path / 'u.md'}\t{tmp_path / 'u.md.brief'}\n"
+    assert seen[0] == s1 + f"s3={tmp_path / 'u.md'}\t{tmp_path / 'u.md.brief'}\n"
     assert (tmp_path / "registry").read_text() == s1
 
 
