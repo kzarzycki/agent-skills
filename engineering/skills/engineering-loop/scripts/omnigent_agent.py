@@ -655,7 +655,7 @@ def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[s
     saying which, and how: ``archived``, or ``ended`` for a sub-agent, which stays unarchived.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
-    reports are in; a child whose ``run`` died is re-attached with ``wait``, which archives it."""
+    reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it."""
     lines = []
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
         info = og.info(sid)
