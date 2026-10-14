@@ -103,13 +103,33 @@ background for it.
 run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
 `blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A chief
-of staff watches its leads this way: a top-level session tells nobody when its
-turn ends or it blocks, and the UI's "Completed" reaches no agent. Handle what it printed,
-then start `watch` again. States a session is already in when `watch` starts are not news,
+of staff learns this way of a lead that owes it no report (one that owes one is
+supervised, below): a top-level session tells nobody when its turn ends or it blocks, and
+the UI's "Completed" reaches no agent. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
 except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
 every few seconds; the session stream pushes the same changes faster but per session and
 without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
 API: a person approves it in the UI, so a watched prompt still waits for one.
+
+**Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a
+chief of staff on another runner has its idle status refused (HTTP 503, the runner logging
+"parent inbox is missing") until something else wakes it, so its status stays `running`
+and nobody hears that it stopped, and Omnigent reaps a runner idle for an hour
+(`runner.idle_timeout_s`). `python3 scripts/omnigent_agent.py supervise <session>=<report>...`
+checks liveness, not only outcomes, for sessions that each owe a report. A session with no
+live runner it revives in place (`revived`). One with no history item for
+`--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
+it sends the `wait` nudge once as its resume line, whatever its status says
+(`resume line sent`). It prints each of those at once and goes on. It exits 0 with one line
+as soon as a session wrote its report (`report written: <path>`) or a question
+(`asked: <path>`), blocks on a prompt, fails, or is given up on (`gave up`: silent again after
+its resume line, which may sit undelivered behind a stuck step; silent with an input already
+undelivered; or a failed revive). A report counts once newer than the session's last
+instruction, so one written before `supervise` started counts at once and an earlier
+phase's at the same path does not. A chief of staff supervises its leads this way,
+and a lead supervises a child no `run`, `send` or `wait` waits on any more: run it in
+the foreground (or under a Monitor), handle what it printed, and run it again for the
+sessions still owing. Exit 1 after `--timeout` (default 3h) with no event.
 
 **Finished sessions.** `run` and `wait` archive the session whose report or verdict they
 return, which ends its agent process and keeps its transcript; a session that asked a

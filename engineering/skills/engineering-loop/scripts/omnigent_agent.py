@@ -5,6 +5,7 @@
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]
+    python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -19,6 +20,12 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
 a prompt or fails, printing each one's id, title, that change and its last message; it is how a
 lead or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
+``supervise`` watches sessions that each owe a report for liveness, not only outcomes: it revives a
+reaped runner in place and sends one resume line to a session silent past ``--silent-seconds``
+(default 1800), printing a line for each and carrying on, and exits 0 with one line as soon as one
+wrote its report or a question, blocks on a prompt, fails, or is given up on (silent after its resume
+line or with an input undelivered, or a failed revive).
+A report counts once newer than the session's last instruction, so one already written counts at once.
 ``run`` and ``wait`` archive the session whose report or verdict they return, not one that asked a
 question; ``reap`` archives each finished one (not running, no prompt or input waiting) and keeps
 the rest; it cannot tell a child still owing its report from a finished one, so it runs once every
@@ -709,6 +716,95 @@ def watch(
         time.sleep(POLL_SECONDS)
 
 
+def instructed(items: list[dict], resume: str) -> float:
+    """When the session was last told to write its report: its newest user message other than the
+    resume line, else the oldest item on the page, since the instruction is older still."""
+    told = [
+        float(i.get("created_at") or 0)
+        for i in items
+        if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() != resume
+    ]
+    return told[-1] if told else min((float(i.get("created_at") or 0) for i in items), default=0.0)
+
+
+def written(path: Path, since: float) -> bool:
+    try:
+        return path.stat().st_mtime > since
+    except FileNotFoundError:
+        return False
+
+
+def supervise(
+    og: Omnigent, owed: dict[str, Path], silent: float = 1800.0, timeout: float = 3 * 3600
+) -> str:
+    """Print and return the first line for the caller about a session of ``owed`` (session to the
+    report it owes): it wrote its report or a question, blocks on a prompt, failed, or was given up
+    on. Its caller runs it again for the sessions still owing, which reports any other at once.
+
+    Liveness, not only outcomes: Omnigent can lose a sub-agent's turn end (its status stays
+    ``running``, its parent is never woken) or reap an idle runner. A session with no live runner is
+    revived in place; one with no history item for ``silent`` seconds gets the nudge once as its
+    resume line, whatever its status says, and is given up on when silent that long again, or at
+    once when an input already waits undelivered (a resume line would queue behind it). Each of
+    those prints a line at once and supervision goes on.
+    """
+    # ponytail: compares the server's item clock with local time and file times, as send does; a
+    # skewed server clock shifts the silence and the report's baseline by the skew.
+    deadline = time.monotonic() + timeout
+    resumed: dict[str, float] = {}
+
+    def say(line: str) -> None:
+        print(line, flush=True)
+
+    while True:
+        for sid, report in owed.items():
+            event = ""
+            info, items = og.info(sid), og.items(sid)
+            head = f"{sid} {info.get('title') or ''}".rstrip()
+            resume = NUDGE.format(report=report)
+            since = instructed(items, resume)
+            if written(report, since):
+                event = f"{head}: report written: {report}"
+            elif written(question_of(report), since):
+                event = f"{head}: asked: {question_of(report)}"
+            elif prompts := prompts_of(info):
+                event = f"{head}: blocked on a prompt: {'; '.join(prompts)}"
+            elif info.get("status") == "failed":
+                e = info.get("last_task_error") or {}
+                event = (
+                    f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}"
+                )
+            elif not info.get("runner_online", True):
+                try:
+                    revive(og, sid)
+                except Gone as e:
+                    event = f"{head}: {e}; gave up"
+                else:
+                    say(f"{head}: revived (no live runner)")
+            else:
+                last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
+                quiet = time.time() - max(last, resumed.get(sid, 0.0))
+                if quiet < silent:
+                    continue
+                if sid in resumed:
+                    event = f"{head}: silent {quiet:.0f}s after the resume line; gave up"
+                elif info.get("pending_inputs"):
+                    event = f"{head}: silent {quiet:.0f}s with an input undelivered; gave up"
+                else:
+                    og.send(sid, resume)
+                    resumed[sid] = time.time()
+                    say(
+                        f"{head}: silent {quiet:.0f}s ({info.get('status')}), report owed;"
+                        " resume line sent"
+                    )
+            if event:  # wake the caller now: no other session's read, revive or resume first
+                say(event)
+                return event
+        if time.monotonic() >= deadline:
+            raise Fail(f"no event in {timeout:.0f}s: {', '.join(owed)}")
+        time.sleep(POLL_SECONDS)
+
+
 def archive_delivered(og: Omnigent, sid: str) -> None:
     """Archive a session whose report or verdict came back: the UI shows it done, and its agent
     process frees the runner's file descriptors. A failed archive is reported, not fatal."""
@@ -756,6 +852,16 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("reap")
     p.add_argument("sessions", nargs="*")
     p.add_argument("--children", metavar="PARENT", help="also reap this session's sub-agents")
+    p = sub.add_parser("supervise")
+    p.add_argument(
+        "owed", nargs="+", metavar="SESSION=REPORT", help="a session and the report it owes"
+    )
+    p.add_argument(
+        "--silent-seconds",
+        type=float,
+        default=1800.0,
+        help="no history item for this long: one resume line, then given up (default 1800)",
+    )
     p = sub.add_parser("wait")
     p.add_argument("session")
     p.add_argument("report", type=Path)
@@ -770,6 +876,12 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
     args = ap.parse_args(argv)
     try:
+        owed = {}
+        for pair in getattr(args, "owed", []):
+            sid, eq, path = pair.partition("=")
+            if not (sid and eq and path):
+                raise Fail(f"{pair}: expected <session>=<report>")
+            owed[sid] = Path(path).resolve()
         og = Omnigent()
         if args.cmd == "watch":
             if not args.sessions and not args.children:
@@ -780,6 +892,9 @@ def main(argv: list[str] | None = None) -> int:
             if not args.sessions and not args.children:
                 raise Fail("reap needs a session or --children <parent>")
             print("\n".join(reap(og, args.sessions, args.children)))
+            return 0
+        if args.cmd == "supervise":
+            supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
         if args.cmd == "wait":
             print(wait(og, args.session, args.report.resolve(), args.timeout, args.verdict))

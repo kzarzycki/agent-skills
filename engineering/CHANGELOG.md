@@ -11,6 +11,16 @@ The per-thread role is the lead (#150).
 - `lead.md` opens with one PR per story, as its Branch step and issues.md, Epics already
   said.
 
+## 0.18.1 - 2026-10-14
+
+`omnigent_agent.py supervise` keeps a stalled session from going unnoticed (#154).
+
+- `supervise <session>=<report>...` checks that sessions owing a report are alive: it
+  revives a reaped runner in place, sends one resume line to a session silent past
+  `--silent-seconds` (default 1800), and exits once one reports, asks, blocks, fails or
+  is given up on. A chief of staff supervises its coordinators with it, since Omnigent can
+  lose a sub-agent coordinator's turn end and leave it `running`.
+
 ## 0.18.0 - 2026-10-14
 
 `land` works on a private repo on GitHub's free plan (#145).
