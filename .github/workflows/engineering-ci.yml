@@ -7,6 +7,7 @@ on:
       - .agents/**
       - .claude/**
       - .gitattributes
+      - docs/agents/**
       - apm.yml
       - apm.lock.yaml
       - engineering/**
@@ -34,6 +35,7 @@ on:
       - .agents/**
       - .claude/**
       - .gitattributes
+      - docs/agents/**
       - apm.yml
       - apm.lock.yaml
       - engineering/**

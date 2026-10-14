@@ -1810,6 +1810,20 @@ def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
     )
 
 
+def test_land_waits_on_a_head_with_no_checks_at_all(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub gives a head no check ran on (a path filter skipped CI) a null rollup."""
+    landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
+    for rulesets, wanted in ((["check"], "`check`"), ([], "check")):
+        landing["rulesets"] = rulesets
+        assert landed(capsys, landing) == (
+            approvals.WAITING,
+            [f"PR #7: no {wanted} on the head commit yet"],
+            [],
+        )
+
+
 def test_land_turns_on_auto_merge_while_required_checks_are_pending(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -1569,7 +1569,11 @@ def land(pr: int) -> int:
     red = [(name, state) for name, state in checks if state not in GREEN]
     statuses = [
         node
-        for node in pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+        # a head no check ran on has a null rollup
+        for node in (
+            pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
+            or {"contexts": {"nodes": []}}
+        )["contexts"]["nodes"]
         if node.get("__typename") == "StatusContext" and node.get("context") == APPROVALS
     ]
     # Resolving a review thread starts no workflow, so the FAILURE the approvals workflow posted while one was open
