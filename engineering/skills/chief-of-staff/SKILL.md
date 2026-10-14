@@ -45,13 +45,19 @@ its landing order.
   deliverables, steps, tests or guardrails the owner never named, since the lead reads
   every sentence as a requirement.
 - **Start.** `python3 <script> start --top-level <claude|codex> <title> <brief-file>
-  <report>`, with the report under the project's `tmp/loop/`. The title is a few plain
+  <report> --role <role-file>`, with the report under the project's `tmp/loop/` and the
+  role the ask needs (an engineering ask: engineering-loop's `lead.md`, by absolute path),
+  which says how the lead asks the owner. The title is a few plain
   words the owner would use for the ask. `--top-level` makes the lead its own session, so
   its workers' notices reach the lead and not you, and the owner can open it. Take the
   harness the owner asked for, else the one they prefer, else your own.
-- **Follow.** Keep one background `watch <session>...` over every live lead, and
-  `supervise <session>=<report>...` over each lead that still owes its report
-  (`../orchestrating-agents/backends/omnigent.md`, Watching sessions and Supervising sessions). Each wakes you when something changes, so never poll.
+- **Follow.** Run one detached `supervise --registry <file> --notify <your session>` for as
+  long as you have leads, and set `OMNIGENT_SUPERVISE_REGISTRY=<file>` on every `start` and
+  `send`, which arm it with the lead's report. It wakes you with a `Supervisor:` line when a
+  lead reports, asks, blocks, fails or goes silent, even after your session restarts. Keep a
+  background `watch <session>...` over the live leads too, for turn endings that owe no report
+  (`../orchestrating-agents/backends/omnigent.md`, Watching sessions, Supervising sessions and
+  Running the supervisor detached). Never poll.
 
 ## What a lead's turn ending means
 
