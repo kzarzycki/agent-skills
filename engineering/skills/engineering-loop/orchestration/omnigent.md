@@ -155,7 +155,10 @@ a false event. `run`, `send` and `wait` remove the line once they return the rep
 question, since their caller has it; a race can still deliver both, and the second line is no
 news. A failed wait keeps it, so the supervisor watches on. A failed arm is a warning, since
 the command's own wait still covers the session. Every edit locks the file (`fcntl.flock`), so
-an arm and a drop at once lose neither line.
+an arm and a drop of two sessions at once lose neither line. A drop of the same session keeps
+the line when the session was instructed after the event's own instruction: a `send` that
+armed it again for the next brief while the event was being posted, which it does only once
+that brief is in the history.
 
 A chief of staff supervises its coordinators this way, and a coordinator a child no `run`,
 `send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`

@@ -9,8 +9,8 @@ caller (#158).
   `session=report` lines each poll. It prints every line with the local time and, with
   `--notify`, posts it into that session as `Supervisor: <line>`, reviving a reaped one first.
   Lines wait in order until posted, so a failed post delays a line but loses none, and a
-  terminal event drops the session's line once its own line is posted. Errors and a quiet
-  `--timeout` window are logged and never stop it.
+  terminal event drops the session's line once its own line is posted, unless a newer brief
+  armed it again meanwhile. Errors and a quiet `--timeout` window are logged and never stop it.
 - `run`, `start` and `send` arm the registry (`--registry`, else
   `$OMNIGENT_SUPERVISE_REGISTRY`) once their message is in the history; `run`, `send` and
   `wait` disarm it when they return the report or a question.

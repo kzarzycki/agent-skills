@@ -726,23 +726,27 @@ def watch(
         time.sleep(POLL_SECONDS)
 
 
+def from_user(item: dict) -> bool:
+    return item.get("type") == "message" and item.get("role") == "user"
+
+
 def instructed(items: list[dict], resume: str) -> tuple[float, float]:
     """When the session was last told to write its report, and when the resume line was sent
     since (0.0 when it was not). The instruction is its newest user message other than the resume
     line, else the oldest item on the page, since the instruction is older still. The resume line
     is read from the history, so a supervisor restarted after sending one sends no second."""
-
-    def user(i: dict) -> bool:
-        return i.get("type") == "message" and i.get("role") == "user"
-
     told = [
-        float(i.get("created_at") or 0) for i in items if user(i) and text_of(i).strip() != resume
+        float(i.get("created_at") or 0)
+        for i in items
+        if from_user(i) and text_of(i).strip() != resume
     ]
     since = told[-1] if told else min((float(i.get("created_at") or 0) for i in items), default=0.0)
     resent = [
         float(i.get("created_at") or 0)
         for i in items
-        if user(i) and text_of(i).strip() == resume and float(i.get("created_at") or 0) >= since
+        if from_user(i)
+        and text_of(i).strip() == resume
+        and float(i.get("created_at") or 0) >= since
     ]
     return since, max(resent, default=0.0)
 
@@ -761,9 +765,10 @@ def check(
     silent: float,
     resumed: dict[str, float],
     say: Callable[[str], None],
-) -> str:
+) -> tuple[str, float]:
     """One look at ``sid``, which owes ``report``: the line for its caller when it wrote its report
-    or a question, blocks on a prompt, failed, or is given up on, else empty.
+    or a question, blocks on a prompt, failed, or is given up on, else empty, with the time of the
+    instruction it measured from.
 
     Liveness, not only outcomes: Omnigent can lose a sub-agent's turn end (its status stays
     ``running``, its parent is never woken) or reap an idle runner. A session with no live runner is
@@ -782,34 +787,37 @@ def check(
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
     if written(report, since):
-        return f"{head}: report written: {report}"
+        return f"{head}: report written: {report}", since
     if written(question_of(report), since):
-        return f"{head}: asked: {question_of(report)}"
+        return f"{head}: asked: {question_of(report)}", since
     if prompts := prompts_of(info):
-        return f"{head}: blocked on a prompt: {'; '.join(prompts)}"
+        return f"{head}: blocked on a prompt: {'; '.join(prompts)}", since
     if info.get("status") == "failed":
         e = info.get("last_task_error") or {}
-        return f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}"
+        return (
+            f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}",
+            since,
+        )
     if not info.get("runner_online", True):
         try:
             revive(og, sid)
         except Gone as e:
-            return f"{head}: {e}; gave up"
+            return f"{head}: {e}; gave up", since
         say(f"{head}: revived (no live runner)")
-        return ""
+        return "", since
     resent = max(resent, resumed.get(sid, 0.0))
     last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
     quiet = time.time() - max(last, resent)
     if quiet < silent:
-        return ""
+        return "", since
     if resent:
-        return f"{head}: silent {quiet:.0f}s after the resume line; gave up"
+        return f"{head}: silent {quiet:.0f}s after the resume line; gave up", since
     if info.get("pending_inputs"):
-        return f"{head}: silent {quiet:.0f}s with an input undelivered; gave up"
+        return f"{head}: silent {quiet:.0f}s with an input undelivered; gave up", since
     og.send(sid, resume)
     resumed[sid] = time.time()
     say(f"{head}: silent {quiet:.0f}s ({info.get('status')}), report owed; resume line sent")
-    return ""
+    return "", since
 
 
 def supervise(
@@ -828,7 +836,8 @@ def supervise(
     while True:
         for sid, report in owed.items():
             # wake the caller now: no other session's read, revive or resume first
-            if event := check(og, sid, report, silent, resumed, say):
+            event, _ = check(og, sid, report, silent, resumed, say)
+            if event:
                 say(event)
                 return event
         if time.monotonic() >= deadline:
@@ -879,15 +888,22 @@ def registered(path: Path) -> tuple[dict[str, Path], list[str]]:
     return owed, bad
 
 
-def arm(path: Path, sid: str, report: Path | None = None) -> None:
-    """Replace ``sid``'s line in the registry with ``sid=report``, or with ``report`` None drop it."""
+def arm(
+    path: Path, sid: str, report: Path | None = None, unless: Callable[[], bool] = lambda: False
+) -> None:
+    """Replace ``sid``'s line in the registry with ``sid=report``, or with ``report`` None drop it;
+    unless ``unless()``, asked under the lock, is true."""
 
     def names(line: str) -> bool:
         return line.partition("=")[0].strip() == sid
 
     edit_registry(
         path,
-        lambda lines: [x for x in lines if not names(x)] + ([f"{sid}={report}"] if report else []),
+        lambda lines: (
+            lines
+            if unless()
+            else [x for x in lines if not names(x)] + ([f"{sid}={report}"] if report else [])
+        ),
     )
 
 
@@ -915,16 +931,19 @@ def supervise_registry(
     each poll. Every line goes to stdout with the local time and, with ``notify``, into that
     session as ``Supervisor: <line>``. Lines wait in order until posted, and each poll posts them
     first, stopping at the first failure. A terminal event drops the session's line once its own
-    line is posted, and a session whose terminal line waits is not checked again. An error is
+    line is posted, and a session whose terminal line waits is not checked again. The drop keeps
+    the line when the session was instructed since the event's instruction: the caller armed it
+    again for a newer brief, once that brief was in the history. An error is
     logged to stderr, once until it clears, and never stops the loop; so is ``timeout`` with no
     event.
     """
     resumed: dict[str, float] = {}
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
-    # Each line not yet posted (None once it is), with the session a terminal line drops.
+    # Each line not yet posted (None once it is), with what a terminal line drops: its session,
+    # report and the instruction its check measured from.
     # ponytail: in memory, so a restart loses the revive and resume lines waiting in it; a terminal
     # event keeps its registry line until posted, and the restarted supervisor finds it again.
-    outbox: list[tuple[str | None, str | None]] = []
+    outbox: list[tuple[str | None, tuple[str, Path, float] | None]] = []
     window = time.monotonic()
 
     def stamp(line: str) -> str:
@@ -951,11 +970,21 @@ def supervise_registry(
         log("post", None)
         return True
 
-    def drop(sid: str) -> bool:
+    def drop(sid: str, report: Path, since: float) -> bool:
+        resume = NUDGE.format(report=report)
+
+        def renewed() -> bool:
+            return any(
+                from_user(i)
+                and text_of(i).strip() != resume
+                and float(i.get("created_at") or 0) > since
+                for i in og.items(sid)
+            )
+
         try:
-            arm(registry, sid)
-        except OSError as e:
-            log(("drop", sid), f"{registry}: {sid} not dropped: {e}")
+            arm(registry, sid, unless=renewed)
+        except Exception as e:  # noqa: BLE001 - never fatal; the drop is retried
+            log(("drop", sid), f"{registry}: {sid} not dropped: {reason(e)}")
             return False
         log(("drop", sid), None)
         resumed.pop(sid, None)
@@ -963,17 +992,17 @@ def supervise_registry(
 
     def flush() -> None:
         while outbox:
-            line, sid = outbox[0]
+            line, event = outbox[0]
             if line is not None and not post(line):
                 return
-            if sid and not drop(sid):
-                outbox[0] = (None, sid)  # posted; only the drop is retried
+            if event and not drop(*event):
+                outbox[0] = (None, event)  # posted; only the drop is retried
                 return
             outbox.pop(0)
 
-    def say(line: str, sid: str | None = None) -> None:
+    def say(line: str, event: tuple[str, Path, float] | None = None) -> None:
         print(stamp(line), flush=True)
-        outbox.append((line, sid))
+        outbox.append((line, event))
         flush()
 
     while True:
@@ -988,10 +1017,10 @@ def supervise_registry(
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
         for sid, report in owed.items():
-            if any(s == sid for _, s in outbox):
+            if any(e and e[0] == sid for _, e in outbox):
                 continue  # its event is found; it waits to be posted
             try:
-                event = check(og, sid, report, silent, resumed, say)
+                event, since = check(og, sid, report, silent, resumed, say)
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
                 continue
@@ -999,7 +1028,7 @@ def supervise_registry(
             if not event:
                 continue
             window = time.monotonic()
-            say(event, sid)
+            say(event, (sid, report, since))
         if time.monotonic() - window >= timeout:
             print(
                 stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),

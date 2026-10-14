@@ -1588,6 +1588,26 @@ def test_a_revive_line_whose_post_failed_is_posted_at_the_next_poll_before_newer
     assert registry.read_text() == ""
 
 
+def test_a_brief_armed_while_the_last_event_is_posted_keeps_its_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "a.md", 10)
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    post = og.send
+
+    def send(sid: str, text: str) -> None:  # the next brief lands and is armed mid-post
+        post(sid, text)
+        og.histories["a"].append(told("next brief", 0))
+        omnigent_agent.arm(registry, "a", report)
+
+    og.send = send  # type: ignore[method-assign]
+    supervised(og, registry, monkeypatch, 2, notify="cos")
+    assert registry.read_text() == f"a={report}\n"
+    assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
+
+
 def test_an_error_reading_one_session_is_logged_once_and_the_others_are_still_checked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
