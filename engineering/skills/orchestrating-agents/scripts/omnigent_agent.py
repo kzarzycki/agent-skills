@@ -6,6 +6,7 @@
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
+    python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [<session>=<report>...]
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -21,11 +22,21 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 a prompt or fails, printing each one's id, title, that change and its last message; it is how a
 lead or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
 ``supervise`` watches sessions that each owe a report for liveness, not only outcomes: it revives a
-reaped runner in place and sends one resume line to a session silent past ``--silent-seconds``
+reaped runner in place, then sends it a line naming its brief files and the report, since a revive
+can drop its context, and sends one resume line to a session silent past ``--silent-seconds``
 (default 1800), printing a line for each and carrying on, and exits 0 with one line as soon as one
 wrote its report or a question, blocks on a prompt, fails, or is given up on (silent after its resume
 line or with an input undelivered, or a failed revive).
 A report counts once newer than the session's last instruction, so one already written counts at once.
+``supervise --registry`` runs until stopped: each poll it re-reads the file's ``session=report``
+lines, each optionally followed by the session's brief files after tabs, and checks each session
+the same way, printing every line with the local time and, with ``--notify``, posting it into that
+session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal event drops the
+session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
+``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
+``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
+file, ``send`` appending its message file); ``run``, ``send`` and ``wait`` disarm it when they
+return the report or a question.
 ``run`` and ``wait`` archive the session whose report or verdict they return, not one that asked a
 question; ``reap`` archives each finished one (not running, no prompt or input waiting) and keeps
 the rest; it cannot tell a child still owing its report from a finished one, so it runs once every
@@ -46,6 +57,7 @@ own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists i
 from __future__ import annotations
 
 import argparse
+import fcntl
 import http.client
 import json
 import os
@@ -56,6 +68,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -75,6 +88,9 @@ TRANSIENT = (TimeoutError, socket.timeout, ConnectionResetError)  # socket.timeo
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 NUDGE = "Your turn ended without the report. Run any long command in the foreground, then write the report to {report}."
+# The line after a revive, which can relaunch a session with its context dropped: it names the
+# brief files and the report. Like the resume line, no instruction; found by this fixed start.
+REVIVED = "Your session was restarted and may have lost its context."
 # A Codex verifier's model unless --model or OMNIGENT_MODEL_CODEX names one: else it inherits
 # whatever ~/.codex/config.toml sets for interactive use.
 CODEX_VERIFIER_MODEL = "gpt-6.1-sol"
@@ -118,6 +134,20 @@ class Gone(Fail):
 
 def question_of(report: Path) -> Path:
     return report.with_name(report.name + ".question")
+
+
+def brief_of(report: Path) -> Path:
+    return report.with_name(report.name + ".brief")
+
+
+def briefs_for(report: Path, listed: list[Path]) -> list[Path]:
+    """The brief files a revived session reads: the registry's, else the one ``start`` wrote."""
+    return listed or [b for b in [brief_of(report)] if b.exists()]
+
+
+def revive_line(report: Path, briefs: list[Path]) -> str:
+    read = f" Read your brief: {', '.join(map(str, briefs))}." if briefs else ""
+    return f"{REVIVED}{read} Write your report to {report}."
 
 
 def _logged_in_server() -> str:
@@ -314,6 +344,12 @@ class Omnigent:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
         return [str(c["id"]) for c in page.get("data", [])]
 
+    def active(self, sid: str) -> float:
+        """When any live child of ``sid`` was last updated (archived ones are not listed), else 0.
+        Not ``busy``: a child whose turn end was lost stays busy for good."""
+        page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
+        return max((float(c.get("updated_at") or 0) for c in page.get("data", [])), default=0.0)
+
 
 def parent_id() -> str:
     """The runner's primary session (the lead, also when a child runs this), else empty."""
@@ -479,7 +515,7 @@ def start(
         )
     # The brief goes in a file beside the report and the message only names it: a child can receive
     # an inline brief as pasted text, which it will not take instructions from.
-    brief_file = report.with_name(report.name + ".brief")
+    brief_file = brief_of(report)
     brief_file.parent.mkdir(parents=True, exist_ok=True)
     brief_file.write_text(
         PREAMBLE.format(
@@ -716,15 +752,32 @@ def watch(
         time.sleep(POLL_SECONDS)
 
 
-def instructed(items: list[dict], resume: str) -> float:
-    """When the session was last told to write its report: its newest user message other than the
-    resume line, else the oldest item on the page, since the instruction is older still."""
-    told = [
+def from_user(item: dict) -> bool:
+    return item.get("type") == "message" and item.get("role") == "user"
+
+
+def instruction(item: dict, resume: str) -> bool:
+    """A user message that tells the session its task: not the resume line, nor the revive line."""
+    text = text_of(item).strip()
+    return from_user(item) and text != resume and not text.startswith(REVIVED)
+
+
+def instructed(items: list[dict], resume: str) -> tuple[float, float]:
+    """When the session was last told to write its report, and when the resume line was sent
+    since (0.0 when it was not). The instruction is its newest user message other than the resume
+    or revive line, else the oldest item on the page, since the instruction is older still. The
+    resume line is read from the history, so a supervisor restarted after sending one sends no
+    second."""
+    told = [float(i.get("created_at") or 0) for i in items if instruction(i, resume)]
+    since = told[-1] if told else min((float(i.get("created_at") or 0) for i in items), default=0.0)
+    resent = [
         float(i.get("created_at") or 0)
         for i in items
-        if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() != resume
+        if from_user(i)
+        and text_of(i).strip() == resume
+        and float(i.get("created_at") or 0) >= since
     ]
-    return told[-1] if told else min((float(i.get("created_at") or 0) for i in items), default=0.0)
+    return since, max(resent, default=0.0)
 
 
 def written(path: Path, since: float) -> bool:
@@ -734,75 +787,331 @@ def written(path: Path, since: float) -> bool:
         return False
 
 
+def check(
+    og: Omnigent,
+    sid: str,
+    report: Path,
+    silent: float,
+    resumed: dict[str, float],
+    unsent: set[str],
+    say: Callable[[str], None],
+    briefs: list[Path] | None = None,
+) -> tuple[str, float]:
+    """One look at ``sid``, which owes ``report``: the line for its caller when it wrote its report
+    or a question, blocks on a prompt, failed, or is given up on, else empty, with the time of the
+    instruction it measured from.
+
+    Liveness, not only outcomes: Omnigent can lose a sub-agent's turn end (its status stays
+    ``running``, its parent is never woken) or reap an idle runner. A session with no live runner is
+    revived in place and sent the revive line, naming ``briefs`` (else ``<report>.brief`` when it
+    exists) and the report, since a revive can drop its context; one with no history item for ``silent`` seconds gets the nudge once as its
+    resume line, whatever its status says, and is given up on when silent that long again, or at
+    once when an input already waits undelivered (a resume line would queue behind it). Each of
+    those is told to ``say`` at once. ``resumed`` holds when this process sent each resume line,
+    since one held in ``pending_inputs`` is not in the history yet; ``unsent`` the revived sessions
+    whose revive line did not go out, sent again at their next look.
+    """
+    # ponytail: compares the server's item clock with local time and file times, as send does; a
+    # skewed server clock shifts the silence and the report's baseline by the skew.
+    info, items = og.info(sid), og.items(sid)
+    head = f"{sid} {info.get('title') or ''}".rstrip()
+    resume = NUDGE.format(report=report)
+    since, resent = instructed(items, resume)
+    if resumed.get(sid, since) < since:  # sent before a newer instruction
+        del resumed[sid]
+    if written(report, since):
+        return f"{head}: report written: {report}", since
+    if written(question_of(report), since):
+        return f"{head}: asked: {question_of(report)}", since
+    if prompts := prompts_of(info):
+        return f"{head}: blocked on a prompt: {'; '.join(prompts)}", since
+    if info.get("status") == "failed":
+        e = info.get("last_task_error") or {}
+        return (
+            f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}",
+            since,
+        )
+    if not info.get("runner_online", True):
+        try:
+            revive(og, sid)
+        except Gone as e:
+            return f"{head}: {e}; gave up", since
+        say(f"{head}: revived (no live runner)")
+        unsent.add(sid)
+    if sid in unsent:  # once online, the revived runner never comes this way again: retry here
+        og.send(sid, revive_line(report, briefs_for(report, briefs or [])))
+        unsent.discard(sid)
+        return "", since
+    resent = max(resent, resumed.get(sid, 0.0))
+    last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
+    quiet = time.time() - max(last, resent)
+    if quiet < silent:
+        return "", since
+    # a session waiting on its own worker or verifier writes nothing meanwhile: the subtree's activity
+    # is its liveness too, read only once its own history is quiet
+    quiet = min(quiet, time.time() - og.active(sid))
+    if quiet < silent:
+        return "", since
+    if resent:
+        return f"{head}: silent {quiet:.0f}s after the resume line; gave up", since
+    if info.get("pending_inputs"):
+        return f"{head}: silent {quiet:.0f}s with an input undelivered; gave up", since
+    og.send(sid, resume)
+    resumed[sid] = time.time()
+    say(f"{head}: silent {quiet:.0f}s ({info.get('status')}), report owed; resume line sent")
+    return "", since
+
+
 def supervise(
     og: Omnigent, owed: dict[str, Path], silent: float = 1800.0, timeout: float = 3 * 3600
 ) -> str:
     """Print and return the first line for the caller about a session of ``owed`` (session to the
-    report it owes): it wrote its report or a question, blocks on a prompt, failed, or was given up
-    on. Its caller runs it again for the sessions still owing, which reports any other at once.
-
-    Liveness, not only outcomes: Omnigent can lose a sub-agent's turn end (its status stays
-    ``running``, its parent is never woken) or reap an idle runner. A session with no live runner is
-    revived in place; one with no history item for ``silent`` seconds gets the nudge once as its
-    resume line, whatever its status says, and is given up on when silent that long again, or at
-    once when an input already waits undelivered (a resume line would queue behind it). Each of
-    those prints a line at once and supervision goes on.
+    report it owes), as ``check`` finds it, printing its revive and resume lines on the way. Its
+    caller runs it again for the sessions still owing, which reports any other at once.
     """
-    # ponytail: compares the server's item clock with local time and file times, as send does; a
-    # skewed server clock shifts the silence and the report's baseline by the skew.
     deadline = time.monotonic() + timeout
     resumed: dict[str, float] = {}
+    unsent: set[str] = set()
 
     def say(line: str) -> None:
         print(line, flush=True)
 
     while True:
         for sid, report in owed.items():
-            event = ""
-            info, items = og.info(sid), og.items(sid)
-            head = f"{sid} {info.get('title') or ''}".rstrip()
-            resume = NUDGE.format(report=report)
-            since = instructed(items, resume)
-            if written(report, since):
-                event = f"{head}: report written: {report}"
-            elif written(question_of(report), since):
-                event = f"{head}: asked: {question_of(report)}"
-            elif prompts := prompts_of(info):
-                event = f"{head}: blocked on a prompt: {'; '.join(prompts)}"
-            elif info.get("status") == "failed":
-                e = info.get("last_task_error") or {}
-                event = (
-                    f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}"
-                )
-            elif not info.get("runner_online", True):
-                try:
-                    revive(og, sid)
-                except Gone as e:
-                    event = f"{head}: {e}; gave up"
-                else:
-                    say(f"{head}: revived (no live runner)")
-            else:
-                last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
-                quiet = time.time() - max(last, resumed.get(sid, 0.0))
-                if quiet < silent:
-                    continue
-                if sid in resumed:
-                    event = f"{head}: silent {quiet:.0f}s after the resume line; gave up"
-                elif info.get("pending_inputs"):
-                    event = f"{head}: silent {quiet:.0f}s with an input undelivered; gave up"
-                else:
-                    og.send(sid, resume)
-                    resumed[sid] = time.time()
-                    say(
-                        f"{head}: silent {quiet:.0f}s ({info.get('status')}), report owed;"
-                        " resume line sent"
-                    )
-            if event:  # wake the caller now: no other session's read, revive or resume first
+            # wake the caller now: no other session's read, revive or resume first
+            event, _ = check(og, sid, report, silent, resumed, unsent, say)
+            if event:
                 say(event)
                 return event
         if time.monotonic() >= deadline:
             raise Fail(f"no event in {timeout:.0f}s: {', '.join(owed)}")
         time.sleep(POLL_SECONDS)
+
+
+def pair(text: str) -> tuple[str, Path]:
+    sid, eq, path = text.strip().partition("=")
+    if not (sid.strip() and eq and path.strip()):
+        raise Fail(f"{text}: expected <session>=<report>")
+    return sid.strip(), Path(path.strip())
+
+
+def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = None) -> list[str]:
+    """The registry's lines, read under an exclusive lock; with ``edit``, rewritten in place to
+    ``edit(lines)`` under the same lock, so a ``run`` arming while the supervisor drops another
+    session loses neither line. A missing file reads as empty."""
+    if edit:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(path, "a+" if edit else "r") as f:  # closing releases the lock
+            fcntl.flock(f, fcntl.LOCK_EX)
+            f.seek(0)
+            lines = f.read().splitlines()
+            if edit:
+                lines = edit(lines)
+                f.seek(0)
+                f.truncate()
+                f.write("".join(line + "\n" for line in lines))
+            return lines
+    except FileNotFoundError:  # only a read opens without creating
+        return []
+
+
+def entry(line: str) -> tuple[str, Path, list[Path]]:
+    """A registry line: ``session=report``, then the session's brief files, each after a tab."""
+    head, *files = line.split("\t")
+    sid, report = pair(head)
+    return sid, report, [Path(f.strip()) for f in files if f.strip()]
+
+
+def registered(path: Path) -> tuple[dict[str, tuple[Path, list[Path]]], list[str]]:
+    """The registry's sessions with the reports they owe and their brief files, the last line
+    winning for a session listed twice, and its malformed lines. Blank lines and ``#`` comments
+    are skipped."""
+    owed, bad = {}, []
+    for line in edit_registry(path):
+        if line.strip() and not line.lstrip().startswith("#"):
+            try:
+                sid, report, briefs = entry(line)
+            except Fail:
+                bad.append(line)
+            else:
+                owed[sid] = report, briefs
+    return owed, bad
+
+
+def arm(
+    path: Path,
+    sid: str,
+    report: Path | None = None,
+    briefs: list[Path] | None = None,
+    then: Path | None = None,
+    unless: Callable[[], bool] = lambda: False,
+) -> None:
+    """Replace ``sid``'s line in the registry with ``sid=report`` and ``briefs``, or with ``report``
+    None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
+    goes after the brief files the line had, else after the one ``start`` wrote."""
+
+    def names(line: str) -> bool:
+        return line.partition("=")[0].strip() == sid
+
+    def edit(lines: list[str]) -> list[str]:
+        if unless():
+            return lines
+        rest, mine = [x for x in lines if not names(x)], [x for x in lines if names(x)]
+        if not report:
+            return rest
+        files = briefs or []
+        if then:
+            try:
+                had = entry(mine[-1])[2] if mine else []
+            except Fail:
+                had = []
+            files = [b for b in briefs_for(report, had) if b != then] + [then]
+        return rest + ["\t".join([f"{sid}={report}", *map(str, files)])]
+
+    edit_registry(path, edit)
+
+
+def arm_quietly(
+    path: Path | None,
+    sid: str,
+    report: Path | None = None,
+    briefs: list[Path] | None = None,
+    then: Path | None = None,
+) -> None:
+    """``arm`` for a command with its own wait: a failure is a warning, since that wait still
+    covers the session."""
+    if path:
+        try:
+            arm(path, sid, report, briefs, then)
+        except OSError as e:
+            print(
+                f"registry {path}: {sid} not {'armed' if report else 'disarmed'}: {e}",
+                file=sys.stderr,
+            )
+
+
+def supervise_registry(
+    og: Omnigent,
+    registry: Path,
+    notify: str | None = None,
+    silent: float = 1800.0,
+    timeout: float = 3 * 3600,
+) -> NoReturn:
+    """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
+    each poll. Every line goes to stdout with the local time and, with ``notify``, into that
+    session as ``Supervisor: <line>``. Lines wait in order until posted, and each poll posts them
+    first, stopping at the first failure. A terminal event drops the session's line once its own
+    line is posted, and a session whose terminal line waits is not checked again. The drop keeps
+    the line when the session was instructed since the event's instruction: the caller armed it
+    again for a newer brief, once that brief was in the history. An error is
+    logged to stderr, once until it clears, and never stops the loop; so is ``timeout`` with no
+    event.
+    """
+    resumed: dict[str, float] = {}
+    unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
+    logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
+    # Each line not yet posted (None once it is), with what a terminal line drops: its session,
+    # report and the instruction its check measured from.
+    # ponytail: in memory, so a restart loses the revive and resume lines waiting in it; a terminal
+    # event keeps its registry line until posted, and the restarted supervisor finds it again.
+    outbox: list[tuple[str | None, tuple[str, Path, float] | None]] = []
+    window = time.monotonic()
+
+    def stamp(line: str) -> str:
+        return f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}"
+
+    def log(key: object, error: str | None) -> None:
+        if error is None:
+            logged.pop(key, None)
+        elif logged.get(key) != error:
+            logged[key] = error
+            print(stamp(error), file=sys.stderr, flush=True)
+
+    def post(line: str) -> bool:
+        if not notify:
+            return True
+        try:
+            # a message to a reaped session answers `queued` and never arrives
+            if not og.info(notify).get("runner_online", True):
+                revive(og, notify)
+            og.send(notify, f"Supervisor: {line}")
+        except Exception as e:  # noqa: BLE001 - never fatal; the event is found again
+            log("post", f"post to {notify} failed: {reason(e)}")
+            return False
+        log("post", None)
+        return True
+
+    def drop(sid: str, report: Path, since: float) -> bool:
+        resume = NUDGE.format(report=report)
+
+        def renewed() -> bool:
+            return any(
+                instruction(i, resume) and float(i.get("created_at") or 0) > since
+                for i in og.items(sid)
+            )
+
+        try:
+            arm(registry, sid, unless=renewed)
+        except Exception as e:  # noqa: BLE001 - never fatal; the drop is retried
+            log(("drop", sid), f"{registry}: {sid} not dropped: {reason(e)}")
+            return False
+        log(("drop", sid), None)
+        resumed.pop(sid, None)
+        unsent.discard(sid)
+        return True
+
+    def flush() -> None:
+        while outbox:
+            line, event = outbox[0]
+            if line is not None and not post(line):
+                return
+            if event and not drop(*event):
+                outbox[0] = (None, event)  # posted; only the drop is retried
+                return
+            outbox.pop(0)
+
+    def say(line: str, event: tuple[str, Path, float] | None = None) -> None:
+        print(stamp(line), flush=True)
+        outbox.append((line, event))
+        flush()
+
+    while True:
+        flush()
+        try:
+            owed, bad = registered(registry)
+        except Exception as e:  # noqa: BLE001 - never fatal
+            owed, bad = {}, []
+            log("registry", f"{registry}: {reason(e)}")
+        else:
+            log("registry", None)
+        for line in bad:
+            log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
+        for sid, (report, briefs) in owed.items():
+            if any(e and e[0] == sid for _, e in outbox):
+                continue  # its event is found; it waits to be posted
+            try:
+                event, since = check(og, sid, report, silent, resumed, unsent, say, briefs)
+            except Exception as e:  # noqa: BLE001 - one session's error skips no other
+                log(sid, f"{sid}: {reason(e)}")
+                continue
+            log(sid, None)
+            if not event:
+                continue
+            window = time.monotonic()
+            say(event, (sid, report, since))
+        if time.monotonic() - window >= timeout:
+            print(
+                stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),
+                file=sys.stderr,
+                flush=True,
+            )
+            window = time.monotonic()
+        time.sleep(POLL_SECONDS)
+
+
+def reason(e: Exception) -> str:
+    return str(e) if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
 
 
 def archive_delivered(og: Omnigent, sid: str) -> None:
@@ -854,8 +1163,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--children", metavar="PARENT", help="also reap this session's sub-agents")
     p = sub.add_parser("supervise")
     p.add_argument(
-        "owed", nargs="+", metavar="SESSION=REPORT", help="a session and the report it owes"
+        "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
     )
+    p.add_argument(
+        "--registry",
+        type=Path,
+        help="run until stopped, supervising the session=report lines of this file, re-read each poll",
+    )
+    p.add_argument("--notify", metavar="SESSION", help="with --registry, post each line here too")
     p.add_argument(
         "--silent-seconds",
         type=float,
@@ -874,14 +1189,19 @@ def main(argv: list[str] | None = None) -> int:
             )
         if p.prog.split()[-1] not in ("start", "reap"):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
+        if p.prog.split()[-1] in ("run", "start", "send", "wait"):
+            p.add_argument(
+                "--registry",
+                type=Path,
+                default=os.environ.get("OMNIGENT_SUPERVISE_REGISTRY") or None,
+                help="supervisor registry to arm with session=report (default: $OMNIGENT_SUPERVISE_REGISTRY)",
+            )
     args = ap.parse_args(argv)
+    sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
     try:
-        owed = {}
-        for pair in getattr(args, "owed", []):
-            sid, eq, path = pair.partition("=")
-            if not (sid and eq and path):
-                raise Fail(f"{pair}: expected <session>=<report>")
-            owed[sid] = Path(path).resolve()
+        owed = {s: r.resolve() for s, r in map(pair, getattr(args, "owed", []))}
+        if args.cmd == "supervise" and not (owed or args.registry):
+            raise Fail("supervise needs <session>=<report> pairs or --registry")
         og = Omnigent()
         if args.cmd == "watch":
             if not args.sessions and not args.children:
@@ -894,10 +1214,18 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(reap(og, args.sessions, args.children)))
             return 0
         if args.cmd == "supervise":
+            if args.registry:
+                for s, r in owed.items():
+                    arm(args.registry, s, r)
+                supervise_registry(
+                    og, args.registry, args.notify, args.silent_seconds, args.timeout
+                )
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
         if args.cmd == "wait":
             print(wait(og, args.session, args.report.resolve(), args.timeout, args.verdict))
+            # the caller has the result: the supervisor's line for it would be a second wake
+            arm_quietly(registry, args.session)
             archive_delivered(og, args.session)
             return 0
         report = args.report.resolve()
@@ -920,7 +1248,11 @@ def main(argv: list[str] | None = None) -> int:
                 except FileNotFoundError:
                     pass
             send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
+            # armed once the message is in the history, as start arms: before it, the report or
+            # question of the turn before reads as newer than the last instruction
+            arm_quietly(registry, args.session, report, then=args.brief.resolve())
             print(wait(og, args.session, report, args.timeout, args.verdict, since))
+            arm_quietly(registry, args.session)
             return 0
         brief = args.brief.read_text()
         verifier = bool(args.role and "verifier" in args.role)
@@ -948,14 +1280,18 @@ def main(argv: list[str] | None = None) -> int:
             or os.environ.get(f"OMNIGENT_MODEL_{args.agent.upper()}")
             or (CODEX_VERIFIER_MODEL if verifier and args.agent == "codex" else None),
         )
+        arm_quietly(registry, sid, report, [brief_of(report)])
         print(sid, flush=True)
         if args.cmd == "run":
             print(wait(og, sid, report, args.timeout, verifier, launched))
+            arm_quietly(registry, sid)
             archive_delivered(og, sid)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0
     except Fail as e:
+        if e.code == ASKED and sid:  # the caller has the question
+            arm_quietly(registry, sid)
         print(e, file=sys.stderr)
         return e.code
 
