@@ -736,21 +736,28 @@ def written(path: Path, since: float) -> bool:
 def supervise(
     og: Omnigent, owed: dict[str, Path], silent: float = 1800.0, timeout: float = 3 * 3600
 ) -> list[str]:
-    """Return a line per session (of ``owed``, session to the report it owes) that needs its caller:
-    it wrote its report or a question, blocks on a prompt, failed, or was given up on.
+    """Print and return a line per session (of ``owed``, session to the report it owes) that needs
+    its caller: it wrote its report or a question, blocks on a prompt, failed, or was given up on.
 
     Liveness, not only outcomes: Omnigent can lose a sub-agent's turn end (its status stays
     ``running``, its parent is never woken) or reap an idle runner. A session with no live runner is
-    revived in place; one with no history item for ``silent`` seconds and nothing pending gets the
-    nudge once as its resume line, whatever its status says, and is given up on when silent that long
-    again. Each of those prints a line at once and supervision goes on.
+    revived in place; one with no history item for ``silent`` seconds gets the nudge once as its
+    resume line, whatever its status says, and is given up on when silent that long again, or at
+    once when an input already waits undelivered (a resume line would queue behind it). Each of
+    those prints a line at once and supervision goes on. Every line is printed as it is observed;
+    once a poll has one for the caller, no session is revived or resumed before it returns.
     """
     # ponytail: compares the server's item clock with local time and file times, as send does; a
     # skewed server clock shifts the silence and the report's baseline by the skew.
     deadline = time.monotonic() + timeout
     resumed: dict[str, float] = {}
+
+    def say(line: str) -> None:
+        print(line, flush=True)
+
     while True:
-        events = []
+        events: list[str] = []
+        said = 0
         for sid, report in owed.items():
             info, items = og.info(sid), og.items(sid)
             head = f"{sid} {info.get('title') or ''}".rstrip()
@@ -767,27 +774,34 @@ def supervise(
                 events.append(
                     f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}"
                 )
+            elif events:  # the caller is due a wake: a revive or resume waits for the next run
+                continue
             elif not info.get("runner_online", True):
                 try:
                     revive(og, sid)
                 except Gone as e:
                     events.append(f"{head}: {e}; gave up")
-                    continue
-                print(f"{head}: revived (no live runner)", flush=True)
-            elif not info.get("pending_inputs"):
+                else:
+                    say(f"{head}: revived (no live runner)")
+            else:
                 last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
                 quiet = time.time() - max(last, resumed.get(sid, 0.0))
                 if quiet < silent:
                     continue
                 if sid in resumed:
                     events.append(f"{head}: silent {quiet:.0f}s after the resume line; gave up")
-                    continue
-                og.send(sid, resume)
-                resumed[sid] = time.time()
-                print(
-                    f"{head}: silent {quiet:.0f}s ({info.get('status')}), report owed; resume line sent",
-                    flush=True,
-                )
+                elif info.get("pending_inputs"):
+                    events.append(f"{head}: silent {quiet:.0f}s with an input undelivered; gave up")
+                else:
+                    og.send(sid, resume)
+                    resumed[sid] = time.time()
+                    say(
+                        f"{head}: silent {quiet:.0f}s ({info.get('status')}), report owed;"
+                        " resume line sent"
+                    )
+            for line in events[said:]:
+                say(line)
+            said = len(events)
         if events:
             return events
         if time.monotonic() >= deadline:
@@ -884,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\n".join(reap(og, args.sessions, args.children)))
             return 0
         if args.cmd == "supervise":
-            print("\n".join(supervise(og, owed, args.silent_seconds, args.timeout)))
+            supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
         if args.cmd == "wait":
             print(wait(og, args.session, args.report.resolve(), args.timeout, args.verdict))

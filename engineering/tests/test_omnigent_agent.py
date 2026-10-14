@@ -1380,3 +1380,49 @@ def test_supervise_never_nudges_a_busy_session_and_the_resume_line_is_no_instruc
 def test_supervise_cli_needs_session_report_pairs(capsys: pytest.CaptureFixture[str]) -> None:
     assert omnigent_agent.main(["supervise", "a"]) == 1
     assert "a: expected <session>=<report>" in capsys.readouterr().err
+
+
+def test_supervise_gives_up_when_the_resume_line_stays_undelivered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A harness stuck mid-step holds the resume line in pending_inputs: that is silence too."""
+    report = tmp_path / "r.md"
+    og = Owing([told("brief", 3600)], {"status": "running"})
+    og.send = lambda sid, text: og.sent.append(text)  # type: ignore[method-assign]
+    info = og.info
+    og.info = lambda sid: {  # type: ignore[method-assign]
+        **info(sid),
+        "pending_inputs": [said("user", t, "p") for t in og.sent],
+    }
+    clock = [time.time()]
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    monkeypatch.setattr(
+        omnigent_agent.time, "sleep", lambda _: clock.__setitem__(0, clock[0] + 600)
+    )
+    assert omnigent_agent.supervise(og, {"a": report}, silent=1800, timeout=3700) == [
+        "a coord: silent 1800s after the resume line; gave up"
+    ]
+    assert len(og.sent) == 1
+
+
+def test_supervise_gives_up_at_once_on_a_silence_with_an_input_already_undelivered(
+    tmp_path: Path,
+) -> None:
+    og = Owing([told("brief", 3600)], {"pending_inputs": [said("user", "answer", "p")]})
+    assert omnigent_agent.supervise(og, {"a": tmp_path / "r.md"}, silent=1800, timeout=0) == [
+        "a coord: silent 3600s with an input undelivered; gave up"
+    ]
+    assert og.sent == []
+
+
+def test_supervise_wakes_its_caller_before_reviving_another_session(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = aged(tmp_path / "a.md", 10)
+    og = Owing([told("brief", 60)], {})
+    info = og.info
+    og.info = lambda sid: {**info(sid), "runner_online": sid == "a"}  # type: ignore[method-assign]
+    lines = omnigent_agent.supervise(og, {"a": report, "b": tmp_path / "b.md"}, timeout=0)
+    assert lines == [f"a coord: report written: {report}"]
+    assert og.retried == []
+    assert capsys.readouterr().out == f"a coord: report written: {report}\n"
