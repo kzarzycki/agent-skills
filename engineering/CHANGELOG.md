@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.1 - 2026-10-14
 
 `omnigent_agent.py supervise` keeps a stalled session from going unnoticed (#154).
 
