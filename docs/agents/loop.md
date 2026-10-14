@@ -8,7 +8,7 @@ explains each line.
 - spec: auto unless risk
 - merge: auto unless risk
 
-A bug, or a follow-up an agent raises with a `Found while #<n>` line, is approved by this
-policy: the agent fixes and lands it without asking the owner. Any other spec, and an epic,
-waits for the owner's approval. A change labelled `risk:high` waits for the owner's
+A bug, a follow-up an agent raises with a `Found while #<n>` line, or a sub-issue of an epic
+the owner approved, is approved by this policy: the agent builds and lands it without asking
+the owner. Any other spec, and a new epic, waits for the owner's approval. A change labelled `risk:high` waits for the owner's
 `approved:merge`.
