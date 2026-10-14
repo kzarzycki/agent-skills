@@ -1632,6 +1632,20 @@ def test_a_revived_session_gets_the_revive_line_naming_its_brief_files_and_its_r
     assert registry.read_text() == ""  # the revive line renews nothing
 
 
+def test_a_revive_line_whose_send_failed_is_sent_at_the_next_poll_once_the_runner_is_online(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, report = tmp_path / "registry", tmp_path / "a.md"
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.offline.add("a")
+    og.refuse = 1  # the revive succeeds, the revive line's send answers 503
+    supervised(og, registry, monkeypatch, 3)
+    assert [text for sid, text in og.inbox if sid == "a"] == [
+        f"Your session was restarted and may have lost its context. Write your report to {report}."
+    ]
+
+
 @pytest.mark.parametrize("brief", [True, False])
 def test_one_shot_supervise_names_the_brief_start_wrote_in_the_revive_line(
     tmp_path: Path, brief: bool

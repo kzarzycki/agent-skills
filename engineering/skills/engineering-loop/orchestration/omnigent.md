@@ -123,7 +123,8 @@ live runner it revives in place (`revived`), then sends it the revive line, sinc
 relaunch it with its context dropped: "Your session was restarted and may have lost its
 context. Read your brief: <files>. Write your report to <report>." The files are the
 registry's brief files in order, else `<report>.brief` when it exists (what `start` writes);
-with neither, the line names only the report. Like the resume line, it is no instruction, so a
+with neither, the line names only the report. A send of it that fails is tried again at the
+session's next look. Like the resume line, it is no instruction, so a
 report written for the brief still counts after it. One with no history item for
 `--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
 it sends the `wait` nudge once as its resume line, whatever its status says

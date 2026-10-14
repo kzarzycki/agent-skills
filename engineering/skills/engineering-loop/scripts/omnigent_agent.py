@@ -787,6 +787,7 @@ def check(
     report: Path,
     silent: float,
     resumed: dict[str, float],
+    unsent: set[str],
     say: Callable[[str], None],
     briefs: list[Path] | None = None,
 ) -> tuple[str, float]:
@@ -801,7 +802,8 @@ def check(
     resume line, whatever its status says, and is given up on when silent that long again, or at
     once when an input already waits undelivered (a resume line would queue behind it). Each of
     those is told to ``say`` at once. ``resumed`` holds when this process sent each resume line,
-    since one held in ``pending_inputs`` is not in the history yet.
+    since one held in ``pending_inputs`` is not in the history yet; ``unsent`` the revived sessions
+    whose revive line did not go out, sent again at their next look.
     """
     # ponytail: compares the server's item clock with local time and file times, as send does; a
     # skewed server clock shifts the silence and the report's baseline by the skew.
@@ -829,7 +831,10 @@ def check(
         except Gone as e:
             return f"{head}: {e}; gave up", since
         say(f"{head}: revived (no live runner)")
+        unsent.add(sid)
+    if sid in unsent:  # once online, the revived runner never comes this way again: retry here
         og.send(sid, revive_line(report, briefs_for(report, briefs or [])))
+        unsent.discard(sid)
         return "", since
     resent = max(resent, resumed.get(sid, 0.0))
     last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
@@ -855,6 +860,7 @@ def supervise(
     """
     deadline = time.monotonic() + timeout
     resumed: dict[str, float] = {}
+    unsent: set[str] = set()
 
     def say(line: str) -> None:
         print(line, flush=True)
@@ -862,7 +868,7 @@ def supervise(
     while True:
         for sid, report in owed.items():
             # wake the caller now: no other session's read, revive or resume first
-            event, _ = check(og, sid, report, silent, resumed, say)
+            event, _ = check(og, sid, report, silent, resumed, unsent, say)
             if event:
                 say(event)
                 return event
@@ -992,6 +998,7 @@ def supervise_registry(
     event.
     """
     resumed: dict[str, float] = {}
+    unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
     # Each line not yet posted (None once it is), with what a terminal line drops: its session,
     # report and the instruction its check measured from.
@@ -1040,6 +1047,7 @@ def supervise_registry(
             return False
         log(("drop", sid), None)
         resumed.pop(sid, None)
+        unsent.discard(sid)
         return True
 
     def flush() -> None:
@@ -1072,7 +1080,7 @@ def supervise_registry(
             if any(e and e[0] == sid for _, e in outbox):
                 continue  # its event is found; it waits to be posted
             try:
-                event, since = check(og, sid, report, silent, resumed, say, briefs)
+                event, since = check(og, sid, report, silent, resumed, unsent, say, briefs)
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
                 continue
