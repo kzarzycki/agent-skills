@@ -199,13 +199,17 @@ and `RunAtLoad` true, `StandardOutPath` and `StandardErrorPath`, and `PATH` unde
 `systemctl --user enable --now <name>`; `loginctl enable-linger $USER` keeps it running while
 the user is logged out, and `journalctl --user -u <name>` shows its log.
 
-**Finished sessions.** `run` and `wait` archive the session whose report or verdict they
+**Finished sessions.** `run` and `wait` finish the session whose report or verdict they
 return, which ends its agent process and keeps its transcript; a session that asked a
-question stays, since the answer goes to it. `python3 scripts/omnigent_agent.py reap
-[<session>...] [--children <parent>]` archives every finished one (not running, no prompt or
-input waiting) and prints which it kept. It cannot tell an idle child whose report is still
+question stays, since the answer goes to it. A top-level session is archived. A sub-agent
+only has its terminals ended and stays in the list unarchived: archiving it stops the runner
+it shares with its parent, which loses the parent its context (kzarzycki/omnigent#5). A codex
+child may still finish the turn it is in, then idles.
+`python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]` finishes each
+session that is done (not running, no prompt or input waiting), printing `archived` or `ended` for
+each, and prints which it kept. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
-which archives it on return, never reaped. Run `reap --children
+which finishes it on return, never reaped. Run `reap --children
 "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` only once every child's report is in or the child is
 given up, as the last step before your own report. Never `DELETE` a session: it erases the
 transcript.

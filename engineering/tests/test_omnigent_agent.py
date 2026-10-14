@@ -97,10 +97,11 @@ class FakeOmnigent:
         status = "running" if pending else self.final
         return {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
 
-    def archive(self, sid: str) -> None:
+    def archive(self, sid: str) -> str:
         if "archive" in self.fail:
             raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
         self.archived.append(sid)
+        return "archived"
 
 
 @pytest.fixture(autouse=True)
@@ -1159,7 +1160,7 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     ]
 
 
-def test_a_sub_agent_is_unbound_from_the_shared_runner_before_it_is_archived(
+def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple] = []
@@ -1174,20 +1175,19 @@ def test_a_sub_agent_is_unbound_from_the_shared_runner_before_it_is_archived(
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     og = object.__new__(omnigent_agent.Omnigent)
-    og.archive("kid")
+    # an archive (unbound first or not) stops coord's runner too: kzarzycki/omnigent#5
+    assert og.archive("kid") == "ended"
     assert [c for c in calls if c[0] != "GET"] == [
         ("DELETE", "/v1/sessions/kid/resources/terminals/terminal_claude_main", None),
-        ("PATCH", "/v1/sessions/kid", {"runner_id": ""}),  # else the archive stops coord's runner
-        ("PATCH", "/v1/sessions/kid", {"archived": True}),
     ]
     calls.clear()
-    og.archive("top")  # its own runner: the archive ends it
+    assert og.archive("top") == "archived"  # its own runner: the archive ends it
     assert [c for c in calls if c[0] != "GET"] == [
         ("PATCH", "/v1/sessions/top", {"archived": True})
     ]
 
 
-def test_reap_archives_finished_children_and_keeps_the_busy_ones() -> None:
+def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
     prompt = {"elicitation_id": "e1", "params": {"message": "Claude wants to call **Bash**"}}
     states = {
         "idle": {"status": "idle"},
@@ -1200,30 +1200,32 @@ def test_reap_archives_finished_children_and_keeps_the_busy_ones() -> None:
     og = FakeOmnigent()
     og.info = lambda s: dict(states[s], title=f"t-{s}")  # type: ignore[method-assign]
     og.children = lambda p: list(states)  # type: ignore[attr-defined]
+    archive = og.archive
+    og.archive = lambda s: "ended" if s == "failed" else archive(s)  # type: ignore[method-assign]
     lines = omnigent_agent.reap(og, [], parent="p")
-    assert og.archived == ["idle", "failed"]
+    assert og.archived == ["idle"]
     assert lines == [
         "idle t-idle: archived (idle)",
-        "failed t-failed: archived (failed)",
+        "failed t-failed: ended (failed)",
         "running t-running: kept (running)",
         "blocked t-blocked: kept (blocked on a prompt)",
         "queued t-queued: kept (input pending)",
     ]
 
 
-def test_reap_goes_on_past_an_archive_that_fails() -> None:
+def test_reap_goes_on_past_a_finish_that_fails() -> None:
     og = FakeOmnigent()
     og.info = lambda s: {"status": "idle", "title": f"t-{s}"}  # type: ignore[method-assign]
     archive = og.archive
 
-    def refuse_a(s: str) -> None:
+    def refuse_a(s: str) -> str:
         if s == "a":
             raise omnigent_agent.Fail("PATCH a: HTTP 503")
-        archive(s)
+        return archive(s)
 
     og.archive = refuse_a  # type: ignore[method-assign]
     assert omnigent_agent.reap(og, ["a", "b"]) == [
-        "a t-a: archive failed: PATCH a: HTTP 503",
+        "a t-a: finish failed: PATCH a: HTTP 503",
         "b t-b: archived (idle)",
     ]
     assert og.archived == ["b"]
