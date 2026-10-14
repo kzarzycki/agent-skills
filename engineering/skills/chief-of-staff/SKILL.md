@@ -16,7 +16,7 @@ and the owner may open any lead's session and talk to it directly. That keeps a 
 without a chief of staff working the same way.
 
 Agents are started, messaged, watched and closed through the backend that
-[orchestrating-agents](../orchestrating-agents/SKILL.md) chooses. The commands below are
+the `orchestrating-agents` skill (`../orchestrating-agents/SKILL.md`) chooses. The commands below are
 the Omnigent backend's (`../orchestrating-agents/scripts/omnigent_agent.py`, run from the
 project's main checkout).
 
@@ -51,8 +51,7 @@ its landing order.
   harness the owner asked for, else the one they prefer, else your own.
 - **Follow.** Keep one background `watch <session>...` over every live lead, and
   `supervise <session>=<report>...` over each lead that still owes its report
-  ([orchestrating-agents/backends/omnigent.md](../orchestrating-agents/backends/omnigent.md),
-  Watching and Supervising). Each wakes you when something changes, so never poll.
+  (`../orchestrating-agents/backends/omnigent.md`, Watching sessions and Supervising sessions). Each wakes you when something changes, so never poll.
 
 ## What a lead's turn ending means
 

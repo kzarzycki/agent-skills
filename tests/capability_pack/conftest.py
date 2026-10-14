@@ -16,6 +16,7 @@ OWNED_SKILLS = (
     "chief-of-staff",
     "context-extractor",
     "operating-omnigent",
+    "orchestrating-agents",
 )
 
 

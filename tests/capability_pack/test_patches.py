@@ -27,6 +27,7 @@ def _write_package(package: Path) -> None:
         "chief-of-staff",
         "context-extractor",
         "operating-omnigent",
+        "orchestrating-agents",
     ):
         owned = skills / name
         owned.mkdir()
@@ -90,6 +91,7 @@ def _write_package(package: Path) -> None:
                     "chief-of-staff",
                     "context-extractor",
                     "operating-omnigent",
+                    "orchestrating-agents",
                 ],
                 "owned_overlays": [],
             },

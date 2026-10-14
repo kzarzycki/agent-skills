@@ -52,6 +52,11 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
         "GIT_COMMITTER_NAME": "Package Test",
         "GIT_COMMITTER_EMAIL": "package-test@example.invalid",
         "GIT_CONFIG_NOSYSTEM": "1",
+        # apm resolves a ref through the GitHub API when it can reach it, which bypasses the
+        # git insteadOf below and installs the real release instead of the fixture (#166);
+        # an unreachable proxy keeps every HTTP call local, so only git, on file URLs, works
+        "HTTPS_PROXY": "http://127.0.0.1:9",
+        "HTTP_PROXY": "http://127.0.0.1:9",
         # no background repack of a fixture repo while a local clone copies its loose objects (#144)
         "GIT_CONFIG_COUNT": "2",
         "GIT_CONFIG_KEY_0": "maintenance.auto",

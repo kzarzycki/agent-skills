@@ -220,16 +220,10 @@ the line, a PR with no trail fails the gate.
 - **Verifier** ([verifier.md](verifier.md)): reviews the PR, drives its instance, and
   leaves the tree as it found it.
 
-Agents are started, messaged, listed and closed through one backend, the first that holds:
-a pin in loop.md; the line `Orchestration backend: <name>` in the developer's personal
-instructions; the session you run in, read from its environment (`OMNIGENT=1` is
-omnigent, `HERDR_ENV=1` is herdr); else native:
-[orchestration/native.md](orchestration/native.md),
-[orchestration/omnigent.md](orchestration/omnigent.md) or
-[orchestration/herdr-link.md](orchestration/herdr-link.md). Only that line names a
-backend: an instruction about which CLI or model to use is not one, and never turns a
-child into a separate process outside the backend. Inside a worker or verifier, review
-angles run as native subagents, never as full harness sessions.
+Agents are started, messaged, watched and closed with the `orchestrating-agents` skill
+(`../orchestrating-agents/SKILL.md`), which picks the backend and holds its rules, reports
+and questions as files among them. Inside a worker or
+verifier, review angles run as native subagents, never as full harness sessions.
 
 ## Rules for every role
 
@@ -254,10 +248,8 @@ angles run as native subagents, never as full harness sessions.
   is satisfied, whichever family wrote it, since the heading is the verifier's own word
   and proves nothing the gate could hold it to. A brief never says who wrote the code or
   why the verifier shares its family: that biases the review.
-- **Reports are files.** An agent writes its report to a file and sends only the path to
-  whoever started it, through the backend's message operation, then stops. Text left in
-  its own session reaches nobody. A report names each agent's model, and returns only
-  what the next step needs; the agent cleans up what it created first.
+- **Reports are files**, sent as a path to whoever started the agent
+  (orchestrating-agents, Reports are files).
 - **Evidence, not claims.** Report each step's real exit code: a chain's status is its
   last command's. Prove a tooling or config change with a live round trip where it runs,
   and "can't" with a real call. Before saying done, check each item of the owner's
