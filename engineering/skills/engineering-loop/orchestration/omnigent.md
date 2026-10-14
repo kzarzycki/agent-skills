@@ -120,12 +120,12 @@ checks liveness, not only outcomes, for sessions that each owe a report. A sessi
 live runner it revives in place (`revived`). One with no history item for
 `--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
 it sends the `wait` nudge once as its resume line, whatever its status says
-(`resume line sent`). It prints each of those at once and goes on. Every line is printed as
-it is seen; it exits 0 once one session wrote its report (`report written: <path>`) or a
-question (`asked: <path>`), blocks on a prompt, fails, or is given up on (`gave up`: silent
-again after its resume line, which may sit undelivered behind a stuck step; silent with an
-input already undelivered; or a failed revive), reviving or resuming no other session first. A report counts once newer than the session's
-last instruction, so one written before `supervise` started counts at once and an earlier
+(`resume line sent`). It prints each of those at once and goes on. It exits 0 with one line
+as soon as a session wrote its report (`report written: <path>`) or a question
+(`asked: <path>`), blocks on a prompt, fails, or is given up on (`gave up`: silent again after
+its resume line, which may sit undelivered behind a stuck step; silent with an input already
+undelivered; or a failed revive). A report counts once newer than the session's last
+instruction, so one written before `supervise` started counts at once and an earlier
 phase's at the same path does not. A chief of staff supervises its coordinators this way,
 and a coordinator supervises a child no `run`, `send` or `wait` waits on any more: run it in
 the foreground (or under a Monitor), handle what it printed, and run it again for the

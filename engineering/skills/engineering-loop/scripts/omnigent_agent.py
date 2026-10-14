@@ -22,8 +22,9 @@ a prompt or fails, printing each one's id, title, that change and its last messa
 coordinator or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
 ``supervise`` watches sessions that each owe a report for liveness, not only outcomes: it revives a
 reaped runner in place and sends one resume line to a session silent past ``--silent-seconds``
-(default 1800), printing a line for each and carrying on, and exits 0 once one wrote its report or a
-question, blocks on a prompt, fails, or stays silent after its resume line or a failed revive (gave up).
+(default 1800), printing a line for each and carrying on, and exits 0 with one line as soon as one
+wrote its report or a question, blocks on a prompt, fails, or is given up on (silent after its resume
+line or with an input undelivered, or a failed revive).
 A report counts once newer than the session's last instruction, so one already written counts at once.
 ``run`` and ``wait`` archive the session whose report or verdict they return, not one that asked a
 question; ``reap`` archives each finished one (not running, no prompt or input waiting) and keeps
@@ -735,17 +736,17 @@ def written(path: Path, since: float) -> bool:
 
 def supervise(
     og: Omnigent, owed: dict[str, Path], silent: float = 1800.0, timeout: float = 3 * 3600
-) -> list[str]:
-    """Print and return a line per session (of ``owed``, session to the report it owes) that needs
-    its caller: it wrote its report or a question, blocks on a prompt, failed, or was given up on.
+) -> str:
+    """Print and return the first line for the caller about a session of ``owed`` (session to the
+    report it owes): it wrote its report or a question, blocks on a prompt, failed, or was given up
+    on. Its caller runs it again for the sessions still owing, which reports any other at once.
 
     Liveness, not only outcomes: Omnigent can lose a sub-agent's turn end (its status stays
     ``running``, its parent is never woken) or reap an idle runner. A session with no live runner is
     revived in place; one with no history item for ``silent`` seconds gets the nudge once as its
     resume line, whatever its status says, and is given up on when silent that long again, or at
     once when an input already waits undelivered (a resume line would queue behind it). Each of
-    those prints a line at once and supervision goes on. Every line is printed as it is observed;
-    once a poll has one for the caller, no session is revived or resumed before it returns.
+    those prints a line at once and supervision goes on.
     """
     # ponytail: compares the server's item clock with local time and file times, as send does; a
     # skewed server clock shifts the silence and the report's baseline by the skew.
@@ -756,31 +757,28 @@ def supervise(
         print(line, flush=True)
 
     while True:
-        events: list[str] = []
-        said = 0
         for sid, report in owed.items():
+            event = ""
             info, items = og.info(sid), og.items(sid)
             head = f"{sid} {info.get('title') or ''}".rstrip()
             resume = NUDGE.format(report=report)
             since = instructed(items, resume)
             if written(report, since):
-                events.append(f"{head}: report written: {report}")
+                event = f"{head}: report written: {report}"
             elif written(question_of(report), since):
-                events.append(f"{head}: asked: {question_of(report)}")
+                event = f"{head}: asked: {question_of(report)}"
             elif prompts := prompts_of(info):
-                events.append(f"{head}: blocked on a prompt: {'; '.join(prompts)}")
+                event = f"{head}: blocked on a prompt: {'; '.join(prompts)}"
             elif info.get("status") == "failed":
                 e = info.get("last_task_error") or {}
-                events.append(
+                event = (
                     f"{head}: failed: {e.get('message') or e.get('title') or '(no error recorded)'}"
                 )
-            elif events:  # the caller is due a wake: a revive or resume waits for the next run
-                continue
             elif not info.get("runner_online", True):
                 try:
                     revive(og, sid)
                 except Gone as e:
-                    events.append(f"{head}: {e}; gave up")
+                    event = f"{head}: {e}; gave up"
                 else:
                     say(f"{head}: revived (no live runner)")
             else:
@@ -789,9 +787,9 @@ def supervise(
                 if quiet < silent:
                     continue
                 if sid in resumed:
-                    events.append(f"{head}: silent {quiet:.0f}s after the resume line; gave up")
+                    event = f"{head}: silent {quiet:.0f}s after the resume line; gave up"
                 elif info.get("pending_inputs"):
-                    events.append(f"{head}: silent {quiet:.0f}s with an input undelivered; gave up")
+                    event = f"{head}: silent {quiet:.0f}s with an input undelivered; gave up"
                 else:
                     og.send(sid, resume)
                     resumed[sid] = time.time()
@@ -799,11 +797,9 @@ def supervise(
                         f"{head}: silent {quiet:.0f}s ({info.get('status')}), report owed;"
                         " resume line sent"
                     )
-            for line in events[said:]:
-                say(line)
-            said = len(events)
-        if events:
-            return events
+            if event:  # wake the caller now: no other session's read, revive or resume first
+                say(event)
+                return event
         if time.monotonic() >= deadline:
             raise Fail(f"no event in {timeout:.0f}s: {', '.join(owed)}")
         time.sleep(POLL_SECONDS)

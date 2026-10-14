@@ -1294,9 +1294,10 @@ def aged(path: Path, ago: float) -> Path:
 def test_supervise_returns_a_report_written_since_the_last_instruction(tmp_path: Path) -> None:
     report = aged(tmp_path / "r.md", 60)
     og = Owing([told("brief", 120)], {})
-    assert omnigent_agent.supervise(og, {"a": report}, timeout=0) == [
-        f"a coord: report written: {report}"
-    ]
+    assert (
+        omnigent_agent.supervise(og, {"a": report}, timeout=0)
+        == f"a coord: report written: {report}"
+    )
     # an earlier phase's report at the same path is not the one owed
     og = Owing([told("brief", 120), told("next phase", 30)], {})
     with pytest.raises(omnigent_agent.Fail, match="no event in 0s: a"):
@@ -1306,17 +1307,20 @@ def test_supervise_returns_a_report_written_since_the_last_instruction(tmp_path:
 def test_supervise_returns_a_question_a_prompt_and_a_failure(tmp_path: Path) -> None:
     report = tmp_path / "r.md"
     aged(tmp_path / "r.md.question", 10)
-    assert omnigent_agent.supervise(Owing([told("brief", 60)], {}), {"a": report}, timeout=0) == [
-        f"a coord: asked: {tmp_path / 'r.md.question'}"
-    ]
+    og = Owing([told("brief", 60)], {})
+    assert (
+        omnigent_agent.supervise(og, {"a": report}, timeout=0)
+        == f"a coord: asked: {tmp_path / 'r.md.question'}"
+    )
     report = tmp_path / "s.md"
     prompt = {"params": {"content_preview": "Bash(rm x)"}}
     og = Owing([told("brief", 60)], {"pending_elicitations": [prompt]})
-    assert omnigent_agent.supervise(og, {"a": report}, timeout=0) == [
-        "a coord: blocked on a prompt: Bash(rm x)"
-    ]
+    assert (
+        omnigent_agent.supervise(og, {"a": report}, timeout=0)
+        == "a coord: blocked on a prompt: Bash(rm x)"
+    )
     og = Owing([told("brief", 60)], {"status": "failed", "last_task_error": {"message": "boom"}})
-    assert omnigent_agent.supervise(og, {"a": report}, timeout=0) == ["a coord: failed: boom"]
+    assert omnigent_agent.supervise(og, {"a": report}, timeout=0) == "a coord: failed: boom"
 
 
 def test_supervise_revives_a_reaped_runner_and_carries_on(
@@ -1325,7 +1329,7 @@ def test_supervise_revives_a_reaped_runner_and_carries_on(
     report = tmp_path / "r.md"
     og = Owing([told("brief", 60)], {"runner_online": False}, {"runner_online": True}, {})
     og.infos.append({"status": "failed", "last_task_error": {"message": "later"}})
-    assert omnigent_agent.supervise(og, {"a": report}, timeout=5) == ["a coord: failed: later"]
+    assert omnigent_agent.supervise(og, {"a": report}, timeout=5) == "a coord: failed: later"
     assert og.retried == ["a"]
     assert "a coord: revived (no live runner)" in capsys.readouterr().out
 
@@ -1333,7 +1337,7 @@ def test_supervise_revives_a_reaped_runner_and_carries_on(
 def test_supervise_gives_up_when_the_revive_fails(tmp_path: Path) -> None:
     og = Owing([told("brief", 60)], {"runner_online": False})
     og.retry = lambda sid: {"recovered": False, "recovery": "no_host"}  # type: ignore[method-assign]
-    [line] = omnigent_agent.supervise(og, {"a": tmp_path / "r.md"}, timeout=0)
+    line = omnigent_agent.supervise(og, {"a": tmp_path / "r.md"}, timeout=0)
     assert line.startswith("a coord: session a has no live runner and the revive failed")
     assert line.endswith("; gave up")
 
@@ -1351,7 +1355,7 @@ def test_supervise_resumes_a_silent_session_once_then_gives_up(
         clock[0] += 600
 
     monkeypatch.setattr(omnigent_agent.time, "sleep", later)
-    [line] = omnigent_agent.supervise(og, {"a": report}, silent=1800, timeout=3600)
+    line = omnigent_agent.supervise(og, {"a": report}, silent=1800, timeout=3600)
     assert og.sent == [omnigent_agent.NUDGE.format(report=report)]
     assert (
         "a coord: silent 3600s (running), report owed; resume line sent" in capsys.readouterr().out
@@ -1372,9 +1376,10 @@ def test_supervise_never_nudges_a_busy_session_and_the_resume_line_is_no_instruc
     # the report written before the resume line still counts: the resume line asked for it again
     aged(report, 1800)
     og = Owing([told("brief", 3600), told(omnigent_agent.NUDGE.format(report=report), 60)], {})
-    assert omnigent_agent.supervise(og, {"a": report}, timeout=0) == [
-        f"a coord: report written: {report}"
-    ]
+    assert (
+        omnigent_agent.supervise(og, {"a": report}, timeout=0)
+        == f"a coord: report written: {report}"
+    )
 
 
 def test_supervise_cli_needs_session_report_pairs(capsys: pytest.CaptureFixture[str]) -> None:
@@ -1399,9 +1404,10 @@ def test_supervise_gives_up_when_the_resume_line_stays_undelivered(
     monkeypatch.setattr(
         omnigent_agent.time, "sleep", lambda _: clock.__setitem__(0, clock[0] + 600)
     )
-    assert omnigent_agent.supervise(og, {"a": report}, silent=1800, timeout=3700) == [
-        "a coord: silent 1800s after the resume line; gave up"
-    ]
+    assert (
+        omnigent_agent.supervise(og, {"a": report}, silent=1800, timeout=3700)
+        == "a coord: silent 1800s after the resume line; gave up"
+    )
     assert len(og.sent) == 1
 
 
@@ -1409,9 +1415,10 @@ def test_supervise_gives_up_at_once_on_a_silence_with_an_input_already_undeliver
     tmp_path: Path,
 ) -> None:
     og = Owing([told("brief", 3600)], {"pending_inputs": [said("user", "answer", "p")]})
-    assert omnigent_agent.supervise(og, {"a": tmp_path / "r.md"}, silent=1800, timeout=0) == [
-        "a coord: silent 3600s with an input undelivered; gave up"
-    ]
+    assert (
+        omnigent_agent.supervise(og, {"a": tmp_path / "r.md"}, silent=1800, timeout=0)
+        == "a coord: silent 3600s with an input undelivered; gave up"
+    )
     assert og.sent == []
 
 
@@ -1422,7 +1429,7 @@ def test_supervise_wakes_its_caller_before_reviving_another_session(
     og = Owing([told("brief", 60)], {})
     info = og.info
     og.info = lambda sid: {**info(sid), "runner_online": sid == "a"}  # type: ignore[method-assign]
-    lines = omnigent_agent.supervise(og, {"a": report, "b": tmp_path / "b.md"}, timeout=0)
-    assert lines == [f"a coord: report written: {report}"]
+    line = omnigent_agent.supervise(og, {"a": report, "b": tmp_path / "b.md"}, timeout=0)
+    assert line == f"a coord: report written: {report}"
     assert og.retried == []
     assert capsys.readouterr().out == f"a coord: report written: {report}\n"
