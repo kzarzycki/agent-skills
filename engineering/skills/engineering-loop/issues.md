@@ -40,7 +40,7 @@ read as approved.
   `area:<name>` for a name on the project's list.
 - **Size**, exactly one, set by the spec step, once the code has been read. It is
   the size of the change, not a time estimate, and an intent has none: `size:XS` one line
-  or one config value; `size:S` one module, the coordinator builds it; `size:M` several
+  or one config value; `size:S` one module, the lead builds it; `size:M` several
   modules, one worker; `size:L` several workers or slices in one PR; `size:XL` too big
   for one spec: split it, or run it as a wayfinder map.
 
@@ -50,7 +50,7 @@ read as approved.
   merge approval, asked for only when the change is high risk (elsewhere the gates are the
   approval), added by them once `check` is green on the head and removed by a push.
 - **Risk**, `risk:high` on an issue or PR: its consequences need the owner at merge (money,
-  data, security, another team's contract). A person sets it, or the coordinator at
+  data, security, another team's contract). A person sets it, or the lead at
   triage, and `approvals.py` adds it to a PR when a loop.md `risk:` rule matches or the cap
   was reached with a core finding open. It names consequences, not urgency: how soon a
   thing matters is a `priority:` label, which the gate never reads.
@@ -98,7 +98,7 @@ An epic is an issue whose goal is an outcome the owner tracks; its work items ar
 native sub-issues. It carries the `epic` label next to its category, so a board view can
 filter for epics, and it closes when its outcome holds, that is when its sub-issues are
 done. Prefer converting an existing issue whose spec already states the outcome over
-filing a new one. Its stories are filed before its approval is asked for (coordinator.md,
+filing a new one. Its stories are filed before its approval is asked for (lead.md,
 Spec). An epic lands as its sub-issues' PRs, one per sub-issue, each off
 main, with no epic or integration branch; a sub-issue whose work isn't usable yet lands
 unexposed, and the sub-issue that exposes it comes last (SKILL.md, Land small and soon).
@@ -118,9 +118,9 @@ report it and carry on.
 | `Intent` | filed, no state label | whoever files it |
 | `Needs owner` | it has `needs-owner` | whoever parks it |
 | `Ready` | it has `approved:spec`, or loop.md's policy covers its spec | the spec step, or the owner approving |
-| `Build` | its draft PR is open | the coordinator |
-| `Verify` | the verifier has the PR | the coordinator |
-| `Sign-off` | its PR merged with `Implements #<n>`, and it waits for the owner to check it in use | the coordinator, after landing |
+| `Build` | its draft PR is open | the lead |
+| `Verify` | the verifier has the PR | the lead |
+| `Sign-off` | its PR merged with `Implements #<n>`, and it waits for the owner to check it in use | the lead, after landing |
 | `Done` | closed | whoever closes it |
 
 ## Sign-off
@@ -130,7 +130,7 @@ it, a person
 checks the merged change in the running product before its issue counts as done, since
 gates and the verifier prove the code, not how it feels in use. The PR links the issue with
 `Implements #<n>` (SKILL.md, Approvals and proof), so the merge leaves it open; the
-coordinator moves it to `Sign-off` with a comment naming the merge and the spec's
+lead moves it to `Sign-off` with a comment naming the merge and the spec's
 acceptance examples to try. Without a `signoff:` line nothing waits for a sign-off, and
 `Implements` is a link like `Part of`. The owner signs off by closing it (`Done`). What they find
 wrong is a new intent with a `Found while #<n>` line, or a revert when the change itself is

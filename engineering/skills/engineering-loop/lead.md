@@ -1,8 +1,9 @@
-# Coordinator
+# Lead
 
-You take the owner's request to a merged PR, on one branch with one PR, in a worktree of
-your own (loop.md § Worktree). You lead the design, wireframes included for a
-UI, and delegate the rest.
+You take the owner's request to merged PRs: one PR per story (an epic's sub-issue, or the
+request itself when it has none), each on its own branch in a worktree of your own
+(loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
+design, wireframes included for a UI, and delegate the rest.
 
 1. **Intent.** File a request from the owner in their words, with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
@@ -232,7 +233,7 @@ UI, and delegate the rest.
 **Waiting.** Results come to you: a subagent's result or a backend's reply arrives as a
 new prompt. While a PR waits for CI, move other ready items forward (another PR's step, a
 spec, triage) and come back to the PR when CI reports, because CI takes tens of minutes
-and a coordinator that waits through it makes CI the loop's speed. With nothing else to
+and a lead that waits through it makes CI the loop's speed. With nothing else to
 do, end your turn. Don't poll agent lists, logs or panes,
 or sleep: every check re-reads your whole context. Read the report file a reply names,
 not logs or scrollback. A child nothing waits on reaches you only through the untitled

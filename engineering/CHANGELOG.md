@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+The per-thread role is the lead (#150).
+
+- `coordinator.md` is now `lead.md`, and the loop's files call the role "lead": most
+  multi-agent systems use "coordinator" for the project-level agent, the layer a chief of
+  staff fills. A brief that names `coordinator.md` names `lead.md` now.
+- SKILL.md, Roles: a session whose brief names no role is the lead.
+- `lead.md` opens with one PR per story, as its Branch step and issues.md, Epics already
+  said.
+
 ## 0.18.1 - 2026-10-14
 
 `omnigent_agent.py supervise` keeps a stalled session from going unnoticed (#154).

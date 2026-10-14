@@ -66,7 +66,7 @@ against the run's start before taking it. Start a second only for a child that f
 is gone: two children on one item write the same branch.
 
 **Whoever starts a worker collects it.** Omnigent files every child under the runner's
-primary session, so a fork's or a worker's own children notify the coordinator, not the
+primary session, so a fork's or a worker's own children notify the lead, not the
 session that started them. A session that starts workers keeps each one's background
 `run`, or a `watch <session>...` on them, and reads their reports before it reports
 itself; it does not end its work while one is still out.
@@ -88,11 +88,11 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   "waiting" and never reports; the preamble covers that, and the first turn that ends
   without a report or a question gets one nudge to finish in the foreground and write the
   report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
-  prompt), or after `--timeout` (default 3h), so the coordinator still wakes.
+  prompt), or after `--timeout` (default 3h), so the lead still wakes.
 
 **Children are your sub-agents.** Run from an Omnigent session, the script creates each
-child under that runner's primary session (the coordinator), so the owner's sidebar shows
-only coordinators. When a child's turn ends, Omnigent wakes you with "sub-agent …
+child under that runner's primary session (the lead), so the owner's sidebar shows
+only leads. When a child's turn ends, Omnigent wakes you with "sub-agent …
 finished … Call sys_read_inbox". Don't read the inbox; end your turn. The background
 command's exit carries the result, with its checks. A child no `run`, `send` or `wait` is
 waiting on (its command died, or it was started elsewhere) still wakes only that untitled
@@ -103,7 +103,7 @@ background for it.
 run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
 `blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A chief
-of staff learns this way of a coordinator that owes it no report (one that owes one is
+of staff learns this way of a lead that owes it no report (one that owes one is
 supervised, below): a top-level session tells nobody when its turn ends or it blocks, and
 the UI's "Completed" reaches no agent. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
 except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
@@ -111,7 +111,7 @@ every few seconds; the session stream pushes the same changes faster but per ses
 without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
 API: a person approves it in the UI, so a watched prompt still waits for one.
 
-**Supervising sessions.** A turn end can be lost: a coordinator that is a sub-agent of a
+**Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a
 chief of staff on another runner has its idle status refused (HTTP 503, the runner logging
 "parent inbox is missing") until something else wakes it, so its status stays `running`
 and nobody hears that it stopped, and Omnigent reaps a runner idle for an hour
@@ -126,8 +126,8 @@ as soon as a session wrote its report (`report written: <path>`) or a question
 its resume line, which may sit undelivered behind a stuck step; silent with an input already
 undelivered; or a failed revive). A report counts once newer than the session's last
 instruction, so one written before `supervise` started counts at once and an earlier
-phase's at the same path does not. A chief of staff supervises its coordinators this way,
-and a coordinator supervises a child no `run`, `send` or `wait` waits on any more: run it in
+phase's at the same path does not. A chief of staff supervises its leads this way,
+and a lead supervises a child no `run`, `send` or `wait` waits on any more: run it in
 the foreground (or under a Monitor), handle what it printed, and run it again for the
 sessions still owing. Exit 1 after `--timeout` (default 3h) with no event.
 
@@ -144,7 +144,7 @@ transcript.
 
 **Permission prompts.** Worktrees go inside the project, in a gitignored `.worktrees/<branch>`
 (loop.md § Worktree), and a child's worktree goes inside the worktree of the agent that starts
-it: a coordinator working in `.worktrees/<pr-branch>` cuts each child's at `.worktrees/<branch>`
+it: a lead working in `.worktrees/<pr-branch>` cuts each child's at `.worktrees/<branch>`
 there, which the same tracked `.gitignore` keeps out of its tree. An agent's workspace is the
 directory it was started in, so its reads in its own worktree and its children's never prompt,
 in any harness; its writes there follow the permission mode (Codex's workspace-write allows
