@@ -313,7 +313,8 @@ class Omnigent:
 
         A top-level session is archived, which stops its own runner. A sub-agent shares its
         parent's runner, and archiving it stops that runner too, taking the parent down: so only
-        its terminals (its agent process) are ended and it stays unarchived.
+        its terminals (its agent process) are ended and it stays unarchived. A codex child may
+        still finish the turn it is in, then idles.
         """
         if self.info(sid).get("parent_session_id"):
             # ponytail: unbinding the runner before the archive does not help, since the child's
@@ -510,7 +511,7 @@ def start(
     attempts: int = 2,
     model: str | None = None,
 ) -> tuple[str, list[str]]:
-    """Return the confirmed session id and any abandoned sessions whose archive failed."""
+    """Return the confirmed session id and any abandoned sessions whose finish failed."""
     if span := EMPTY_SPAN.search(brief):
         line = brief[: span.start()].count("\n") + 1
         raise Fail(
@@ -674,8 +675,8 @@ def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[s
             continue
         try:
             how = og.archive(sid)
-        except Fail as e:  # one refused archive leaves the rest to reap
-            lines.append(f"{sid} {info.get('title') or ''}: archive failed: {e}")
+        except Fail as e:  # one refused finish leaves the rest to reap
+            lines.append(f"{sid} {info.get('title') or ''}: finish failed: {e}")
             continue
         lines.append(f"{sid} {info.get('title') or ''}: {how} ({status})")
     return lines
@@ -1120,11 +1121,11 @@ def reason(e: Exception) -> str:
 
 def archive_delivered(og: Omnigent, sid: str) -> None:
     """Finish a session whose report or verdict came back (``Omnigent.archive``): its agent process
-    frees the runner's file descriptors. A failed archive is reported, not fatal."""
+    frees the runner's file descriptors. A failed finish is reported, not fatal."""
     try:
         og.archive(sid)
     except Fail as e:
-        print(f"session {sid} delivered but was not archived: {e}", file=sys.stderr)
+        print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:

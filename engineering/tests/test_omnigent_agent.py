@@ -1187,7 +1187,7 @@ def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
     ]
 
 
-def test_reap_archives_finished_children_and_keeps_the_busy_ones() -> None:
+def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
     prompt = {"elicitation_id": "e1", "params": {"message": "Claude wants to call **Bash**"}}
     states = {
         "idle": {"status": "idle"},
@@ -1213,7 +1213,7 @@ def test_reap_archives_finished_children_and_keeps_the_busy_ones() -> None:
     ]
 
 
-def test_reap_goes_on_past_an_archive_that_fails() -> None:
+def test_reap_goes_on_past_a_finish_that_fails() -> None:
     og = FakeOmnigent()
     og.info = lambda s: {"status": "idle", "title": f"t-{s}"}  # type: ignore[method-assign]
     archive = og.archive
@@ -1225,7 +1225,7 @@ def test_reap_goes_on_past_an_archive_that_fails() -> None:
 
     og.archive = refuse_a  # type: ignore[method-assign]
     assert omnigent_agent.reap(og, ["a", "b"]) == [
-        "a t-a: archive failed: PATCH a: HTTP 503",
+        "a t-a: finish failed: PATCH a: HTTP 503",
         "b t-b: archived (idle)",
     ]
     assert og.archived == ["b"]
