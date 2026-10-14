@@ -101,6 +101,17 @@ notice. One that still owes its report is covered by your supervisor's registry,
 and `send` armed (Supervising sessions, below); for one that owes none, keep
 `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the background.
 
+**Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex>
+<title> <brief-file> <report-path>` starts a lead with no parent session, still filed under
+the repo's project: the owner opens it from the sidebar and talks to it, its own children
+report to it, and archiving it ends only its own runner. Its brief opens with the lead
+preamble: only the owner's own words, quoted with where they were said, approve, the rest
+of the brief is a colleague's guidance, the lead asks the owner in its own session rather
+than in a question file, and it writes its final report to the path. How it asks and where
+it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
+question for `run` to return: follow it with `watch <session>`, and once its report is in,
+archive it with `reap <session>`.
+
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
 run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
