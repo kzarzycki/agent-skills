@@ -1581,7 +1581,7 @@ def test_a_revive_line_whose_post_failed_is_posted_at_the_next_poll_before_newer
     og.offline.add("a")
     og.refuse = 1
     supervised(og, registry, monkeypatch, 2, lambda poll: report.write_text("x"), notify="cos")
-    assert og.inbox == [
+    assert [m for m in og.inbox if m[0] == "cos"] == [
         ("cos", "Supervisor: a t-a: revived (no live runner)"),
         ("cos", f"Supervisor: a t-a: report written: {report}"),
     ]
@@ -1606,6 +1606,49 @@ def test_a_brief_armed_while_the_last_event_is_posted_keeps_its_line(
     supervised(og, registry, monkeypatch, 2, notify="cos")
     assert registry.read_text() == f"a={report}\n"
     assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
+
+
+def test_a_revived_session_gets_the_revive_line_naming_its_brief_files_and_its_report_still_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry, report = tmp_path / "registry", tmp_path / "a.md"
+    first, then = tmp_path / "a.md.brief", tmp_path / "answer.md"
+    registry.write_text(f"a={report}\t{first}\t{then}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.offline.add("a")
+
+    def written_before_the_revive_line(poll: int) -> None:
+        aged(report, 30)  # the report its brief asked for, then the runner was reaped
+        og.histories["a"] += [told(text, 0) for sid, text in og.inbox if sid == "a"]
+
+    supervised(og, registry, monkeypatch, 2, written_before_the_revive_line, notify="cos")
+    assert [text for sid, text in og.inbox if sid == "a"] == [
+        (
+            "Your session was restarted and may have lost its context."
+            f" Read your brief: {first}, {then}. Write your report to {report}."
+        )
+    ]
+    assert og.inbox[-1] == ("cos", f"Supervisor: a t-a: report written: {report}")
+    assert registry.read_text() == ""  # the revive line renews nothing
+
+
+@pytest.mark.parametrize("brief", [True, False])
+def test_one_shot_supervise_names_the_brief_start_wrote_in_the_revive_line(
+    tmp_path: Path, brief: bool
+) -> None:
+    report = tmp_path / "r.md"
+    if brief:
+        (tmp_path / "r.md.brief").write_text("do X")
+    og = Owing([told("brief", 60)], {"runner_online": False}, {"runner_online": True}, {})
+    og.infos.append({"status": "failed", "last_task_error": {"message": "later"}})
+    omnigent_agent.supervise(og, {"a": report}, timeout=5)
+    read = f" Read your brief: {tmp_path / 'r.md.brief'}." if brief else ""
+    assert og.sent == [
+        (
+            f"Your session was restarted and may have lost its context.{read}"
+            f" Write your report to {report}."
+        )
+    ]
 
 
 def test_an_error_reading_one_session_is_logged_once_and_the_others_are_still_checked(
@@ -1650,7 +1693,7 @@ def test_a_notify_session_with_no_live_runner_is_revived_before_the_post(
     assert registry.read_text() == ""
 
 
-def test_start_and_run_arm_the_registry_from_the_environment_and_run_disarms_it_on_the_report(
+def test_start_and_run_arm_the_registry_with_their_brief_file_and_run_disarms_it_on_the_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -1665,7 +1708,8 @@ def test_start_and_run_arm_the_registry_from_the_environment_and_run_disarms_it_
         omnigent_agent.main(["start", "claude", "t2", "b.md", "s.md", "--confirm-seconds", "0"])
         == 0
     )
-    assert (tmp_path / "registry").read_text() == f"s1={tmp_path / 's.md'}\n"
+    s1 = f"s1={tmp_path / 's.md'}\t{tmp_path / 's.md.brief'}\n"
+    assert (tmp_path / "registry").read_text() == s1
     seen: list[str] = []
     info = og.info
 
@@ -1678,11 +1722,11 @@ def test_start_and_run_arm_the_registry_from_the_environment_and_run_disarms_it_
     assert (
         omnigent_agent.main(["run", "claude", "t3", "b.md", "u.md", "--confirm-seconds", "0"]) == 0
     )
-    assert seen[0] == f"s1={tmp_path / 's.md'}\ns2={tmp_path / 'u.md'}\n"
-    assert (tmp_path / "registry").read_text() == f"s1={tmp_path / 's.md'}\n"
+    assert seen[0] == s1 + f"s2={tmp_path / 'u.md'}\t{tmp_path / 'u.md.brief'}\n"
+    assert (tmp_path / "registry").read_text() == s1
 
 
-def test_send_arms_the_registry_replacing_the_sessions_line_and_disarms_it_on_the_report(
+def test_send_arms_the_registry_appending_its_message_file_and_disarms_it_on_the_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
@@ -1691,7 +1735,8 @@ def test_send_arms_the_registry_replacing_the_sessions_line_and_disarms_it_on_th
     og = FakeOmnigent(reply="done")
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     sid = og.create("claude", "t")
-    registry.write_text(f"{sid}={tmp_path / 'old.md'}\nx={tmp_path / 'x.md'}\n")
+    brief = tmp_path / "old.md.brief"
+    registry.write_text(f"{sid}={tmp_path / 'old.md'}\t{brief}\nx={tmp_path / 'x.md'}\n")
     (tmp_path / "a.md").write_text("use main")
     seen: list[str] = []
     info = og.info
@@ -1704,7 +1749,7 @@ def test_send_arms_the_registry_replacing_the_sessions_line_and_disarms_it_on_th
 
     og.info = reporting  # type: ignore[method-assign]
     assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
-    assert seen[0] == f"x={tmp_path / 'x.md'}\n{sid}={report}\n"
+    assert seen[0] == f"x={tmp_path / 'x.md'}\n{sid}={report}\t{brief}\t{tmp_path / 'a.md'}\n"
     assert registry.read_text() == f"x={tmp_path / 'x.md'}\n"
 
 

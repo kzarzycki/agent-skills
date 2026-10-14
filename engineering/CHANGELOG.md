@@ -13,7 +13,13 @@ caller (#158).
   armed it again meanwhile. Errors and a quiet `--timeout` window are logged and never stop it.
 - `run`, `start` and `send` arm the registry (`--registry`, else
   `$OMNIGENT_SUPERVISE_REGISTRY`) once their message is in the history; `run`, `send` and
-  `wait` disarm it when they return the report or a question.
+  `wait` disarm it when they return the report or a question. A line carries the session's
+  brief files after the report, each after a tab: `start` writes its `<report>.brief`, and
+  `send` appends its message file.
+- After a revive, which can drop a session's context, `supervise` sends it one line naming its
+  brief files (the registry's, else `<report>.brief`) and the report it owes, in place of
+  nothing. Like the resume line, it is no instruction, so a report written for the brief still
+  counts.
 - A resume line already in the history counts as sent, so a restarted supervisor gives up on a
   session still silent after it instead of sending a second.
 - `orchestration/omnigent.md` shows how to run it detached under launchd or a systemd user

@@ -119,7 +119,12 @@ chief of staff on another runner has its idle status refused (HTTP 503, the runn
 and nobody hears that it stopped, and Omnigent reaps a runner idle for an hour
 (`runner.idle_timeout_s`). `python3 scripts/omnigent_agent.py supervise <session>=<report>...`
 checks liveness, not only outcomes, for sessions that each owe a report. A session with no
-live runner it revives in place (`revived`). One with no history item for
+live runner it revives in place (`revived`), then sends it the revive line, since a revive can
+relaunch it with its context dropped: "Your session was restarted and may have lost its
+context. Read your brief: <files>. Write your report to <report>." The files are the
+registry's brief files in order, else `<report>.brief` when it exists (what `start` writes);
+with neither, the line names only the report. Like the resume line, it is no instruction, so a
+report written for the brief still counts after it. One with no history item for
 `--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
 it sends the `wait` nudge once as its resume line, whatever its status says
 (`resume line sent`). It prints each of those at once and goes on. It exits 0 with one line
@@ -133,8 +138,8 @@ supervisor started again gives up on a session still silent after it instead of 
 second. Exit 1 after `--timeout` (default 3h) with no event.
 
 `supervise --registry <file> [--notify <session>]` runs the same check until it is stopped.
-Each poll it re-reads the file: one `<session>=<report>` per line, blank lines and `#` comments
-skipped, a malformed line logged and skipped, the last line winning for a session listed
+Each poll it re-reads the file: one `<session>=<report>` per line, optionally followed by the
+session's brief files, each after a tab, blank lines and `#` comments skipped, a malformed line logged and skipped, the last line winning for a session listed
 twice, and a missing file empty. Pairs on its command line are added to the file first. It
 prints every line with the local time and, with `--notify`, posts it into that session as
 `Supervisor: <line>`, which wakes the session even with no command of its own running; a
@@ -149,14 +154,18 @@ posting, goes to stderr once until it clears, and a `--timeout` window with no e
 
 `run`, `start` and `send` arm the registry named by `--registry`, else
 `$OMNIGENT_SUPERVISE_REGISTRY`: once their message is in the history, they write
-`<session>=<report>`, replacing any line for that session. Not before, because until the
+`<session>=<report>`, replacing any line for that session. `start` (and so `run`) puts its
+brief file `<report>.brief` on the line; `send` appends its message file to the line's brief
+files (else to `<report>.brief` when it exists), so a revived session reads its brief and then
+each follow-up in order. Not before, because until the
 message lands the turn before's report or question reads as newer than the last instruction,
 a false event. `run`, `send` and `wait` remove the line once they return the report or a
 question, since their caller has it; a race can still deliver both, and the second line is no
 news. A failed wait keeps it, so the supervisor watches on. A failed arm is a warning, since
 the command's own wait still covers the session. Every edit locks the file (`fcntl.flock`), so
 an arm and a drop of two sessions at once lose neither line. A drop of the same session keeps
-the line when the session was instructed after the event's own instruction: a `send` that
+the line when the session was instructed after the event's own instruction (the resume and
+revive lines are no instruction): a `send` that
 armed it again for the next brief while the event was being posted, which it does only once
 that brief is in the history.
 
