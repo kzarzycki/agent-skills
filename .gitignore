@@ -8,7 +8,6 @@
 __pycache__/
 *.pyc
 .venv/
-.memsearch/
 .archive/
 node_modules/
 .vite/
