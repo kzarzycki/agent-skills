@@ -879,7 +879,7 @@ def test_a_found_session_that_already_has_the_brief_is_not_briefed_twice(tmp_pat
         brief = tmp_path / "r.md.brief"
         og.land(
             sid,
-            f"Your brief from the coordinator is the file {brief}. Read it now and do what it says.",
+            f"Your brief from the lead is the file {brief}. Read it now and do what it says.",
         )
         return sid
 
@@ -1551,11 +1551,11 @@ def test_a_terminal_event_is_posted_to_the_notify_session_and_drops_only_its_lin
 ) -> None:
     registry = tmp_path / "registry"
     report = aged(tmp_path / "a.md", 10)
-    registry.write_text(f"# coordinators\na={report}\nb={tmp_path / 'b.md'}\n")
+    registry.write_text(f"# leads\na={report}\nb={tmp_path / 'b.md'}\n")
     og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
     supervised(og, registry, monkeypatch, 1, notify="cos")
     assert og.inbox == [("cos", f"Supervisor: a t-a: report written: {report}")]
-    assert registry.read_text() == f"# coordinators\nb={tmp_path / 'b.md'}\n"
+    assert registry.read_text() == f"# leads\nb={tmp_path / 'b.md'}\n"
     assert re.fullmatch(f"{STAMP}a t-a: report written: {report}\n", capsys.readouterr().out)
 
 

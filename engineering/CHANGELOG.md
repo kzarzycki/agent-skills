@@ -20,15 +20,24 @@ caller (#158).
   brief files (the registry's, else `<report>.brief`) and the report it owes, in place of
   nothing. Like the resume line, it is no instruction, so a report written for the brief still
   counts. A failed send of it is tried again at the next look.
-- Silence counts the session's children: a coordinator waiting on its own worker or verifier
+- Silence counts the session's children: a lead waiting on its own worker or verifier
   gets no resume line while a child of it was updated within `--silent-seconds`.
 - A resume line already in the history counts as sent, so a restarted supervisor gives up on a
   session still silent after it instead of sending a second.
 - `orchestration/omnigent.md` shows how to run it detached under launchd or a systemd user
-  unit; the chief-of-staff passages and `coordinator.md` § Waiting use it in place of
+  unit; the chief-of-staff passages and `lead.md` § Waiting use it in place of
   in-session watchers, which die with the session.
 - A regression test that one-shot `supervise` reads no other session after a caller event
   (#156).
+
+The per-thread role is the lead (#150).
+
+- `coordinator.md` is now `lead.md`, and the loop's files call the role "lead": most
+  multi-agent systems use "coordinator" for the project-level agent, the layer a chief of
+  staff fills. A brief that names `coordinator.md` names `lead.md` now.
+- SKILL.md, Roles: a session whose brief names no role is the lead.
+- `lead.md` opens with one PR per story, as its Branch step and issues.md, Epics already
+  said.
 
 ## 0.18.1 - 2026-10-14
 
