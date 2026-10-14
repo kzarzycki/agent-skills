@@ -334,7 +334,9 @@ def test_stalled_server_timeout_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(self, agent: str, title: str, model: str | None = None, top_level: bool = False) -> str:
+        def create(
+            self, agent: str, title: str, model: str | None = None, top_level: bool = False
+        ) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -373,7 +375,9 @@ def test_stalled_error_body_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(self, agent: str, title: str, model: str | None = None, top_level: bool = False) -> str:
+        def create(
+            self, agent: str, title: str, model: str | None = None, top_level: bool = False
+        ) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -766,7 +770,9 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     titles: list[str] = []
     create = og.create
-    og.create = lambda agent, title, model=None, top_level=False: titles.append(title) or create(agent, title)  # type: ignore[method-assign]
+    og.create = lambda agent, title, model=None, top_level=False: (
+        titles.append(title) or create(agent, title)
+    )  # type: ignore[method-assign]
     og.fail.add("archive")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert titles == ["t", "t-r2"]
