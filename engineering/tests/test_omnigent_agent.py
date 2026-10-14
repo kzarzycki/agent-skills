@@ -877,7 +877,7 @@ def test_a_found_session_that_already_has_the_brief_is_not_briefed_twice(tmp_pat
         brief = tmp_path / "r.md.brief"
         og.land(
             sid,
-            f"Your brief from the coordinator is the file {brief}. Read it now and do what it says.",
+            f"Your brief from the lead is the file {brief}. Read it now and do what it says.",
         )
         return sid
 

@@ -18,7 +18,7 @@ it (Approvals and proof); no step runs for their changes.
 |---|---|
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
-| **Build.** Workers, or the coordinator when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
+| **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
 | **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
@@ -212,10 +212,11 @@ the line, a PR with no trail fails the gate.
 
 ## Roles
 
-- **Coordinator** ([coordinator.md](coordinator.md)): takes a request to a merged PR and
-  runs every step above.
+- **Lead** ([lead.md](lead.md)): takes a request to merged PRs, one per story, and
+  runs every step above. A session whose brief names no role is the lead, since workers
+  and verifiers are given theirs by the brief that starts them.
 - **Worker** ([worker.md](worker.md)): implements a piece of the spec, or a list of
-  findings, on its own branch. The coordinator follows it too when it builds itself.
+  findings, on its own branch. The lead follows it too when it builds itself.
 - **Verifier** ([verifier.md](verifier.md)): reviews the PR, drives its instance, and
   leaves the tree as it found it.
 
@@ -248,7 +249,7 @@ angles run as native subagents, never as full harness sessions.
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
   included; each writes its own report, and the cap counts rounds they share. The family
-  is a preference the coordinator follows and a record, not a gate: the verifier names it
+  is a preference the lead follows and a record, not a gate: the verifier names it
   in its review's heading, and the merge gate checks only that the newest pass on the head
   is satisfied, whichever family wrote it, since the heading is the verifier's own word
   and proves nothing the gate could hold it to. A brief never says who wrote the code or
@@ -302,7 +303,7 @@ angles run as native subagents, never as full harness sessions.
   pass <n>`, and a summary carrying the verdict. The gate reads these reviews, so the
   review is the verdict. Resolution follows triage, and the verifier never triages: the
   worker resolves only a thread it fixed, reason `ADDRESSED`, replying with the fixing SHA;
-  the coordinator resolves a deferred finding `WONT_FIX`, replying with its triage and the
+  the lead resolves a deferred finding `WONT_FIX`, replying with its triage and the
   issue it waits in, and a rejected one `INVALID`, with the one-line why. The owner may
   override any resolution, and alone dismisses a teammate's `CHANGES_REQUESTED`; an agent
   dismisses one only when the owner asks for that review in the session, quoting the ask
@@ -353,7 +354,7 @@ implemented once, not iterated against the verifier. A finding that contradicts 
 may be resolved by correcting the spec.
 
 The ledger (loop.md § Ledger) has one line per entry: what, where, the guard if
-any, what would make it matter, and its issue. The coordinator writes it during triage,
+any, what would make it matter, and its issue. The lead writes it during triage,
 in the fix commit; the verifier reads it first and does not re-report entries.
 
 Everything real the PR leaves unfixed is placed before the report. The test: would

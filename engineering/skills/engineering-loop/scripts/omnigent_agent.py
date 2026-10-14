@@ -11,14 +11,14 @@ only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict
 path of a question the child wrote (``<report>.question``) instead of a report; exit 1 prints the
 reason and the child's last message (for a failed session, its ``last_task_error`` and runner log).
 A report already at the path is a pass before: only one written after the launch counts. The first
-turn that ends with neither gets one nudge to write it; a second fails. A coordinator launches it as one background command, so its
+turn that ends with neither gets one nudge to write it; a second fails. A lead launches it as one background command, so its
 exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
 a prompt or fails, printing each one's id, title, that change and its last message; it is how a
-coordinator or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
+lead or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
 ``run`` and ``wait`` archive the session whose report or verdict they return, not one that asked a
 question; ``reap`` archives each finished one (not running, no prompt or input waiting) and keeps
 the rest; it cannot tell a child still owing its report from a finished one, so it runs once every
@@ -233,7 +233,7 @@ class Omnigent:
         # Filed under the repo's project, when one exists, so spawned sessions don't crowd the top level.
         if project := self.project_id(os.environ.get("OMNIGENT_PROJECT") or repo_name()):
             body["project_id"] = project
-        # A sub-agent of the runner's primary session (the coordinator, also when a child runs
+        # A sub-agent of the runner's primary session (the lead, also when a child runs
         # this): hidden from the owner's sidebar and unread badge, and gone with it. Top level
         # when not run from an Omnigent session.
         if parent := parent_id():
@@ -309,7 +309,7 @@ class Omnigent:
 
 
 def parent_id() -> str:
-    """The runner's primary session (the coordinator, also when a child runs this), else empty."""
+    """The runner's primary session (the lead, also when a child runs this), else empty."""
     return os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
 
 
@@ -481,7 +481,7 @@ def start(
         )
         + brief
     )
-    text = f"Your brief from the coordinator is the file {brief_file}. Read it now and do what it says."
+    text = f"Your brief from the lead is the file {brief_file}. Read it now and do what it says."
     reasons: list[str] = []
     survivors: list[str] = []
 
