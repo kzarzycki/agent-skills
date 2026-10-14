@@ -8,8 +8,8 @@ python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <repor
 ```
 
 Run it from the worktree the child works in, because the script makes its current
-directory the session's workspace. The report path goes under `tmp/loop/` in that
-worktree: outside its workspace a Codex child's sandbox refuses the write and a Claude Code
+directory the session's workspace. The report path goes in a gitignored directory of that
+workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
 `s120-verifier-p1`. The brief file holds only the task specifics; the script writes it,
