@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+`omnigent_agent.py supervise --registry` supervises sessions from a process that outlives its
+caller (#158).
+
+- `supervise --registry <file> [--notify <session>]` runs until stopped, re-reading the file's
+  `session=report` lines each poll. It prints every line with the local time and, with
+  `--notify`, posts it into that session as `Supervisor: <line>`, reviving a reaped one first.
+  A terminal event drops the session's line once posted; a failed post is retried at the next
+  poll. Errors and a quiet `--timeout` window are logged and never stop it.
+- `run`, `start` and `send` arm the registry (`--registry`, else
+  `$OMNIGENT_SUPERVISE_REGISTRY`) once their message is in the history; `run`, `send` and
+  `wait` disarm it when they return the report or a question.
+- A resume line already in the history counts as sent, so a restarted supervisor gives up on a
+  session still silent after it instead of sending a second.
+- `orchestration/omnigent.md` shows how to run it detached under launchd or a systemd user
+  unit; the chief-of-staff passages and `coordinator.md` § Waiting use it in place of
+  in-session watchers, which die with the session.
+- A regression test that one-shot `supervise` reads no other session after a caller event
+  (#156).
+
 ## 0.18.1 - 2026-10-14
 
 `omnigent_agent.py supervise` keeps a stalled session from going unnoticed (#154).
