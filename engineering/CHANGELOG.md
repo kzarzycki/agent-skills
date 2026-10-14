@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+`omnigent_agent.py supervise --registry` supervises sessions from a process that outlives its
+caller (#158).
+
+- `supervise --registry <file> [--notify <session>]` runs until stopped, re-reading the file's
+  `session=report` lines each poll. It prints every line with the local time and, with
+  `--notify`, posts it into that session as `Supervisor: <line>`, reviving a reaped one first.
+  Lines wait in order until posted, so a failed post delays a line but loses none, and a
+  terminal event drops the session's line once its own line is posted, unless a newer brief
+  armed it again meanwhile. Errors and a quiet `--timeout` window are logged and never stop it.
+- `run`, `start` and `send` arm the registry (`--registry`, else
+  `$OMNIGENT_SUPERVISE_REGISTRY`) once their message is in the history; `run`, `send` and
+  `wait` disarm it when they return the report or a question. A line carries the session's
+  brief files after the report, each after a tab: `start` writes its `<report>.brief`, and
+  `send` appends its message file.
+- After a revive, which can drop a session's context, `supervise` sends it one line naming its
+  brief files (the registry's, else `<report>.brief`) and the report it owes, in place of
+  nothing. Like the resume line, it is no instruction, so a report written for the brief still
+  counts. A failed send of it is tried again at the next look.
+- Silence counts the session's children: a lead waiting on its own worker or verifier
+  gets no resume line while a child of it was updated within `--silent-seconds`.
+- A resume line already in the history counts as sent, so a restarted supervisor gives up on a
+  session still silent after it instead of sending a second.
+- `orchestration/omnigent.md` shows how to run it detached under launchd or a systemd user
+  unit; the chief-of-staff passages and `lead.md` § Waiting use it in place of
+  in-session watchers, which die with the session.
+- A regression test that one-shot `supervise` reads no other session after a caller event
+  (#156).
+
 The per-thread role is the lead (#150).
 
 - `coordinator.md` is now `lead.md`, and the loop's files call the role "lead": most
