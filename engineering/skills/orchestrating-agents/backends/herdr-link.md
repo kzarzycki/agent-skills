@@ -11,10 +11,14 @@ SKILL.md ("Reports are files") tells every role.
 - **Message:** `herdr_link_send`. The first message is the role file's path plus the
   specifics (spec and item, worktree, branch, base, report path). The agent's reply is
   the path of its report.
+- **Wait:** end your turn. The agent's reply, the path of its report, arrives as a message
+  to you.
+- **Watch:** `herdr_link_peers` before you end your work: an agent gone from it without
+  having replied left no report, so start it again with the same brief.
 - **List:** `herdr_link_peers` shows the live agents: use it before a main-moved notice
   and before touching a worktree someone else may have open.
 - **Close:** `herdr_link_close` once the agent's final reply has arrived.
 
-A harness without herdr-link uses the `herdr` skill for the same four operations. A
-worker can instead be a native background subagent of your own harness; a verifier only
-when the other family is unavailable (../engineering-loop/SKILL.md, Independent verification).
+A harness without herdr-link uses the `herdr` skill for the same operations. Any child of
+your own model family can instead be a native background subagent of your own harness
+([native.md](native.md)).

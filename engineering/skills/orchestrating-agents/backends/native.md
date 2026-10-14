@@ -8,21 +8,26 @@ The default backend: every harness has one, and it needs no setup.
   (`s120-parser-worker`, `s120-verifier-p1`: one verifier per pass).
 - **Message:** the harness's send-to-agent operation while the agent is live; otherwise
   a fresh agent whose brief points at the earlier report.
+- **Wait:** end your turn. The harness notifies you when a background agent finishes,
+  with its final reply, the report path; read the report then.
+- **Watch:** the same notification arrives for every background agent you started, so
+  there is nothing to arm for one no wait is on.
 - **List:** the harness's list of running agents and background tasks.
 - **Close:** stop the agent once its final reply has arrived.
 
-## Verifier
+## A child in another harness
 
-When the other model family's CLI is installed, the verifier runs there,
-non-interactively, as one background command from the worktree. Its prompt is one line
-naming a brief file under `tmp/loop/`, because a child given pasted text tends to ask
-for a go-ahead:
+When the caller wants a child of another model family (which role does is the caller's
+policy: under the engineering loop, its SKILL.md, Independent verification) and that
+family's CLI is installed, run it non-interactively, as one background command from the
+worktree. Its prompt is one line naming a brief file under `tmp/loop/`, because a child
+given pasted text tends to ask for a go-ahead:
 
 ```bash
-codex exec -C <worktree> "Read <brief-file> and follow it."   # verifies a Claude-written diff
-claude -p "Read <brief-file> and follow it."                  # verifies a Codex-written diff
+codex exec -C <worktree> "Read <brief-file> and follow it."   # a Codex child
+claude -p "Read <brief-file> and follow it."                  # a Claude child
 ```
 
 The permission settings for unattended runs are the developer's. The command's exit is
-the wake; then read the report it names. Without the other family's CLI, start the
-verifier as a fresh native subagent and write `verifier: same family` in the PR body.
+the wake (wait and watch both); then read the report it names. Without that CLI, a fresh
+native subagent of your own harness is the only child this backend can start.
