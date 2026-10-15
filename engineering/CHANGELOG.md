@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+No model is hardcoded or picked in the pack (#175).
+
+- A Codex verifier no longer defaults to `gpt-6.1-sol`: every child runs on `--model`, else
+  `OMNIGENT_MODEL_<AGENT>`, else its harness's configured default (Codex:
+  `~/.codex/config.toml`).
+- `engineering-loop` SKILL.md § Models and `lead.md` step 4 no longer pick a model per item: a
+  lead leaves it to the default unless the owner names one. A launch that fails on capacity is
+  retried later on the same model, never on another (`backends/omnigent.md` § Model).
+
 ## 0.18.3 - 2026-10-15
 
 A waiter takes a child's report only once it is final (#165), and a taken title no longer
