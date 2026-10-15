@@ -1115,7 +1115,8 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "named")
     omnigent_agent.main([*base[:2], "t3", *base[3:], "--role", "verifier.md"])
     omnigent_agent.main([*base[:2], "t4", *base[3:], "--role", "verifier.md", "--model", "flag"])
-    assert models == [omnigent_agent.CODEX_VERIFIER_MODEL, None, "named", "flag"]
+    assert models == [None, None, None, "flag"]  # Omnigent.create reads OMNIGENT_MODEL_CODEX
+    assert not hasattr(omnigent_agent, "CODEX_VERIFIER_MODEL")
 
 
 def test_start_refuses_a_report_already_there(

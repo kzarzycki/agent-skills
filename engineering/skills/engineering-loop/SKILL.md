@@ -307,10 +307,11 @@ verifier, review angles run as native subagents, never as full harness sessions.
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
   silently.
-- **Models.** Pick by what is at stake: the strongest for money paths and design, a
-  cheaper one for mechanical items, never the top tier for review. When one family is
-  out of quota, continue on the other; revive a stuck or interrupted agent rather than
-  restart it.
+- **Models.** Never pick a model: every agent runs on its harness's configured default,
+  which the owner sets, unless the owner names one for a task. A launch that fails on
+  capacity is retried later on the same model (the backend's Model section). When one
+  family is out of quota, continue on the other; revive a stuck or interrupted agent
+  rather than restart it.
 - **Turns.** A turn the owner reads (not a child's path-only reply) ends with `DONE`,
   `STILL WORKING` or `USER NEEDED`. A status reply opens with a tl;dr: the loop step with
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
