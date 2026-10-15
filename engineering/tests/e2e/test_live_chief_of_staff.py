@@ -1,7 +1,8 @@
 """A chief of staff in one harness has a lead in the other harness do a small ask.
 
-Live: it needs a logged-in Omnigent with a local host for both native harnesses, and runs only
-with OMNIGENT_E2E=1 (about five minutes and two agent sessions per direction):
+The ask is in the chief's repo, or across it and a sibling repo, which the lead does from their
+parent directory. Live: it needs a logged-in Omnigent with a local host for both native harnesses,
+and runs only with OMNIGENT_E2E=1 (about three minutes and two agent sessions per case):
 
     OMNIGENT_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e/test_live_chief_of_staff.py
 """
@@ -30,10 +31,10 @@ def _git(repo: Path, *args: str) -> str:
     ).stdout
 
 
-def _sessions(og, repo: Path) -> list[str]:
-    """The top-level sessions working in ``repo``, archived ones too (the chief archives its lead)."""
+def _sessions(og, *dirs: Path) -> list[str]:
+    """The top-level sessions working in ``dirs``, archived ones too (the chief archives its lead)."""
     page = og.call("GET", "/v1/sessions?kind=default&include_archived=true&limit=100")
-    return [s["id"] for s in page.get("data", []) if s.get("workspace") == str(repo)]
+    return [s["id"] for s in page.get("data", []) if s.get("workspace") in map(str, dirs)]
 
 
 def _omnigent():
@@ -44,22 +45,44 @@ def _omnigent():
     return module, module.Omnigent()
 
 
-@pytest.mark.parametrize(("chief", "lead"), [("claude", "codex"), ("codex", "claude")])
+def _init(repo: Path) -> None:
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "init")
+
+
+@pytest.mark.parametrize(
+    ("chief", "lead", "across"),
+    [
+        ("claude", "codex", False),
+        ("codex", "claude", False),
+        ("claude", "codex", True),
+        ("codex", "claude", True),
+    ],
+)
 def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
-    tmp_path: Path, chief: str, lead: str
+    tmp_path: Path, chief: str, lead: str, across: bool
 ) -> None:
     if os.environ.get("OMNIGENT_E2E") != "1":
         pytest.skip("OMNIGENT_E2E=1 is required for the live chief-of-staff test")
-    repo = (tmp_path / "project").resolve()
+    parent = tmp_path.resolve()
+    repo, sibling = parent / "project", parent / "lib"
     repo.mkdir()
     # A native child is prompted for a read outside its workspace, so the skills live inside it.
     for name in ("chief-of-staff", "orchestrating-agents"):
         for target in (".claude", ".agents"):
             shutil.copytree(SKILLS / name, repo / target / "skills" / name)
     (repo / ".gitignore").write_text(".claude/\n.agents/\ntmp/\n")
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "add", "-A")
-    _git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "init")
+    _init(repo)
+    repos = [repo]
+    where = "this repo"
+    if across:
+        sibling.mkdir()
+        (sibling / "README.md").write_text("lib\n")
+        (sibling / ".gitignore").write_text("tmp/\n")
+        _init(sibling)
+        repos.append(sibling)
+        where = f"this repo and to the sibling repo {sibling}, which is part of this project, each"
     skills = repo / ".claude" / "skills"
     line = f"hello from {lead}"
     report = repo / "tmp" / "loop" / "chief-report.md"
@@ -70,11 +93,11 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         f"{skills / 'chief-of-staff' / 'SKILL.md'}. Its `<script>` is "
         f"{skills / 'orchestrating-agents' / 'scripts' / 'omnigent_agent.py'}.\n\n"
         "The owner, in the session that started you:\n\n"
-        f"> Have a {lead.capitalize()} lead add a file NOTES.md to this repo containing exactly "
+        f"> Have a {lead.capitalize()} lead add a file NOTES.md to {where} containing exactly "
         f"the line `{line}`, committed on main. Tell me when it's done.\n\n"
         "This is a test project with no remote and no issue tracker. Start no detached "
         "supervisor job; follow the lead with a one-shot `supervise`. Once the lead has reported "
-        "and you have checked NOTES.md and the commit, archive the lead and write your final "
+        "and you have checked each NOTES.md and commit, archive the lead and write your final "
         "report: the lead's session id and what it did.\n"
     )
     module, og = _omnigent()
@@ -107,12 +130,15 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
             check=False,
         )
         assert waited.returncode == 0, waited.stdout + waited.stderr
-        assert (repo / "NOTES.md").read_text() == line + "\n"
-        assert "NOTES.md" in _git(repo, "log", "-1", "--name-only", "--format=")
-        assert _git(repo, "status", "--porcelain") == ""
-        leads = [og.info(sid) for sid in _sessions(og, repo) if sid != chief_id]
-        assert [(s.get("harness"), s.get("parent_session_id")) for s in leads] == [
-            (NATIVE[lead], None)
-        ]
+        for r in repos:
+            assert (r / "NOTES.md").read_text() == line + "\n"
+            assert "NOTES.md" in _git(r, "log", "-1", "--name-only", "--format=")
+            assert _git(r, "status", "--porcelain") == ""
+        # a start that retried leaves its abandoned first chief behind, under the same title stem
+        sessions = map(og.info, _sessions(og, repo, parent))
+        leads = [s for s in sessions if not s.get("title", "").startswith("chief-e2e")]
+        assert [
+            (s.get("harness"), s.get("parent_session_id"), s.get("workspace")) for s in leads
+        ] == [(NATIVE[lead], None, str(parent if across else repo))]
     finally:
-        module.reap(og, _sessions(og, repo) or [chief_id])
+        module.reap(og, _sessions(og, repo, parent) or [chief_id])
