@@ -1546,6 +1546,40 @@ def test_supervise_returns_a_report_written_since_the_last_instruction(tmp_path:
         omnigent_agent.supervise(og, {"a": report}, timeout=0)
 
 
+def test_settled_needs_the_turn_ended_at_every_look_for_turn_end_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 60)
+    report = aged(tmp_path / "r.md", 120)  # a draft written long before
+    idle, running = {"status": "idle"}, {"status": "running"}
+    ended: dict[str, float] = {}
+    assert not omnigent_agent.settled(report, idle, [], ended, "a")  # one idle look is no turn end
+    ended["a"] = time.time() - 61
+    assert omnigent_agent.settled(report, idle, [], ended, "a")
+    assert not omnigent_agent.settled(report, running, [told("x", 0)], ended, "a")
+    assert "a" not in ended  # a running look restarts the count
+    assert not omnigent_agent.settled(report, idle, [], ended, "a")
+    ended["a"] = time.time() - 61
+    aged(report, 10)  # rewritten while out of its turn
+    assert not omnigent_agent.settled(report, idle, [], ended, "a")
+
+
+def test_check_reads_the_report_again_after_it_settled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = tmp_path / "r.md"
+    report.write_text("SATISFIED: yes\n")
+    og = Owing([told("brief", 120)], {})
+
+    def rewritten(r: Path, *_: object) -> bool:
+        r.write_text("revising")  # the verdict is gone by the time it settled
+        return True
+
+    monkeypatch.setattr(omnigent_agent, "settled", rewritten)
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print, verdict=True)
+    assert event == ""
+
+
 def test_supervise_counts_a_report_only_once_its_turn_ended(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
