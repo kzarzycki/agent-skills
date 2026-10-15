@@ -13,8 +13,10 @@
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
 path of a question the child wrote (``<report>.question``) instead of a report; exit 1 prints the
 reason and the child's last message (for a failed session, its ``last_task_error`` and runner log).
-A report already at the path is a pass before: only one written after the launch counts. The first
-turn that ends with neither gets one nudge to write it; a second fails. A lead launches it as one background command, so its
+A report already at the path is a pass before: only one written after the launch counts. It counts
+once final (``settled``): the child's turn has ended and the file is unchanged since, since a child
+can rewrite its report until then. The first turn that ends with neither gets one nudge to write
+it; a second fails. A lead launches it as one background command, so its
 exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
@@ -28,7 +30,8 @@ can drop its context, and sends one resume line to a session silent past ``--sil
 (default 1800), printing a line for each and carrying on, and exits 0 with one line as soon as one
 wrote its report or a question, blocks on a prompt, fails, or is given up on (silent after its resume
 line or with an input undelivered, or a failed revive).
-A report counts once newer than the session's last instruction, so one already written counts at once.
+A report counts once newer than the session's last instruction, so one already written counts at once,
+and only once ``settled``, as ``wait`` counts it.
 ``supervise --registry`` runs until stopped: each poll it re-reads the file's ``session=report``
 lines, each optionally followed by the session's brief files after tabs and a ``verdict`` field
 for a verifier, whose report then counts only with its ``SATISFIED:`` line, and checks each session
@@ -91,6 +94,10 @@ HTTP_SECONDS = 30.0
 # Idle with the brief last for this long: a turn that ended with no output. Shorter is not proof:
 # claude-native was seen idle for 15 s mid-turn, with the brief last, before its reply came.
 IDLE_GRACE_SECONDS = 30.0
+# A report and history this quiet while the session still reads ``running``: a lost turn end
+# (kzarzycki/omnigent#4), so the report is final. Long, since a lead waits on its children quietly.
+SETTLE_SECONDS = 600.0
+TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0)
 TRANSIENT = (TimeoutError, socket.timeout, ConnectionResetError)  # socket.timeout: Python 3.9
@@ -110,7 +117,7 @@ ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no runn
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
-Write your report to {report}.
+Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
 
@@ -531,6 +538,11 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     question.unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
 
 
+def taken(e: Fail) -> bool:
+    """Whether a create failed with 409: Omnigent refuses a title a sibling already holds."""
+    return isinstance(e.__cause__, HTTPError) and e.__cause__.code == 409
+
+
 def start(
     og: Omnigent,
     agent: str,
@@ -575,20 +587,37 @@ def start(
         left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
         return Fail(reason + left)
 
-    for n in range(attempts):
-        # a surviving abandoned child keeps its title, and Omnigent refuses a sibling with the same one
-        name = title if n == 0 else f"{title}-r{n + 1}"
+    # Omnigent refuses a sibling with a title an earlier child holds, archived or not, abandoned
+    # here or left by an earlier run: each refusal and each abandon moves to the next <title>-r<n>.
+    n = 0
+    for _ in range(attempts):
         # ponytail: whole seconds of the server's clock against this host's; a skewed server
         # misses the match and fails as before. Upgrade: an idempotency key, once Omnigent has one.
         began, found = int(time.time()), None
-        try:
-            sid = og.create(agent, name, model, top_level)
-        except Fail as e:  # a timed-out create can have made the session: brief that one
+        while True:
+            name = title if n == 0 else f"{title}-r{n + 1}"
+            n += 1
+            try:
+                sid, error = og.create(agent, name, model, top_level), None
+            except Fail as e:
+                if not taken(e):
+                    error = e
+                elif n < TITLES:
+                    print(f"title {name} is taken", file=sys.stderr)
+                    continue
+                else:
+                    raise failed(f"start failed: titles {title} to {name} are taken") from e
+            break
+        if error:  # a timed-out create can have made the session: brief that one
             found = og.find(name, began, top_level)
             if not found:
-                raise failed(f"start failed: {e}") from e
-            print(f"create failed ({e}); briefing session {found}, made anyway", file=sys.stderr)
+                raise failed(f"start failed: {error}") from error
+            print(
+                f"create failed ({error}); briefing session {found}, made anyway", file=sys.stderr
+            )
             sid = found
+        if name != title:
+            print(f"session {sid} is titled {name}", file=sys.stderr)
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 og.send(sid, text)
@@ -617,14 +646,15 @@ def wait(
     path when the child wrote one instead. Fails when the turn ends without a report, when the
     child is blocked on an approval or input prompt (nothing answers it), or after ``timeout``
     seconds. With ``since`` (a follow-up), only a report modified after that ``st_mtime_ns``
-    counts: the one from the earlier turn is still there.
+    counts: the one from the earlier turn is still there. A report that counts is returned once
+    ``settled``, read again first, since the child can rewrite it until its turn ends.
     """
     deadline = time.monotonic() + timeout
     idle_since, nudged = None, False
     question = question_of(report)
     missing = f"a verdict in {report}" if verdict else str(report)
 
-    def done() -> bool:
+    def counts() -> bool:
         try:
             mtime = report.stat().st_mtime_ns
         except FileNotFoundError:
@@ -633,13 +663,22 @@ def wait(
             not verdict or bool(VERDICT.search(report.read_text()))
         )
 
-    while not done():
+    while True:
         if question.exists():
             raise Asked(str(question))
         info = og.info(sid)
         status = str(info.get("status"))
-        last = last_message(og.items(sid))
+        items = og.items(sid)
+        last = last_message(items)
         said = text_of(last) if last else "(none)"
+        if counts() and settled(report, info, items) and counts():
+            if status in RUNNING and not prompts_of(info):
+                print(
+                    f"session {sid} still reads {status}, but its report and history were quiet"
+                    f" for {SETTLE_SECONDS:.0f}s: taking the report (a lost turn end)",
+                    file=sys.stderr,
+                )
+            break
         prompts = prompts_of(info)
         if prompts:
             raise Fail(
@@ -654,8 +693,8 @@ def wait(
             status == "failed" or (last is not None and last.get("role") != "user") or empty_turn
         ):
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
-            if done():
-                break
+            if counts():
+                continue  # final at the next look
             if question.exists():
                 raise Asked(str(question))
             if status == "failed":
@@ -817,6 +856,22 @@ def instructed(items: list[dict], resume: str) -> tuple[float, float]:
     return since, max(resent, default=0.0)
 
 
+def settled(report: Path, info: dict, items: list[dict]) -> bool:
+    """Whether ``report``, one that counts, is final: the session is out of its turn (not running,
+    or blocked on a prompt nothing answers) and the file unchanged for a poll, or the file and the
+    history were both quiet for ``SETTLE_SECONDS`` while it still reads running, a lost turn end.
+    Until its turn ends a child can rewrite its report: a verifier revising its verdict, a lead
+    writing progress there."""
+    try:
+        age = time.time() - report.stat().st_mtime
+    except FileNotFoundError:
+        return False
+    if str(info.get("status")) not in RUNNING or prompts_of(info):
+        return age >= POLL_SECONDS
+    newest = max((float(i.get("created_at") or 0) for i in items), default=0.0)
+    return min(age, time.time() - newest) >= SETTLE_SECONDS
+
+
 def written(path: Path, since: float) -> bool:
     try:
         return path.stat().st_mtime > since
@@ -859,7 +914,9 @@ def check(
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
     if written(report, since) and (not verdict or VERDICT.search(report.read_text())):
-        return f"{head}: report written: {report}", since
+        if settled(report, info, items):
+            return f"{head}: report written: {report}", since
+        return "", since  # still in its turn: it may rewrite the report
     if written(question_of(report), since):
         return f"{head}: asked: {question_of(report)}", since
     if prompts := prompts_of(info):

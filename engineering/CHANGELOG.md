@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+A waiter takes a child's report only once it is final (#165), and a taken title no longer
+fails a start (#174).
+
+- `run`, `send` and `wait` count a report only once the child's turn has ended and the file
+  is unchanged since, and read it again before returning it: a child can rewrite its report
+  until then (a verifier revising its verdict, a lead writing progress at its report path).
+  Omnigent can lose a turn end (kzarzycki/omnigent#4), so a report quiet for 10 minutes
+  together with the session's history counts too. The supervisor's `report written` follows
+  the same rule.
+- The brief's preamble, `orchestrating-agents` § Rules and `lead.md` § Report say the report
+  path holds the final report, written once at the end, and progress goes to another file.
+- A create Omnigent refuses with 409, a title an earlier child of the same parent holds
+  (archived ones too), tries the next free `<title>-r<n>`, the sequence the abandoned-start
+  retry uses, and prints the title it used.
+
+Starting a lead the owner can open (#152).
+
+- `omnigent_agent.py start --top-level` starts a lead as a top-level session in the repo's
+  project, which the owner opens from the sidebar and whose children report to it, not to
+  the session that started it (#152). Its brief says only the owner's quoted words
+  approve, and it asks the owner in its own session (`USER NEEDED`) instead of writing a
+  question; `run` refuses the flag. Without it, `start` and `run` are unchanged.
+- The one-line message naming a brief file reads "Your brief is the file …", no longer
+  naming the lead as its sender.
+
+Starting and collecting agents is its own skill, `orchestrating-agents` (#151).
+
+- `engineering-loop/orchestration/{native,omnigent,herdr-link}.md` are now
+  `orchestrating-agents/backends/`, and `engineering-loop/scripts/omnigent_agent.py` is
+  `orchestrating-agents/scripts/omnigent_agent.py`: a brief or command that names the old
+  path names the new one. Installed skills are siblings, so from the loop's folder it is
+  `../orchestrating-agents/scripts/omnigent_agent.py`.
+- The backend choice and the "Reports are files" rule moved from the loop's SKILL.md to the
+  new skill, which also states questions as files and that whoever starts a child collects
+  it. The loop keeps its roles and points at the new skill.
+- `operating-omnigent` now covers the Omnigent install and its raw `sys_*` tools only.
+
+Fixes.
+
+- `supervise --registry` counts a verifier's report only with its `SATISFIED:` line, as
+  `wait` does: a registry line carries a `verdict` field, written by `run` and `start` for a
+  verifier role and by `send --verdict` (#167).
+- `approvals.py land` waits on a head no check ran on instead of crashing on its null
+  `statusCheckRollup` (#172).
+
 ## 0.18.2 - 2026-10-14
 
 A finished sub-agent no longer takes its lead down with it (#163).
@@ -47,25 +94,6 @@ The per-thread role is the lead (#150).
 - SKILL.md, Roles: a session whose brief names no role is the lead.
 - `lead.md` opens with one PR per story, as its Branch step and issues.md, Epics already
   said.
-- `omnigent_agent.py start --top-level` starts a lead as a top-level session in the repo's
-  project, which the owner opens from the sidebar and whose children report to it, not to
-  the session that started it (#152). Its brief says only the owner's quoted words
-  approve, and it asks the owner in its own session (`USER NEEDED`) instead of writing a
-  question; `run` refuses the flag. Without it, `start` and `run` are unchanged.
-- The one-line message naming a brief file reads "Your brief is the file …", no longer
-  naming the lead as its sender.
-
-Starting and collecting agents is its own skill, `orchestrating-agents` (#151).
-
-- `engineering-loop/orchestration/{native,omnigent,herdr-link}.md` are now
-  `orchestrating-agents/backends/`, and `engineering-loop/scripts/omnigent_agent.py` is
-  `orchestrating-agents/scripts/omnigent_agent.py`: a brief or command that names the old
-  path names the new one. Installed skills are siblings, so from the loop's folder it is
-  `../orchestrating-agents/scripts/omnigent_agent.py`.
-- The backend choice and the "Reports are files" rule moved from the loop's SKILL.md to the
-  new skill, which also states questions as files and that whoever starts a child collects
-  it. The loop keeps its roles and points at the new skill.
-- `operating-omnigent` now covers the Omnigent install and its raw `sys_*` tools only.
 
 ## 0.18.1 - 2026-10-14
 
