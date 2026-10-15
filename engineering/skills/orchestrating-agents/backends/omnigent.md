@@ -21,7 +21,14 @@ refuses a brief left with an empty `` `` `` span. Exit 0 prints the report path.
 prints the reason and the child's last message; for a session that failed, also its
 `last_task_error` and its runner log. With a verifier's role file, the report
 counts only once it has its `SATISFIED:` line, so a report written in stages does not end
-the wait early. Sessions are filed under the Omnigent project named like the repo, when
+the wait early. Any report counts only once the child's turn has ended and the file is
+unchanged since, which takes 30 seconds out of its turn at every look (a session can read idle
+mid-turn), and is read again before `run` returns it: until then a child can rewrite it (a
+verifier revising its verdict). Omnigent can lose a turn end and leave the session
+`running` (kzarzycki/omnigent#4), so a report that is quiet, with its session's history,
+for 10 minutes counts too. The report path is the final report, written once at the end:
+a child keeps progress in another file, since the first report the waiter takes is its
+answer. Sessions are filed under the Omnigent project named like the repo, when
 one exists; `OMNIGENT_PROJECT` overrides the name.
 
 **Questions.** A child never asks the owner. It writes `<report>.question` and stops;
@@ -83,7 +90,10 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   then sends.
 - A send answers `queued`/`launching` even when the brief never arrives. The script
   counts a start only once that one line is a user message in the history, and otherwise
-  abandons the session and retries once with a fresh one. A create that fails (a timeout
+  abandons the session and retries once with a fresh one, titled `<title>-r<n>`.
+- Omnigent refuses (409) a title an earlier child of the same parent holds, archived or
+  not, such as a rerun `s120-verifier-p1`. The create then tries the next free
+  `<title>-r<n>`, the same sequence the retry above uses, and prints the title it used. A create that fails (a timeout
   on a loaded server) may still have made the session, so the script looks for its title
   among the parent's children made since, and briefs that one instead of a second.
 - A loaded server times out reads while the child works on. Every `GET` is retried on a
@@ -152,7 +162,8 @@ as soon as a session wrote its report (`report written: <path>`) or a question
 its resume line, which may sit undelivered behind a stuck step; silent with an input already
 undelivered; or a failed revive). A report counts once newer than the session's last
 instruction, so one written before `supervise` started counts at once and an earlier
-phase's at the same path does not. A resume line already in the history counts as sent, so a
+phase's at the same path does not, and it counts only once the session's turn has ended,
+as `run` counts it. A resume line already in the history counts as sent, so a
 supervisor started again gives up on a session still silent after it instead of sending a
 second. Exit 1 after `--timeout` (default 3h) with no event.
 
