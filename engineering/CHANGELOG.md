@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.3 - 2026-10-15
 
 A waiter takes a child's report only once it is final (#165), and a taken title no longer
 fails a start (#174).
