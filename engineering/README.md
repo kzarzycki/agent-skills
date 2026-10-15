@@ -54,6 +54,24 @@ instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
 means native subagents. The verifier comes from the other model family when its
 CLI is installed; otherwise the PR body says `verifier: same family`.
 
+## Start a chief of staff
+
+A chief of staff is an optional session you talk to while leads do the work.
+Without one, every session you start is a lead, as before.
+
+- One per project. Its state belongs to the project: the handover file
+  `tmp/loop/chief-of-staff.md` in the main checkout, the board, and the memory
+  bank `coding-agent-<repo>`. Several projects on one machine each run their own.
+- Start it through Omnigent in the project's main checkout, in Claude or Codex,
+  and ask it to act as the project's chief of staff (`/chief-of-staff` in Claude
+  Code). Each lead it starts is a top-level session in either harness, which you
+  can open and talk to directly.
+- Allow once the detached supervisor it asks you to start (a `launchctl submit`
+  job, from `orchestrating-agents`' Omnigent backend). Claude Code's auto mode
+  refuses to start one itself.
+- Memory is used when `~/.hindsight/coding-agent.json` exists: the chief of staff
+  recalls and retains your decisions (the skill's Memory section).
+
 The package is released under independently versioned `engineering-vX.Y.Z` tags. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
