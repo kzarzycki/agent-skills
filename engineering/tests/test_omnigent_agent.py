@@ -118,6 +118,7 @@ class FakeOmnigent:
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
 
 
@@ -199,6 +200,34 @@ def test_a_report_written_while_the_turn_runs_waits_for_the_turn_end(
         omnigent_agent.wait(og, sid, report, timeout=0)
     og.final = "idle"
     assert omnigent_agent.wait(og, sid, report, timeout=0) == str(report)
+
+
+def test_one_idle_look_is_no_turn_end_and_the_deadline_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="checking")  # reads idle mid-turn, its draft long written
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "codex", "t", "do X", report, None, 0)
+    report.write_text("draft\nSATISFIED: yes\n")
+    old = time.time() - 120
+    os.utime(report, (old, old))
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 60)
+    looks = 0
+    info = og.info
+
+    def rewriting(s: str) -> dict:
+        nonlocal looks
+        looks += 1
+        assert looks < 5, "the wait ran past its deadline"
+        report.write_text(f"draft {looks}\nSATISFIED: yes\n")  # still revising
+        return info(s)
+
+    og.info = rewriting  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="no verdict after 0s"):
+        omnigent_agent.wait(og, sid, report, timeout=0, verdict=True)
+    og.info = info  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    assert omnigent_agent.wait(og, sid, report, timeout=0, verdict=True) == str(report)
 
 
 def test_a_lost_turn_end_counts_the_report_once_it_and_the_history_are_quiet(

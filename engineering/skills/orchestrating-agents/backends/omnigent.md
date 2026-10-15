@@ -22,7 +22,8 @@ prints the reason and the child's last message; for a session that failed, also 
 `last_task_error` and its runner log. With a verifier's role file, the report
 counts only once it has its `SATISFIED:` line, so a report written in stages does not end
 the wait early. Any report counts only once the child's turn has ended and the file is
-unchanged since, read again before `run` returns it: until then a child can rewrite it (a
+unchanged since, which takes 30 seconds out of its turn at every look (a session can read idle
+mid-turn), and is read again before `run` returns it: until then a child can rewrite it (a
 verifier revising its verdict). Omnigent can lose a turn end and leave the session
 `running` (kzarzycki/omnigent#4), so a report that is quiet, with its session's history,
 for 10 minutes counts too. The report path is the final report, written once at the end:

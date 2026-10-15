@@ -97,6 +97,9 @@ IDLE_GRACE_SECONDS = 30.0
 # A report and history this quiet while the session still reads ``running``: a lost turn end
 # (kzarzycki/omnigent#4), so the report is final. Long, since a lead waits on its children quietly.
 SETTLE_SECONDS = 600.0
+# Out of its turn this long, the report unchanged as long: the turn has ended. One idle look is no
+# proof, since a session can read idle mid-turn (IDLE_GRACE_SECONDS above).
+TURN_END_SECONDS = 30.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0)
@@ -651,6 +654,7 @@ def wait(
     """
     deadline = time.monotonic() + timeout
     idle_since, nudged = None, False
+    ended: dict[str, float] = {}
     question = question_of(report)
     missing = f"a verdict in {report}" if verdict else str(report)
 
@@ -671,7 +675,7 @@ def wait(
         items = og.items(sid)
         last = last_message(items)
         said = text_of(last) if last else "(none)"
-        if counts() and settled(report, info, items) and counts():
+        if counts() and settled(report, info, items, ended, sid) and counts():
             if status in RUNNING and not prompts_of(info):
                 print(
                     f"session {sid} still reads {status}, but its report and history were quiet"
@@ -680,7 +684,7 @@ def wait(
                 )
             break
         prompts = prompts_of(info)
-        if prompts:
+        if prompts and not counts():  # a report that counts is taken once settled
             raise Fail(
                 f"session {sid} is blocked on a prompt: {'; '.join(prompts)}\nlast message: {said}"
             )
@@ -689,12 +693,13 @@ def wait(
         # turn or a mid-turn idle: so only once the idle outlasted IDLE_GRACE_SECONDS.
         idle_since = (idle_since or time.monotonic()) if status not in RUNNING else None
         empty_turn = idle_since is not None and time.monotonic() - idle_since >= IDLE_GRACE_SECONDS
-        if status not in RUNNING and (
+        turn_ended = status not in RUNNING and (
             status == "failed" or (last is not None and last.get("role") != "user") or empty_turn
-        ):
+        )
+        if turn_ended and not counts():
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
-            if counts():
-                continue  # final at the next look
+        # a report that counts is final once settled, at a later look, within the deadline
+        if turn_ended and not counts():
             if question.exists():
                 raise Asked(str(question))
             if status == "failed":
@@ -856,20 +861,25 @@ def instructed(items: list[dict], resume: str) -> tuple[float, float]:
     return since, max(resent, default=0.0)
 
 
-def settled(report: Path, info: dict, items: list[dict]) -> bool:
-    """Whether ``report``, one that counts, is final: the session is out of its turn (not running,
-    or blocked on a prompt nothing answers) and the file unchanged for a poll, or the file and the
-    history were both quiet for ``SETTLE_SECONDS`` while it still reads running, a lost turn end.
-    Until its turn ends a child can rewrite its report: a verifier revising its verdict, a lead
-    writing progress there."""
+def settled(report: Path, info: dict, items: list[dict], ended: dict[str, float], sid: str) -> bool:
+    """Whether ``report``, one that counts, is final: the session has been out of its turn (not
+    running, or blocked on a prompt nothing answers) at every look for ``TURN_END_SECONDS`` and the
+    file unchanged as long, or the file and the history were both quiet for ``SETTLE_SECONDS``
+    while it still reads running, a lost turn end. ``ended`` holds when each session was first seen
+    out of its turn, the caller's across looks; a look that finds it running clears it. Until its
+    turn ends a child can rewrite its report: a verifier revising its verdict, a lead writing
+    progress there."""
     try:
-        age = time.time() - report.stat().st_mtime
+        mtime = report.stat().st_mtime
     except FileNotFoundError:
         return False
+    now = time.time()
     if str(info.get("status")) not in RUNNING or prompts_of(info):
-        return age >= POLL_SECONDS
+        out = ended.setdefault(sid, now)
+        return now - max(out, mtime) >= TURN_END_SECONDS
+    ended.pop(sid, None)
     newest = max((float(i.get("created_at") or 0) for i in items), default=0.0)
-    return min(age, time.time() - newest) >= SETTLE_SECONDS
+    return now - max(mtime, newest) >= SETTLE_SECONDS
 
 
 def written(path: Path, since: float) -> bool:
@@ -889,6 +899,7 @@ def check(
     say: Callable[[str], None],
     briefs: list[Path] | None = None,
     verdict: bool = False,
+    ended: dict[str, float] | None = None,
 ) -> tuple[str, float]:
     """One look at ``sid``, which owes ``report``: the line for its caller when it wrote its report
     (with ``verdict``, a verifier's, once it has its ``SATISFIED:`` line, as ``wait`` counts it)
@@ -903,7 +914,8 @@ def check(
     once when an input already waits undelivered (a resume line would queue behind it). Each of
     those is told to ``say`` at once. ``resumed`` holds when this process sent each resume line,
     since one held in ``pending_inputs`` is not in the history yet; ``unsent`` the revived sessions
-    whose revive line did not go out, sent again at their next look.
+    whose revive line did not go out, sent again at their next look; ``ended`` when each session
+    was first seen out of its turn (``settled``), across looks.
     """
     # ponytail: compares the server's item clock with local time and file times, as send does; a
     # skewed server clock shifts the silence and the report's baseline by the skew.
@@ -913,10 +925,14 @@ def check(
     since, resent = instructed(items, resume)
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
-    if written(report, since) and (not verdict or VERDICT.search(report.read_text())):
-        if settled(report, info, items):
+
+    def counts() -> bool:
+        return written(report, since) and (not verdict or bool(VERDICT.search(report.read_text())))
+
+    if counts():
+        if settled(report, info, items, {} if ended is None else ended, sid) and counts():
             return f"{head}: report written: {report}", since
-        return "", since  # still in its turn: it may rewrite the report
+        return "", since  # in its turn, or not out of it for long: it may rewrite the report
     if written(question_of(report), since):
         return f"{head}: asked: {question_of(report)}", since
     if prompts := prompts_of(info):
@@ -968,6 +984,7 @@ def supervise(
     deadline = time.monotonic() + timeout
     resumed: dict[str, float] = {}
     unsent: set[str] = set()
+    ended: dict[str, float] = {}
 
     def say(line: str) -> None:
         print(line, flush=True)
@@ -975,7 +992,7 @@ def supervise(
     while True:
         for sid, report in owed.items():
             # wake the caller now: no other session's read, revive or resume first
-            event, _ = check(og, sid, report, silent, resumed, unsent, say)
+            event, _ = check(og, sid, report, silent, resumed, unsent, say, ended=ended)
             if event:
                 say(event)
                 return event
@@ -1110,6 +1127,7 @@ def supervise_registry(
     logged to stderr, once until it clears, and never stops the loop; so is ``timeout`` with no
     event.
     """
+    ended: dict[str, float] = {}
     resumed: dict[str, float] = {}
     unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
@@ -1193,7 +1211,9 @@ def supervise_registry(
             if any(e and e[0] == sid for _, e in outbox):
                 continue  # its event is found; it waits to be posted
             try:
-                event, since = check(og, sid, report, silent, resumed, unsent, say, briefs, verdict)
+                event, since = check(
+                    og, sid, report, silent, resumed, unsent, say, briefs, verdict, ended
+                )
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
                 continue
