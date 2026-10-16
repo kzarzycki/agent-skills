@@ -1500,7 +1500,7 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     ]
 
 
-def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
+def test_a_sub_agent_has_its_turn_interrupted_and_terminals_ended_and_is_never_archived(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple] = []
@@ -1518,6 +1518,7 @@ def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
     # an archive (unbound first or not) stops coord's runner too: kzarzycki/omnigent#5
     assert og.archive("kid") == "ended"
     assert [c for c in calls if c[0] != "GET"] == [
+        ("POST", "/v1/sessions/kid/events", {"type": "interrupt"}),  # else a codex turn runs on
         ("DELETE", "/v1/sessions/kid/resources/terminals/terminal_claude_main", None),
     ]
     calls.clear()

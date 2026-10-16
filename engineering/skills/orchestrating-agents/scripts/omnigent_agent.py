@@ -353,10 +353,11 @@ class Omnigent:
 
         A top-level session is archived, which stops its own runner. A sub-agent shares its
         parent's runner, and archiving it stops that runner too, taking the parent down: so only
-        its terminals (its agent process) are ended and it stays unarchived. A codex child may
-        still finish the turn it is in, then idles.
+        its turn is interrupted, its terminals (its agent process) are ended and it stays
+        unarchived: ending the terminals alone leaves a codex child's app-server turn running.
         """
         if self.info(sid).get("parent_session_id"):
+            self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
             # ponytail: unbinding the runner before the archive does not help, since the child's
             # turn-end idle makes the server bind it back to the parent's runner before the
             # archive's delayed stop (kzarzycki/omnigent#5). Upgrade: archive sub-agents again
