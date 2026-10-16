@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.0 - 2026-10-16
 
 A chief of staff, an optional session the owner talks to while leads do the work (#179).
 
