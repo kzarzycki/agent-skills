@@ -1382,10 +1382,13 @@ def main(argv: list[str] | None = None) -> int:
             archive_delivered(og, args.session)
             return 0
         report = args.report.resolve()
-        workspace = (getattr(args, "workspace", None) or Path.cwd()).resolve()
-        if not workspace.is_dir():
-            raise Fail(f"--workspace {workspace} is not a directory")
-        # The child's workspace is this directory unless --workspace names one; outside it a Codex
+        if args.cmd == "send":  # a live session keeps its own workspace, wherever this runs
+            workspace = Path(og.info(args.session).get("workspace") or Path.cwd()).resolve()
+        else:
+            workspace = (getattr(args, "workspace", None) or Path.cwd()).resolve()
+            if not workspace.is_dir():
+                raise Fail(f"--workspace {workspace} is not a directory")
+        # A new child's workspace is this directory unless --workspace names one; outside it a Codex
         # sandbox refuses the write and Claude Code prompts for the read (denies it in auto mode),
         # which nobody answers. The child also saves its repro files beside the report.
         if not report.is_relative_to(workspace):

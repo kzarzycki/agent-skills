@@ -119,7 +119,10 @@ class FakeOmnigent:
             {"content": [{"type": "input_text", "text": t}]} for s, t, _ in self.held if s == sid
         ]
         status = "running" if pending else self.final
-        return {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        if sid[1:].isdigit() and int(sid[1:]) < len(self.workspaces):
+            info["workspace"] = self.workspaces[int(sid[1:])]
+        return info
 
     def archive(self, sid: str) -> str:
         if "archive" in self.fail:
@@ -889,6 +892,29 @@ def test_workspace_names_the_child_s_directory_and_bounds_its_report(
     assert omnigent_agent.main(outside) == 1
     assert f"outside the child's workspace {(tmp_path / 'b').resolve()}" in capsys.readouterr().err
     assert len(og.sessions) == 1
+
+
+def test_send_bounds_the_report_by_the_session_s_own_workspace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A follow-up sent from another repo's checkout: the child works where it was started.
+    og = FakeOmnigent(reply="ok")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "child").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    sid = og.create("claude", "t", workspace=str(tmp_path / "child"))
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    (tmp_path / "m.md").write_text("fix it")
+    report = tmp_path / "child" / "r.md"
+    monkeypatch.setattr(
+        omnigent_agent, "wait", lambda *a, **k: (report.write_text("done"), str(report))[1]
+    )
+    assert omnigent_agent.main(["send", sid, str(tmp_path / "m.md"), str(report)]) == 0
+    outside = tmp_path / "elsewhere" / "r.md"
+    assert omnigent_agent.main(["send", sid, str(tmp_path / "m.md"), str(outside)]) == 1
+    assert (
+        f"outside the child's workspace {(tmp_path / 'child').resolve()}" in capsys.readouterr().err
+    )
 
 
 def test_send_confirms_answer_on_a_full_rolling_page(tmp_path: Path) -> None:
