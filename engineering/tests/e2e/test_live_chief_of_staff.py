@@ -141,8 +141,9 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         assert [
             (s.get("harness"), s.get("parent_session_id"), s.get("workspace")) for s in leads
         ] == [(NATIVE[lead], None, str(parent if across else repo))]
-        # the chief heard the lead through its subscription, not a command of its own: the notice
-        # came, the chief worked on after it, and it never ran watch or supervise
+        # the chief heard the lead through its subscription, not a command of its own: it ended
+        # the turn that started the lead, the notice woke it into a later turn (each turn has its
+        # own response id), and it never ran watch or supervise
         items = og.items(chief_id)
         heard = [
             n
@@ -151,8 +152,10 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
             and f"({leads[0]['id']}) ended its turn" in module.text_of(i)
         ]
         assert heard, [module.text_of(i) for i in items[-3:]]
-        assert any(i.get("type") == "function_call" for i in items[heard[0] + 1 :])
-        calls = [str(i) for i in items if i.get("type") == "function_call"]
-        assert not [c for c in calls if " watch " in c or " supervise" in c], calls
+        calls = [i for i in items if i.get("type") == "function_call"]
+        started = {i.get("response_id") for i in calls if "--top-level" in str(i)}
+        woken = {i.get("response_id") for i in items[heard[0] + 1 :] if i in calls}
+        assert started and woken and not started & woken, (started, woken)
+        assert not [c for c in map(str, calls) if " watch " in c or " supervise" in c]
     finally:
         module.reap(og, _sessions(og, repo, parent) or [chief_id])
