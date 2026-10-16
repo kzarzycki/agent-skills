@@ -831,6 +831,7 @@ def watch(
     deadline = time.monotonic() + timeout
     seen: dict[str, tuple] = {}
     idle_since: dict[str, tuple] = {}
+    ending: dict[str, tuple[tuple, float]] = {}  # an end seen, not yet held TURN_END_SECONDS
     first = True
     while True:
         ids = list(dict.fromkeys(sessions + (og.children(parent) if parent else [])))
@@ -839,6 +840,17 @@ def watch(
             # idle at the start, empty turn or not, is the baseline, not a turn ending later
             key, line = observe(og, sid, idle_since, baseline=first)
             before = seen.get(sid, None if first else ("running",))
+            # ponytail: a native Claude session reads idle while quiet mid-turn, and its last
+            # message then is one from the middle of the turn, so an end counts once it holds.
+            # A tool call quiet for longer still wakes early. Upgrade: Omnigent's session
+            # subscriptions, which deliver only a confirmed turn end.
+            if key[0] == "ended" and key != before and before is not None:
+                held = ending.get(sid)
+                if not held or held[0] != key:
+                    held = ending[sid] = (key, time.monotonic())
+                if time.monotonic() - held[1] < TURN_END_SECONDS:
+                    continue
+            ending.pop(sid, None)
             seen[sid] = key
             if (
                 key != before

@@ -126,7 +126,8 @@ question for `run` to return: follow it with `watch <session>`, and once its rep
 archive it with `reap <session>`.
 
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
-run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
+run as a background command, exits 0 as soon as one of them ends a turn (an end that has
+held for 30s, since a native Claude session reads idle while quiet mid-turn), blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
 `blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A top-level
 session tells no parent when its turn ends or it blocks, and the UI's "Completed" reaches

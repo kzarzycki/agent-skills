@@ -1390,6 +1390,25 @@ def test_watch_ignores_states_it_starts_in_and_the_launch_idle(
         omnigent_agent.watch(og, ["a", "b"], timeout=0)
 
 
+def test_watch_reports_an_end_only_once_it_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A native Claude session reads idle while quiet mid-turn: the end it shows then is not one.
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 30)
+    now = [0.0]
+    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: now[0])
+    states = iter(["running", "idle", "running", "idle", "idle", "idle"])
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.info = lambda s: {"status": next(states), "title": "lead"}  # type: ignore[method-assign]
+    og.items = lambda s: [{"id": "m1", "type": "message", "role": "assistant", "content": []}]  # type: ignore[method-assign]
+
+    def tick(seconds: float) -> None:
+        now[0] += 20
+
+    monkeypatch.setattr(omnigent_agent.time, "sleep", tick)
+    assert omnigent_agent.watch(og, [sid]) == [f"{sid} lead: turn ended\nlast message: "]
+    assert now[0] == 100  # the first idle passed; the second held for 40s
+
+
 def test_watch_reports_a_prompt_at_once_with_the_tool_call() -> None:
     prompt = {
         "elicitation_id": "e1",
