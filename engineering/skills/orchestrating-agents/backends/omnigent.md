@@ -140,11 +140,13 @@ API: a person approves it in the UI, so a watched prompt still waits for one.
 **Subscribing to sessions.** A session subscribes to another (Omnigent's
 `sys_session_subscribe` tool, or `POST /v1/sessions/<subscriber>/subscriptions` with
 `{"session_id": <target>}`) to have Omnigent post `[System: session <title> (<id>) ended its
-turn (completed|cancelled|failed). ...]` or `[System: session <title> (<id>) is waiting on a
-prompt: <reason>.]` into it, once per turn or prompt, reviving the subscriber's runner when it
-was reaped. It is how a top-level lead's starter hears it, since only a sub-agent's parent is
-told; `start --top-level` subscribes the session it runs in (`not subscribed` on stderr when
-the server has no subscriptions: follow it with `watch`). It says nothing of a session silent
+turn (completed|cancelled|failed). Read it with sys_session_get_history.]` or `[System: session
+<title> (<id>) is waiting on a prompt. Read it with sys_session_get_info.]` into it, once per
+turn or prompt, reviving the subscriber's runner when it was reaped. A notice carries no text
+of the target's, so read what it names. It is how a top-level lead's starter hears it, since
+only a sub-agent's parent is told; `start --top-level` subscribes the session it runs in
+(`not subscribed` on stderr when the subscribe fails: a server without subscriptions answers
+404, a cycle or the 1,000-per-session cap 409; follow that lead with `watch`). It says nothing of a session silent
 mid-turn, which `supervise` still catches. Archiving or deleting either side drops it.
 
 **Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a

@@ -61,10 +61,13 @@ its landing order.
   Asks in different repos that only need a landing order get a lead each, the later
   brief naming the PR it waits on, since the order is all they share.
 - **Follow.** `start --top-level` subscribes you to the lead it starts: Omnigent posts
-  `[System: session <title> (<id>) ended its turn (completed|cancelled|failed) ...]` or
-  `... is waiting on a prompt: <reason>` into your session, and revives your runner for it if
-  it was reaped, so you hear every lead without a command of your own running. When `start`
-  prints `not subscribed`, the server has no subscriptions: follow that lead with a background
+  `[System: session <title> (<id>) ended its turn (completed|cancelled|failed). Read it with
+  sys_session_get_history.]` or `[System: session <title> (<id>) is waiting on a prompt. Read
+  it with sys_session_get_info.]` into your session, and revives your runner for it if it was
+  reaped, so you hear every lead without a command of your own running. Read the history or
+  info it names before acting on the table below, since the notice carries no text of the
+  lead's. When `start` prints `not subscribed`, the subscribe failed (a server without
+  subscriptions, a cycle, or the 1,000-per-session cap): follow that lead with a background
   `watch <session>...` (`../orchestrating-agents/backends/omnigent.md`, Watching sessions). A
   lead you took over, or started some other way, you subscribe to with Omnigent's
   `sys_session_subscribe` tool. Never poll, since a notice reaches you anyway.
