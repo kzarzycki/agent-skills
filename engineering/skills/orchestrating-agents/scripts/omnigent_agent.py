@@ -317,6 +317,10 @@ class Omnigent:
             body["model_override"] = model
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
+    def subscribe(self, subscriber: str, sid: str) -> None:
+        """Have Omnigent tell ``subscriber`` each time ``sid`` ends a turn or waits on a prompt."""
+        self.call("POST", f"/v1/sessions/{subscriber}/subscriptions", {"session_id": sid})
+
     def retry(self, sid: str) -> dict:
         return self.call(
             "POST", f"/v1/sessions/{sid}/events", {"type": "retry_session", "data": {}}
@@ -631,6 +635,13 @@ def start(
             sid = found
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
+        if top_level and (me := parent_id()):
+            # A top-level lead has no parent to tell: the session starting it hears its turn ends
+            # and prompts instead, revived for them if its runner was reaped.
+            try:
+                og.subscribe(me, sid)
+            except Fail as e:
+                print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 og.send(sid, text)

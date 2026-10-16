@@ -128,15 +128,23 @@ archive it with `reap <session>`.
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
 run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
-`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A chief
-of staff learns this way of a lead that owes it no report (one that owes one is
-supervised by a detached supervisor, below, since a `watch` dies with the session that runs
-it): a top-level session tells nobody when its turn ends or it blocks, and
-the UI's "Completed" reaches no agent. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
+`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A top-level
+session tells no parent when its turn ends or it blocks, and the UI's "Completed" reaches
+no agent, so a session that follows one without a subscription (below) learns it this way. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
 except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
 every few seconds; the session stream pushes the same changes faster but per session and
 without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
 API: a person approves it in the UI, so a watched prompt still waits for one.
+
+**Subscribing to sessions.** A session subscribes to another (Omnigent's
+`sys_session_subscribe` tool, or `POST /v1/sessions/<subscriber>/subscriptions` with
+`{"session_id": <target>}`) to have Omnigent post `[System: session <title> (<id>) ended its
+turn (completed|cancelled|failed). ...]` or `[System: session <title> (<id>) is waiting on a
+prompt: <reason>.]` into it, once per turn or prompt, reviving the subscriber's runner when it
+was reaped. It is how a top-level lead's starter hears it, since only a sub-agent's parent is
+told; `start --top-level` subscribes the session it runs in (`not subscribed` on stderr when
+the server has no subscriptions: follow it with `watch`). It says nothing of a session silent
+mid-turn, which `supervise` still catches. Archiving or deleting either side drops it.
 
 **Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a
 chief of staff on another runner has its idle status refused (HTTP 503, the runner logging
@@ -198,8 +206,7 @@ revive lines are no instruction): a `send` that
 armed it again for the next brief while the event was being posted, which it does only once
 that brief is in the history.
 
-A chief of staff supervises its leads this way, and a lead a child no `run`,
-`send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
+A lead supervises this way a child no `run`, `send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
 names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its `run` and
 `send`. An in-session background command or a session cron dies when the session restarts,
 and with it every wake it owed. The one-shot form serves a single check in the foreground.

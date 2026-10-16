@@ -44,6 +44,7 @@ class FakeOmnigent:
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
         self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
+        self.subscriptions: list[tuple[str, str]] = []
 
     def create(
         self,
@@ -64,6 +65,11 @@ class FakeOmnigent:
         if "create" in self.fail:  # the server made it; the answer timed out
             raise omnigent_agent.Fail("POST /v1/sessions: TimeoutError: timed out")
         return sid
+
+    def subscribe(self, subscriber: str, sid: str) -> None:
+        if "subscribe" in self.fail:
+            raise omnigent_agent.Fail("POST subscriptions: HTTP 404 Not Found")
+        self.subscriptions.append((subscriber, sid))
 
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         self.top_level.append(top_level)
@@ -1123,6 +1129,28 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert "foreground" in text and f"final report to {tmp_path / 'r.md'}" in text
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
+
+
+def test_a_top_level_start_subscribes_its_starter_to_the_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "chief")
+    og = FakeOmnigent()
+    lead, _ = omnigent_agent.start(
+        og, "claude", "t", "do X", tmp_path / "a.md", None, 0, top_level=True
+    )
+    omnigent_agent.start(og, "claude", "w", "do Y", tmp_path / "b.md", None, 0)
+    assert og.subscriptions == [("chief", lead)]  # a child's parent hears it already
+    og.fail.add("subscribe")  # an Omnigent without subscriptions: the lead still starts
+    other, _ = omnigent_agent.start(
+        og, "claude", "u", "do Z", tmp_path / "c.md", None, 0, top_level=True
+    )
+    assert other in og.sessions and og.archived == []
+    assert f"not subscribed to {other}" in capsys.readouterr().err
+    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID")  # started from no session
+    og.fail.discard("subscribe")
+    omnigent_agent.start(og, "claude", "v", "do W", tmp_path / "d.md", None, 0, top_level=True)
+    assert og.subscriptions == [("chief", lead)]
 
 
 def test_run_refuses_top_level_before_a_session_exists(

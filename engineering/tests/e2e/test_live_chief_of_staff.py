@@ -95,10 +95,11 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         "The owner, in the session that started you:\n\n"
         f"> Have a {lead.capitalize()} lead add a file NOTES.md to {where} containing exactly "
         f"the line `{line}`, committed on main. Tell me when it's done.\n\n"
-        "This is a test project with no remote and no issue tracker. Start no detached "
-        "supervisor job; follow the lead with a one-shot `supervise`. Once the lead has reported "
-        "and you have checked each NOTES.md and commit, archive the lead and write your final "
-        "report: the lead's session id and what it did.\n"
+        "This is a test project with no remote and no issue tracker. Once the lead is started, "
+        "end your turn: Omnigent's notice that the lead ended its turn wakes you, so run no "
+        "`watch` or `supervise`. Once the lead has reported and you have checked each NOTES.md "
+        "and commit, archive the lead and write your final report: the lead's session id and "
+        "what it did.\n"
     )
     module, og = _omnigent()
     started = subprocess.run(
@@ -117,7 +118,7 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "OMNIGENT_PROJECT": ""},
+        env={**os.environ, "OMNIGENT_PROJECT": "", "OMNIGENT_RUNNER_PRIMARY_SESSION_ID": ""},
     )
     assert started.returncode == 0, started.stderr
     chief_id = started.stdout.split()[0]
@@ -140,5 +141,8 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         assert [
             (s.get("harness"), s.get("parent_session_id"), s.get("workspace")) for s in leads
         ] == [(NATIVE[lead], None, str(parent if across else repo))]
+        # the chief heard the lead through its subscription, not a command of its own
+        notices = [module.text_of(i) for i in og.items(chief_id) if i.get("type") == "message"]
+        assert any(f"({leads[0]['id']}) ended its turn" in n for n in notices), notices[-3:]
     finally:
         module.reap(og, _sessions(og, repo, parent) or [chief_id])

@@ -60,26 +60,24 @@ its landing order.
   which reports you can read, so the report stays under your `tmp/loop/`, inside both.
   Asks in different repos that only need a landing order get a lead each, the later
   brief naming the PR it waits on, since the order is all they share.
-- **Follow.** Run one detached `supervise --registry <file> --notify <your session>` for as
-  long as you have leads, and set `OMNIGENT_SUPERVISE_REGISTRY=<file>` on every `start` and
-  `send`, which arm it with the lead's report. It wakes you with a `Supervisor:` line when a
-  lead reports, asks, blocks, fails or goes silent, even after your session restarts. Keep a
-  background `watch <session>...` over the live leads too, for turn endings that owe no report
-  (`../orchestrating-agents/backends/omnigent.md`, Watching sessions, Supervising sessions and
-  Running the supervisor detached). Never poll. When your harness refuses to start the
-  detached job (Claude Code's auto mode classes a new launchd job as persistence), never work
-  around it: give the owner the exact command to run once, and until it runs, follow each lead
-  with a background one-shot `supervise <session>=<report>`, which dies with your session.
+- **Follow.** `start --top-level` subscribes you to the lead it starts: Omnigent posts
+  `[System: session <title> (<id>) ended its turn (completed|cancelled|failed) ...]` or
+  `... is waiting on a prompt: <reason>` into your session, and revives your runner for it if
+  it was reaped, so you hear every lead without a command of your own running. When `start`
+  prints `not subscribed`, the server has no subscriptions: follow that lead with a background
+  `watch <session>...` (`../orchestrating-agents/backends/omnigent.md`, Watching sessions). A
+  lead you took over, or started some other way, you subscribe to with Omnigent's
+  `sys_session_subscribe` tool. Never poll, since a notice reaches you anyway.
 
 ## What a lead's turn ending means
 
 A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`.
 
-| `watch` or `supervise` prints | You do |
+| A notice or `watch` says | You do |
 |---|---|
-| Turn ended, `DONE`, or `report written` | One line to the owner with the result: PR, merge, issue. Then archive the lead once its report says it cleaned up. |
+| Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Then archive the lead once its report says it cleaned up. |
 | Turn ended, `USER NEEDED` | Put its question to the owner in one line, linked to the lead's session. Never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
-| Turn ended, `STILL WORKING` or no ending | Send it one nudge to carry on to its next step. A second stop without progress goes to the owner. |
+| Turn ended, `STILL WORKING`, no ending, or cancelled | Send it one nudge to carry on to its next step. A second stop without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Only a person approves a prompt, in the UI. |
 | Failed, or gave up | Revive it in place (`send`, which revives a reaped runner) once. If it fails again, give the owner the error line. |
 
@@ -110,9 +108,8 @@ it quoted.
 
 You may be replaced by a fresh session at any time. Keep `tmp/loop/chief-of-staff.md` in
 the main checkout current: each live lead (session id, title, report path, what it waits
-on) and each standing decision the owner gave you. A new chief of staff reads it, restarts
-`watch` and `supervise` over the live leads, and carries on without greeting the owner
-again.
+on) and each standing decision the owner gave you. A new chief of staff reads it,
+subscribes to each live lead, and carries on without greeting the owner again.
 
 ## Memory
 

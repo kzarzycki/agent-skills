@@ -69,9 +69,9 @@ Without one, every session you start is a lead, as before.
   and ask it to act as the project's chief of staff (`/chief-of-staff` in Claude
   Code). Each lead it starts is a top-level session in either harness, which you
   can open and talk to directly.
-- Allow once the detached supervisor it asks you to start (a `launchctl submit`
-  job, from `orchestrating-agents`' Omnigent backend). Claude Code's auto mode
-  refuses to start one itself.
+- It hears from its leads through Omnigent session subscriptions, so it needs no
+  process of its own running. An Omnigent without them leaves it to `watch`
+  each lead from its session.
 - Memory is used when `~/.hindsight/coding-agent.json` exists: the chief of staff
   recalls and retains your decisions (the skill's Memory section).
 
