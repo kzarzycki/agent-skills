@@ -24,6 +24,7 @@ def _write_package(package: Path) -> None:
     skills.mkdir()
     for name in (
         "audit-third-party-software",
+        "chief-of-staff",
         "context-extractor",
         "operating-omnigent",
         "orchestrating-agents",
@@ -87,6 +88,7 @@ def _write_package(package: Path) -> None:
                 "aliases": {},
                 "owned_skills": [
                     "audit-third-party-software",
+                    "chief-of-staff",
                     "context-extractor",
                     "operating-omnigent",
                     "orchestrating-agents",

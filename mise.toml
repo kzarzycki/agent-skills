@@ -101,5 +101,9 @@ run = "uv run pytest -q engineering/tests/test_contract.py engineering/tests/tes
 [tasks.test-engineering-agents]
 run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e"
 
+[tasks.test-chief-of-staff-live]
+description = "A chief of staff has a lead of the other harness do an ask, in its repo and across two, both ways, through a logged-in Omnigent"
+run = "OMNIGENT_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e/test_live_chief_of_staff.py"
+
 [tasks.test]
-run = "uv run pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts"
+run = "uv run pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts && uv run ruff format --check tools tests engineering/tests engineering/skills/engineering-loop/scripts engineering/skills/orchestrating-agents/scripts engineering/skills/chief-of-staff/scripts"

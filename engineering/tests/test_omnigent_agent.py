@@ -42,16 +42,23 @@ class FakeOmnigent:
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
+        self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
 
     def create(
-        self, agent: str, title: str, model: str | None = None, top_level: bool = False
+        self,
+        agent: str,
+        title: str,
+        model: str | None = None,
+        top_level: bool = False,
+        workspace: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
         self.top_level.append(top_level)
+        self.workspaces.append(workspace)
         self.sessions[sid] = [{"type": "resource_event"}]
         self.titles[sid] = title
         if "create" in self.fail:  # the server made it; the answer timed out
@@ -444,9 +451,7 @@ def test_stalled_server_timeout_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(
-            self, agent: str, title: str, model: str | None = None, top_level: bool = False
-        ) -> str:
+        def create(self, *args: object) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -485,9 +490,7 @@ def test_stalled_error_body_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(
-            self, agent: str, title: str, model: str | None = None, top_level: bool = False
-        ) -> str:
+        def create(self, *args: object) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -854,6 +857,34 @@ def test_report_outside_the_workspace_is_refused_before_a_session_exists(
     assert og.sessions == {}
 
 
+def test_workspace_names_the_child_s_directory_and_bounds_its_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A lead for a change across two repos works in their parent; its report sits in the
+    # starter's own tmp/loop/, inside both workspaces.
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "a" / "tmp").mkdir(parents=True)
+    (tmp_path / "b").mkdir()
+    monkeypatch.chdir(tmp_path / "a")
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", str(tmp_path / "brief.md"), "tmp/lead.md", "--top-level"]
+    assert omnigent_agent.main([*argv, "--workspace", ".."]) == 0
+    assert og.workspaces == [str(tmp_path.resolve())]
+    outside = [
+        "start",
+        "claude",
+        "t2",
+        str(tmp_path / "brief.md"),
+        "tmp/x.md",
+        "--workspace",
+        "../b",
+    ]
+    assert omnigent_agent.main(outside) == 1
+    assert f"outside the child's workspace {(tmp_path / 'b').resolve()}" in capsys.readouterr().err
+    assert len(og.sessions) == 1
+
+
 def test_send_confirms_answer_on_a_full_rolling_page(tmp_path: Path) -> None:
     og = FakeOmnigent()
     sid = og.create("claude", "t")
@@ -880,7 +911,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     titles: list[str] = []
     create = og.create
-    og.create = lambda agent, title, model=None, top_level=False: (
+    og.create = lambda agent, title, model=None, top_level=False, workspace=None: (
         titles.append(title) or create(agent, title)
     )  # type: ignore[method-assign]
     og.fail.add("archive")
@@ -1052,6 +1083,8 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
 ) -> None:
     bodies = create_bodies(monkeypatch)
     omnigent_agent.Omnigent().create("claude", "t")
+    omnigent_agent.Omnigent().create("claude", "t", workspace="/w")
+    assert bodies[1]["workspace"] == "/w" and bodies.pop()["project_id"] == "p1"
     assert bodies == [
         {
             "agent_id": "a1",
@@ -1211,7 +1244,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None, top=False: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
+    og.create = lambda a, t, m=None, top=False, w=None: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     monkeypatch.chdir(tmp_path)

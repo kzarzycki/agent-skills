@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+A chief of staff, an optional session the owner talks to while leads do the work (#179).
+
+- New skill `chief-of-staff`, explicit-only (`/chief-of-staff` or a direct request): it sorts
+  each owner message, starts one top-level lead per independent ask with the owner's words
+  quoted, relays follow-ups, follows the leads with the detached `supervise --registry` job
+  and reports their results, questions and stalls. A lead behaves the same with or without
+  one, and every session started without it is a lead, as before.
+- With Hindsight configured (`~/.hindsight/coding-agent.json`), the chief recalls and retains
+  the owner's preferences and standing decisions per repo (`scripts/memory.py`). Workers and
+  verifiers get no memory, and `verifier.md` says a verifier reads none.
+- `omnigent_agent.py start` and `run` take `--workspace <dir>`: a lead for a change across
+  sibling repos works in their parent, its report under the starter's `tmp/loop/`. Without
+  it nothing changes. `lead.md` says each PR still follows its own repo's `docs/agents/`.
+
 ## 0.18.3 - 2026-10-15
 
 A waiter takes a child's report only once it is final (#165), and a taken title no longer
