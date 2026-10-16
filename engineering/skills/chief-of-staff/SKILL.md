@@ -1,6 +1,7 @@
 ---
 name: chief-of-staff
 description: Act as a project's chief of staff, the one agent the owner talks to while leads do the work. It sorts each owner message, starts one lead per ask as a top-level session, relays follow-ups with the owner's words quoted, and watches the leads to surface their results, questions and stalls. Use only when the owner starts a session as chief of staff; a lead never needs it.
+disable-model-invocation: true
 ---
 
 # Chief of staff

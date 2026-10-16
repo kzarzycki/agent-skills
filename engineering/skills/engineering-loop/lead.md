@@ -234,7 +234,9 @@ design, wireframes included for a UI, and delegate the rest.
    examples as checked (with a screenshot when there is something to see), ledger lines
    added, findings rejected, issues filed, each issue waiting for their sign-off, each
    agent's model, `verifier: same family`
-   when it was, and the main instance's link.
+   when it was, and the main instance's link. When your brief names a report path, write
+   this report there once, at the end: whoever started you takes that file as your final
+   report, so keep progress notes in another file.
 
 **Waiting.** Results come to you: a subagent's result or a backend's reply arrives as a
 new prompt. While a PR waits for CI, move other ready items forward (another PR's step, a

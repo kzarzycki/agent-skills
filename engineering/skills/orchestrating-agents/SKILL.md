@@ -25,7 +25,9 @@ it, **wait** for its report, **watch** children nothing waits on, **list** them 
 ## Rules
 
 - **Reports are files.** An agent writes its report to a file and sends only the path to
-  whoever started it, through the backend's message operation, then stops. Text left in
+  whoever started it, through the backend's message operation, then stops. It writes the
+  report path once, at the end: whoever waits takes that file as the final report, so
+  progress notes go to another file. Text left in
   its own session reaches nobody. A report names each agent's model, and returns only
   what the next step needs; the agent cleans up what it created first.
 - **Questions are files.** A child never asks the owner, who is not watching it: it

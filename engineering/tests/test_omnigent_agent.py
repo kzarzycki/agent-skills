@@ -6,7 +6,9 @@ import re
 import subprocess
 import sys
 import time
+from email.message import Message
 from pathlib import Path
+from urllib.error import HTTPError
 
 import pytest
 
@@ -41,6 +43,7 @@ class FakeOmnigent:
         self.titles: dict[str, str] = {}
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
         self.workspaces: list[str | None] = []
+        self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
 
     def create(
         self,
@@ -50,6 +53,9 @@ class FakeOmnigent:
         top_level: bool = False,
         workspace: str | None = None,
     ) -> str:
+        if title in self.taken:
+            error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
+            raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
         self.top_level.append(top_level)
         self.workspaces.append(workspace)
@@ -119,6 +125,7 @@ class FakeOmnigent:
 @pytest.fixture(autouse=True)
 def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
 
 
@@ -159,8 +166,10 @@ def test_start_fails_after_two_deaf_sessions(tmp_path: Path) -> None:
 
 
 def test_wait_returns_report(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "t")
     (tmp_path / "r.md").write_text("ok")
-    assert omnigent_agent.wait(FakeOmnigent(), "s0", tmp_path / "r.md") == str(tmp_path / "r.md")
+    assert omnigent_agent.wait(og, sid, tmp_path / "r.md") == str(tmp_path / "r.md")
 
 
 def test_verifier_wait_returns_only_after_the_verdict(tmp_path: Path) -> None:
@@ -176,12 +185,79 @@ def test_verifier_wait_returns_only_after_the_verdict(tmp_path: Path) -> None:
         nonlocal polls
         polls += 1
         if polls == 3:
-            report.write_text(report.read_text() + "SATISFIED: no\n")
-        return {"status": "running", "pending_elicitations": []}
+            report.write_text(report.read_text() + "SATISFIED: yes\n")
+        if polls == 4:  # it revises the verdict before its turn ends
+            report.write_text(report.read_text().replace("yes", "no"))
+        return {"status": "running" if polls < 5 else "idle", "pending_elicitations": []}
 
     og.info = info  # type: ignore[method-assign]
     assert omnigent_agent.wait(og, sid, report, verdict=True) == str(report)
-    assert polls == 3
+    assert polls == 5
+    assert report.read_text().endswith("SATISFIED: no\n")
+
+
+def test_a_report_written_while_the_turn_runs_waits_for_the_turn_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="landed #1", status="running")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", report, None, 0)
+    report.write_text("progress: #1 landed")  # a lead writing progress at its report path
+    with pytest.raises(omnigent_agent.Fail, match="no report after 0s"):
+        omnigent_agent.wait(og, sid, report, timeout=0)
+    og.final = "idle"
+    assert omnigent_agent.wait(og, sid, report, timeout=0) == str(report)
+
+
+def test_one_idle_look_is_no_turn_end_and_the_deadline_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="checking")  # reads idle mid-turn, its draft long written
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "codex", "t", "do X", report, None, 0)
+    report.write_text("draft\nSATISFIED: yes\n")
+    old = time.time() - 120
+    os.utime(report, (old, old))
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 60)
+    looks = 0
+    info = og.info
+
+    def rewriting(s: str) -> dict:
+        nonlocal looks
+        looks += 1
+        assert looks < 5, "the wait ran past its deadline"
+        report.write_text(f"draft {looks}\nSATISFIED: yes\n")  # still revising
+        return info(s)
+
+    og.info = rewriting  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="no verdict after 0s"):
+        omnigent_agent.wait(og, sid, report, timeout=0, verdict=True)
+    og.info = info  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    assert omnigent_agent.wait(og, sid, report, timeout=0, verdict=True) == str(report)
+
+
+def test_a_lost_turn_end_counts_the_report_once_it_and_the_history_are_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="done", status="running")  # Omnigent never shows the turn end
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", report, None, 0)
+    report.write_text("final")
+    old = time.time() - 120
+    os.utime(report, (old, old))
+    for item in og.sessions[sid]:
+        item["created_at"] = old
+    monkeypatch.setattr(omnigent_agent, "SETTLE_SECONDS", 180)
+    with pytest.raises(omnigent_agent.Fail, match="no report after 0s"):
+        omnigent_agent.wait(og, sid, report, timeout=0)
+    monkeypatch.setattr(omnigent_agent, "SETTLE_SECONDS", 60)
+    og.sessions[sid].append({"type": "message", "role": "assistant", "created_at": time.time()})
+    with pytest.raises(omnigent_agent.Fail, match="no report after 0s"):  # its history is not
+        omnigent_agent.wait(og, sid, report, timeout=0)
+    og.sessions[sid][-1]["created_at"] = old
+    assert omnigent_agent.wait(og, sid, report, timeout=0) == str(report)
+    assert "a lost turn end" in capsys.readouterr().err
 
 
 def test_verifier_wait_fails_when_turn_ends_without_verdict(tmp_path: Path) -> None:
@@ -194,9 +270,10 @@ def test_verifier_wait_fails_when_turn_ends_without_verdict(tmp_path: Path) -> N
 
 
 def test_worker_wait_needs_no_verdict(tmp_path: Path) -> None:
-    og = FakeOmnigent(reply="checking", status="running")
+    og = FakeOmnigent(reply="checking")
+    sid = og.create("claude", "t")
     (tmp_path / "r.md").write_text("partial")
-    assert omnigent_agent.wait(og, "s0", tmp_path / "r.md", timeout=0) == str(tmp_path / "r.md")
+    assert omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=0) == str(tmp_path / "r.md")
 
 
 def test_wait_fails_with_last_message_when_turn_ends_without_report(
@@ -246,9 +323,10 @@ def test_wait_keeps_waiting_through_a_mid_turn_idle(
 
     def info(s: str) -> dict:
         status = next(statuses, None)
-        if status is None:
+        if status is None and not report.exists():
             report.write_text("done")
-        return {"status": status or "running", "pending_elicitations": []}
+            status = "running"
+        return {"status": status or "idle", "pending_elicitations": []}
 
     og.info = info  # type: ignore[method-assign]
     assert omnigent_agent.wait(og, sid, report, timeout=5) == str(report)
@@ -265,6 +343,35 @@ def test_wait_keeps_waiting_through_launch_idle(
     monkeypatch.setattr(omnigent_agent, "IDLE_GRACE_SECONDS", 0)
     with pytest.raises(omnigent_agent.Fail, match=r"ended \(idle\)"):
         omnigent_agent.wait(og, sid, tmp_path / "r.md")
+
+
+def test_a_taken_title_moves_to_the_next_free_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    og.taken = {"t", "t-r2"}  # an earlier pass's children, archived or not
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.titles[sid] == "t-r3"
+    err = capsys.readouterr().err
+    assert "title t is taken" in err and f"session {sid} is titled t-r3" in err
+
+
+def test_a_taken_title_and_a_deaf_session_share_one_suffix_sequence(tmp_path: Path) -> None:
+    og = FakeOmnigent(deaf={0})
+    og.taken = {"t-r2"}
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert [og.titles[s] for s in og.sessions] == ["t", "t-r3"]
+    assert og.titles[sid] == "t-r3"
+
+
+def test_start_gives_up_when_every_title_is_taken(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    og.taken = {"t"} | {f"t-r{n}" for n in range(2, omnigent_agent.TITLES + 1)}
+    with pytest.raises(
+        omnigent_agent.Fail, match=f"titles t to t-r{omnigent_agent.TITLES} are taken"
+    ):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.sessions == {}
 
 
 def test_failed_archive_is_reported_and_retry_proceeds(
@@ -691,7 +798,7 @@ def test_a_follow_up_sent_as_the_turn_before_ends_is_waited_for(tmp_path: Path) 
     script = iter(["running", "idle", "idle", "running", "running"])
 
     def info(s: str) -> dict:
-        status = next(script, "running")
+        status = next(script, "idle")
         if status == "idle" and og.sessions[s][-1].get("role") != "user":
             og.land(s, "fix C1")
         if (
@@ -943,7 +1050,7 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
 DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
 {role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
-Write your report to {report}.
+Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
 
@@ -1470,6 +1577,56 @@ def test_supervise_returns_a_report_written_since_the_last_instruction(tmp_path:
     og = Owing([told("brief", 120), told("next phase", 30)], {})
     with pytest.raises(omnigent_agent.Fail, match="no event in 0s: a"):
         omnigent_agent.supervise(og, {"a": report}, timeout=0)
+
+
+def test_settled_needs_the_turn_ended_at_every_look_for_turn_end_seconds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 60)
+    report = aged(tmp_path / "r.md", 120)  # a draft written long before
+    idle, running = {"status": "idle"}, {"status": "running"}
+    ended: dict[str, float] = {}
+    assert not omnigent_agent.settled(report, idle, [], ended, "a")  # one idle look is no turn end
+    ended["a"] = time.time() - 61
+    assert omnigent_agent.settled(report, idle, [], ended, "a")
+    assert not omnigent_agent.settled(report, running, [told("x", 0)], ended, "a")
+    assert "a" not in ended  # a running look restarts the count
+    assert not omnigent_agent.settled(report, idle, [], ended, "a")
+    ended["a"] = time.time() - 61
+    aged(report, 10)  # rewritten while out of its turn
+    assert not omnigent_agent.settled(report, idle, [], ended, "a")
+
+
+def test_check_reads_the_report_again_after_it_settled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = tmp_path / "r.md"
+    report.write_text("SATISFIED: yes\n")
+    og = Owing([told("brief", 120)], {})
+
+    def rewritten(r: Path, *_: object) -> bool:
+        r.write_text("revising")  # the verdict is gone by the time it settled
+        return True
+
+    monkeypatch.setattr(omnigent_agent, "settled", rewritten)
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print, verdict=True)
+    assert event == ""
+
+
+def test_supervise_counts_a_report_only_once_its_turn_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = aged(tmp_path / "r.md", 60)  # progress, while the lead still works
+    og = Owing(
+        [told("brief", 120), told("progress", 1) | {"role": "assistant"}], {"status": "running"}
+    )
+    with pytest.raises(omnigent_agent.Fail, match="no event in 0s: a"):
+        omnigent_agent.supervise(og, {"a": report}, timeout=0)
+    og.infos = [{"status": "idle"}]
+    assert (
+        omnigent_agent.supervise(og, {"a": report}, timeout=0)
+        == f"a coord: report written: {report}"
+    )
 
 
 def test_supervise_returns_a_question_a_prompt_and_a_failure(tmp_path: Path) -> None:
