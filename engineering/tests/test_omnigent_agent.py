@@ -44,6 +44,7 @@ class FakeOmnigent:
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
         self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
+        self.subscriptions: list[tuple[str, str]] = []
 
     def create(
         self,
@@ -64,6 +65,11 @@ class FakeOmnigent:
         if "create" in self.fail:  # the server made it; the answer timed out
             raise omnigent_agent.Fail("POST /v1/sessions: TimeoutError: timed out")
         return sid
+
+    def subscribe(self, subscriber: str, sid: str) -> None:
+        if "subscribe" in self.fail:
+            raise omnigent_agent.Fail("POST subscriptions: HTTP 404 Not Found")
+        self.subscriptions.append((subscriber, sid))
 
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         self.top_level.append(top_level)
@@ -113,7 +119,10 @@ class FakeOmnigent:
             {"content": [{"type": "input_text", "text": t}]} for s, t, _ in self.held if s == sid
         ]
         status = "running" if pending else self.final
-        return {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        if sid[1:].isdigit() and int(sid[1:]) < len(self.workspaces):
+            info["workspace"] = self.workspaces[int(sid[1:])]
+        return info
 
     def archive(self, sid: str) -> str:
         if "archive" in self.fail:
@@ -885,6 +894,29 @@ def test_workspace_names_the_child_s_directory_and_bounds_its_report(
     assert len(og.sessions) == 1
 
 
+def test_send_bounds_the_report_by_the_session_s_own_workspace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A follow-up sent from another repo's checkout: the child works where it was started.
+    og = FakeOmnigent(reply="ok")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "child").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    sid = og.create("claude", "t", workspace=str(tmp_path / "child"))
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    (tmp_path / "m.md").write_text("fix it")
+    report = tmp_path / "child" / "r.md"
+    monkeypatch.setattr(
+        omnigent_agent, "wait", lambda *a, **k: (report.write_text("done"), str(report))[1]
+    )
+    assert omnigent_agent.main(["send", sid, str(tmp_path / "m.md"), str(report)]) == 0
+    outside = tmp_path / "elsewhere" / "r.md"
+    assert omnigent_agent.main(["send", sid, str(tmp_path / "m.md"), str(outside)]) == 1
+    assert (
+        f"outside the child's workspace {(tmp_path / 'child').resolve()}" in capsys.readouterr().err
+    )
+
+
 def test_send_confirms_answer_on_a_full_rolling_page(tmp_path: Path) -> None:
     og = FakeOmnigent()
     sid = og.create("claude", "t")
@@ -1125,6 +1157,40 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
 
 
+def test_a_top_level_start_subscribes_its_starter_to_the_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in ("OMNIGENT_SESSION_ID", "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "chief")
+    og = FakeOmnigent()
+    lead, _ = omnigent_agent.start(
+        og, "claude", "t", "do X", tmp_path / "a.md", None, 0, top_level=True
+    )
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "child")  # a child of the chief: it, not the chief
+    own, _ = omnigent_agent.start(
+        og, "codex", "s", "do V", tmp_path / "e.md", None, 0, top_level=True
+    )
+    assert og.subscriptions.pop() == ("child", own)
+    monkeypatch.delenv("OMNIGENT_SESSION_ID")
+    omnigent_agent.start(og, "claude", "w", "do Y", tmp_path / "b.md", None, 0)
+    assert og.subscriptions == [("chief", lead)]  # a child's parent hears it already
+    og.fail.add("subscribe")  # an Omnigent without subscriptions: the lead still starts
+    other, _ = omnigent_agent.start(
+        og, "claude", "u", "do Z", tmp_path / "c.md", None, 0, top_level=True
+    )
+    assert other in og.sessions and og.archived == []
+    assert f"not subscribed to {other}" in capsys.readouterr().err
+    # started from no session, or from a shell that does not name it (a native Codex one)
+    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID")
+    og.fail.discard("subscribe")
+    last, _ = omnigent_agent.start(
+        og, "claude", "v", "do W", tmp_path / "d.md", None, 0, top_level=True
+    )
+    assert og.subscriptions == [("chief", lead)]
+    assert f"not subscribed to {last}" in capsys.readouterr().err
+
+
 def test_run_refuses_top_level_before_a_session_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1336,6 +1402,25 @@ def test_watch_ignores_states_it_starts_in_and_the_launch_idle(
         omnigent_agent.watch(og, ["a", "b"], timeout=0)
 
 
+def test_watch_reports_an_end_only_once_it_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A native Claude session reads idle while quiet mid-turn: the end it shows then is not one.
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 30)
+    now = [0.0]
+    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: now[0])
+    states = iter(["running", "idle", "running", "idle", "idle", "idle"])
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.info = lambda s: {"status": next(states), "title": "lead"}  # type: ignore[method-assign]
+    og.items = lambda s: [{"id": "m1", "type": "message", "role": "assistant", "content": []}]  # type: ignore[method-assign]
+
+    def tick(seconds: float) -> None:
+        now[0] += 20
+
+    monkeypatch.setattr(omnigent_agent.time, "sleep", tick)
+    assert omnigent_agent.watch(og, [sid]) == [f"{sid} lead: turn ended\nlast message: "]
+    assert now[0] == 100  # the first idle passed; the second held for 40s
+
+
 def test_watch_reports_a_prompt_at_once_with_the_tool_call() -> None:
     prompt = {
         "elicitation_id": "e1",
@@ -1427,7 +1512,7 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     ]
 
 
-def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
+def test_a_sub_agent_has_its_turn_interrupted_and_terminals_ended_and_is_never_archived(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple] = []
@@ -1445,6 +1530,7 @@ def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
     # an archive (unbound first or not) stops coord's runner too: kzarzycki/omnigent#5
     assert og.archive("kid") == "ended"
     assert [c for c in calls if c[0] != "GET"] == [
+        ("POST", "/v1/sessions/kid/events", {"type": "interrupt"}),  # else a codex turn runs on
         ("DELETE", "/v1/sessions/kid/resources/terminals/terminal_claude_main", None),
     ]
     calls.clear()

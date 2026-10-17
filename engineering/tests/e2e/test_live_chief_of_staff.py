@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -95,10 +96,11 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         "The owner, in the session that started you:\n\n"
         f"> Have a {lead.capitalize()} lead add a file NOTES.md to {where} containing exactly "
         f"the line `{line}`, committed on main. Tell me when it's done.\n\n"
-        "This is a test project with no remote and no issue tracker. Start no detached "
-        "supervisor job; follow the lead with a one-shot `supervise`. Once the lead has reported "
-        "and you have checked each NOTES.md and commit, archive the lead and write your final "
-        "report: the lead's session id and what it did.\n"
+        "This is a test project with no remote and no issue tracker. Once the lead is started, "
+        "end your turn: Omnigent's notice that the lead ended its turn wakes you, so run no "
+        "`watch` or `supervise`. Once the lead has reported and you have checked each NOTES.md "
+        "and commit, archive the lead and write your final report: the lead's session id and "
+        "what it did.\n"
     )
     module, og = _omnigent()
     started = subprocess.run(
@@ -117,19 +119,46 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "OMNIGENT_PROJECT": ""},
+        env={
+            **os.environ,
+            "OMNIGENT_PROJECT": "",
+            **dict.fromkeys(
+                (
+                    "OMNIGENT_SESSION_ID",
+                    "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
+                    "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
+                ),
+                "",
+            ),
+        },
     )
     assert started.returncode == 0, started.stderr
     chief_id = started.stdout.split()[0]
     try:
-        waited = subprocess.run(
-            [sys.executable, "-B", str(SCRIPT), "wait", chief_id, str(report), "--timeout", "1800"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert waited.returncode == 0, waited.stdout + waited.stderr
+        # Not ``wait``: its nudge after a turn ending with no report would wake the chief itself.
+        # The chief rested when it was idle after starting the lead with no notice yet: the
+        # status is read before the items, so a notice the items lack came after that idle.
+        # ponytail: idle, not a confirmed turn end. A native Claude session also shows idle in
+        # a lull mid-turn, and Omnigent tells only a subscriber that a turn ended. Upgrade: a
+        # witness session subscribed to the chief, whose notice is that confirmation.
+        rested, deadline = False, time.monotonic() + 1800
+        while True:
+            status = og.info(chief_id).get("status")
+            assert status != "failed" and time.monotonic() < deadline, status
+            items = og.items(chief_id)
+            began = any(i.get("type") == "function_call" and "--top-level" in str(i) for i in items)
+            notices = [i for i in items if " ended its turn" in module.text_of(i)]
+            rested |= status == "idle" and began and not notices
+            # a chief may note "lead started" in its report before it rests: only a report written
+            # after a notice is the final one
+            if (
+                status == "idle"
+                and notices
+                and report.exists()
+                and report.stat().st_mtime >= notices[-1].get("created_at", 0)
+            ):
+                break
+            time.sleep(5)
         for r in repos:
             assert (r / "NOTES.md").read_text() == line + "\n"
             assert "NOTES.md" in _git(r, "log", "-1", "--name-only", "--format=")
@@ -140,5 +169,19 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         assert [
             (s.get("harness"), s.get("parent_session_id"), s.get("workspace")) for s in leads
         ] == [(NATIVE[lead], None, str(parent if across else repo))]
+        # the chief heard the lead through its subscription, not a command of its own: it went
+        # idle after starting the lead, acted after the notice, and never ran watch or supervise
+        items = og.items(chief_id)
+        heard = [
+            n
+            for n, i in enumerate(items)
+            if i.get("type") == "message"
+            and f"({leads[0]['id']}) ended its turn" in module.text_of(i)
+        ]
+        assert heard, [module.text_of(i) for i in items[-3:]]
+        assert rested, "the chief was never idle between starting the lead and the notice"
+        calls = [i for i in items if i.get("type") == "function_call"]
+        assert [i for i in items[heard[0] + 1 :] if i in calls]
+        assert not [c for c in map(str, calls) if " watch " in c or " supervise" in c]
     finally:
         module.reap(og, _sessions(og, repo, parent) or [chief_id])
