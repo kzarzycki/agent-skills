@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.21.0 - 2026-10-17
 
-No model is hardcoded or picked in the pack (#175).
+No model is hardcoded or picked in the pack (#175), and a finished sub-agent is archived (#188).
+The latter needs an Omnigent build with kzarzycki/omnigent 4dd0af32, a new requirement, so this
+is a minor version.
 
 - A Codex verifier no longer defaults to `gpt-6.1-sol`: every child runs on `--model`, else
   `OMNIGENT_MODEL_<AGENT>`, else its harness's configured default (Codex:
