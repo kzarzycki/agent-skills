@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.20.0 - 2026-10-17
+
+A chief of staff hears its leads through Omnigent session subscriptions, not a detached
+supervisor job (#182). It needs an Omnigent build with subscriptions (kzarzycki/omnigent#6);
+a Codex chief also needs its shell to name its session (kzarzycki/omnigent#9).
+
+- `omnigent_agent.py start --top-level` subscribes the session it runs in to the new lead,
+  before the brief is sent. Omnigent then posts the chief a notice each time the lead ends a
+  turn or waits on a prompt, and revives the chief for it. A subscribe that fails, or a shell
+  that doesn't name its session, prints `not subscribed` and the start still succeeds: follow
+  that lead with `watch`.
+- `chief-of-staff` follows its leads by those notices and subscribes with
+  `sys_session_subscribe` to a lead it takes over. The launchd supervisor is gone from the
+  skill and the README.
+- `send` bounds a follow-up's report by the session's own workspace, so a lead working in a
+  parent directory or a sibling repo no longer has its report rejected.
+- `watch` counts a native session's turn end only once it has held for 30s, since a Claude
+  session reads idle in the middle of a turn.
+- Ending a sub-agent interrupts its turn before ending its terminals. Ending only the terminals
+  left a Codex child's turn running, and an ended verifier kept working and overwrote a report.
+
 ## 0.19.1 - 2026-10-17
 
 - An Omnigent child's label names its work. Omnigent labels a child by a model summary of its
