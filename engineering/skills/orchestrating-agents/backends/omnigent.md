@@ -146,7 +146,9 @@ turn or prompt, reviving the subscriber's runner when it was reaped. A notice ca
 of the target's, so read what it names. It is how a top-level lead's starter hears it, since
 only a sub-agent's parent is told; `start --top-level` subscribes the session it runs in
 (`not subscribed` on stderr when the subscribe fails: a server without subscriptions answers
-404, a cycle or the 1,000-per-session cap 409; follow that lead with `watch`). It says nothing of a session silent
+404, a cycle or the 1,000-per-session cap 409, and a shell that does not name its session in
+`OMNIGENT_RUNNER_PRIMARY_SESSION_ID`, as a native Codex one does not yet, subscribes nobody;
+follow that lead with `watch`). It says nothing of a session silent
 mid-turn, which `supervise` still catches. Archiving or deleting either side drops it.
 
 **Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a

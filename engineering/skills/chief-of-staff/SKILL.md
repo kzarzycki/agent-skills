@@ -67,7 +67,8 @@ its landing order.
   reaped, so you hear every lead without a command of your own running. Read the history or
   info it names before acting on the table below, since the notice carries no text of the
   lead's. When `start` prints `not subscribed`, the subscribe failed (a server without
-  subscriptions, a cycle, or the 1,000-per-session cap): follow that lead with a background
+  subscriptions, a cycle, the 1,000-per-session cap, or a shell that does not name its
+  Omnigent session, as a native Codex one does not yet): follow that lead with a background
   `watch <session>...` (`../orchestrating-agents/backends/omnigent.md`, Watching sessions). A
   lead you took over, or started some other way, you subscribe to with Omnigent's
   `sys_session_subscribe` tool. Never poll, since a notice reaches you anyway.

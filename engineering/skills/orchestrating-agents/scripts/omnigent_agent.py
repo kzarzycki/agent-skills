@@ -636,10 +636,12 @@ def start(
             sid = found
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
-        if top_level and (me := parent_id()):
+        if top_level:
             # A top-level lead has no parent to tell: the session starting it hears its turn ends
             # and prompts instead, revived for them if its runner was reaped.
             try:
+                if not (me := parent_id()):
+                    raise Fail("this shell does not name its Omnigent session")
                 og.subscribe(me, sid)
             except Fail as e:
                 print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)

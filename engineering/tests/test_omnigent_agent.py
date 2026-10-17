@@ -1173,10 +1173,14 @@ def test_a_top_level_start_subscribes_its_starter_to_the_lead(
     )
     assert other in og.sessions and og.archived == []
     assert f"not subscribed to {other}" in capsys.readouterr().err
-    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID")  # started from no session
+    # started from no session, or from a shell that does not name it (a native Codex one)
+    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID")
     og.fail.discard("subscribe")
-    omnigent_agent.start(og, "claude", "v", "do W", tmp_path / "d.md", None, 0, top_level=True)
+    last, _ = omnigent_agent.start(
+        og, "claude", "v", "do W", tmp_path / "d.md", None, 0, top_level=True
+    )
     assert og.subscriptions == [("chief", lead)]
+    assert f"not subscribed to {last}" in capsys.readouterr().err
 
 
 def test_run_refuses_top_level_before_a_session_exists(
