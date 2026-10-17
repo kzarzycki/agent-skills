@@ -136,7 +136,7 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
     )
     message = omnigent_agent.text_of(og.sessions[sid][1])
     brief_file = tmp_path / "r.md.brief"
-    assert str(brief_file) in message and "do X" not in message
+    assert message.startswith("Work on t:") and str(brief_file) in message and "do X" not in message
     text = brief_file.read_text()
     assert sid == "s0" and text.endswith("do X")
     assert (
@@ -1122,7 +1122,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert "USER NEEDED" not in text and "needs-owner" not in text
     assert "foreground" in text and f"final report to {tmp_path / 'r.md'}" in text
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
-    assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Your brief is the file ")
+    assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
 
 
 def test_run_refuses_top_level_before_a_session_exists(
@@ -1147,7 +1147,7 @@ def test_a_found_session_that_already_has_the_brief_is_not_briefed_twice(tmp_pat
         brief = tmp_path / "r.md.brief"
         og.land(
             sid,
-            f"Your brief is the file {brief}. Read it now and do what it says.",
+            f"Work on t: read {brief} and do what it says.",
         )
         return sid
 

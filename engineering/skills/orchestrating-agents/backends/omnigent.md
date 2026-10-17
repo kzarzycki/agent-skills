@@ -13,10 +13,12 @@ several repos for a lead whose change spans them. The report path goes in a giti
 workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
-`s120-verifier-p1`. The brief file holds only the task specifics; the script writes it,
-under a fixed preamble (owner-authorized imperative, the role file, long commands in the
-foreground, write the report to the path, reply with only the path), to `<report>.brief`
-and sends the child one line naming that file. Build the brief with a quoted heredoc
+`pr182-verifier-p1`: the issue or PR, then the role. The brief file holds only the task
+specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
+role file, long commands in the foreground, write the report to the path, reply with only
+the path), to `<report>.brief` and sends the child one line naming the title and that file.
+Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
+that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc
 (`<<'EOF'`): an unquoted one runs each backticked name as a command, and the script
 refuses a brief left with an empty `` `` `` span. Exit 0 prints the report path. Exit 1
 prints the reason and the child's last message; for a session that failed, also its

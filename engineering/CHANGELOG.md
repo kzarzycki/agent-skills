@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- An Omnigent child's label names its work. Omnigent labels a child by a model summary of its
+  first message, not by its title, and that message was the same line for every child, so
+  labels came out as "Read Brief and Execute". The line now leads with the title
+  (`Work on pr182-verifier-p2: read <brief> and do what it says.`), and
+  `backends/omnigent.md` asks for titles that name the issue or PR.
+
 ## 0.19.0 - 2026-10-16
 
 A chief of staff, an optional session the owner talks to while leads do the work (#179).
