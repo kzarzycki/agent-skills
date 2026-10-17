@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.19.1 - 2026-10-17
 
 - An Omnigent child's label names its work. Omnigent labels a child by a model summary of its
   first message, not by its title, and that message was the same line for every child, so
