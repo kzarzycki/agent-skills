@@ -1566,7 +1566,8 @@ def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
     og = FakeOmnigent()
     og.info = lambda s: dict(states[s], title=f"t-{s}")  # type: ignore[method-assign]
     og.children = lambda p: list(states)  # type: ignore[attr-defined]
-    lines = omnigent_agent.reap(og, [], parent="p")
+    lines, failed = omnigent_agent.reap(og, [], parent="p")
+    assert not failed
     assert og.archived == ["idle", "failed"]
     assert lines == [
         "idle t-idle: archived (idle)",
@@ -1588,11 +1589,37 @@ def test_reap_goes_on_past_a_finish_that_fails() -> None:
         return archive(s)
 
     og.archive = refuse_a  # type: ignore[method-assign]
-    assert omnigent_agent.reap(og, ["a", "b"]) == [
-        "a t-a: finish failed: PATCH a: HTTP 503",
-        "b t-b: archived (idle)",
-    ]
+    assert omnigent_agent.reap(og, ["a", "b"]) == (
+        ["a t-a: finish failed: PATCH a: HTTP 503", "b t-b: archived (idle)"],
+        True,
+    )
     assert og.archived == ["b"]
+
+
+def test_reap_exits_1_when_a_finish_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    title = "investigate: finish failed: PATCH"  # a title is not an outcome
+    og.info = lambda s: {"status": "idle", "title": title}  # type: ignore[method-assign]
+    assert omnigent_agent.main(["reap", "b"]) == 0
+    og.info = lambda s: {"status": "idle", "title": f"t-{s}"}  # type: ignore[method-assign]
+    capsys.readouterr()
+    archive = og.archive
+
+    def refuse_a(s: str) -> None:
+        if s == "a":
+            raise omnigent_agent.Fail("PATCH a: HTTP 503")
+        archive(s)
+
+    og.archive = refuse_a  # type: ignore[method-assign]
+    assert omnigent_agent.main(["reap", "a", "c"]) == 1
+    assert og.archived == ["b", "c"]
+    assert capsys.readouterr().out.splitlines() == [
+        "a t-a: finish failed: PATCH a: HTTP 503",
+        "c t-c: archived (idle)",
+    ]
 
 
 def test_run_archives_on_its_report_but_not_on_a_question(
