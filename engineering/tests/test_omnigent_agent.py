@@ -548,6 +548,10 @@ def test_create_files_the_session_under_the_project(
     assert omnigent_agent.Omnigent().create("claude", "t") == "s1"
     assert calls[-1][2] and "project_id" not in calls[-1][2]
 
+    monkeypatch.setenv("OMNIGENT_PROJECT", "S_hop")  # as the repo voice_note files under "Voice note"
+    omnigent_agent.Omnigent().create("claude", "t")
+    assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
+
 
 def test_the_model_is_the_flag_else_the_agents_environment_variable_else_the_harness_default(
     monkeypatch: pytest.MonkeyPatch,
@@ -1069,7 +1073,7 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "coord")
     og = object.__new__(omnigent_agent.Omnigent)
-    monkeypatch.setenv("OMNIGENT_PROJECT", "my shop")
+    monkeypatch.setenv("OMNIGENT_PROJECT", "my_shop")  # lists under the project's exact name
     assert og.find("t", 100, top_level=True) == "new"
     assert paths[-1] == "/v1/sessions?kind=default&project=my%20shop&limit=100"
     monkeypatch.setenv("OMNIGENT_PROJECT", "no-such-group")  # created unfiled: look there

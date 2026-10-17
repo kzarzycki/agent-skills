@@ -31,8 +31,9 @@ verifier revising its verdict). Omnigent can lose a turn end and leave the sessi
 `running` (kzarzycki/omnigent#4), so a report that is quiet, with its session's history,
 for 10 minutes counts too. The report path is the final report, written once at the end:
 a child keeps progress in another file, since the first report the waiter takes is its
-answer. Sessions are filed under the Omnigent project named like the repo, when
-one exists; `OMNIGENT_PROJECT` overrides the name.
+answer. Sessions are filed under the Omnigent project named like the repo, when one exists;
+case, spaces and punctuation don't count, so `voice_note` files under "Voice note".
+`OMNIGENT_PROJECT` overrides the name.
 
 **Questions.** A child never asks the owner. It writes `<report>.question` and stops;
 exit 3 prints that path. Answer from the spec and the owner's stated intent, or ask the
