@@ -119,7 +119,18 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "OMNIGENT_PROJECT": "", "OMNIGENT_RUNNER_PRIMARY_SESSION_ID": ""},
+        env={
+            **os.environ,
+            "OMNIGENT_PROJECT": "",
+            **dict.fromkeys(
+                (
+                    "OMNIGENT_SESSION_ID",
+                    "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
+                    "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
+                ),
+                "",
+            ),
+        },
     )
     assert started.returncode == 0, started.stderr
     chief_id = started.stdout.split()[0]

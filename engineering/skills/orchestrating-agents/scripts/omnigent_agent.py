@@ -413,6 +413,17 @@ def parent_id() -> str:
     return os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
 
 
+def own_id() -> str:
+    """The session this runs in: a child's own id, not its lead's. Codex names it in
+    OMNIGENT_SESSION_ID, a Claude pane in OMNIGENT_TERMINAL_LAUNCH_SESSION_ID; else the primary."""
+    env = os.environ
+    return (
+        env.get("OMNIGENT_SESSION_ID")
+        or env.get("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID")
+        or parent_id()
+    )
+
+
 def runner_log(info: dict) -> str:
     """Where the session's runner logs: one file per primary session, children included."""
     root = info.get("parent_session_id") or info.get("id") or "*"
@@ -640,7 +651,7 @@ def start(
             # A top-level lead has no parent to tell: the session starting it hears its turn ends
             # and prompts instead, revived for them if its runner was reaped.
             try:
-                if not (me := parent_id()):
+                if not (me := own_id()):
                     raise Fail("this shell does not name its Omnigent session")
                 og.subscribe(me, sid)
             except Fail as e:

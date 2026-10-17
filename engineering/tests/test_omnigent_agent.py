@@ -1160,11 +1160,19 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
 def test_a_top_level_start_subscribes_its_starter_to_the_lead(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    for name in ("OMNIGENT_SESSION_ID", "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "chief")
     og = FakeOmnigent()
     lead, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "a.md", None, 0, top_level=True
     )
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "child")  # a child of the chief: it, not the chief
+    own, _ = omnigent_agent.start(
+        og, "codex", "s", "do V", tmp_path / "e.md", None, 0, top_level=True
+    )
+    assert og.subscriptions.pop() == ("child", own)
+    monkeypatch.delenv("OMNIGENT_SESSION_ID")
     omnigent_agent.start(og, "claude", "w", "do Y", tmp_path / "b.md", None, 0)
     assert og.subscriptions == [("chief", lead)]  # a child's parent hears it already
     og.fail.add("subscribe")  # an Omnigent without subscriptions: the lead still starts
