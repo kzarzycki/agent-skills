@@ -146,11 +146,18 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
             status = og.info(chief_id).get("status")
             assert status != "failed" and time.monotonic() < deadline, status
             items = og.items(chief_id)
-            if status == "idle" and report.exists():
-                break
             began = any(i.get("type") == "function_call" and "--top-level" in str(i) for i in items)
-            notified = any(" ended its turn" in module.text_of(i) for i in items)
-            rested |= status == "idle" and began and not notified
+            notices = [i for i in items if " ended its turn" in module.text_of(i)]
+            rested |= status == "idle" and began and not notices
+            # a chief may note "lead started" in its report before it rests: only a report written
+            # after a notice is the final one
+            if (
+                status == "idle"
+                and notices
+                and report.exists()
+                and report.stat().st_mtime >= notices[-1].get("created_at", 0)
+            ):
+                break
             time.sleep(5)
         for r in repos:
             assert (r / "NOTES.md").read_text() == line + "\n"
