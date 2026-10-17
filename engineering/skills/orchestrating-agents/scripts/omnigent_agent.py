@@ -741,14 +741,14 @@ def wait(
     return str(report)
 
 
-def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[str]:
+def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
-    saying which: ``archived``, or kept and why.
+    saying which: ``archived``, or kept and why, and whether any finish failed.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
     reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it."""
-    lines = []
+    lines, failed = [], False
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
         info = og.info(sid)
         status = str(info.get("status"))
@@ -768,9 +768,10 @@ def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[s
             og.archive(sid)
         except Fail as e:  # one refused finish leaves the rest to reap
             lines.append(f"{sid} {info.get('title') or ''}: finish failed: {e}")
+            failed = True
             continue
         lines.append(f"{sid} {info.get('title') or ''}: archived ({status})")
-    return lines
+    return lines, failed
 
 
 def observe(
@@ -1370,9 +1371,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "reap":
             if not args.sessions and not args.children:
                 raise Fail("reap needs a session or --children <parent>")
-            lines = reap(og, args.sessions, args.children)
+            lines, failed = reap(og, args.sessions, args.children)
             print("\n".join(lines))
-            return 1 if any(": finish failed: " in line for line in lines) else 0
+            return 1 if failed else 0
         if args.cmd == "supervise":
             if args.registry:
                 for s, r in owed.items():
