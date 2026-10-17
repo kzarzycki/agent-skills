@@ -10,6 +10,11 @@ No model is hardcoded or picked in the pack (#175).
 - `engineering-loop` SKILL.md § Models and `lead.md` step 4 no longer pick a model per item: a
   lead leaves it to the default unless the owner names one. A launch that fails on capacity is
   retried later on the same model, never on another (`backends/omnigent.md` § Model).
+- A finished sub-agent is archived, like a top-level session, instead of having its turn
+  interrupted and its terminals ended and being left unarchived (#188). It needs an Omnigent
+  build with kzarzycki/omnigent 4dd0af32, where archiving a sub-agent leaves the runner it
+  shares with its parent up; an older build stops that runner and the parent with it.
+  `reap` prints `archived` for every session it finishes.
 
 ## 0.20.0 - 2026-10-17
 

@@ -124,11 +124,10 @@ class FakeOmnigent:
             info["workspace"] = self.workspaces[int(sid[1:])]
         return info
 
-    def archive(self, sid: str) -> str:
+    def archive(self, sid: str) -> None:
         if "archive" in self.fail:
             raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
         self.archived.append(sid)
-        return "archived"
 
 
 @pytest.fixture(autouse=True)
@@ -1513,32 +1512,12 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     ]
 
 
-def test_a_sub_agent_has_its_turn_interrupted_and_terminals_ended_and_is_never_archived(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_sub_agent_is_archived_like_a_top_level_session(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple] = []
-    parents = {"kid": "coord", "top": None}
-
-    def call(self, method: str, path: str, body: object = None) -> object:
-        calls.append((method, path, body))
-        sid = path.split("/")[3]
-        if method == "GET" and path.endswith("/resources/terminals"):
-            return {"data": [{"id": "terminal_claude_main"}]}
-        return {"parent_session_id": parents[sid]} if method == "GET" else {}
-
-    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda self, *c: calls.append(c) or {})
     og = object.__new__(omnigent_agent.Omnigent)
-    # an archive (unbound first or not) stops coord's runner too: kzarzycki/omnigent#5
-    assert og.archive("kid") == "ended"
-    assert [c for c in calls if c[0] != "GET"] == [
-        ("POST", "/v1/sessions/kid/events", {"type": "interrupt"}),  # else a codex turn runs on
-        ("DELETE", "/v1/sessions/kid/resources/terminals/terminal_claude_main", None),
-    ]
-    calls.clear()
-    assert og.archive("top") == "archived"  # its own runner: the archive ends it
-    assert [c for c in calls if c[0] != "GET"] == [
-        ("PATCH", "/v1/sessions/top", {"archived": True})
-    ]
+    og.archive("kid")  # the server leaves the parent's shared runner up (omnigent 4dd0af32)
+    assert calls == [("PATCH", "/v1/sessions/kid", {"archived": True})]
 
 
 def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
@@ -1554,13 +1533,11 @@ def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
     og = FakeOmnigent()
     og.info = lambda s: dict(states[s], title=f"t-{s}")  # type: ignore[method-assign]
     og.children = lambda p: list(states)  # type: ignore[attr-defined]
-    archive = og.archive
-    og.archive = lambda s: "ended" if s == "failed" else archive(s)  # type: ignore[method-assign]
     lines = omnigent_agent.reap(og, [], parent="p")
-    assert og.archived == ["idle"]
+    assert og.archived == ["idle", "failed"]
     assert lines == [
         "idle t-idle: archived (idle)",
-        "failed t-failed: ended (failed)",
+        "failed t-failed: archived (failed)",
         "running t-running: kept (running)",
         "blocked t-blocked: kept (blocked on a prompt)",
         "queued t-queued: kept (input pending)",
