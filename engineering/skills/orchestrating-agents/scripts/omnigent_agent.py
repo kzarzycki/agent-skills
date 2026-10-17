@@ -281,12 +281,20 @@ class Omnigent:
 
     def project(self, name: str) -> dict | None:
         """The project (a sidebar group) called ``name``, or None when there is none. Case, spaces
-        and punctuation don't count: the repo ``voice_note`` files under the project "Voice note"."""
+        and punctuation don't count: the repo ``voice_note`` files under the project "Voice note".
+        An exact name wins; two loose matches and no exact one fail rather than pick by order."""
         projects = self.call("GET", "/v1/projects")
-        for p in projects.get("data", projects) if isinstance(projects, dict) else projects:
-            if loose(p.get("name") or "") == loose(name):
-                return p
-        return None
+        projects = projects.get("data", projects) if isinstance(projects, dict) else projects
+        if exact := [p for p in projects if p.get("name") == name]:
+            return exact[0]
+        key = loose(name)
+        matches = [p for p in projects if key and loose(p.get("name") or "") == key]
+        if len(matches) > 1:
+            names = ", ".join(repr(p.get("name")) for p in matches)
+            raise Fail(
+                f"projects {names} all match {name!r}: set OMNIGENT_PROJECT to the exact one"
+            )
+        return matches[0] if matches else None
 
     def create(
         self,
@@ -389,7 +397,8 @@ def project_name() -> str:
 
 
 def loose(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", name.casefold())
+    """``name`` without case, spaces or punctuation; letters and digits in any script stay."""
+    return "".join(c for c in name.casefold() if c.isalnum())
 
 
 def parent_id() -> str:
