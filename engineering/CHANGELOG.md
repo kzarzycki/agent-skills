@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.1 - 2026-10-18
+
+Two fixes to `omnigent_agent.py`.
+
+- A session files under the Omnigent project whose name matches the repo's ignoring case,
+  spaces and punctuation, so `voice_note` files under "Voice note" (#194). An exact name wins;
+  two loose matches with no exact one fail and name `OMNIGENT_PROJECT`. Letters and digits in
+  any script count.
+- `reap` exits 1 when a finish failed, after trying every session (#192).
+
 ## 0.21.0 - 2026-10-17
 
 No model is hardcoded or picked in the pack (#175), and a finished sub-agent is archived (#188).
