@@ -583,7 +583,9 @@ def start(
         )
         + brief
     )
-    text = f"Your brief is the file {brief_file}. Read it now and do what it says."
+    # Omnigent labels a child by a model summary of this first message, not by its title, so the
+    # title leads: a generic line gets labels like "Read Brief and Execute".
+    text = f"Work on {title}: read {brief_file} and do what it says."
     reasons: list[str] = []
     survivors: list[str] = []
 
