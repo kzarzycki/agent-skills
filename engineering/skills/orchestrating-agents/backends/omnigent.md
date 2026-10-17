@@ -245,12 +245,11 @@ the user is logged out, and `journalctl --user -u <name>` shows its log.
 
 **Finished sessions.** `run` and `wait` finish the session whose report or verdict they
 return, which ends its agent process and keeps its transcript; a session that asked a
-question stays, since the answer goes to it. A top-level session is archived. A sub-agent
-has its turn interrupted and its terminals ended, and stays in the list unarchived: archiving
-it stops the runner it shares with its parent, which loses the parent its context
-(kzarzycki/omnigent#5). Without the interrupt a codex child's turn runs on.
+question stays, since the answer goes to it. Finishing archives the session, a sub-agent
+too: Omnigent leaves the runner it shares with its parent up, on a build with
+kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]` finishes each
-session that is done (not running, no prompt or input waiting), printing `archived` or `ended` for
+session that is done (not running, no prompt or input waiting), printing `archived` for
 each, and prints which it kept. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
 which finishes it on return, never reaped. Run `reap --children

@@ -46,9 +46,8 @@ return the report or a question.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
 question; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest; it cannot tell a child still owing its report from a finished one, so it runs once every
-report is in. Finishing archives a top-level session and only ends a sub-agent's terminals, since
-archiving a sub-agent stops its parent's runner (kzarzycki/omnigent#5); either way the transcript
-is kept, and nothing here deletes a session.
+report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
+session.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -344,27 +343,11 @@ class Omnigent:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
         return self.call("GET", f"/v1/sessions/{sid}")
 
-    def archive(self, sid: str) -> str:
-        """Finish ``sid``: end its agent process, keep its transcript, and say how (``archived``
-        or ``ended``). Never DELETE, which erases the transcript.
-
-        A top-level session is archived, which stops its own runner. A sub-agent shares its
-        parent's runner, and archiving it stops that runner too, taking the parent down: so only
-        its turn is interrupted, its terminals (its agent process) are ended and it stays
-        unarchived: ending the terminals alone leaves a codex child's app-server turn running.
-        """
-        if self.info(sid).get("parent_session_id"):
-            self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
-            # ponytail: unbinding the runner before the archive does not help, since the child's
-            # turn-end idle makes the server bind it back to the parent's runner before the
-            # archive's delayed stop (kzarzycki/omnigent#5). Upgrade: archive sub-agents again
-            # once the server no longer stops a runner a sub-agent shares.
-            terminals = self.call("GET", f"/v1/sessions/{sid}/resources/terminals")
-            for t in terminals.get("data", []):
-                self.call("DELETE", f"/v1/sessions/{sid}/resources/terminals/{t['id']}")
-            return "ended"
+    def archive(self, sid: str) -> None:
+        """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
+        DELETE, which erases the transcript. A sub-agent's archive leaves the runner it shares
+        with its parent up (kzarzycki/omnigent 4dd0af32)."""
         self.call("PATCH", f"/v1/sessions/{sid}", {"archived": True})
-        return "archived"
 
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         """The parent's child called ``title`` created at or after ``after`` (epoch seconds): the
@@ -761,7 +744,7 @@ def wait(
 def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[str]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
-    saying which, and how: ``archived``, or ``ended`` for a sub-agent, which stays unarchived.
+    saying which: ``archived``, or kept and why.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
     reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it."""
@@ -782,11 +765,11 @@ def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> list[s
             lines.append(f"{sid} {info.get('title') or ''}: kept ({busy})")
             continue
         try:
-            how = og.archive(sid)
+            og.archive(sid)
         except Fail as e:  # one refused finish leaves the rest to reap
             lines.append(f"{sid} {info.get('title') or ''}: finish failed: {e}")
             continue
-        lines.append(f"{sid} {info.get('title') or ''}: {how} ({status})")
+        lines.append(f"{sid} {info.get('title') or ''}: archived ({status})")
     return lines
 
 

@@ -58,7 +58,7 @@ g("/health").read()  # {"status":"ok"}: the server is alive
 | Attach to a live session | `omnigent attach conv_xxx` | Interactive; needs a real terminal, not a headless shell. Starts nothing. |
 | Reopen a stored session | `omnigent resume conv_xxx` | Interactive, like `attach`: fails headless. claude-native lands in `omnigent claude`. |
 | Revive a reaped session | `POST /v1/sessions/conv_xxx/events` with `{"type": "retry_session", "data": {}}`, then poll `GET /v1/sessions/conv_xxx` until `runner_online` is true, then send as usual | Relaunches the runner on the same session and keeps its whole conversation; replies `{"queued": false, "recovered": true, "recovery": "runner_relaunched"}`; a native terminal already up gives `"recovered": true, "recovery": "native_terminal_ready"`, and a live runner `"recovered": false, "recovery": "already_connected"`, which is success too, so read `recovery`, not `recovered` alone. No runner to relaunch is an HTTP error. It is the web UI's "Resume session" button and works headless, unlike `omnigent resume`; the engineering-loop launcher's `send` does it by itself. Fallback: `PATCH /v1/sessions/conv_xxx` with `{"runner_id": ""}` (empty string clears, null leaves unchanged), then `POST /v1/hosts/<host_id>/runners` with `{"session_id", "workspace"}`; without the clear it fails 400 "session already has a runner bound". |
-| Archive (reversible) | `PATCH /v1/sessions/conv_xxx` with `{"archived": true}` | Hidden; transcript kept. About 8 s later (the Undo window) it stops the session and the runner bound to it. Never archive a sub-agent: it shares its parent's runner, so the stop takes the parent offline, and unbinding it first (`PATCH` `{"runner_id": ""}`) does not help, since its turn-end idle binds it back to the parent's runner before the stop (kzarzycki/omnigent#5). End a finished sub-agent with `POST /v1/sessions/conv_xxx/events` `{"type": "interrupt"}`, since a codex child's turn otherwise runs on, then `DELETE /v1/sessions/conv_xxx/resources/terminals/<id>` for each of its terminals, and leave it unarchived. |
+| Archive (reversible) | `PATCH /v1/sessions/conv_xxx` with `{"archived": true}` | Hidden; transcript kept. About 8 s later (the Undo window) it stops the session and the runner bound to it. A sub-agent's archive releases only its own session on the runner it shares with its parent, which stays up, on a build with kzarzycki/omnigent 4dd0af32; an older build stops that runner and takes the parent offline. |
 | Dispose (irreversible, owner-level) | `DELETE /v1/sessions/conv_xxx` | Removes tasks, terminals, files and the row. A running turn keeps running and the runner process is orphaned until the idle timeout; killing it sooner needs the user's approval for `kill <pid>`. |
 
 If `OMNIGENT_RUNNER_ID` is set, you are running inside a runner and a server restart
@@ -126,8 +126,8 @@ brief ("commit to a local branch, do not push").
   `sys_session_create` children, `session_out_of_tree` for independent chats and
   `sub_agent_busy` mid-turn); `sys_cancel_async` cancels only local `sys_call_async`
   tasks; `DELETE` frees resources while the turn runs on. For cleanup, let runners
-  idle-reap, or archive a top-level session (a sub-agent only has its terminals ended,
-  § Commands) or dispose over HTTP.
+  idle-reap, archive a session (a sub-agent's archive leaves its parent's runner up) or
+  dispose over HTTP.
 
 ## Native-TUI child hangs at startup
 
