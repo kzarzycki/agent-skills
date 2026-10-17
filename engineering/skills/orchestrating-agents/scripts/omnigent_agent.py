@@ -112,9 +112,6 @@ NUDGE = "Your turn ended without the report. Run any long command in the foregro
 # The line after a revive, which can relaunch a session with its context dropped: it names the
 # brief files and the report. Like the resume line, no instruction; found by this fixed start.
 REVIVED = "Your session was restarted and may have lost its context."
-# A Codex verifier's model unless --model or OMNIGENT_MODEL_CODEX names one: else it inherits
-# whatever ~/.codex/config.toml sets for interactive use.
-CODEX_VERIFIER_MODEL = "gpt-6.1-sol"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no runner it could revive
@@ -1468,9 +1465,7 @@ def main(argv: list[str] | None = None) -> int:
             report,
             args.role,
             args.confirm_seconds,
-            model=args.model
-            or os.environ.get(f"OMNIGENT_MODEL_{args.agent.upper()}")
-            or (CODEX_VERIFIER_MODEL if verifier and args.agent == "codex" else None),
+            model=args.model,
             top_level=args.top_level,
             workspace=str(workspace),
         )
