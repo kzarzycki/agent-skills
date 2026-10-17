@@ -8,14 +8,17 @@ python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <repor
 ```
 
 Run it from the worktree the child works in, because the script makes its current
-directory the session's workspace. The report path goes in a gitignored directory of that
+directory the session's workspace; `--workspace <dir>` names another, such as the parent of
+several repos for a lead whose change spans them. The report path goes in a gitignored directory of that
 workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
-`s120-verifier-p1`. The brief file holds only the task specifics; the script writes it,
-under a fixed preamble (owner-authorized imperative, the role file, long commands in the
-foreground, write the report to the path, reply with only the path), to `<report>.brief`
-and sends the child one line naming that file. Build the brief with a quoted heredoc
+`pr182-verifier-p1`: the issue or PR, then the role. The brief file holds only the task
+specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
+role file, long commands in the foreground, write the report to the path, reply with only
+the path), to `<report>.brief` and sends the child one line naming the title and that file.
+Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
+that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc
 (`<<'EOF'`): an unquoted one runs each backticked name as a command, and the script
 refuses a brief left with an empty `` `` `` span. Exit 0 prints the report path. Exit 1
 prints the reason and the child's last message; for a session that failed, also its
@@ -127,17 +130,32 @@ question for `run` to return: follow it with `watch <session>`, and once its rep
 archive it with `reap <session>`.
 
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
-run as a background command, exits 0 as soon as one of them ends a turn, blocks on an
+run as a background command, exits 0 as soon as one of them ends a turn (an end that has
+held for 30s, since a native Claude session reads idle while quiet mid-turn), blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
-`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A chief
-of staff learns this way of a lead that owes it no report (one that owes one is
-supervised by a detached supervisor, below, since a `watch` dies with the session that runs
-it): a top-level session tells nobody when its turn ends or it blocks, and
-the UI's "Completed" reaches no agent. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
+`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A top-level
+session tells no parent when its turn ends or it blocks, and the UI's "Completed" reaches
+no agent, so a session that follows one without a subscription (below) learns it this way. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
 except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
 every few seconds; the session stream pushes the same changes faster but per session and
 without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
 API: a person approves it in the UI, so a watched prompt still waits for one.
+
+**Subscribing to sessions.** A session subscribes to another (Omnigent's
+`sys_session_subscribe` tool, or `POST /v1/sessions/<subscriber>/subscriptions` with
+`{"session_id": <target>}`) to have Omnigent post `[System: session <title> (<id>) ended its
+turn (completed|cancelled|failed). Read it with sys_session_get_history.]` or `[System: session
+<title> (<id>) is waiting on a prompt. Read it with sys_session_get_info.]` into it, once per
+turn or prompt, reviving the subscriber's runner when it was reaped. A notice carries no text
+of the target's, so read what it names. It is how a top-level lead's starter hears it, since
+only a sub-agent's parent is told; `start --top-level` subscribes the session it runs in
+(`not subscribed` on stderr when the subscribe fails: a server without subscriptions answers
+404, a cycle or the 1,000-per-session cap 409, and a shell that does not name its session
+(`OMNIGENT_SESSION_ID`, `OMNIGENT_TERMINAL_LAUNCH_SESSION_ID` or
+`OMNIGENT_RUNNER_PRIMARY_SESSION_ID`; a native Codex one names none before Omnigent 567625d35)
+subscribes nobody;
+follow that lead with `watch`). It says nothing of a session silent
+mid-turn, which `supervise` still catches. Archiving or deleting either side drops it.
 
 **Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a
 chief of staff on another runner has its idle status refused (HTTP 503, the runner logging
@@ -199,8 +217,7 @@ revive lines are no instruction): a `send` that
 armed it again for the next brief while the event was being posted, which it does only once
 that brief is in the history.
 
-A chief of staff supervises its leads this way, and a lead a child no `run`,
-`send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
+A lead supervises this way a child no `run`, `send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
 names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its `run` and
 `send`. An in-session background command or a session cron dies when the session restarts,
 and with it every wake it owed. The one-shot form serves a single check in the foreground.
@@ -229,9 +246,9 @@ the user is logged out, and `journalctl --user -u <name>` shows its log.
 **Finished sessions.** `run` and `wait` finish the session whose report or verdict they
 return, which ends its agent process and keeps its transcript; a session that asked a
 question stays, since the answer goes to it. A top-level session is archived. A sub-agent
-only has its terminals ended and stays in the list unarchived: archiving it stops the runner
-it shares with its parent, which loses the parent its context (kzarzycki/omnigent#5). A codex
-child may still finish the turn it is in, then idles.
+has its turn interrupted and its terminals ended, and stays in the list unarchived: archiving
+it stops the runner it shares with its parent, which loses the parent its context
+(kzarzycki/omnigent#5). Without the interrupt a codex child's turn runs on.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` or `ended` for
 each, and prints which it kept. It cannot tell an idle child whose report is still

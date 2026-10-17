@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
-    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level]
+    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]
@@ -60,7 +60,9 @@ looks its title up among the parent's children (``GET /v1/sessions/{parent}/chil
 with ``--top-level`` among the project's top-level sessions (``GET /v1/sessions?project=<name>``),
 and briefs that one. ``start --top-level`` starts a lead: no parent session, so the owner sees it
 in the sidebar and its own children report to it, under the lead preamble; ``run`` refuses it,
-since a lead asks the owner in its own session and writes no question for ``run`` to return. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
+since a lead asks the owner in its own session and writes no question for ``run`` to return.
+``--workspace`` gives the child a workspace other than this directory, such as one holding
+several repos' checkouts for a change across them; its report must be inside it. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Server and host come from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
 own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists it. Stdlib only.
 """
@@ -287,13 +289,18 @@ class Omnigent:
         return None
 
     def create(
-        self, agent: str, title: str, model: str | None = None, top_level: bool = False
+        self,
+        agent: str,
+        title: str,
+        model: str | None = None,
+        top_level: bool = False,
+        workspace: str | None = None,
     ) -> str:
         body = {
             "agent_id": self.agent_id(AGENTS[agent]),
             "title": title,
             "host_id": self.host_id,
-            "workspace": os.getcwd(),
+            "workspace": workspace or os.getcwd(),
         }
         # Filed under the repo's project, when one exists, so spawned sessions don't crowd the top level.
         if project := self.project_id(project_name()):
@@ -306,6 +313,10 @@ class Omnigent:
         if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
             body["model_override"] = model
         return str(self.call("POST", "/v1/sessions", body)["id"])
+
+    def subscribe(self, subscriber: str, sid: str) -> None:
+        """Have Omnigent tell ``subscriber`` each time ``sid`` ends a turn or waits on a prompt."""
+        self.call("POST", f"/v1/sessions/{subscriber}/subscriptions", {"session_id": sid})
 
     def retry(self, sid: str) -> dict:
         return self.call(
@@ -339,10 +350,11 @@ class Omnigent:
 
         A top-level session is archived, which stops its own runner. A sub-agent shares its
         parent's runner, and archiving it stops that runner too, taking the parent down: so only
-        its terminals (its agent process) are ended and it stays unarchived. A codex child may
-        still finish the turn it is in, then idles.
+        its turn is interrupted, its terminals (its agent process) are ended and it stays
+        unarchived: ending the terminals alone leaves a codex child's app-server turn running.
         """
         if self.info(sid).get("parent_session_id"):
+            self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
             # ponytail: unbinding the runner before the archive does not help, since the child's
             # turn-end idle makes the server bind it back to the parent's runner before the
             # archive's delayed stop (kzarzycki/omnigent#5). Upgrade: archive sub-agents again
@@ -396,6 +408,17 @@ def project_name() -> str:
 def parent_id() -> str:
     """The runner's primary session (the lead, also when a child runs this), else empty."""
     return os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
+
+
+def own_id() -> str:
+    """The session this runs in: a child's own id, not its lead's. Codex names it in
+    OMNIGENT_SESSION_ID, a Claude pane in OMNIGENT_TERMINAL_LAUNCH_SESSION_ID; else the primary."""
+    env = os.environ
+    return (
+        env.get("OMNIGENT_SESSION_ID")
+        or env.get("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID")
+        or parent_id()
+    )
 
 
 def runner_log(info: dict) -> str:
@@ -554,6 +577,7 @@ def start(
     attempts: int = 2,
     model: str | None = None,
     top_level: bool = False,
+    workspace: str | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed."""
     if span := EMPTY_SPAN.search(brief):
@@ -572,7 +596,9 @@ def start(
         )
         + brief
     )
-    text = f"Your brief is the file {brief_file}. Read it now and do what it says."
+    # Omnigent labels a child by a model summary of this first message, not by its title, so the
+    # title leads: a generic line gets labels like "Read Brief and Execute".
+    text = f"Work on {title}: read {brief_file} and do what it says."
     reasons: list[str] = []
     survivors: list[str] = []
 
@@ -598,7 +624,7 @@ def start(
             name = title if n == 0 else f"{title}-r{n + 1}"
             n += 1
             try:
-                sid, error = og.create(agent, name, model, top_level), None
+                sid, error = og.create(agent, name, model, top_level, workspace), None
             except Fail as e:
                 if not taken(e):
                     error = e
@@ -618,6 +644,15 @@ def start(
             sid = found
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
+        if top_level:
+            # A top-level lead has no parent to tell: the session starting it hears its turn ends
+            # and prompts instead, revived for them if its runner was reaped.
+            try:
+                if not (me := own_id()):
+                    raise Fail("this shell does not name its Omnigent session")
+                og.subscribe(me, sid)
+            except Fail as e:
+                print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 og.send(sid, text)
@@ -807,6 +842,7 @@ def watch(
     deadline = time.monotonic() + timeout
     seen: dict[str, tuple] = {}
     idle_since: dict[str, tuple] = {}
+    ending: dict[str, tuple[tuple, float]] = {}  # an end seen, not yet held TURN_END_SECONDS
     first = True
     while True:
         ids = list(dict.fromkeys(sessions + (og.children(parent) if parent else [])))
@@ -815,6 +851,17 @@ def watch(
             # idle at the start, empty turn or not, is the baseline, not a turn ending later
             key, line = observe(og, sid, idle_since, baseline=first)
             before = seen.get(sid, None if first else ("running",))
+            # ponytail: a native Claude session reads idle while quiet mid-turn, and its last
+            # message then is one from the middle of the turn, so an end counts once it holds.
+            # A tool call quiet for longer still wakes early. Upgrade: Omnigent's session
+            # subscriptions, which deliver only a confirmed turn end.
+            if key[0] == "ended" and key != before and before is not None:
+                held = ending.get(sid)
+                if not held or held[0] != key:
+                    held = ending[sid] = (key, time.monotonic())
+                if time.monotonic() - held[1] < TURN_END_SECONDS:
+                    continue
+            ending.pop(sid, None)
             seen[sid] = key
             if (
                 key != before
@@ -1274,6 +1321,11 @@ def main(argv: list[str] | None = None) -> int:
             action="store_true",
             help="start a lead: no parent session, under the lead preamble (start only)",
         )
+        p.add_argument(
+            "--workspace",
+            type=Path,
+            help="the child's workspace (default: this directory); the report must be inside it",
+        )
     p = sub.add_parser("send")
     p.add_argument("session")
     p.add_argument("brief", type=Path, help="file with the answer or follow-up")
@@ -1353,12 +1405,18 @@ def main(argv: list[str] | None = None) -> int:
             archive_delivered(og, args.session)
             return 0
         report = args.report.resolve()
-        # The child's workspace is this directory; outside it a Codex sandbox refuses the write and
-        # Claude Code prompts for the read (denies it in auto mode), which nobody answers. The child also
-        # saves its repro files beside the report.
-        if not report.is_relative_to(Path.cwd()):
+        if args.cmd == "send":  # a live session keeps its own workspace, wherever this runs
+            workspace = Path(og.info(args.session).get("workspace") or Path.cwd()).resolve()
+        else:
+            workspace = (getattr(args, "workspace", None) or Path.cwd()).resolve()
+            if not workspace.is_dir():
+                raise Fail(f"--workspace {workspace} is not a directory")
+        # A new child's workspace is this directory unless --workspace names one; outside it a Codex
+        # sandbox refuses the write and Claude Code prompts for the read (denies it in auto mode),
+        # which nobody answers. The child also saves its repro files beside the report.
+        if not report.is_relative_to(workspace):
             raise Fail(
-                f"{report} is outside the child's workspace {Path.cwd()}; use tmp/loop/ in the worktree"
+                f"{report} is outside the child's workspace {workspace}; use tmp/loop/ in the worktree"
             )
         if args.cmd == "send":
             # A report older than the question the follow-up answers, else than the send, is the
@@ -1409,6 +1467,7 @@ def main(argv: list[str] | None = None) -> int:
             args.confirm_seconds,
             model=args.model,
             top_level=args.top_level,
+            workspace=str(workspace),
         )
         arm_quietly(registry, sid, report, [brief_of(report)], verdict=verifier)
         print(sid, flush=True)

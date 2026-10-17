@@ -11,6 +11,7 @@ exclusions:
   - setup-matt-pocock-skills
 owned_skills:
   - audit-third-party-software
+  - chief-of-staff
   - context-extractor
   - demo
   - engineering-loop

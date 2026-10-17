@@ -42,21 +42,34 @@ class FakeOmnigent:
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
+        self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
+        self.subscriptions: list[tuple[str, str]] = []
 
     def create(
-        self, agent: str, title: str, model: str | None = None, top_level: bool = False
+        self,
+        agent: str,
+        title: str,
+        model: str | None = None,
+        top_level: bool = False,
+        workspace: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
         self.top_level.append(top_level)
+        self.workspaces.append(workspace)
         self.sessions[sid] = [{"type": "resource_event"}]
         self.titles[sid] = title
         if "create" in self.fail:  # the server made it; the answer timed out
             raise omnigent_agent.Fail("POST /v1/sessions: TimeoutError: timed out")
         return sid
+
+    def subscribe(self, subscriber: str, sid: str) -> None:
+        if "subscribe" in self.fail:
+            raise omnigent_agent.Fail("POST subscriptions: HTTP 404 Not Found")
+        self.subscriptions.append((subscriber, sid))
 
     def find(self, title: str, after: float, top_level: bool = False) -> str | None:
         self.top_level.append(top_level)
@@ -106,7 +119,10 @@ class FakeOmnigent:
             {"content": [{"type": "input_text", "text": t}]} for s, t, _ in self.held if s == sid
         ]
         status = "running" if pending else self.final
-        return {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        if sid[1:].isdigit() and int(sid[1:]) < len(self.workspaces):
+            info["workspace"] = self.workspaces[int(sid[1:])]
+        return info
 
     def archive(self, sid: str) -> str:
         if "archive" in self.fail:
@@ -129,7 +145,7 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
     )
     message = omnigent_agent.text_of(og.sessions[sid][1])
     brief_file = tmp_path / "r.md.brief"
-    assert str(brief_file) in message and "do X" not in message
+    assert message.startswith("Work on t:") and str(brief_file) in message and "do X" not in message
     text = brief_file.read_text()
     assert sid == "s0" and text.endswith("do X")
     assert (
@@ -444,9 +460,7 @@ def test_stalled_server_timeout_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(
-            self, agent: str, title: str, model: str | None = None, top_level: bool = False
-        ) -> str:
+        def create(self, *args: object) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -485,9 +499,7 @@ def test_stalled_error_body_reaches_cleanup(
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
 
-        def create(
-            self, agent: str, title: str, model: str | None = None, top_level: bool = False
-        ) -> str:
+        def create(self, *args: object) -> str:
             return "s0"
 
         def archive(self, sid: str) -> None:
@@ -854,6 +866,57 @@ def test_report_outside_the_workspace_is_refused_before_a_session_exists(
     assert og.sessions == {}
 
 
+def test_workspace_names_the_child_s_directory_and_bounds_its_report(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A lead for a change across two repos works in their parent; its report sits in the
+    # starter's own tmp/loop/, inside both workspaces.
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "a" / "tmp").mkdir(parents=True)
+    (tmp_path / "b").mkdir()
+    monkeypatch.chdir(tmp_path / "a")
+    (tmp_path / "brief.md").write_text("do X")
+    argv = ["start", "claude", "t", str(tmp_path / "brief.md"), "tmp/lead.md", "--top-level"]
+    assert omnigent_agent.main([*argv, "--workspace", ".."]) == 0
+    assert og.workspaces == [str(tmp_path.resolve())]
+    outside = [
+        "start",
+        "claude",
+        "t2",
+        str(tmp_path / "brief.md"),
+        "tmp/x.md",
+        "--workspace",
+        "../b",
+    ]
+    assert omnigent_agent.main(outside) == 1
+    assert f"outside the child's workspace {(tmp_path / 'b').resolve()}" in capsys.readouterr().err
+    assert len(og.sessions) == 1
+
+
+def test_send_bounds_the_report_by_the_session_s_own_workspace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A follow-up sent from another repo's checkout: the child works where it was started.
+    og = FakeOmnigent(reply="ok")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "child").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    sid = og.create("claude", "t", workspace=str(tmp_path / "child"))
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    (tmp_path / "m.md").write_text("fix it")
+    report = tmp_path / "child" / "r.md"
+    monkeypatch.setattr(
+        omnigent_agent, "wait", lambda *a, **k: (report.write_text("done"), str(report))[1]
+    )
+    assert omnigent_agent.main(["send", sid, str(tmp_path / "m.md"), str(report)]) == 0
+    outside = tmp_path / "elsewhere" / "r.md"
+    assert omnigent_agent.main(["send", sid, str(tmp_path / "m.md"), str(outside)]) == 1
+    assert (
+        f"outside the child's workspace {(tmp_path / 'child').resolve()}" in capsys.readouterr().err
+    )
+
+
 def test_send_confirms_answer_on_a_full_rolling_page(tmp_path: Path) -> None:
     og = FakeOmnigent()
     sid = og.create("claude", "t")
@@ -880,7 +943,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     titles: list[str] = []
     create = og.create
-    og.create = lambda agent, title, model=None, top_level=False: (
+    og.create = lambda agent, title, model=None, top_level=False, workspace=None: (
         titles.append(title) or create(agent, title)
     )  # type: ignore[method-assign]
     og.fail.add("archive")
@@ -1052,6 +1115,8 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
 ) -> None:
     bodies = create_bodies(monkeypatch)
     omnigent_agent.Omnigent().create("claude", "t")
+    omnigent_agent.Omnigent().create("claude", "t", workspace="/w")
+    assert bodies[1]["workspace"] == "/w" and bodies.pop()["project_id"] == "p1"
     assert bodies == [
         {
             "agent_id": "a1",
@@ -1089,7 +1154,41 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert "USER NEEDED" not in text and "needs-owner" not in text
     assert "foreground" in text and f"final report to {tmp_path / 'r.md'}" in text
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
-    assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Your brief is the file ")
+    assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
+
+
+def test_a_top_level_start_subscribes_its_starter_to_the_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in ("OMNIGENT_SESSION_ID", "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "chief")
+    og = FakeOmnigent()
+    lead, _ = omnigent_agent.start(
+        og, "claude", "t", "do X", tmp_path / "a.md", None, 0, top_level=True
+    )
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "child")  # a child of the chief: it, not the chief
+    own, _ = omnigent_agent.start(
+        og, "codex", "s", "do V", tmp_path / "e.md", None, 0, top_level=True
+    )
+    assert og.subscriptions.pop() == ("child", own)
+    monkeypatch.delenv("OMNIGENT_SESSION_ID")
+    omnigent_agent.start(og, "claude", "w", "do Y", tmp_path / "b.md", None, 0)
+    assert og.subscriptions == [("chief", lead)]  # a child's parent hears it already
+    og.fail.add("subscribe")  # an Omnigent without subscriptions: the lead still starts
+    other, _ = omnigent_agent.start(
+        og, "claude", "u", "do Z", tmp_path / "c.md", None, 0, top_level=True
+    )
+    assert other in og.sessions and og.archived == []
+    assert f"not subscribed to {other}" in capsys.readouterr().err
+    # started from no session, or from a shell that does not name it (a native Codex one)
+    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID")
+    og.fail.discard("subscribe")
+    last, _ = omnigent_agent.start(
+        og, "claude", "v", "do W", tmp_path / "d.md", None, 0, top_level=True
+    )
+    assert og.subscriptions == [("chief", lead)]
+    assert f"not subscribed to {last}" in capsys.readouterr().err
 
 
 def test_run_refuses_top_level_before_a_session_exists(
@@ -1114,7 +1213,7 @@ def test_a_found_session_that_already_has_the_brief_is_not_briefed_twice(tmp_pat
         brief = tmp_path / "r.md.brief"
         og.land(
             sid,
-            f"Your brief is the file {brief}. Read it now and do what it says.",
+            f"Work on t: read {brief} and do what it says.",
         )
         return sid
 
@@ -1211,7 +1310,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None, top=False: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
+    og.create = lambda a, t, m=None, top=False, w=None: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     monkeypatch.chdir(tmp_path)
@@ -1302,6 +1401,25 @@ def test_watch_ignores_states_it_starts_in_and_the_launch_idle(
     )
     with pytest.raises(omnigent_agent.Fail, match="no session changed in 0s: a, b"):
         omnigent_agent.watch(og, ["a", "b"], timeout=0)
+
+
+def test_watch_reports_an_end_only_once_it_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A native Claude session reads idle while quiet mid-turn: the end it shows then is not one.
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 30)
+    now = [0.0]
+    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: now[0])
+    states = iter(["running", "idle", "running", "idle", "idle", "idle"])
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.info = lambda s: {"status": next(states), "title": "lead"}  # type: ignore[method-assign]
+    og.items = lambda s: [{"id": "m1", "type": "message", "role": "assistant", "content": []}]  # type: ignore[method-assign]
+
+    def tick(seconds: float) -> None:
+        now[0] += 20
+
+    monkeypatch.setattr(omnigent_agent.time, "sleep", tick)
+    assert omnigent_agent.watch(og, [sid]) == [f"{sid} lead: turn ended\nlast message: "]
+    assert now[0] == 100  # the first idle passed; the second held for 40s
 
 
 def test_watch_reports_a_prompt_at_once_with_the_tool_call() -> None:
@@ -1395,7 +1513,7 @@ def test_watch_wakes_when_a_running_session_gains_a_prompt() -> None:
     ]
 
 
-def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
+def test_a_sub_agent_has_its_turn_interrupted_and_terminals_ended_and_is_never_archived(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple] = []
@@ -1413,6 +1531,7 @@ def test_a_sub_agent_has_its_terminals_ended_and_is_never_archived(
     # an archive (unbound first or not) stops coord's runner too: kzarzycki/omnigent#5
     assert og.archive("kid") == "ended"
     assert [c for c in calls if c[0] != "GET"] == [
+        ("POST", "/v1/sessions/kid/events", {"type": "interrupt"}),  # else a codex turn runs on
         ("DELETE", "/v1/sessions/kid/resources/terminals/terminal_claude_main", None),
     ]
     calls.clear()

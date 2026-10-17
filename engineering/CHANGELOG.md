@@ -11,6 +11,51 @@ No model is hardcoded or picked in the pack (#175).
   lead leaves it to the default unless the owner names one. A launch that fails on capacity is
   retried later on the same model, never on another (`backends/omnigent.md` § Model).
 
+## 0.20.0 - 2026-10-17
+
+A chief of staff hears its leads through Omnigent session subscriptions, not a detached
+supervisor job (#182). It needs an Omnigent build with subscriptions (kzarzycki/omnigent#6);
+a Codex chief also needs its shell to name its session (kzarzycki/omnigent#9).
+
+- `omnigent_agent.py start --top-level` subscribes the session it runs in to the new lead,
+  before the brief is sent. Omnigent then posts the chief a notice each time the lead ends a
+  turn or waits on a prompt, and revives the chief for it. A subscribe that fails, or a shell
+  that doesn't name its session, prints `not subscribed` and the start still succeeds: follow
+  that lead with `watch`.
+- `chief-of-staff` follows its leads by those notices and subscribes with
+  `sys_session_subscribe` to a lead it takes over. The launchd supervisor is gone from the
+  skill and the README.
+- `send` bounds a follow-up's report by the session's own workspace, so a lead working in a
+  parent directory or a sibling repo no longer has its report rejected.
+- `watch` counts a native session's turn end only once it has held for 30s, since a Claude
+  session reads idle in the middle of a turn.
+- Ending a sub-agent interrupts its turn before ending its terminals. Ending only the terminals
+  left a Codex child's turn running, and an ended verifier kept working and overwrote a report.
+
+## 0.19.1 - 2026-10-17
+
+- An Omnigent child's label names its work. Omnigent labels a child by a model summary of its
+  first message, not by its title, and that message was the same line for every child, so
+  labels came out as "Read Brief and Execute". The line now leads with the title
+  (`Work on pr182-verifier-p2: read <brief> and do what it says.`), and
+  `backends/omnigent.md` asks for titles that name the issue or PR.
+
+## 0.19.0 - 2026-10-16
+
+A chief of staff, an optional session the owner talks to while leads do the work (#179).
+
+- New skill `chief-of-staff`, explicit-only (`/chief-of-staff` or a direct request): it sorts
+  each owner message, starts one top-level lead per independent ask with the owner's words
+  quoted, relays follow-ups, follows the leads with the detached `supervise --registry` job
+  and reports their results, questions and stalls. A lead behaves the same with or without
+  one, and every session started without it is a lead, as before.
+- With Hindsight configured (`~/.hindsight/coding-agent.json`), the chief recalls and retains
+  the owner's preferences and standing decisions per repo (`scripts/memory.py`). Workers and
+  verifiers get no memory, and `verifier.md` says a verifier reads none.
+- `omnigent_agent.py start` and `run` take `--workspace <dir>`: a lead for a change across
+  sibling repos works in their parent, its report under the starter's `tmp/loop/`. Without
+  it nothing changes. `lead.md` says each PR still follows its own repo's `docs/agents/`.
+
 ## 0.18.3 - 2026-10-15
 
 A waiter takes a child's report only once it is final (#165), and a taken title no longer

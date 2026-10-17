@@ -61,7 +61,11 @@ design, wireframes included for a UI, and delegate the rest.
    branch the run creates (step 10 removes them). Agents get its path, never its content.
    The spec is the only issue for the work itself; SKILL.md, Triage places what the PR
    leaves unfixed, and the PR says `Part of` instead of `Closes` when that leaves the spec
-   open.
+   open. A workspace holding several repos (a change that needs them together) changes
+   only where things go: each PR's issue, branch, worktree, gates and landing follow its
+   own repo's `docs/agents/` files, and the notes say which repo each PR is in. Read each
+   repo's `AGENTS.md` or `CLAUDE.md` and `docs/agents/` yourself, since a harness loads
+   only those of the directory it started in.
 4. **Build.** Start every item nothing blocks. Hand an item to a worker when it can run in
    parallel or would flood your context. Build it yourself only when the cause is read
    and the fix and its test are a few lines in one area, following `worker.md` and saying

@@ -6,7 +6,9 @@ tree ends as you found it, with `git status --porcelain` and `git diff` unchange
 lead gives you the base, the reviewed head, the spec number, priorities and a
 report path, so ask for nothing. You run in the worktree you were started in, the
 lead's own or a detached one at the same head, so you see the tree the author
-tested.
+tested. Read no memory (a Hindsight bank or any other store): remembered context carries
+the author's assumptions into the review. Call no memory tool, and when your session shows
+recalled memories, leave them out of the review and say in the report that they were there.
 
 Check the tree first:
 

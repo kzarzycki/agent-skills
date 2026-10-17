@@ -13,6 +13,7 @@ FIXTURE_UPSTREAM = Path(__file__).parents[1] / "fixtures" / "upstreams" / "mattp
 OLD_COMMIT = "1" * 40
 OWNED_SKILLS = (
     "audit-third-party-software",
+    "chief-of-staff",
     "context-extractor",
     "operating-omnigent",
     "orchestrating-agents",
