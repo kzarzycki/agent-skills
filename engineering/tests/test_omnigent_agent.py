@@ -548,6 +548,39 @@ def test_create_files_the_session_under_the_project(
     assert omnigent_agent.Omnigent().create("claude", "t") == "s1"
     assert calls[-1][2] and "project_id" not in calls[-1][2]
 
+    # as the repo voice_note files under "Voice note"
+    monkeypatch.setenv("OMNIGENT_PROJECT", "S_hop")
+    omnigent_agent.Omnigent().create("claude", "t")
+    assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
+
+
+@pytest.mark.parametrize(
+    ("names", "name", "picked"),
+    [
+        (["Voice-note", "voice_note"], "voice_note", 1),  # the exact name wins over a loose one
+        (["工程", "日本語"], "日本語", 1),  # letters in any script count
+        (["café"], "caf", None),
+        (["!!"], "--", None),  # nothing left to compare matches nothing
+        (["Voice note"], "voice_note", 0),
+    ],
+)
+def test_a_project_matches_its_exact_name_first_then_loosely(
+    monkeypatch: pytest.MonkeyPatch, names: list[str], name: str, picked: int | None
+) -> None:
+    projects = [{"name": n, "id": f"p{i}"} for i, n in enumerate(names)]
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda *a: {"data": projects})
+    found = object.__new__(omnigent_agent.Omnigent).project(name)
+    assert found == (None if picked is None else projects[picked])
+
+
+def test_two_loose_project_matches_fail_rather_than_pick_by_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projects = [{"name": "Voice-note", "id": "p0"}, {"name": "Voice note", "id": "p1"}]
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda *a: {"data": projects})
+    with pytest.raises(omnigent_agent.Fail, match="OMNIGENT_PROJECT"):
+        object.__new__(omnigent_agent.Omnigent).project("voice_note")
+
 
 def test_the_model_is_the_flag_else_the_agents_environment_variable_else_the_harness_default(
     monkeypatch: pytest.MonkeyPatch,
@@ -1069,7 +1102,7 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "coord")
     og = object.__new__(omnigent_agent.Omnigent)
-    monkeypatch.setenv("OMNIGENT_PROJECT", "my shop")
+    monkeypatch.setenv("OMNIGENT_PROJECT", "my_shop")  # lists under the project's exact name
     assert og.find("t", 100, top_level=True) == "new"
     assert paths[-1] == "/v1/sessions?kind=default&project=my%20shop&limit=100"
     monkeypatch.setenv("OMNIGENT_PROJECT", "no-such-group")  # created unfiled: look there
