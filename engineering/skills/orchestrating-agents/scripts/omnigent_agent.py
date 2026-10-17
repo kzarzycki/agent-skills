@@ -45,7 +45,7 @@ count its report); ``run``, ``send`` and ``wait`` disarm it when they
 return the report or a question.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
 question; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
-the rest; it cannot tell a child still owing its report from a finished one, so it runs once every
+the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
 session.
 
@@ -1370,8 +1370,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "reap":
             if not args.sessions and not args.children:
                 raise Fail("reap needs a session or --children <parent>")
-            print("\n".join(reap(og, args.sessions, args.children)))
-            return 0
+            lines = reap(og, args.sessions, args.children)
+            print("\n".join(lines))
+            return 1 if any(": finish failed: " in line for line in lines) else 0
         if args.cmd == "supervise":
             if args.registry:
                 for s, r in owed.items():

@@ -1562,6 +1562,23 @@ def test_reap_goes_on_past_a_finish_that_fails() -> None:
     assert og.archived == ["b"]
 
 
+def test_reap_exits_1_when_a_finish_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    og = FakeOmnigent()
+    og.info = lambda s: {"status": "idle", "title": f"t-{s}"}  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["reap", "b"]) == 0
+    archive = og.archive
+
+    def refuse_a(s: str) -> None:
+        if s == "a":
+            raise omnigent_agent.Fail("PATCH a: HTTP 503")
+        archive(s)
+
+    og.archive = refuse_a  # type: ignore[method-assign]
+    assert omnigent_agent.main(["reap", "a", "c"]) == 1
+    assert og.archived == ["b", "c"]
+
+
 def test_run_archives_on_its_report_but_not_on_a_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
