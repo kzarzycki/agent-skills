@@ -279,13 +279,22 @@ class Omnigent:
                 return str(a["id"])
         raise Fail(f"agent {name} not registered")
 
-    def project_id(self, name: str) -> str | None:
-        """The id of the project (a sidebar group) called ``name``, or None when there is none."""
+    def project(self, name: str) -> dict | None:
+        """The project (a sidebar group) called ``name``, or None when there is none. Case, spaces
+        and punctuation don't count: the repo ``voice_note`` files under the project "Voice note".
+        An exact name wins; two loose matches and no exact one fail rather than pick by order."""
         projects = self.call("GET", "/v1/projects")
-        for p in projects.get("data", projects) if isinstance(projects, dict) else projects:
-            if p.get("name") == name:
-                return str(p["id"])
-        return None
+        projects = projects.get("data", projects) if isinstance(projects, dict) else projects
+        if exact := [p for p in projects if p.get("name") == name]:
+            return exact[0]
+        key = loose(name)
+        matches = [p for p in projects if key and loose(p.get("name") or "") == key]
+        if len(matches) > 1:
+            names = ", ".join(repr(p.get("name")) for p in matches)
+            raise Fail(
+                f"projects {names} all match {name!r}: set OMNIGENT_PROJECT to the exact one"
+            )
+        return matches[0] if matches else None
 
     def create(
         self,
@@ -302,8 +311,8 @@ class Omnigent:
             "workspace": workspace or os.getcwd(),
         }
         # Filed under the repo's project, when one exists, so spawned sessions don't crowd the top level.
-        if project := self.project_id(project_name()):
-            body["project_id"] = project
+        if project := self.project(project_name()):
+            body["project_id"] = str(project["id"])
         # A sub-agent of the runner's primary session (the lead, also when a child runs
         # this): hidden from the owner's sidebar and unread badge, and gone with it. Top level
         # with ``top_level`` or when not run from an Omnigent session.
@@ -355,9 +364,8 @@ class Omnigent:
         ``top_level``, the project's top-level session of that title instead (unfiled ones when the
         project does not exist, as ``create`` files them)."""
         if top_level:
-            name = project_name()
-            # the list filters by project name; "" is the unfiled sessions
-            project = quote(name if self.project_id(name) else "")
+            # the list filters by the project's exact name; "" is the unfiled sessions
+            project = quote((self.project(project_name()) or {}).get("name", ""))
             path = f"/v1/sessions?kind=default&project={project}&limit=100"
         elif parent := parent_id():
             path = f"/v1/sessions/{parent}/child_sessions?limit=100"
@@ -386,6 +394,11 @@ class Omnigent:
 
 def project_name() -> str:
     return os.environ.get("OMNIGENT_PROJECT") or repo_name()
+
+
+def loose(name: str) -> str:
+    """``name`` without case, spaces or punctuation; letters and digits in any script stay."""
+    return "".join(c for c in name.casefold() if c.isalnum())
 
 
 def parent_id() -> str:
