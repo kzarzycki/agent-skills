@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A chief of staff's handover file is one page, overwritten in the turn its state changes,
+  before the owner hears it: owner contact, standing decisions, live leads, closed, follow
+  (#196). A successor in either harness takes over from that file alone, never from
+  transcripts.
+
 ## 0.21.1 - 2026-10-18
 
 Two fixes to `omnigent_agent.py`.
