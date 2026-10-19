@@ -45,6 +45,7 @@ class FakeOmnigent:
         self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
+        self.interrupted: list[str] = []
 
     def create(
         self,
@@ -120,9 +121,17 @@ class FakeOmnigent:
         ]
         status = "running" if pending else self.final
         info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        if sid in self.archived:
+            info["archived"] = True
         if sid[1:].isdigit() and int(sid[1:]) < len(self.workspaces):
             info["workspace"] = self.workspaces[int(sid[1:])]
         return info
+
+    def interrupt(self, sid: str) -> None:
+        """Omnigent cancels the turn and drops the inputs pending then."""
+        self.interrupted.append(sid)
+        self.prompts = []
+        self.held = [h for h in self.held if h[0] != sid]
 
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
@@ -2307,3 +2316,168 @@ def test_send_arms_only_once_its_message_is_in_the_history(
     assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
     assert at_send == [""]
     assert stale == [False]
+
+
+QUESTION = {
+    "elicitation_id": "e1",
+    "params": {
+        "content_preview": 'AskUserQuestion({"questions": [{"question": "Which base?"}]})',
+        "ask_user_question": {"questions": [{"question": "Which base?"}]},
+    },
+}
+APPROVAL = {"elicitation_id": "e2", "params": {"content_preview": "Bash(rm -rf build)"}}
+
+
+def relay(
+    og: FakeOmnigent, sid: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str = "go"
+) -> int:
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    (tmp_path / "m.md").write_text(text)
+    return omnigent_agent.main(["relay", sid, str(tmp_path / "m.md")])
+
+
+def test_relay_to_an_idle_session_is_delivered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert capsys.readouterr().out.strip() == f"session {sid}: delivered"
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "go"
+
+
+def test_relay_to_a_session_in_a_long_step_returns_queued_and_a_rerun_sends_no_second_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # a foreground command that outlasts the call
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert "queued until the session's current step ends; it lands then" in capsys.readouterr().err
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert og.posts == 1
+
+
+def test_relay_rerun_after_the_copy_landed_unanswered_sends_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    relay(og, sid, tmp_path, monkeypatch)
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == f"session {sid}: already delivered"
+    assert og.posts == 1
+
+
+def test_relay_of_the_same_words_after_the_session_replied_is_a_new_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="STILL WORKING")
+    sid = og.create("claude", "lead")
+    relay(og, sid, tmp_path, monkeypatch, "carry on")
+    assert relay(og, sid, tmp_path, monkeypatch, "carry on") == 0
+    assert og.posts == 2
+
+
+def test_relay_to_a_session_blocked_on_a_question_interrupts_it_then_delivers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch, "use main") == 0
+    assert og.interrupted == [sid]
+    assert "interrupted its open question" in capsys.readouterr().err
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
+
+
+def test_relay_says_when_an_interrupted_question_still_holds_the_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # claude-native buffers input after the interrupt (omnigent#14)
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch, "use main") == omnigent_agent.QUEUED
+    assert "until the interrupted question releases input" in capsys.readouterr().err
+
+
+def test_relay_does_not_interrupt_a_question_that_other_queued_inputs_wait_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION]
+    og.send(sid, "[System: session w1 ended its turn (completed).]")  # an interrupt drops it
+    assert relay(og, sid, tmp_path, monkeypatch, "use main") == omnigent_agent.QUEUED
+    assert og.interrupted == []
+    assert [t for _, t, _ in og.held] == [
+        "[System: session w1 ended its turn (completed).]",
+        "use main",
+    ]
+    assert "not interrupted: that would drop 1 other queued input" in capsys.readouterr().err
+
+
+def test_relay_revives_a_reaped_runner_then_delivers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    retried = reaped(og, {"recovered": True, "recovery": "runner_relaunched"}, 2)
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert retried == [sid]
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "go"
+
+
+def test_relay_of_a_message_neither_pending_nor_landed_is_not_deliverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(deaf={0})
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("go")
+    args = ["relay", sid, str(tmp_path / "m.md"), "--confirm-seconds", "0"]
+    assert omnigent_agent.main(args) == omnigent_agent.GONE
+    assert "neither pending nor in history" in capsys.readouterr().err
+
+
+def test_relay_never_interrupts_an_approval_prompt_and_says_what_holds_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION, APPROVAL]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert og.interrupted == []
+    assert "queued behind a prompt a person answers in the UI: " in capsys.readouterr().err
+
+
+def test_relay_to_an_archived_session_is_not_deliverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.archive(sid)
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.GONE
+    assert f"session {sid} is archived" in capsys.readouterr().err
+    assert og.posts == 0
+
+
+def test_status_prints_each_session_s_state_queued_inputs_and_last_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="DONE: #12 merged")
+    ended, busy, gone = og.create("claude", "a"), og.create("codex", "b"), og.create("claude", "c")
+    og.send(ended, "go")
+    og.archive(gone)
+    og.hold = 10**6
+    og.send(busy, "go")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["status", ended, busy, gone]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"{ended}: turn ended",
+        "last message: DONE: #12 merged",
+        f"{busy} (1 queued input): running",
+        "last message: (none)",
+        f"{gone}: archived",
+        "last message: (none)",
+    ]

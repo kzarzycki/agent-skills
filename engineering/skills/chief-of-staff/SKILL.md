@@ -64,9 +64,11 @@ its landing order.
   `[System: session <title> (<id>) ended its turn (completed|cancelled|failed). Read it with
   sys_session_get_history.]` or `[System: session <title> (<id>) is waiting on a prompt. Read
   it with sys_session_get_info.]` into your session, and revives your runner for it if it was
-  reaped, so you hear every lead without a command of your own running. Read the history or
-  info it names before acting on the table below, since the notice carries no text of the
-  lead's. When `start` prints `not subscribed`, the subscribe failed (a server without
+  reaped, so you hear every lead without a command of your own running. The notice carries no
+  text of the lead's, so before acting on the table below read it with one call,
+  `python3 <script> status <session>`, which prints its state (turn ended, running, blocked on
+  a prompt and what it asks, failed and why, archived), any input still queued, and its last
+  message, in place of the history and info the notice names. When `start` prints `not subscribed`, the subscribe failed (a server without
   subscriptions, a cycle, the 1,000-per-session cap, or a shell that does not name its
   Omnigent session, as a native Codex one did not before Omnigent 567625d35): follow that lead with a background
   `watch <session>...` (`../orchestrating-agents/backends/omnigent.md`, Watching sessions). A
@@ -84,14 +86,30 @@ A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEE
 | Turn ended, `STILL WORKING`, with something pending | Record what it waits on (Handover, Live leads) and send nothing: its own worker, verifier or CI wakes it, and another lead's merge reaches it through that lead's `DONE`. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step. A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Only a person approves a prompt, in the UI. |
-| Failed, or gave up | Revive it in place (`send`, which revives a reaped runner) once. If it fails again, give the owner the error line. |
+| Failed, or gave up | Revive it in place (`relay` a nudge, which revives a reaped runner) once. If it fails again, give the owner the error line. |
 
 ## Relaying
 
-`python3 <script> send <session> <brief-file> <report>`: the owner's message verbatim,
-quoted with where it was said, and at most one line of yours, marked as yours. Never
-paraphrase the owner. A lead acts on the owner's quoted words; your line is a colleague's
-note.
+`python3 <script> relay <session> <message-file>`: the owner's message verbatim, quoted
+with where it was said, and at most one line of yours, marked as yours. Never paraphrase
+the owner. A lead acts on the owner's quoted words; your line is a colleague's note. Nudges,
+and the line to a lead that waits on another's result, go the same way.
+
+It returns at once, on this host or another, and its exit says what happened, so run it in
+the foreground and never poll the lead afterwards:
+
+| Exit | Means | You do |
+|---|---|---|
+| 0 | Delivered, or already in the lead's history unanswered (a rerun sends no second copy) | Tell the owner it went |
+| 5 | Queued: the lead holds it until its current step ends, until its interrupted question releases it, or until a person answers the approval prompt it names; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
+| 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
+
+A lead blocked on a question (its own ask of the owner) is interrupted first and then
+given the message, because a question holds every message behind it until answered, and an
+interrupt drops the ones already queued. While another input already waits behind the
+question (a worker's notice, the owner typing into the lead), `relay` does not interrupt,
+since that would drop it too, and exits 5 saying so: the owner answers the question in the
+lead's session. An approval prompt is never interrupted, since only a person approves one.
 
 ## Authority
 
