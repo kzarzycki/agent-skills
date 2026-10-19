@@ -103,8 +103,8 @@ it quoted.
 
 - Lead with the answer or the decision needed. One line per lead, each with its link.
 - Speak at task level: a task started, what blocks it, a decision the owner must make, its
-  result. How a lead gets there (a verifier pass, a gate re-run, a worker's hand-off, a CI
-  wait) stays in the lead's session, which the owner opens when they want it. Asked how a
+  result. How a lead gets there (a verifier pass and its findings, a gate re-run, a worker's
+  hand-off, a CI wait) stays in the lead's session, which the owner opens when they want it. Asked how a
   task is going, give its stage (building, in review, landing) and what blocks it, if
   anything.
 - A result stays where the work happened: on the PR, the issue and in the lead's session.
