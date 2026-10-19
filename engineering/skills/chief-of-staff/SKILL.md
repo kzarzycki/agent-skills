@@ -92,8 +92,8 @@ A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEE
 
 `python3 <script> relay <session> <message-file>`: the owner's message verbatim, quoted
 with where it was said, and at most one line of yours, marked as yours. Never paraphrase
-the owner. A lead acts on the owner's quoted words; your line is a colleague's note. Nudges
-go the same way.
+the owner. A lead acts on the owner's quoted words; your line is a colleague's note. Nudges,
+and the line to a lead that waits on another's result, go the same way.
 
 It returns at once, on this host or another, and its exit says what happened, so run it in
 the foreground and never poll the lead afterwards:
