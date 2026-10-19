@@ -114,21 +114,31 @@ You may be replaced at any time by a fresh session, in either harness, on this h
 another. Your successor knows only what `tmp/loop/chief-of-staff.md` in the main checkout
 says, so that file is the whole of your state:
 
-- **Shape.** One page (about 4 KB), overwritten in place, with these sections: Owner contact
-  (your session id, harness, host and checkout), Standing decisions (the owner's, one line
-  each, dated), Live leads (a table: session id, title, harness, report path, what it waits
-  on), Closed (one line each with its link, removed once the owner has been told), and
-  Follow (how to subscribe to the live leads again). It holds no history: finished work lives
-  on its PR, issue or report, and the file links it. A journal grows past what a successor
-  can read cheaply and buries the live state under the dead.
+- **Shape.** One page (about 4 KB), overwritten in place, with these sections:
+  - Owner contact: your Omnigent session id, harness, host and checkout, and your
+    predecessor's session id.
+  - Standing decisions: the owner's, one line each, in their words where short, with the
+    date and session they were given in.
+  - Live leads: a table of session id, title, harness, report path (absolute, with its host
+    when not yours) and what it waits on: the owner (with the question), a prompt, another
+    lead, or nothing while it works.
+  - Closed: one line per lead that finished since the owner's last message, with its PR,
+    issue or report link, dropped at their next message, which shows they read your reply.
+  - Follow: only a lead followed by a `watch` instead of a subscription, with the command.
+
+  It holds no history: finished work lives on its PR, issue or report, and the file links
+  it. A journal grows past what a successor can read cheaply and buries the live state.
 - **When.** Rewrite it in the turn that changes what it holds, before you reply to the
   owner: a lead started, relayed, reporting, failing or closed, a standing decision, a
   takeover. State that is only in chat is lost at the next switch.
-- **Taking over.** Read the file, recall (Memory), subscribe to each live lead, and rewrite
-  Owner contact; then carry on without greeting the owner again. Read no transcript or
-  report to rebuild state, since that is what the file saves; read one only when a lead's
-  notice or the owner's question needs it. A predecessor in another checkout or on another
-  host left its file there: take that one, not this checkout's.
+- **Taking over.** Read the file, then make sure your predecessor no longer answers the owner
+  (its session ended, or the owner left it), since two chiefs of staff would both reply.
+  Recall the owner's standing decisions (Memory), read each live lead's status (session info,
+  not its history), subscribe to it, and rewrite the file with what you found: Owner contact
+  and any row its status contradicts. Then carry on without greeting the owner again. Read no
+  transcript or report to rebuild state, since that is what the file saves; read one only
+  when a lead's notice or the owner's question needs it. A predecessor in another checkout or
+  on another host left its file there: take that one, not this checkout's.
 
 ## Memory
 
