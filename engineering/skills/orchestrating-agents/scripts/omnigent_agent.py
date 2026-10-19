@@ -4,6 +4,8 @@
     python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
     python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
+    python3 scripts/omnigent_agent.py relay <session> <message-file>
+    python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
@@ -21,6 +23,13 @@ exit is the wake. ``send`` answers that question in the same session, also mid-t
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
+``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
+exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
+one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
+delivered (archived, a failed revive, neither pending nor in the history). A session blocked on a
+question (``ask_user_question``) is interrupted first, since its pending inputs wait on the answer
+and an interrupt drops them; an approval prompt never is. ``status`` prints one line per session:
+its state, queued inputs and last message.
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
 a prompt or fails, printing each one's id, title, that change and its last message; it is how a
 lead or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
@@ -113,7 +122,10 @@ NUDGE = "Your turn ended without the report. Run any long command in the foregro
 REVIVED = "Your session was restarted and may have lost its context."
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
-ASKED, GONE = 3, 4  # exit codes: the child asked a question; send found no runner it could revive
+ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
+# could revive, or relay could not deliver; relay left the message queued in the session
+# A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
+QUEUED_SECONDS = 10.0
 
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -157,6 +169,10 @@ class Asked(Fail):
 
 class Gone(Fail):
     code = GONE
+
+
+class Queued(Fail):
+    code = QUEUED
 
 
 def question_of(report: Path) -> Path:
@@ -331,6 +347,10 @@ class Omnigent:
             "POST", f"/v1/sessions/{sid}/events", {"type": "retry_session", "data": {}}
         )
 
+    def interrupt(self, sid: str) -> None:
+        """Cancel the session's turn; Omnigent drops the inputs pending at that moment."""
+        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt", "data": {}})
+
     def send(self, sid: str, text: str) -> None:
         self.call(
             "POST",
@@ -441,6 +461,17 @@ def prompts_of(info: dict) -> list[str]:
     ]
 
 
+def questions_of(info: dict) -> list[str]:
+    """What each pending question asks (Claude's AskUserQuestion, Codex's requestUserInput, both
+    marked ``ask_user_question``): prompts an answer settles, unlike an approval."""
+    return [
+        str(p.get("content_preview") or p.get("message") or e)
+        for e in info.get("pending_elicitations") or []
+        for p in [e.get("params") or {}]
+        if p.get("ask_user_question")
+    ]
+
+
 def delivered(
     og: Omnigent,
     sid: str,
@@ -484,8 +515,17 @@ def revive(og: Omnigent, sid: str, seconds: float = 120.0) -> None:
         time.sleep(POLL_SECONDS)
 
 
-def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: float) -> None:
-    """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands.
+def send(
+    og: Omnigent,
+    sid: str,
+    brief: str,
+    report: Path | None,
+    confirm_seconds: float,
+    queued_after: float | None = None,
+) -> str:
+    """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
+    ``delivered``, or ``already`` when a copy had landed before. With ``queued_after`` (a relay),
+    ``queued`` once the copy has been pending that long instead.
 
     Omnigent hands a message to the harness at once, also mid-turn: that is steering (the web
     composer's queue and its "Always steer" live only in the browser). The session lists it under
@@ -493,12 +533,13 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     foreground command holds off for minutes. So pending is delivery under way, and the message is
     lost only once it has been neither pending nor in the history for ``confirm_seconds``. A retry
     finds the first copy pending, or in the history since the question was written, and sends
-    nothing: a second post delivers twice.
+    nothing: a second post delivers twice. With no ``report`` (a relay), a copy the session has
+    not replied to yet is that first copy.
     """
-    text, question = brief.strip(), question_of(report)
+    text, question = brief.strip(), question_of(report) if report else None
     # Read once, first: the sender of the first copy deletes the question once that copy lands.
     try:
-        asked: float | None = question.stat().st_mtime
+        asked: float | None = question.stat().st_mtime if question else None
     except FileNotFoundError:
         asked = None
     # History before info: Omnigent persists a copy before it drops it from pending_inputs, so a
@@ -506,6 +547,8 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
     items = og.items(sid)
     old = frozenset(str(i.get("id")) for i in items)
     info = og.info(sid)
+    if info.get("archived"):
+        raise Gone(f"session {sid} is archived")
     if not info.get("runner_online", True):
         revive(og, sid)
 
@@ -523,10 +566,17 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
 
     # ponytail: compares the server's item clock with the local question file's; a skewed server
     # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
-    if asked is not None and any(float(i.get("created_at") or 0) >= asked for i in copies(items)):
-        print(f"session {sid}: this answer already landed", file=sys.stderr)
-        question.unlink(missing_ok=True)
-        return
+    replied = max(
+        (n for n, i in enumerate(items) if i.get("type") == "message" and i.get("role") != "user"),
+        default=-1,
+    )
+    if (
+        asked is not None and any(float(i.get("created_at") or 0) >= asked for i in copies(items))
+    ) or (question is None and copies(items[replied + 1 :])):
+        print(f"session {sid}: this message already landed", file=sys.stderr)
+        if question:
+            question.unlink(missing_ok=True)
+        return "already"
     # or it landed between the two reads
     if pending(info) or any(str(i.get("id")) not in old for i in copies(og.items(sid))):
         print(
@@ -534,19 +584,21 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
         )
     else:
         og.send(sid, brief)
-    deadline, said = time.monotonic() + confirm_seconds, False
+    deadline, held = time.monotonic() + confirm_seconds, None
     while True:
         info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
         if any(str(i.get("id")) not in old for i in copies(og.items(sid))):
             break
         if pending(info):
-            if not said:
+            if held is None and queued_after is None:  # relay says it once it returns queued
                 print(
                     f"session {sid} is {info.get('status')}: message queued in its harness until"
                     " the current step ends",
                     file=sys.stderr,
                 )
-                said = True
+            held = held or time.monotonic()
+            if queued_after is not None and time.monotonic() - held >= queued_after:
+                return "queued"
             deadline = time.monotonic() + confirm_seconds
         elif time.monotonic() >= deadline:
             raise Gone(
@@ -554,7 +606,39 @@ def send(og: Omnigent, sid: str, brief: str, report: Path, confirm_seconds: floa
                 " start a fresh run instead"
             )
         time.sleep(POLL_SECONDS)
-    question.unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
+    if question:
+        question.unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
+    return "delivered"
+
+
+def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
+    """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
+    the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
+    is interrupted first: its pending inputs wait on the answer, and an interrupt drops the ones
+    pending when it lands, so it goes before the post. An approval prompt waits for a person."""
+    info = og.info(sid)
+    asks = questions_of(info)
+    if asks and len(asks) == len(info["pending_elicitations"]):
+        og.interrupt(sid)
+        deadline = time.monotonic() + confirm_seconds
+        while prompts_of(og.info(sid)):
+            if time.monotonic() >= deadline:
+                raise Gone(f"session {sid}: its question is still open after an interrupt")
+            time.sleep(POLL_SECONDS)
+        print(f"session {sid}: interrupted its open question: {'; '.join(asks)}", file=sys.stderr)
+    outcome = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
+    if outcome == "queued":
+        prompts = prompts_of(og.info(sid))
+        if prompts:
+            why = f"behind a prompt a person answers in the UI: {'; '.join(prompts)}"
+        elif asks:
+            # Omnigent holds input after an interrupted claude-native question until its hook
+            # marker goes stale (kzarzycki/omnigent#14).
+            why = "until the interrupted question releases input, up to 7 minutes after it was asked"
+        else:
+            why = "until the session's current step ends"
+        raise Queued(f"session {sid}: queued {why}; it lands then")
+    return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
 
 
 def taken(e: Fail) -> bool:
@@ -802,8 +886,12 @@ def observe(
     status = str(info.get("status"))
     last = last_message(og.items(sid))
     head = f"{sid} {info.get('title') or ''}".rstrip()
+    if queued := len(info.get("pending_inputs") or []):
+        head += f" ({queued} queued input{'s' if queued > 1 else ''})"
     tail = f"\nlast message: {text_of(last) if last else '(none)'}"
     lid = last.get("id") if last else None
+    if info.get("archived"):
+        return ("archived",), f"{head}: archived{tail}"
     if status in RUNNING:
         idle_since.pop(sid, None)
     elif sid not in idle_since or idle_since[sid][0] != lid:  # (last message id, idle since)
@@ -820,7 +908,7 @@ def observe(
         or time.monotonic() - idle_since[sid][1] >= IDLE_GRACE_SECONDS
     ):
         return ("ended", str(last.get("id")) if last else ""), f"{head}: turn ended{tail}"
-    return ("running",), head
+    return ("running",), f"{head}: {status}{tail}"
 
 
 def watch(
@@ -1328,6 +1416,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("brief", type=Path, help="file with the answer or follow-up")
     p.add_argument("report", type=Path)
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p = sub.add_parser("relay")
+    p.add_argument("session")
+    p.add_argument("message", type=Path, help="file with the message; it owes no report")
+    p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p = sub.add_parser("status")
+    p.add_argument("sessions", nargs="+")
     p = sub.add_parser("watch")
     p.add_argument("sessions", nargs="*")
     p.add_argument("--children", metavar="PARENT", help="also watch this session's sub-agents")
@@ -1360,7 +1454,7 @@ def main(argv: list[str] | None = None) -> int:
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
-        if p.prog.split()[-1] not in ("start", "reap"):
+        if p.prog.split()[-1] not in ("start", "reap", "relay", "status"):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
@@ -1376,6 +1470,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "supervise" and not (owed or args.registry):
             raise Fail("supervise needs <session>=<report> pairs or --registry")
         og = Omnigent()
+        if args.cmd == "relay":
+            print(relay(og, args.session, args.message.read_text(), args.confirm_seconds))
+            return 0
+        if args.cmd == "status":
+            # a snapshot: an idle look reads as a turn ended, which a notice has confirmed
+            print("\n".join(observe(og, s, {}, baseline=True)[1] for s in args.sessions))
+            return 0
         if args.cmd == "watch":
             if not args.sessions and not args.children:
                 raise Fail("watch needs a session or --children <parent>")

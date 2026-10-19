@@ -131,6 +131,28 @@ it parks a question is its role's (`--role`; under the engineering loop, `lead.m
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
 
+**Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
+posts a message that owes no report, such as the owner's words for a top-level lead, and
+returns at once. It reads no file but the message, so the lead may run on another host.
+Exit 0: the message is in the lead's history, or a copy it has not replied to already is, so a
+rerun sends no second one. Exit 5: queued, held until the lead's current step ends (a long
+foreground command) or until a person answers the approval prompt it prints; it lands then
+with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
+neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
+revived in place first, as `send` does. A lead blocked on a question (Claude's
+AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
+prompts) holds every message until the question is answered, and Omnigent drops the messages
+pending when an interrupt lands, so `relay` interrupts the turn first and then posts. A Claude lead
+still holds that message until up to 7 minutes after it asked (kzarzycki/omnigent#14), and
+`relay` then exits 5 saying so. It never interrupts an approval prompt.
+
+**Reading a session.** `python3 scripts/omnigent_agent.py status <session>...` prints, per
+session, its state (`turn ended`, its running status, `blocked on a prompt: <what it asks>`,
+`failed: <error>`, `archived`), how many inputs wait queued, and its last message: one call
+for what a subscription notice names, in place of session info plus history. It is a
+snapshot: a native Claude session reads idle while quiet mid-turn, so an idle look reads as
+`turn ended`, which a notice has already confirmed.
+
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
 run as a background command, exits 0 as soon as one of them ends a turn (an end that has
 held for 30s, since a native Claude session reads idle while quiet mid-turn), blocks on an
