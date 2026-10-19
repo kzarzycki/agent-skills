@@ -110,10 +110,25 @@ it quoted.
 
 ## Handover
 
-You may be replaced by a fresh session at any time. Keep `tmp/loop/chief-of-staff.md` in
-the main checkout current: each live lead (session id, title, report path, what it waits
-on) and each standing decision the owner gave you. A new chief of staff reads it,
-subscribes to each live lead, and carries on without greeting the owner again.
+You may be replaced at any time by a fresh session, in either harness, on this host or
+another. Your successor knows only what `tmp/loop/chief-of-staff.md` in the main checkout
+says, so that file is the whole of your state:
+
+- **Shape.** One page (about 4 KB), overwritten in place, with these sections: Owner contact
+  (your session id, harness, host and checkout), Standing decisions (the owner's, one line
+  each, dated), Live leads (a table: session id, title, harness, report path, what it waits
+  on), Closed (one line each with its link, removed once the owner has been told), and
+  Follow (how to subscribe to the live leads again). It holds no history: finished work lives
+  on its PR, issue or report, and the file links it. A journal grows past what a successor
+  can read cheaply and buries the live state under the dead.
+- **When.** Rewrite it in the turn that changes what it holds, before you reply to the
+  owner: a lead started, relayed, reporting, failing or closed, a standing decision, a
+  takeover. State that is only in chat is lost at the next switch.
+- **Taking over.** Read the file, recall (Memory), subscribe to each live lead, and rewrite
+  Owner contact; then carry on without greeting the owner again. Read no transcript or
+  report to rebuild state, since that is what the file saves; read one only when a lead's
+  notice or the owner's question needs it. A predecessor in another checkout or on another
+  host left its file there: take that one, not this checkout's.
 
 ## Memory
 
