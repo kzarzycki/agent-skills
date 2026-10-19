@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- New owned skill `omnigent-telemetry` (#206): `scripts/omnigent_telemetry.py` reports
+  Omnigent spend, tokens by model, session trees, scheduled-task health and Codex rate limits
+  over the last N days from the API, the server's Postgres and local Codex rollouts, with
+  one-line anomaly flags (`SUBAGENT_EXPLOSION`, `VERIFIER_CHURN`, `FORK_BLOAT`,
+  `SUBSCRIPTION_AMPLIFICATION`, `CRON_FAIL_LOOP`, `SIDEBAR_NOISE`) and `--html` for an
+  offline page of the same numbers. A source that does not answer leaves its sections out
+  and the report names them.
 - `omnigent_agent.py run` takes a report written in the same clock tick as its launch (#185):
   it compared the report's mtime with `time.time_ns()`, which runs ahead of the kernel's coarse
   file clock, so three `run` tests failed in most runs. A report already at the path is still a
