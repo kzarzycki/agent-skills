@@ -64,6 +64,13 @@ launch that fails on capacity (`server_overloaded`, a rate limit) is retried lat
 backoff on the same model, never on another, which would leave the work on a model nobody
 chose.
 
+**Permission mode.** A Claude child starts in `--permission-mode <mode>`, else
+`OMNIGENT_PERMISSION_MODE`, else the harness default; the mode is the project's or owner's
+choice, set in the environment once. Omnigent applies it as the session's
+`terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
+none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
+`start` refuses the flag for Codex and ignores the variable.
+
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
 is given, so a reviewer of the author's family is always a deliberate choice. Whether a

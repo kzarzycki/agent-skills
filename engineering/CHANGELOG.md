@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `omnigent_agent.py start` and `run` take `--permission-mode <mode>`, defaulting from
+  `$OMNIGENT_PERMISSION_MODE`, for a Claude child (#213). Omnigent applies it at terminal launch.
+  Codex takes none: its CLI fails to start with the flag, so `start` refuses it there.
 - A chief of staff relays an owner message to a lead in one call (#202): `omnigent_agent.py
   relay` returns at once with exit 0 (delivered), 5 (queued, and it will land) or 4 (not
   deliverable, and why), whatever the lead is doing and on whichever host. A lead blocked on
