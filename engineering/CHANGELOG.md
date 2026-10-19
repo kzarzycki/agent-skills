@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- New owned skill `omnigent-telemetry` (#206): `scripts/omnigent_telemetry.py` reports
+  Omnigent spend, tokens by model, session trees, scheduled-task health and Codex rate limits
+  over the last N days from the API, the server's Postgres and local Codex rollouts, with
+  one-line anomaly flags (`SUBAGENT_EXPLOSION`, `VERIFIER_CHURN`, `FORK_BLOAT`,
+  `SUBSCRIPTION_AMPLIFICATION`, `CRON_FAIL_LOOP`, `SIDEBAR_NOISE`) and `--html` for an
+  offline page of the same numbers. A source that does not answer leaves its sections out
+  and the report names them.
 - A chief of staff relays an owner message to a lead in one call (#202): `omnigent_agent.py
   relay` returns at once with exit 0 (delivered), 5 (queued, and it will land) or 4 (not
   deliverable, and why), whatever the lead is doing and on whichever host. A lead blocked on
