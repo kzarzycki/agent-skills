@@ -79,9 +79,9 @@ A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEE
 
 | A notice or `watch` says | You do |
 |---|---|
-| Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one a line of yours naming the merge, since nothing else wakes it. Then archive the lead once its report says it cleaned up. |
+| Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it. Then archive the lead once its report says it cleaned up. |
 | Turn ended, `USER NEEDED` | Put its question to the owner in one line, linked to the lead's session. Never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
-| Turn ended, `STILL WORKING`, with something pending | Record what it waits on (Handover, Live leads) and send nothing: its own worker, verifier or CI wakes it, and another lead's merge reaches it through that lead's `DONE`. Tell the owner only when the turn changes the task: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
+| Turn ended, `STILL WORKING`, with something pending | Record what it waits on (Handover, Live leads) and send nothing: its own worker, verifier or CI wakes it, and another lead's merge reaches it through that lead's `DONE`. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step. A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Only a person approves a prompt, in the UI. |
 | Failed, or gave up | Revive it in place (`send`, which revives a reaped runner) once. If it fails again, give the owner the error line. |
@@ -127,7 +127,8 @@ says, so that file is the whole of your state:
     date and session they were given in.
   - Live leads: a table of session id, title, harness, report path (absolute, with its host
     when not yours) and what it waits on: the owner (what they must answer or do), an
-    approval prompt in the UI, another lead, or nothing while it works; plus a nudge or
+    approval prompt in the UI, another lead (which one), its own worker, verifier or CI, or
+    nothing (mid-turn, or stalled); plus a nudge or
     revive already spent (What a lead's turn ending means), so a successor does not spend
     it again.
   - Closed: one line per lead that finished, with its PR, issue or report link and when you
