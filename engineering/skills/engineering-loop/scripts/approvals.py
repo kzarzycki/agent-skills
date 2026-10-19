@@ -175,7 +175,7 @@ PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body b
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
+    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -1191,23 +1191,38 @@ def head_checks(
     # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of one check on the
     # head; only the newest says whether it is green. One job name in two workflows is two checks.
     newest: dict[tuple[str, str], dict[str, Any]] = {}
-    drafts: set[str] = set()
+    drafts: set[tuple[str, str]] = set()
+
+    def skipped(node: dict[str, Any]) -> bool:
+        return node.get("conclusion") == "SKIPPED" and (node.get("completedAt") or "") < ready
+
+    # A workflow whose run since ready has finished never produces a name only its draft run had, such as a matrix
+    # job's literal `matrix.part`, skipped before the matrix expanded. Only a finished run says so: a job that needs
+    # another has no check run until it starts. A draft's skip is no such run, though GitHub may give it a
+    # `startedAt` after its `completedAt`, and so after a ready right behind it.
+    finished = {
+        workflow(node)
+        for node in every
+        if not skipped(node)
+        and started(node) >= ready
+        and (node.get("checkSuite") or {}).get("status") == "COMPLETED"
+    }
     for node in every:
         name = node.get("name") or node.get("context")
         if wanted and name not in wanted:
             continue
-        if node.get("conclusion") == "SKIPPED" and (node.get("completedAt") or "") < ready:
-            drafts.add(name)
+        if skipped(node):
+            drafts.add((workflow(node), name))
             continue
-        run = (node.get("checkSuite") or {}).get("workflowRun") or {}
-        key = ((run.get("workflow") or {}).get("name", ""), name)
+        key = (workflow(node), name)
         if key not in newest or started(node) >= started(newest[key]):
             newest[key] = node
     checks = [
         (name, node.get("conclusion") or node.get("state") or node.get("status"))
         for (_, name), node in newest.items()
     ]
-    return checks, more, drafts - {name for name, _ in checks}
+    # a draft skip is replaced only by its own workflow's run: a job of that name in another workflow says nothing
+    return checks, more, {name for flow, name in drafts - newest.keys() if flow not in finished}
 
 
 def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> list[str]:
@@ -1231,6 +1246,12 @@ def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> li
         for name, state in checks
         if state not in GREEN
     ]
+
+
+def workflow(node: dict[str, Any]) -> str:
+    """The name of the workflow a check run belongs to; empty for a status."""
+    run = (node.get("checkSuite") or {}).get("workflowRun") or {}
+    return (run.get("workflow") or {}).get("name", "")
 
 
 def started(node: dict[str, Any]) -> str:
