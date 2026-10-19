@@ -97,11 +97,13 @@ def unzstd(blob: bytes) -> bytes:
 
 
 def decode_usage(hex_blob: str | None) -> dict:
-    """A ``session_usage`` blob: ``\\x00\\x01`` then zstd JSON, or plain JSON."""
+    """A ``session_usage`` blob: NUL, a codec byte (0 raw, 1 zstd), then JSON; or legacy plain JSON."""
     if not hex_blob:
         return {}
     raw = bytes.fromhex(hex_blob)
-    return json.loads(unzstd(raw[2:]) if raw[:2] == b"\x00\x01" else raw)
+    if raw[:1] != b"\x00":
+        return json.loads(raw)
+    return json.loads(unzstd(raw[2:]) if raw[1:2] == b"\x01" else raw[2:])
 
 
 def fetch_db(container: str, since: int) -> dict:

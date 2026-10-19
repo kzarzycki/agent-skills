@@ -166,3 +166,10 @@ def test_without_the_database_the_api_sections_render_and_the_rest_are_named() -
     assert "7 days $12.25" in out and "r1" in out
     assert all(f"{s}: unreachable" in out for s in telemetry.DB_SECTIONS)
     assert "$12.25" in telemetry.page(r) and "<script" not in telemetry.page(r)
+
+
+def test_usage_decodes_in_each_frame_omnigent_writes() -> None:
+    doc = b'{"total_cost_usd": 0.12}'
+    assert telemetry.decode_usage((b"\x00\x00" + doc).hex()) == {"total_cost_usd": 0.12}
+    assert telemetry.decode_usage(doc.hex()) == {"total_cost_usd": 0.12}
+    assert telemetry.decode_usage(None) == {}
