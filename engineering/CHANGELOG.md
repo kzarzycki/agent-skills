@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `omnigent_agent.py run` takes a report written in the same clock tick as its launch (#185):
+  it compared the report's mtime with `time.time_ns()`, which runs ahead of the kernel's coarse
+  file clock, so three `run` tests failed in most runs. A report already at the path is still a
+  pass before; only one newer than it counts.
+- `status`, `watch` and `run`/`wait`'s failure lines print the session's last assistant message,
+  or `(none)`, never a user message such as the brief or an injected reminder (#185).
 - A chief of staff relays an owner message to a lead in one call (#202): `omnigent_agent.py
   relay` returns at once with exit 0 (delivered), 5 (queued, and it will land) or 4 (not
   deliverable, and why), whatever the lead is doing and on whichever host. A lead blocked on

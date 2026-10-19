@@ -150,7 +150,8 @@ too, and exits 5 naming the question. It never interrupts an approval prompt.
 
 **Reading a session.** `python3 scripts/omnigent_agent.py status <session>...` prints, per
 session, its state (`turn ended`, its running status, `blocked on a prompt: <what it asks>`,
-`failed: <error>`, `archived`), how many inputs wait queued, and its last message: one call
+`failed: <error>`, `archived`), how many inputs wait queued, and its last assistant message (`(none)` before its first, never
+the brief or an injected reminder): one call
 for what a subscription notice names, in place of session info plus history. It is a
 snapshot: a native Claude session reads idle while quiet mid-turn, so an idle look reads as
 `turn ended`, which a notice has already confirmed.
@@ -159,7 +160,7 @@ snapshot: a native Claude session reads idle while quiet mid-turn, so an idle lo
 run as a background command, exits 0 as soon as one of them ends a turn (an end that has
 held for 30s, since a native Claude session reads idle while quiet mid-turn), blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
-`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A top-level
+`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last assistant message. A top-level
 session tells no parent when its turn ends or it blocks, and the UI's "Completed" reaches
 no agent, so a session that follows one without a subscription (below) learns it this way. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
 except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
