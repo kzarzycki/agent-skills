@@ -26,8 +26,10 @@ offline. The page holds the numbers; a retro's narrative stays the `retro` skill
 A source that does not answer leaves its sections out, and the report's `Left out` lists
 each one with why. Run it on the server host for the full report, and on another host for
 its own Codex limits. Tokens and per-model numbers are each session's lifetime totals for
-the trees active in the window; Claude harnesses record cost but no tokens. The tree
-table's cost is the API's subtree sum, and its root cost the root session alone.
+the trees active in the window; Claude harnesses record cost but no tokens. A tree's cost
+is the API's subtree sum, and its root cost the root session alone. The API lists only
+unarchived top-level sessions, so an archived tree's cost is its sessions' sum from the
+database, and without the database an archived tree is missing.
 
 ## Flags
 
