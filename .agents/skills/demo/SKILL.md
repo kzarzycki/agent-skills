@@ -12,7 +12,7 @@ when to record one. Without such a rule, record only when asked.
 
 ## Record
 
-When the project's agent docs name a demo command, such as `mise run demo <script>`, use
+When the project's agent docs name a demo command, such as `mise run pr:demo <script>`, use
 it. Otherwise pick the recorder for the surface and read its file:
 
 | Surface | Recorder | Read |

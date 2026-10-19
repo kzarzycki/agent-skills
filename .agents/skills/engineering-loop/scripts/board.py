@@ -4,20 +4,32 @@
     python3 scripts/board.py <issue> <column>
     python3 scripts/board.py column <issue>
 
-The columns are the loop's stages (the skill's issues.md). Adds the issue to the board when it is not there yet,
+The columns are the loop's stages (the skill's issues.md, Board), each shown in the board column of its own name unless
+docs/agents/issue-tracker.md § Board maps it to another: one list item per mapping, the loop column then the board's,
+both in backticks (`` - `Build` is `In progress` ``), several loop columns to one board column allowed. A name that is
+no loop column is taken as a board column. Adds the issue to the board when it is not there yet,
 then sets its Status. Ids are looked up by name on every call: GitHub changes option ids whenever a field is edited.
 Exit 1 with gh's reason or the valid columns; the labels, not the board, are an issue's state, so a failed move never
 blocks a ticket. Needs the `project` token scope (`gh auth refresh -s project`).
 
-`column` prints the issue's column, or nothing when the repo has no board or the issue is not on it.
+`column` prints the loop's column: the later of the one its board column shows (the earliest loop column mapped to it) and the one its labels give (issues.md, Board:
+`needs-owner` is `Needs owner`, `approved:spec` is `Ready`, neither is `Intent`), since the labels are the state and a
+board move may have failed. A board column no loop column maps to and the loop does not name is printed as is. `Sign-off` is a landed change
+whose issue stays open for the owner's check in use (`Implements #n`), so it comes after `Verify` and before `Done`.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from typing import Any
+
+# importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
+sys.dont_write_bytecode = True
+# the label names and the docs' reading, defined once
+from approvals import NEEDS_OWNER, READY, TRACKER, Refused, read, section, toplevel
 
 # ponytail: the repo's first linked project is the board; pick by title when a second one is linked.
 LOOKUP = """query($owner: String!, $name: String!, $issue: Int!) {
@@ -32,7 +44,7 @@ ADD = """mutation($project: ID!, $issue: ID!) {
 COLUMN = """query($owner: String!, $name: String!, $issue: Int!) {
   repository(owner: $owner, name: $name) {
     projectsV2(first: 1) { nodes { id } }
-    issue(number: $issue) { projectItems(first: 20) { nodes { project { id } fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } }
+    issue(number: $issue) { labels(first: 50) { nodes { name } } projectItems(first: 20) { nodes { project { id } fieldValueByName(name: "Status") { ... on ProjectV2ItemFieldSingleSelectValue { name } } } } }
   }
 }"""
 SET = """mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
@@ -78,6 +90,7 @@ def _graphql(query: str, **values: int | str) -> Any:
 
 
 def move(issue: int, column: str) -> None:
+    """Set the issue's board column, a board column name (main maps the loop's)."""
     # gh fills owner and repo from the checkout
     repo = _graphql(LOOKUP, owner="{owner}", name="{repo}", issue=issue)["repository"]
     project, field, option = target(repo["projectsV2"]["nodes"], column)
@@ -87,34 +100,70 @@ def move(issue: int, column: str) -> None:
     _graphql(SET, project=project, item=item, field=field, option=option)
 
 
-def column_of(repo: dict[str, Any]) -> str:
-    """The issue's Status on the repo's board; empty without a board, off it, or with no Status."""
+# the loop's columns in stage order (issues.md, Board)
+COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Sign-off", "Done"]
+# a § Board list item: the loop column, then the board's, each the first backticked name on its side
+MAPPED = re.compile(r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`[^`\n]*`([^`\n]+)`", re.MULTILINE)
+
+
+def mapping(tracker: str | None) -> dict[str, str]:
+    """The board column of each loop column docs/agents/issue-tracker.md § Board names; a loop column it does not
+    name keeps its own name (callers use `.get(name, name)`)."""
+    return dict(MAPPED.findall(section(tracker or "", "Board")))
+
+
+def tracker_file() -> str | None:
+    path = toplevel() / TRACKER
+    return read(path) if path.exists() else None
+
+
+def labelled(labels: set[str]) -> str:
+    """The column an issue's state labels give."""
+    return "Needs owner" if NEEDS_OWNER in labels else "Ready" if READY in labels else "Intent"
+
+
+def column_of(repo: dict[str, Any], mapped: dict[str, str] | None = None) -> str:
+    """The later of the loop column the issue's Status on the repo's board shows and the one its labels give. A board
+    column several loop columns share shows the earliest of them; a Status no loop column maps to (`mapped`, mapping())
+    and the loop does not name wins."""
     boards = repo["projectsV2"]["nodes"]
-    if not boards:
-        return ""
-    for item in repo["issue"]["projectItems"]["nodes"]:
-        if item["project"]["id"] == boards[0]["id"]:
-            return (item["fieldValueByName"] or {}).get("name", "")
-    return ""
+    status = next(
+        (
+            (item["fieldValueByName"] or {}).get("name", "")
+            for item in repo["issue"]["projectItems"]["nodes"]
+            if boards and item["project"]["id"] == boards[0]["id"]
+        ),
+        "",
+    )
+    labels = labelled({label["name"] for label in repo["issue"]["labels"]["nodes"]})
+    mapped = mapped or {}
+    shown = [column for column in COLUMNS if mapped.get(column, column) == status]
+    if status and not shown:
+        return status
+    return max(shown[0] if shown else labels, labels, key=COLUMNS.index)
 
 
 def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "column" and argv[1].isdigit():
         try:
+            mapped = mapping(tracker_file())
             repo = _graphql(COLUMN, owner="{owner}", name="{repo}", issue=int(argv[1]))[
                 "repository"
             ]
+        except Refused as exc:
+            print(exc, file=sys.stderr)
+            return 1
         except subprocess.CalledProcessError as exc:
             print(exc.stderr.strip(), file=sys.stderr)
             return 1
-        print(column_of(repo))
+        print(column_of(repo, mapped))
         return 0
     if len(argv) != 2 or not argv[0].isdigit():
         print(__doc__, file=sys.stderr)
         return 2
     try:
-        move(int(argv[0]), argv[1])
-    except (ValueError, subprocess.CalledProcessError) as exc:
+        move(int(argv[0]), mapping(tracker_file()).get(argv[1], argv[1]))
+    except (ValueError, Refused, subprocess.CalledProcessError) as exc:
         print(getattr(exc, "stderr", "").strip() or exc, file=sys.stderr)
         return 1
     return 0
