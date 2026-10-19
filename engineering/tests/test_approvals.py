@@ -1853,6 +1853,20 @@ def test_land_merges_past_a_draft_only_check_its_workflows_finished_run_never_pr
     landing["calls"].clear()
     rollup["nodes"] = [draft, run("lint", "SUCCESS", after, "COMPLETED", "Lint")]
     assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
+    # GitHub may start a skipped run after it completed, so after a ready right behind it: still the draft's run
+    rollup["nodes"] = [
+        {**draft, "startedAt": "2026-10-01T12:00:10Z"},
+        run("lint", "SUCCESS", after, "COMPLETED", "Lint"),
+    ]
+    assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
+    # one name in two workflows waits until each has finished a run since ready, in either order
+    other = {
+        **draft,
+        "checkSuite": {"status": "COMPLETED", "workflowRun": {"workflow": {"name": "Lint"}}},
+    }
+    for nodes in ([draft, other], [other, draft]):
+        rollup["nodes"] = [*nodes, run("lint", "SUCCESS", after, "COMPLETED", "Lint")]
+        assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
 
 
 def test_land_waits_on_a_head_with_no_checks_at_all(

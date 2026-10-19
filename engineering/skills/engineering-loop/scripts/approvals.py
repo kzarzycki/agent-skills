@@ -1191,21 +1191,28 @@ def head_checks(
     # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of one check on the
     # head; only the newest says whether it is green. One job name in two workflows is two checks.
     newest: dict[tuple[str, str], dict[str, Any]] = {}
-    drafts: dict[str, str] = {}
+    drafts: set[tuple[str, str]] = set()
+
+    def skipped(node: dict[str, Any]) -> bool:
+        return node.get("conclusion") == "SKIPPED" and (node.get("completedAt") or "") < ready
+
     # A workflow whose run since ready has finished never produces a name only its draft run had, such as a matrix
     # job's literal `matrix.part`, skipped before the matrix expanded. Only a finished run says so: a job that needs
-    # another has no check run until it starts.
+    # another has no check run until it starts. A draft's skip is no such run, though GitHub may give it a
+    # `startedAt` after its `completedAt`, and so after a ready right behind it.
     finished = {
         workflow(node)
         for node in every
-        if started(node) >= ready and (node.get("checkSuite") or {}).get("status") == "COMPLETED"
+        if not skipped(node)
+        and started(node) >= ready
+        and (node.get("checkSuite") or {}).get("status") == "COMPLETED"
     }
     for node in every:
         name = node.get("name") or node.get("context")
         if wanted and name not in wanted:
             continue
-        if node.get("conclusion") == "SKIPPED" and (node.get("completedAt") or "") < ready:
-            drafts[name] = workflow(node)
+        if skipped(node):
+            drafts.add((workflow(node), name))
             continue
         key = (workflow(node), name)
         if key not in newest or started(node) >= started(newest[key]):
@@ -1218,7 +1225,7 @@ def head_checks(
     return (
         checks,
         more,
-        {name for name, flow in drafts.items() if name not in ran and flow not in finished},
+        {name for flow, name in drafts if name not in ran and flow not in finished},
     )
 
 
