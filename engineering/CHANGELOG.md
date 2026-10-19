@@ -9,6 +9,12 @@
   `SUBSCRIPTION_AMPLIFICATION`, `CRON_FAIL_LOOP`, `SIDEBAR_NOISE`) and `--html` for an
   offline page of the same numbers. A source that does not answer leaves its sections out
   and the report names them.
+- `omnigent_agent.py run` takes a report written in the same clock tick as its launch (#185):
+  it compared the report's mtime with `time.time_ns()`, which runs ahead of the kernel's coarse
+  file clock, so three `run` tests failed in most runs. A report already at the path is still a
+  pass before; only one newer than it counts.
+- `status`, `watch` and `run`/`wait`'s failure lines print the session's last assistant message,
+  or `(none)`, never a user message such as the brief or an injected reminder (#185).
 - Cheaper runs, from the 2026-10-19 retro (#207). Continuing on the other model family, or
   replacing a chief of staff, starts a fresh session from the notes or handover file,
   never a fork of the old one; `operating-omnigent` lists the fork endpoint with when not
