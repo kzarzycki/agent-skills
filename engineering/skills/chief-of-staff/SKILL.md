@@ -115,15 +115,17 @@ another. Your successor knows only what `tmp/loop/chief-of-staff.md` in the main
 says, so that file is the whole of your state:
 
 - **Shape.** One page (about 4 KB), overwritten in place, with these sections:
-  - Owner contact: your Omnigent session id, harness, host and checkout, and your
-    predecessor's session id.
+  - Owner contact: your Omnigent session id (the one `start` subscribes as, `own_id` in the
+    script), harness, host and checkout, and your predecessor's session id.
   - Standing decisions: the owner's, one line each, in their words where short, with the
     date and session they were given in.
   - Live leads: a table of session id, title, harness, report path (absolute, with its host
     when not yours) and what it waits on: the owner (with the question), a prompt, another
-    lead, or nothing while it works.
-  - Closed: one line per lead that finished since the owner's last message, with its PR,
-    issue or report link, dropped at their next message, which shows they read your reply.
+    lead, or nothing while it works; plus a nudge or revive already spent (What a lead's
+    turn ending means), so a successor does not spend it again.
+  - Closed: one line per lead that finished, with its PR, issue or report link, dropped once
+    the owner has sent a message since you told them, which shows they read it, and the lead
+    is archived.
   - Follow: only a lead followed by a `watch` instead of a subscription, with the command.
 
   It holds no history: finished work lives on its PR, issue or report, and the file links
@@ -131,14 +133,21 @@ says, so that file is the whole of your state:
 - **When.** Rewrite it in the turn that changes what it holds, before you reply to the
   owner: a lead started, relayed, reporting, failing or closed, a standing decision, a
   takeover. State that is only in chat is lost at the next switch.
-- **Taking over.** Read the file, then make sure your predecessor no longer answers the owner
-  (its session ended, or the owner left it), since two chiefs of staff would both reply.
-  Recall the owner's standing decisions (Memory), read each live lead's status (session info,
-  not its history), subscribe to it, and rewrite the file with what you found: Owner contact
-  and any row its status contradicts. Then carry on without greeting the owner again. Read no
-  transcript or report to rebuild state, since that is what the file saves; read one only
-  when a lead's notice or the owner's question needs it. A predecessor in another checkout or
-  on another host left its file there: take that one, not this checkout's.
+- **Taking over.** Your predecessor is the session the owner names, else the one this
+  checkout's file names, unless that one is archived, which makes the file stale: then ask
+  the owner which session was last. Its session info gives its host and checkout. When
+  those are not yours, its file is the one there, since this checkout's may be older: read it on that
+  host, or ask the owner to paste it when you cannot reach the host, since rebuilding from
+  transcripts is what the file exists to avoid. Once the predecessor's turn has ended,
+  archive it (`reap <session>`, which keeps its transcript): archiving drops its
+  subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
+  staff would both act, and it marks every file that names it in Owner contact as stale.
+  Then recall with the query `owner standing decisions` (Memory), read each live lead's
+  status (session info, not its history), subscribe to it, and rewrite the file with what
+  you found: Owner contact, any row a status contradicts, and any recalled decision it
+  lacks. Carry on without greeting the owner again. Read no transcript or report to rebuild
+  state, since that is what the file saves; read one only when a lead's notice or the
+  owner's question needs it.
 
 ## Memory
 
