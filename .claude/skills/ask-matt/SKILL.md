@@ -49,7 +49,8 @@ Model-invoked references that other skills pull in. Call one directly when the w
 - **`/audit-third-party-software`**: audit third-party code before installing it.
 - **`/demo`**: record a visible change running and post the video to its PR. `/pr` names it in the Evidence.
 - **`/context-extractor`**: extract a project's conventions into a `CLAUDE.md`.
-- **`/operating-omnigent`**: operate a local Omnigent install and drive its agents.
+- **`/orchestrating-agents`**: start, message, watch and collect agents through one backend (native, Omnigent, herdr-link).
+- **`/operating-omnigent`**: operate a local Omnigent install and its raw `sys_*` tools.
 
 ## Phase boundaries
 
