@@ -247,7 +247,10 @@ verifier, review angles run as native subagents, never as full harness sessions.
   in its review's heading, and the merge gate checks only that the newest pass on the head
   is satisfied, whichever family wrote it, since the heading is the verifier's own word
   and proves nothing the gate could hold it to. A brief never says who wrote the code or
-  why the verifier shares its family: that biases the review.
+  why the verifier shares its family: that biases the review. A verifier reviews a pushed
+  PR head only, never an untracked helper script, a scratch wrapper or a mid-edit
+  snapshot, since a review of what will not land proves nothing about what will: a helper
+  worth reviewing is committed on a PR, and the cap counts PR passes only.
 - **Reports are files**, sent as a path to whoever started the agent
   (orchestrating-agents, Reports are files).
 - **Evidence, not claims.** Report each step's real exit code: a chain's status is its
@@ -310,8 +313,10 @@ verifier, review angles run as native subagents, never as full harness sessions.
 - **Models.** Never pick a model: every agent runs on its harness's configured default,
   which the owner sets, unless the owner names one for a task. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
-  family is out of quota, continue on the other; revive a stuck or interrupted agent
-  rather than restart it.
+  family is out of quota, continue on the other in a fresh session briefed from the run's
+  notes, the spec and the PR, never a fork of the old session, since every turn of a fork
+  re-reads the whole transcript it copied; revive a stuck or interrupted agent rather than
+  restart it.
 - **Turns.** A turn the owner reads (not a child's path-only reply) ends with `DONE`,
   `STILL WORKING` or `USER NEEDED`. A status reply opens with a tl;dr: the loop step with
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
