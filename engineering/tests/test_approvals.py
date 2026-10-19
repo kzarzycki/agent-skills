@@ -1867,6 +1867,12 @@ def test_land_merges_past_a_draft_only_check_its_workflows_finished_run_never_pr
     for nodes in ([draft, other], [other, draft]):
         rollup["nodes"] = [*nodes, run("lint", "SUCCESS", after, "COMPLETED", "Lint")]
         assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
+        # nor does the other workflow's ready run of that very name stand in for this one's
+        rollup["nodes"] = [
+            *({**node, "name": "check"} for node in nodes),
+            run("check", "SUCCESS", after, "COMPLETED", "Lint"),
+        ]
+        assert landed(capsys, landing) == (approvals.WAITING, [WAITED], [])
 
 
 def test_land_waits_on_a_head_with_no_checks_at_all(

@@ -1221,12 +1221,8 @@ def head_checks(
         (name, node.get("conclusion") or node.get("state") or node.get("status"))
         for (_, name), node in newest.items()
     ]
-    ran = {name for name, _ in checks}
-    return (
-        checks,
-        more,
-        {name for flow, name in drafts if name not in ran and flow not in finished},
-    )
+    # a draft skip is replaced only by its own workflow's run: a job of that name in another workflow says nothing
+    return checks, more, {name for flow, name in drafts - newest.keys() if flow not in finished}
 
 
 def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> list[str]:
