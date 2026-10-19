@@ -586,9 +586,9 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
     assert "terminal_launch_args" not in bodies[-1]  # the harness default
     og.create("claude", "t", permission_mode="plan")
     assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "plan"]
-    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")
     og.create("claude", "t")
-    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "bypassPermissions"]
+    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "acceptEdits"]
     og.create("codex", "t")  # codex-native would hand it to the codex CLI, which fails to start
     assert "terminal_launch_args" not in bodies[-1]
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):

@@ -1416,7 +1416,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         p.add_argument(
             "--permission-mode",
-            help="a claude session's permission mode, e.g. bypassPermissions (default: $OMNIGENT_PERMISSION_MODE,"
+            help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
             " else the harness default); codex sessions take none",
         )
         p.add_argument(
