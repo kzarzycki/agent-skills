@@ -175,7 +175,7 @@ PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body b
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ workflowRun {{ workflow {{ name }} }} }} }}
+    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -1191,23 +1191,34 @@ def head_checks(
     # A rerun, or a run cancelled by a newer one in its concurrency group, leaves several runs of one check on the
     # head; only the newest says whether it is green. One job name in two workflows is two checks.
     newest: dict[tuple[str, str], dict[str, Any]] = {}
-    drafts: set[str] = set()
+    drafts: dict[str, str] = {}  # a check whose only run is the draft's skip -> its workflow
+    finished: set[str] = set()  # workflows whose run since ready completed
     for node in every:
         name = node.get("name") or node.get("context")
         if wanted and name not in wanted:
             continue
+        suite = node.get("checkSuite") or {}
+        flow = ((suite.get("workflowRun") or {}).get("workflow") or {}).get("name", "")
         if node.get("conclusion") == "SKIPPED" and (node.get("completedAt") or "") < ready:
-            drafts.add(name)
+            drafts[name] = flow
             continue
-        run = (node.get("checkSuite") or {}).get("workflowRun") or {}
-        key = ((run.get("workflow") or {}).get("name", ""), name)
+        if suite.get("status") == "COMPLETED" and started(node) >= ready:
+            finished.add(flow)
+        key = (flow, name)
         if key not in newest or started(node) >= started(newest[key]):
             newest[key] = node
     checks = [
         (name, node.get("conclusion") or node.get("state") or node.get("status"))
         for (_, name), node in newest.items()
     ]
-    return checks, more, drafts - {name for name, _ in checks}
+    # A matrix job the draft skipped carries its unexpanded name (`matrix.part`), never seen again: once its
+    # workflow's run since ready has completed, every job that run had is among the checks under its real name.
+    ran = {name for name, _ in checks}
+    return (
+        checks,
+        more,
+        {name for name, flow in drafts.items() if name not in ran and flow not in finished},
+    )
 
 
 def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> list[str]:

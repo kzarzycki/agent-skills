@@ -1809,6 +1809,28 @@ def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
         [],
     )
 
+    # a matrix job the draft skipped is named `matrix.part` and never reappears: its workflow's completed run since
+    # ready ran it under its real names; a run still in progress may not have registered them yet
+    def ci(status: str) -> dict[str, Any]:
+        return {"status": status, "workflowRun": {"workflow": {"name": "ci"}}}
+
+    part = {**draft, "name": "matrix.part", "checkSuite": ci("COMPLETED")}
+    lint = {
+        **draft,
+        "name": "lint",
+        "conclusion": "SUCCESS",
+        "startedAt": "2026-10-01T12:00:05Z",
+        "completedAt": "2026-10-01T12:01:00Z",
+    }
+    rollup["nodes"] = [part, {**lint, "checkSuite": ci("IN_PROGRESS")}]
+    landing["calls"].clear()
+    code, lines, calls = landed(capsys, landing)
+    assert (code, calls) == (approvals.WAITING, [])
+    assert lines == [WAITED.replace("`check`", "`matrix.part`")]
+    rollup["nodes"] = [part, {**lint, "checkSuite": ci("COMPLETED")}]
+    landing["calls"].clear()
+    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+
 
 def test_land_waits_on_a_head_with_no_checks_at_all(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
