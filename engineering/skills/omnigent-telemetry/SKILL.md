@@ -38,8 +38,8 @@ Thresholds are constants at the top of the script; a flag fires at its threshold
 - `SUBAGENT_EXPLOSION`: a tree with 25 sub-agents, or 6 nested Codex ones (sessions
   Codex spawned itself, `sub_agent_name` `Codex`). Usually a reviewer that fans out per
   axis on every pass, or a lead that starts a session per small step.
-- `VERIFIER_CHURN`: a verifier session titled past pass 3 (`-p4`, `pass 4`), beyond the
-  engineering loop's cap. Usually mechanical rejections (proof not at the reviewed head, a
+- `VERIFIER_CHURN`: a verifier session titled pass 4 or later (`-p4`, `pass 4`), more
+  passes than one change usually needs. Usually mechanical rejections (proof not at the reviewed head, a
   dirty worktree) or a spec the verifier reads differently each pass. It reads the title
   only, so verifiers named another way never fire it.
 - `FORK_BLOAT`: a session started in the window with 500 items inherited from a fork.
