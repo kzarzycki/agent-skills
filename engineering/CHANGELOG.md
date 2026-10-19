@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `omnigent_agent.py` under load (#226):
+  - `capacity` says whether this host has room for another session, and `start` and `run`
+    wait for it, failing after 10 minutes;
+  - a message whose POST timed out is confirmed from the history instead of failing the
+    `start`, which had archived sessions that took their brief;
+  - `run`'s usage says a lead (`--top-level`) uses `start`, then `watch`.
 - New owned skill `omnigent-telemetry` (#206): `scripts/omnigent_telemetry.py` reports
   Omnigent spend, tokens by model, session trees, scheduled-task health and Codex rate limits
   over the last N days from the API, the server's Postgres and local Codex rollouts, with
