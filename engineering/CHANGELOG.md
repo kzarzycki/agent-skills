@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- The chief-of-staff skill states how to work delegated and under load (#224):
+  - a delegated decision is reported as options, a recommendation and the action taken;
+  - a chief of staff records an owner's approval as a label with a quoted comment, and leaves
+    the written record to the owner;
+  - a release checks the standing decisions first;
+  - an adopted session becomes a lead;
+  - an overloaded host's leads park at a clean checkpoint;
+  - a lead rewriting a shared checkout has it to itself.
+
+  The handover names the exact subscribe and info-only takeover calls, quotes the owner with
+  the session id they spoke in, and records revives spent on every lead (#196's A1 dry run).
 - New owned skill `omnigent-telemetry` (#206): `scripts/omnigent_telemetry.py` reports
   Omnigent spend, tokens by model, session trees, scheduled-task health and Codex rate limits
   over the last N days from the API, the server's Postgres and local Codex rollouts, with
