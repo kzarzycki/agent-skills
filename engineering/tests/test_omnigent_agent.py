@@ -488,27 +488,30 @@ def test_stalled_server_timeout_reaches_cleanup(
         server.shutdown()
 
 
-def test_a_send_that_timed_out_is_left_to_the_history_and_any_other_error_fails(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_a_start_whose_send_timed_out_keeps_the_session_the_history_shows_took_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from urllib.error import URLError
 
-    errors = [
-        URLError(TimeoutError("timed out")),
-        TimeoutError("timed out"),
-        HTTPError("u", 503, "", Message(), None),
-    ]
+    class Late(FakeOmnigent):
+        def send(self, sid: str, text: str) -> None:
+            super().send(sid, text)  # the server took it, after the client gave up
+            raise omnigent_agent.Fail("POST events: timed out") from URLError(
+                TimeoutError("timed out")
+            )
 
-    def call(self, method: str, path: str, body: object = None) -> dict:
-        raise omnigent_agent.Fail(f"{method} {path}: down") from errors.pop(0)
+    og = Late()
+    sid = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0]
+    assert og.archived == [] and og.posts == 1
 
-    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
-    og = object.__new__(omnigent_agent.Omnigent)
-    og.send("s1", "go")
-    og.send("s1", "go")
-    assert capsys.readouterr().err.count("confirming from the history") == 2
-    with pytest.raises(omnigent_agent.Fail, match="down"):
-        og.send("s1", "go")
+    # a timeout only: a reset still fails, as Omnigent.send itself does on any error (the
+    # supervisor's sends advance their state on its return)
+    def reset(sid: str, text: str) -> None:
+        raise omnigent_agent.Fail("POST events: reset") from ConnectionResetError("reset")
+
+    monkeypatch.setattr(og, "send", reset)
+    with pytest.raises(omnigent_agent.Fail, match="reset"):
+        omnigent_agent.send_to_confirm(og, sid, "go")
 
 
 def test_start_waits_while_the_host_is_over_capacity(

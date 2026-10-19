@@ -358,24 +358,17 @@ class Omnigent:
         self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt", "data": {}})
 
     def send(self, sid: str, text: str) -> None:
-        """Post a user message. A timeout is no failure: a slow server takes the message after the
-        client gave up, and every caller confirms delivery from the history, which decides."""
-        try:
-            self.call(
-                "POST",
-                f"/v1/sessions/{sid}/events",
-                {
-                    "type": "message",
-                    "data": {
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": text}],
-                    },
+        self.call(
+            "POST",
+            f"/v1/sessions/{sid}/events",
+            {
+                "type": "message",
+                "data": {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
                 },
-            )
-        except Fail as e:
-            if not isinstance(getattr(e.__cause__, "reason", e.__cause__), TRANSIENT):
-                raise
-            print(f"{e}; confirming from the history", file=sys.stderr)
+            },
+        )
 
     def items(self, sid: str) -> list[dict]:
         page = self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc")
@@ -491,6 +484,17 @@ def questions_of(info: dict) -> list[str]:
     ]
 
 
+def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
+    """Send a message the caller then looks for in the history. A timeout is no failure here: a slow
+    server takes the message after the client gave up, and the history decides."""
+    try:
+        og.send(sid, text)
+    except Fail as e:
+        if not isinstance(getattr(e.__cause__, "reason", e.__cause__), TimeoutError):
+            raise
+        print(f"{e}; confirming from the history", file=sys.stderr)
+
+
 def delivered(
     og: Omnigent,
     sid: str,
@@ -602,7 +606,7 @@ def send(
             f"session {sid}: this message was already sent; waiting for that copy", file=sys.stderr
         )
     else:
-        og.send(sid, brief)
+        send_to_confirm(og, sid, brief)
     deadline, held = time.monotonic() + confirm_seconds, None
     while True:
         info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
@@ -782,7 +786,7 @@ def start(
                 print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
-                og.send(sid, text)
+                send_to_confirm(og, sid, text)
             if delivered(og, sid, text, confirm_seconds):
                 return sid, survivors
         except Fail as e:
@@ -872,7 +876,7 @@ def wait(
                     f"session {sid} ended ({status}) without {missing}; nudging once",
                     file=sys.stderr,
                 )
-                og.send(sid, nudge)
+                send_to_confirm(og, sid, nudge)
                 delivered(og, sid, nudge, 60.0)  # else its old last message ends the wait at once
                 idle_since, nudged = None, True
                 continue
