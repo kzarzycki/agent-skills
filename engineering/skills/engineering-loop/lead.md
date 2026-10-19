@@ -118,7 +118,8 @@ design, wireframes included for a UI, and delegate the rest.
    fixed after a satisfied verdict among them, gets a short delta pass: the verifier reviews
    only the change since the last verdict's head. Instructions are code: a skill, a role
    file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt,
-   and anything a tool parses each need the full pass.
+   and anything a tool parses each need the full verifier pass (gates, proof and repros),
+   still reviewing only the change since the last verdict's head.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
    waits for the landing rule (SKILL.md):
    - Fetch, then merge `origin/main` in only when GitHub requires it: `gh pr view <pr> --json
