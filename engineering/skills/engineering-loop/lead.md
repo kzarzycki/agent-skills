@@ -87,7 +87,8 @@ design, wireframes included for a UI, and delegate the rest.
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
-7. **Verify** (board: `Verify`). Commit and push, then start the verifier (SKILL.md) in
+7. **Verify** (board: `Verify`). Commit and push, then start the verifier on that pushed
+   head (SKILL.md, Independent verification) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
    worktree, which the project gitignores: outside its workspace a Codex child's sandbox
@@ -117,7 +118,8 @@ design, wireframes included for a UI, and delegate the rest.
    fixed after a satisfied verdict among them, gets a short delta pass: the verifier reviews
    only the change since the last verdict's head. Instructions are code: a skill, a role
    file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt,
-   and anything a tool parses each need the full pass.
+   and anything a tool parses each need the full verifier pass (gates, proof and repros),
+   still reviewing only the change since the last verdict's head.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
    waits for the landing rule (SKILL.md):
    - Fetch, then merge `origin/main` in only when GitHub requires it: `gh pr view <pr> --json
