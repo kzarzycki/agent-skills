@@ -5,6 +5,9 @@
 - A chief of staff reports to the owner at task level (#199): a task started, what blocks it,
   a decision the owner must make, its result. A lead's interim progress, such as a verifier
   pass, a gate re-run or a worker's hand-off, stays in the lead's session.
+- A chief of staff nudges only a stalled lead (#201). A lead waiting on its own worker,
+  verifier or CI, or on another lead, gets no nudge and no escalation, and a lead waiting
+  on another lead hears of that lead's merge from the chief of staff.
 - A chief of staff's handover file is one page, overwritten in the turn its state changes,
   before the owner hears it: owner contact, standing decisions, live leads, closed, follow
   (#196). A successor in either harness takes over from that file alone, never from

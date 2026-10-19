@@ -79,9 +79,10 @@ A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEE
 
 | A notice or `watch` says | You do |
 |---|---|
-| Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Then archive the lead once its report says it cleaned up. |
+| Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one a line of yours naming the merge, since nothing else wakes it. Then archive the lead once its report says it cleaned up. |
 | Turn ended, `USER NEEDED` | Put its question to the owner in one line, linked to the lead's session. Never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
-| Turn ended, `STILL WORKING`, no ending, or cancelled | Send it one nudge to carry on to its next step. Tell the owner only when the turn changes the task: it is blocked on something outside the lead, or its scope changed. A second stop without progress goes to the owner. |
+| Turn ended, `STILL WORKING`, with something pending | Record what it waits on (Handover, Live leads) and send nothing: its own worker, verifier or CI wakes it, and another lead's merge reaches it through that lead's `DONE`. Tell the owner only when the turn changes the task: it is blocked on something outside the lead, or its scope changed. |
+| Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step. A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Only a person approves a prompt, in the UI. |
 | Failed, or gave up | Revive it in place (`send`, which revives a reaped runner) once. If it fails again, give the owner the error line. |
 
@@ -102,11 +103,11 @@ it quoted.
 ## Speaking to the owner
 
 - Lead with the answer or the decision needed. One line per lead, each with its link.
-- Speak at task level: a task started, what blocks it, a decision the owner must make, its
-  result. How a lead gets there (a verifier pass and its findings, a gate re-run, a worker's
-  hand-off, a CI wait) stays in the lead's session, which the owner opens when they want it. Asked how a
-  task is going, give its stage (building, in review, landing) and what blocks it, if
-  anything.
+- Speak at task level: a task started, what blocks it or changes its scope, a decision the
+  owner must make, its result. How a lead gets there (a verifier pass and its findings, a
+  gate run and its result, a worker's hand-off, a CI wait) stays in the lead's session,
+  which the owner opens when they want it. Asked how a task is going, give its stage
+  (building, in review, landing) and what blocks it, if anything.
 - A result stays where the work happened: on the PR, the issue and in the lead's session.
   You link to it and never restate it.
 - Say what was checked: a link, an exit code, a report path. Mark anything you inferred
