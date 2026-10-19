@@ -144,7 +144,9 @@ AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in it
 prompts) holds every message until the question is answered, and Omnigent drops the messages
 pending when an interrupt lands, so `relay` interrupts the turn first and then posts. A Claude lead
 still holds that message until up to 7 minutes after it asked (kzarzycki/omnigent#14), and
-`relay` then exits 5 saying so. It never interrupts an approval prompt.
+`relay` then exits 5 saying so. While another input waits pending (a subscription notice,
+text typed into the session), it does not interrupt, since the interrupt would drop that
+too, and exits 5 naming the question. It never interrupts an approval prompt.
 
 **Reading a session.** `python3 scripts/omnigent_agent.py status <session>...` prints, per
 session, its state (`turn ended`, its running status, `blocked on a prompt: <what it asks>`,

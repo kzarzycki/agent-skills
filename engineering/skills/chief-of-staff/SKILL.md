@@ -105,8 +105,10 @@ the foreground and never poll the lead afterwards:
 
 A lead blocked on a question (its own ask of the owner) is interrupted first and then
 given the message, because a question holds every message behind it until answered, and an
-interrupt drops the ones already queued. An approval prompt is never interrupted, since only
-a person approves one.
+interrupt drops the ones already queued. While another input already waits behind the
+question (a worker's notice, the owner typing into the lead), `relay` does not interrupt,
+since that would drop it too, and exits 5 saying so: the owner answers the question in the
+lead's session. An approval prompt is never interrupted, since only a person approves one.
 
 ## Authority
 

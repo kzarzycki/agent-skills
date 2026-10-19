@@ -615,10 +615,13 @@ def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
     the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
     is interrupted first: its pending inputs wait on the answer, and an interrupt drops the ones
-    pending when it lands, so it goes before the post. An approval prompt waits for a person."""
+    pending when it lands, so it goes before the post; but not while another input waits (a
+    worker's notice, the owner's own typing), which it would drop too. An approval prompt waits
+    for a person."""
     info = og.info(sid)
     asks = questions_of(info)
-    if asks and len(asks) == len(info["pending_elicitations"]):
+    others = [i for i in info.get("pending_inputs") or [] if text_of(i).strip() != text.strip()]
+    if asks and len(asks) == len(info["pending_elicitations"]) and not others:
         og.interrupt(sid)
         deadline = time.monotonic() + confirm_seconds
         while prompts_of(og.info(sid)):
@@ -631,10 +634,15 @@ def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
         prompts = prompts_of(og.info(sid))
         if prompts:
             why = f"behind a prompt a person answers in the UI: {'; '.join(prompts)}"
+            if asks and others:
+                n = len(others)
+                why += f" (not interrupted: that would drop {n} other queued input{'s' * (n > 1)})"
         elif asks:
             # Omnigent holds input after an interrupted claude-native question until its hook
             # marker goes stale (kzarzycki/omnigent#14).
-            why = "until the interrupted question releases input, up to 7 minutes after it was asked"
+            why = (
+                "until the interrupted question releases input, up to 7 minutes after it was asked"
+            )
         else:
             why = "until the session's current step ends"
         raise Queued(f"session {sid}: queued {why}; it lands then")
