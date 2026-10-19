@@ -135,7 +135,8 @@ it quoted.
 ## Handover
 
 You may be replaced at any time by a fresh session, in either harness, on this host or
-another. Your successor knows only what `tmp/loop/chief-of-staff.md` in the main checkout
+another, never a fork of yours, since every turn of a fork re-reads the whole transcript
+it copied. Your successor knows only what `tmp/loop/chief-of-staff.md` in the main checkout
 says, so that file is the whole of your state:
 
 - **Shape.** One page (about 4 KB), overwritten in place, with these sections:

@@ -32,6 +32,8 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
 4. **Report.** Every log or capture you hand over as proof (a gate run, a repro, a drive
    of the instance) starts with the output of `git rev-parse HEAD` and the command that
    produced it, since a proof of another commit says nothing about the one under review.
+   That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
+   commit does not already pin.
    Clean up what you started (servers, temporary files), then write your
    report to a file and send the lead its path: the branch and head SHA, the gate
    exit codes, the model you ran on, anything left out and why, and what you tried and
