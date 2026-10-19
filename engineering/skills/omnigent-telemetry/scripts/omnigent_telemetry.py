@@ -107,11 +107,6 @@ def decode_usage(hex_blob: str | None) -> dict:
 def fetch_db(container: str, since: int) -> dict:
     trees = f"SELECT root_conversation_id FROM conversations WHERE updated_at >= {since}"
     db = {
-        "daily": psql(
-            container,
-            "SELECT day_utc AS day, sum(cost_usd) AS cost_usd FROM user_daily_cost"
-            f" WHERE day_utc >= '{day(since)}' GROUP BY day_utc ORDER BY day_utc",
-        ),
         "sessions": psql(
             container,
             f"""SELECT encode(c.id, 'hex') AS id, encode(c.parent_conversation_id, 'hex') AS parent_id,
@@ -165,6 +160,12 @@ def fetch_db(container: str, since: int) -> dict:
     }
     for s in db["sessions"]:  # ponytail: one decode per blob; batch them if this gets slow
         s["usage"] = decode_usage(s["usage"])
+    # Last, and the API right after it (main): today's row grows by the second while sessions run.
+    db["daily"] = psql(
+        container,
+        "SELECT day_utc AS day, sum(cost_usd) AS cost_usd FROM user_daily_cost"
+        f" WHERE day_utc >= '{day(since)}' GROUP BY day_utc ORDER BY day_utc",
+    )
     return db
 
 
@@ -579,7 +580,7 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
     left_out: dict[str, str] = {}
     usage = db = None
-    try:  # first, so the daily sum and the API's 7 days are read seconds apart
+    try:  # first: its daily cost and the API's are read under a second apart
         db = fetch_db(args.db_container, window_start(args.days, now))
     except (Fail, OSError, ValueError, subprocess.SubprocessError) as e:
         reason = f"Postgres via `docker exec {args.db_container}` unreachable: {str(e)[:200]}"
