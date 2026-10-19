@@ -1810,6 +1810,71 @@ def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
     )
 
 
+def test_land_merges_past_a_draft_only_check_its_workflows_finished_run_never_produced(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A matrix job skipped on the draft before its matrix expanded leaves a check named literally `matrix.part`,
+    which the ready PR's run, expanding it to `check:lint`, never produces. On a base requiring no check, `land`
+    waits for every check; that one is gone once its workflow's run since ready has finished, and not before, since
+    a job that needs another has no check run until it starts."""
+    ready = "2026-10-01T12:00:00Z"
+    landing["pull"]["timelineItems"]["nodes"].append(
+        {"__typename": "ReadyForReviewEvent", "createdAt": ready}
+    )
+    landing["rulesets"] = []
+
+    def run(
+        name: str, conclusion: str | None, at: str, suite: str, flow: str = "CI"
+    ) -> dict[str, Any]:
+        return {
+            "__typename": "CheckRun",
+            "name": name,
+            "status": "COMPLETED" if conclusion else "IN_PROGRESS",
+            "conclusion": conclusion,
+            "startedAt": at,
+            "completedAt": at if conclusion else None,
+            "checkSuite": {"status": suite, "workflowRun": {"workflow": {"name": flow}}},
+        }
+
+    draft = run("matrix.part", "SKIPPED", "2026-10-01T11:30:00Z", "COMPLETED")
+    after = "2026-10-01T12:01:00Z"
+    waited = WAITED.replace("`check`", "`matrix.part`")
+    rollup = landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
+    # the run since ready is still going: `check`, which needs the parts, has no check run yet
+    rollup["nodes"] = [draft, run("check:lint", "SUCCESS", after, "IN_PROGRESS")]
+    assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
+    rollup["nodes"] = [
+        draft,
+        run("check:lint", "SUCCESS", after, "COMPLETED"),
+        run("check", "SUCCESS", after, "COMPLETED"),
+    ]
+    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+    # another workflow's finished run says nothing about whether CI still produces the name
+    landing["calls"].clear()
+    rollup["nodes"] = [draft, run("lint", "SUCCESS", after, "COMPLETED", "Lint")]
+    assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
+    # GitHub may start a skipped run after it completed, so after a ready right behind it: still the draft's run
+    rollup["nodes"] = [
+        {**draft, "startedAt": "2026-10-01T12:00:10Z"},
+        run("lint", "SUCCESS", after, "COMPLETED", "Lint"),
+    ]
+    assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
+    # one name in two workflows waits until each has finished a run since ready, in either order
+    other = {
+        **draft,
+        "checkSuite": {"status": "COMPLETED", "workflowRun": {"workflow": {"name": "Lint"}}},
+    }
+    for nodes in ([draft, other], [other, draft]):
+        rollup["nodes"] = [*nodes, run("lint", "SUCCESS", after, "COMPLETED", "Lint")]
+        assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
+        # nor does the other workflow's ready run of that very name stand in for this one's
+        rollup["nodes"] = [
+            *({**node, "name": "check"} for node in nodes),
+            run("check", "SUCCESS", after, "COMPLETED", "Lint"),
+        ]
+        assert landed(capsys, landing) == (approvals.WAITING, [WAITED], [])
+
+
 def test_land_waits_on_a_head_with_no_checks_at_all(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:

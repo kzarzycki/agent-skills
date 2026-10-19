@@ -5,6 +5,18 @@
 - `omnigent_agent.py start` and `run` take `--permission-mode <mode>`, defaulting from
   `$OMNIGENT_PERMISSION_MODE`, for a Claude child (#213). Omnigent applies it at terminal launch.
   Codex takes none: its CLI fails to start with the flag, so `start` refuses it there.
+- `omnigent_agent.py run` takes a report written in the same clock tick as its launch (#185):
+  it compared the report's mtime with `time.time_ns()`, which runs ahead of the kernel's coarse
+  file clock, so three `run` tests failed in most runs. A report already at the path is still a
+  pass before; only one newer than it counts.
+- `status`, `watch` and `run`/`wait`'s failure lines print the session's last assistant message,
+  or `(none)`, never a user message such as the brief or an injected reminder (#185).
+- Cheaper runs, from the 2026-10-19 retro (#207). Continuing on the other model family, or
+  replacing a chief of staff, starts a fresh session from the notes or handover file,
+  never a fork of the old one; `operating-omnigent` lists the fork endpoint with when not
+  to use it. A later verifier pass reviews its delta in one session, with no `code-review`
+  axis sub-agents. A verifier reviews a pushed PR head only, never a helper script or a
+  mid-edit snapshot, and a proof log's commit SHA is its whole provenance.
 - A chief of staff relays an owner message to a lead in one call (#202): `omnigent_agent.py
   relay` returns at once with exit 0 (delivered), 5 (queued, and it will land) or 4 (not
   deliverable, and why), whatever the lead is doing and on whichever host. A lead blocked on

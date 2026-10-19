@@ -1349,6 +1349,21 @@ def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
     assert capsys.readouterr().out.splitlines()[-1] == str(report)
 
 
+def test_run_takes_a_report_written_within_a_clock_tick_of_the_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The kernel stamps files from a coarse clock that lags time.time_ns() by up to a tick.
+    monkeypatch.setattr(omnigent_agent.time, "time_ns", lambda: 2**62)
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    info = og.info
+    og.info = lambda s: ((tmp_path / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+
+
 def test_a_brief_with_an_empty_backtick_span_is_refused_before_a_session_exists(
     tmp_path: Path,
 ) -> None:
@@ -1564,7 +1579,9 @@ def test_watch_reports_an_empty_turn_once_past_the_grace(monkeypatch: pytest.Mon
     Clock(monkeypatch, step=20)
     og = Roster(a=[{"status": "running"}, {"status": "idle"}])
     og.items = lambda sid: [said("user", "go", "1")]  # type: ignore[method-assign]
-    assert omnigent_agent.watch(og, ["a"], timeout=200) == ["a t-a: turn ended\nlast message: go"]
+    assert omnigent_agent.watch(og, ["a"], timeout=200) == [
+        "a t-a: turn ended\nlast message: (none)"
+    ]
 
 
 def test_watch_gives_a_follow_up_to_an_idle_baseline_its_own_grace(
@@ -2519,3 +2536,18 @@ def test_status_prints_each_session_s_state_queued_inputs_and_last_message(
         f"{gone}: archived",
         "last message: (none)",
     ]
+
+
+def test_status_never_prints_a_user_message_as_the_last_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.send(sid, "<system-reminder>be brief</system-reminder>")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["status", sid]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "last message: (none)"
+    og.reply = "on it"
+    og.send(sid, "go")
+    assert omnigent_agent.main(["status", sid]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "last message: on it"

@@ -29,9 +29,9 @@ one), 5 while the session holds it (a step, or an approval prompt, in progress),
 delivered (archived, a failed revive, neither pending nor in the history). A session blocked on a
 question (``ask_user_question``) is interrupted first, since its pending inputs wait on the answer
 and an interrupt drops them; an approval prompt never is. ``status`` prints one line per session:
-its state, queued inputs and last message.
+its state, queued inputs and last assistant message (``(none)`` before its first).
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
-a prompt or fails, printing each one's id, title, that change and its last message; it is how a
+a prompt or fails, printing each one's id, title, that change and its last assistant message; it is how a
 lead or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
 ``supervise`` watches sessions that each owe a report for liveness, not only outcomes: it revives a
 reaped runner in place, then sends it a line naming its brief files and the report, since a revive
@@ -459,6 +459,12 @@ def last_message(items: list[dict]) -> dict | None:
     return next((i for i in reversed(items) if i.get("type") == "message"), None)
 
 
+def last_said(items: list[dict]) -> str:
+    """What the session last said: a user message is a brief, a nudge or an injected reminder."""
+    said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+    return text_of(said[-1]) if said else "(none)"
+
+
 def prompts_of(info: dict) -> list[str]:
     """What each pending approval prompt asks: the tool call it holds, else its message."""
     return [
@@ -809,7 +815,7 @@ def wait(
         status = str(info.get("status"))
         items = og.items(sid)
         last = last_message(items)
-        said = text_of(last) if last else "(none)"
+        said = last_said(items)
         if counts() and settled(report, info, items, ended, sid) and counts():
             if status in RUNNING and not prompts_of(info):
                 print(
@@ -907,11 +913,12 @@ def observe(
     """
     info = og.info(sid)
     status = str(info.get("status"))
-    last = last_message(og.items(sid))
+    items = og.items(sid)
+    last = last_message(items)
     head = f"{sid} {info.get('title') or ''}".rstrip()
     if queued := len(info.get("pending_inputs") or []):
         head += f" ({queued} queued input{'s' if queued > 1 else ''})"
-    tail = f"\nlast message: {text_of(last) if last else '(none)'}"
+    tail = f"\nlast message: {last_said(items)}"
     lid = last.get("id") if last else None
     if info.get("archived"):
         return ("archived",), f"{head}: archived{tail}"
@@ -1582,7 +1589,9 @@ def main(argv: list[str] | None = None) -> int:
             raise Fail(
                 f"{report} already exists; wait would return at once (use run, or a new path)"
             )
-        launched = time.time_ns()
+        # The file's own mtime, never the clock: the kernel stamps files from a coarse clock that
+        # lags time.time_ns() by up to a tick, so a report written that soon would read as older.
+        launched = report.stat().st_mtime_ns if report.exists() else None
         report.parent.mkdir(parents=True, exist_ok=True)
         sid, survivors = start(
             og,
