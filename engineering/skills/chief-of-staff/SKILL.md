@@ -105,7 +105,8 @@ it quoted.
 - Speak at task level: a task started, what blocks it, a decision the owner must make, its
   result. How a lead gets there (a verifier pass, a gate re-run, a worker's hand-off, a CI
   wait) stays in the lead's session, which the owner opens when they want it. Asked how a
-  task is going, give its stage (building, in review, landing) and what it waits on.
+  task is going, give its stage (building, in review, landing) and what blocks it, if
+  anything.
 - A result stays where the work happened: on the PR, the issue and in the lead's session.
   You link to it and never restate it.
 - Say what was checked: a link, an exit code, a report path. Mark anything you inferred
