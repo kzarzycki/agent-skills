@@ -2251,7 +2251,7 @@ def supervise_registry(
             if any(o[1] and o[1][0] == sid for o in outbox):
                 continue  # its event is found; it waits to be posted
             try:
-                if followed:  # never revived or nudged: its lead owes no report
+                if followed:  # no report rules: only --console's routing nudges or revives it
                     event, key = follow(rec, sid, idle_since, told, holding)
                     lead = track(sid, report, briefs, followed, after) if console else {}
                     since, kind = time.time(), key[0]

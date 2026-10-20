@@ -288,7 +288,8 @@ that brief is in the history.
 
 A line ending in the field `follow` (`<session>=<report>`, the brief file, `follow`: what `start
 --top-level` writes with a registry) is a lead the supervisor follows, which owes no report and is
-never revived, nudged or given up on. Its lines go to `--notify` as the others do, but only
+never given up on, nor revived or sent the resume line as a session owing a report is (with
+`--console` its routing may nudge or revive it). Its lines go to `--notify` as the others do, but only
 when they are news, so the notified session is not woken for a turn that changed nothing:
 a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED`, once it holds
 as `watch` counts an end; any other turn end only once the lead and its live children wrote
@@ -301,8 +302,9 @@ A restart posts an end it finds again.
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
 restarts, and routing (below). Without it `supervise --registry` writes none of them, and the paragraphs above are
-all it does. With it, each event is posted once, also across a restart: a terminal event found
-again after one only drops the line it already posted, and a followed lead's failure or prompt is
+all it does. With it, each event is routed once, also across a restart, and posted only when its
+route sends it to the notified session (Routing, below): a terminal event found again after one
+only drops the line it already settled, and a followed lead's failure or prompt is
 one event per occurrence (`occurrences` in the state counts each entry into one), so the same
 error again after a recovery is news and the one a restart finds again is not.
 
