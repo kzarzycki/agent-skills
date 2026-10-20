@@ -10,6 +10,8 @@
   - an adopted session becomes a lead;
   - an overloaded host's leads park at a clean checkpoint;
   - a lead rewriting a shared checkout has it to itself.
+  - a chief of staff counts why it involved the owner, and proposes a fix for a cause that
+    repeats.
 
   The handover names the exact subscribe and info-only takeover calls, quotes the owner with
   the session id they spoke in, and records revives spent on every lead (#196's A1 dry run).

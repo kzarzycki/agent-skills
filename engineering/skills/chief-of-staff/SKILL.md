@@ -144,6 +144,11 @@ it quoted.
 - **Releases.** Check the standing decisions before any release, a lead's included. Where
   the owner holds releases, a consumer that needs an unreleased fix pins to its merge
   commit rather than a new release, since a release ships every held change with it.
+- **Needing the owner less.** Each time you involve the owner (a question, an approval, an
+  action only they can take), note its cause in the handover's Owner asks. When a cause
+  repeats, propose what removes it through the loop as an issue: a line of project policy, a
+  script, a clearer brief. An approval only the owner may give stays theirs; how much they
+  delegate is their standing decision on the board, never a line in this skill.
 
 ## Speaking to the owner
 
@@ -179,6 +184,8 @@ says, so that file is the whole of your state:
     approval prompt in the UI, another lead (which one), its own worker, verifier or CI, or
     nothing (mid-turn, or stalled); plus the nudges and revives it has spent, `0` included
     (What a lead's turn ending means), so a successor does not spend one again.
+  - Owner asks: one line per cause you involved the owner for, with its count and the issue
+    proposing its fix once it repeats (Authority).
   - Closed: one line per lead that finished, with its PR, issue or report link and when you
     told the owner, dropped once they have sent a message since, which shows they read it,
     and the lead is archived.
