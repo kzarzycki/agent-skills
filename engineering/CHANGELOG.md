@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A chief of staff's handover file and memory bank come from the project's instructions, with
+  `tmp/loop/chief-of-staff.md` and the repo's bank as defaults, so it can run from a home of
+  its own across projects (#230). A handover file in a repo with a remote is pushed after
+  each rewrite and pulled on takeover, and a restart into another permission mode or harness
+  is a fresh session that takes over from the file.
 - A project may name its worker model in loop.md as a tier, `Worker model: <top|mid|small> for
   <condition>` (#245, #247): the lead starts a worker whose issue matches on that tier's model
   from the worker family's newest generation, the closest higher tier there when that

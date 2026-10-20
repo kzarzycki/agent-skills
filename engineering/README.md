@@ -59,16 +59,19 @@ CLI is installed; otherwise the PR body says `verifier: same family`.
 A chief of staff is an optional session you talk to while leads do the work.
 Without one, every session you start is a lead, as before.
 
-- One per project. Its state belongs to the project: the handover file
-  `tmp/loop/chief-of-staff.md` in the main checkout, the board, and the memory
-  bank `coding-agent-<repo>`. Several projects on one machine each run their own.
+- One per project, or one across projects from a home repo of its own. It runs
+  in the directory its project's instructions name, by default the project's
+  main checkout. Its state is the handover file and the memory bank those
+  instructions name: by default `tmp/loop/chief-of-staff.md` in the directory it
+  runs in and the bank `coding-agent-<repo>`. A handover file in a repo with a remote is pushed, so a
+  successor on another host pulls it.
 - Switch it at any time, to either harness: the handover file is one page the
   chief rewrites whenever its state changes, and a successor takes over by
   reading that file alone.
 - A project can span sibling repos: name them to it. It starts a lead for a
   change across them in their parent directory, so the lead can work in all of
   them, and each PR still follows its own repo's `docs/agents/` files.
-- Start it through Omnigent in the project's main checkout, in Claude or Codex,
+- Start it through Omnigent in that directory, in Claude or Codex,
   and ask it to act as the project's chief of staff (`/chief-of-staff` in Claude
   Code). Each lead it starts is a top-level session in either harness, which you
   can open and talk to directly.
