@@ -2217,11 +2217,14 @@ def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pend
     og = Lead(told("brief", 800), ending("STILL WORKING: its worker runs", 400))
     og.kids["a"] = time.time() + 100  # its worker wrote at 100, after the end seen at 0
     at = {1: 350.0, 2: 399.0, 3: 401.0}  # 250 s, then 299 s, then 301 s since the worker wrote
+    before: list[int] = []  # notices after the looks at 0, 350 and 399
 
     def later(poll: int) -> None:
+        before.append(len(posted(og)))
         offset[0] = at[poll]
 
     supervised(og, registry, monkeypatch, 4, later, notify="cos")
+    assert before == [0, 0, 0]  # past the end's 300 s at 350 and 399, but the child is younger
     assert len(posted(og)) == 1  # news only at 401: the child, not the end, held it
 
 
