@@ -55,6 +55,8 @@ run on a schedule; a manual intake follows it too.
 ## Checks
 
 Before every commit that changes this package, run
-`mise run vendor-engineering-check`. Also run
+`mise run vendor-engineering-check`. A change's changelog entry is its own file in
+`changelog.d/` ([its README](changelog.d/README.md)), never a line added to `CHANGELOG.md`.
+Also run
 `mise run test-engineering-package` and validate both JSON manifests when
 package metadata changes.
