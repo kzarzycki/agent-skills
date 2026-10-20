@@ -1191,7 +1191,12 @@ def from_user(item: dict) -> bool:
 def in_history(og: Omnigent, sid: str, found: Callable[[dict], bool], since: float) -> bool:
     """Whether an item of ``sid``'s history no older than ``since`` (epoch seconds) is ``found``,
     read back a page at a time from the newest until a page reaches older items or the history
-    ends, so a match behind the newest 100 items is found and an older copy of it is not."""
+    ends, so a match behind the newest 100 items is found and an older copy of it is not. A copy
+    in ``pending_inputs`` (taken, not yet folded in) is found too, as ``send`` counts one."""
+    # Info before history: a copy that leaves pending_inputs is in the history by then.
+    held = og.info(sid).get("pending_inputs") or []
+    if any(found({**p, "type": "message", "role": "user"}) for p in held):
+        return True
     # ponytail: the server's item clock against the local one, as check does; a minute's margin
     # covers a small skew. Upgrade: a client id on the message, once Omnigent has one.
     after, since = "", since - 60

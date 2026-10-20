@@ -362,7 +362,8 @@ budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
 `relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there, no older than
-the intent less a minute's margin for clock skew, marks it done,
+the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
+it done,
 else it is escalated as act, never sent again. A state write that fails before a small-model call, an
 action or a post stops it: nothing is asked or sent, what the event had counted is undone, and it
 is settled again at the next poll.
@@ -376,7 +377,7 @@ the state with its batch id before the send and delivered after, and its events 
 only then, so nothing waiting for the owner is dropped; a session owing a report has its event
 written to the queue before its registry line is dropped. A pending post (a crash or a failed send
 left it) is looked up in the notified session's history by its id, a page of 100 at a time back
-to its pending time: found, it was delivered; not found, it is sent again with its id, and that
+to its pending time, and in its `pending_inputs`: found, it was delivered; not found, it is sent again with its id, and that
 retry reserves the next 5 minutes as a new post would. The
 notified session's own `status.line` reads `needs you: <n>` while owner events wait. Without
 `--notify` the post is printed (`would post:`), so a run on a copy of the registry shows the

@@ -4107,3 +4107,41 @@ def test_an_older_identical_message_does_not_close_an_open_intent(
     assert state_of(registry)["intents"][0]["status"] == "escalated"
     assert "the supervisor's nudge may not have reached it" in "\n".join(posted(og))
     assert [s for s, t in og.inbox if s == "a"] == []  # never sent again
+
+
+@pytest.mark.parametrize("held", ["post", "intent"])
+def test_a_copy_still_pending_after_a_crash_counts_as_delivered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: str
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("DONE: shipped" if held == "post" else "on it", 5))
+    og.histories["cos"] = []
+    to = "cos" if held == "post" else "a"
+    pending: list[dict] = []  # the session took the copy and has not folded it in yet
+
+    def hold(sid: str, text: str) -> None:
+        assert sid == to  # nothing else is sent
+        pending.append(
+            {"pending_id": f"p{len(pending)}", "content": [{"type": "input_text", "text": text}]}
+        )
+        raise Stop
+
+    if held == "intent":
+        state = omnigent_agent.fresh_state()
+        intent = {"id": "nudge:a:e1", "session": "a", "action": "nudge", "event": "e1"}
+        intent.update(text=omnigent_agent.LEAD_NUDGE, at=time.time(), status="open")
+        state["intents"] = [intent]  # a crash after its send
+        registry.with_suffix(".state.json").write_text(json.dumps(state))
+        pending.append(
+            {"pending_id": "p0", "content": [{"type": "input_text", "text": intent["text"]}]}
+        )
+    info = og.info
+    og.info = lambda sid: {**info(sid), **({"pending_inputs": pending} if sid == to else {})}  # type: ignore[method-assign]
+    og.send = hold  # type: ignore[method-assign]
+    for _ in range(2 if held == "post" else 1):  # a post: the crash, then the restart
+        supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert len(pending) == 1
+    final = state_of(registry)
+    assert final["pending_posts"] == [] and final["attention"] == []
+    if held == "intent":
+        assert final["intents"][0]["status"] == "done"
