@@ -2078,7 +2078,7 @@ def supervise_registry(
         ``POST_SECONDS``, each pending in the state with its batch id before the send, and its
         events off the queue once delivered. A pending post (a crash or a failed send left it) is
         looked up in ``notify``'s history by its id first: found, it was delivered; not, it is
-        sent again, in the window it already took."""
+        sent again, and the retry reserves its own window before the send."""
         pending = state["pending_posts"]
         if pending:
             out = pending[0]
@@ -2092,6 +2092,9 @@ def supervise_registry(
             except Exception as e:  # noqa: BLE001 - looked up again next poll
                 log("post", f"post {out['id']} not looked up: {reason(e)}")
                 return
+            if not found:
+                state["rate"]["next_post_at"] = time.time() + POST_SECONDS
+                save()
         else:
             if not state["attention"] or time.time() < state["rate"]["next_post_at"]:
                 return

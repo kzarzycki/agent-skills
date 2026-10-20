@@ -4037,3 +4037,33 @@ def test_a_crash_while_telling_the_first_waiting_lead_leaves_the_others_recovera
         posted(og)[0],
         re.MULTILINE,
     )
+
+
+def test_a_late_retry_of_a_pending_post_reserves_its_own_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b")
+    offset = skewed(monkeypatch)
+    og = Leads(a=[told("brief", 60), ending("DONE: one", 5)], b=[told("brief", 60)])
+    og.histories["cos"] = []
+    real, at = og.send, []
+
+    def crash(sid: str, text: str) -> None:
+        if sid == "cos":
+            raise Stop  # the first attempt never lands
+
+    og.send = crash  # type: ignore[method-assign]
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+
+    def record(sid: str, text: str) -> None:
+        at.append(offset[0]) if sid == "cos" else None
+        real(sid, text)
+
+    og.send = record  # type: ignore[method-assign]
+    offset[0] = 299.0
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the restart: a retry
+    og.histories["b"].append(ending("DONE: two", 0))
+    for t in (301.0, 598.0, 600.0):
+        offset[0] = t
+        supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert at == [299.0, 600.0]

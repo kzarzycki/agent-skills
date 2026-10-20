@@ -374,7 +374,8 @@ report (read through the file API, from any host; a failed read is noted). The p
 the state with its batch id before the send and delivered after, and its events leave the queue
 only then, so nothing waiting for the owner is dropped. A pending post (a crash or a failed send
 left it) is looked up in the notified session's history by its id, a page of 100 at a time back
-to its pending time: found, it was delivered; not found, it is sent again with its id. The
+to its pending time: found, it was delivered; not found, it is sent again with its id, and that
+retry reserves the next 5 minutes as a new post would. The
 notified session's own `status.line` reads `needs you: <n>` while owner events wait. Without
 `--notify` the post is printed (`would post:`), so a run on a copy of the registry shows the
 routing. `--fyi post` posts every line as without `--console` too; the default, `skip`, posts
