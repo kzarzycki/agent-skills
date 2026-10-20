@@ -74,11 +74,21 @@ def _expected_skills() -> set[str]:
 
 
 def _file_manifest(root: Path) -> dict[str, str]:
+    """Every file under root by its sha256, leaving out the bytecode Python caches, as git and the install do: a
+    script imported from a skill folder writes it there."""
     return {
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
     }
+
+
+def test_file_manifest_leaves_out_python_bytecode(tmp_path: Path) -> None:
+    (tmp_path / "s" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "s" / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"x")
+    (tmp_path / "s" / "b.pyc").write_bytes(b"x")
+    (tmp_path / "s" / "a.py").write_text("")
+    assert list(_file_manifest(tmp_path)) == ["s/a.py"]
 
 
 def _installed_skills(consumer: Path, target: str) -> set[str]:
