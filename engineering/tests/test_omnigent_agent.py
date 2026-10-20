@@ -2399,7 +2399,7 @@ def test_a_restart_raises_no_settled_event_again_and_keeps_budgets_and_progress(
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     og = Lead(told("brief", 800), ending("STILL WORKING: carrying on", 600))
-    at = {1: 301.0, 2: 1201.0}
+    at = {1: 301.0, 2: 601.0}  # its last message was 600 s old at the start
     supervised(
         og,
         registry,
@@ -2418,7 +2418,7 @@ def test_a_restart_raises_no_settled_event_again_and_keeps_budgets_and_progress(
     state["leads"]["a"].update(nudges=1, revives=1)  # what the routing will count
     registry.with_suffix(".state.json").write_text(json.dumps(state))
     og.inbox.clear()
-    at = {1: 1210.0, 2: 1801.0}  # the end found again; then 30 min since the progress
+    at = {1: 1205.0, 2: 1210.0}  # the end found again at 601; at 1205, 30 min since the progress
     supervised(
         og,
         registry,
@@ -2440,7 +2440,7 @@ def test_a_lead_stuck_running_raises_one_deadline_for_its_progress(
 ) -> None:
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 50))
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 0))
     og.snap = {"status": "running"}
     at = {1: 1199.0, 2: 1201.0, 3: 1300.0, 4: 2500.0}
 
@@ -2455,13 +2455,45 @@ def test_a_lead_stuck_running_raises_one_deadline_for_its_progress(
     assert state_of(registry)["settled"]["a"][0].startswith("deadline:a:")
 
 
+@pytest.mark.parametrize(
+    ("said_ago", "child_ago", "deadline"),
+    [
+        (3600.0, 0.0, "no progress 60m (unknown)"),
+        (3600.0, 1300.0, "no progress 22m (unknown)"),
+        (0.0, 0.0, None),  # no activity at all: progress counts from first sight
+    ],
+)
+def test_progress_starts_from_the_leads_real_activity_not_from_first_sight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    said_ago: float,
+    child_ago: float,
+    deadline: str | None,
+) -> None:
+    registry = following(tmp_path)
+    items = [ending("STILL WORKING: building", said_ago)] if said_ago else []
+    og = Lead(told("brief", 4000), *items)
+    og.snap = {"status": "running"}
+    if child_ago:
+        og.kids["a"] = time.time() - child_ago
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert [p.split("\n")[0] for p in posted(og)] == (
+        [f"Supervisor: a t-a: {deadline}"] if deadline else []
+    )
+    progress = state_of(registry)["leads"]["a"]["progress_at"]
+    if items:
+        assert progress == max(items[-1]["created_at"], og.kids.get("a", 0.0))
+    else:
+        assert time.time() - 60 < progress <= time.time()
+
+
 def test_a_second_quiet_spell_with_the_same_ending_raises_a_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     og = Lead(told("brief", 800), ending("STILL WORKING: waiting on the verifier", 600))
-    steps = {1: (301.0, "idle"), 2: (400.0, "running"), 3: (500.0, "idle"), 4: (1201.0, "idle")}
+    steps = {1: (301.0, "idle"), 2: (400.0, "running"), 3: (500.0, "idle"), 4: (601.0, "idle")}
 
     def later(poll: int) -> None:
         offset[0], status = steps[poll]

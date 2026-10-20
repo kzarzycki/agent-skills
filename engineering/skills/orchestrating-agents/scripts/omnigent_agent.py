@@ -1716,8 +1716,7 @@ def supervise_registry(
         nonlocal hosts
         seen = rec.seen.pop(sid, {})
         lead = state["leads"].setdefault(
-            sid,
-            {"progress_at": time.time(), "nudges": 0, "revives": 0, "waits_on": [], "label": {}},
+            sid, {"nudges": 0, "revives": 0, "waits_on": [], "label": {}}
         )
         if "info" not in seen or "items" not in seen:
             return lead
@@ -1744,8 +1743,21 @@ def supervise_registry(
             for i in items
             if not from_user(i) and i.get("type") != "resource_event"
         ]
-        lead["progress_at"] = max([lead["progress_at"], *own])
+        if "progress_at" not in lead:  # first sight: its children's activity too
+            own.append(active(sid))
+        # with no activity at all, progress counts from now
+        lead["progress_at"] = max([lead.get("progress_at") or 0.0, *own]) or time.time()
         return lead
+
+    def active(sid: str) -> float:
+        """``og.active``, else 0 with the error logged: a missed read only delays a deadline."""
+        try:
+            at = og.active(sid)
+        except Exception as e:  # noqa: BLE001 - its event this poll is still raised
+            log(("active", sid), f"{sid}: children not read: {reason(e)}")
+            return 0.0
+        log(("active", sid), None)
+        return at
 
     def label(sid: str, lead: dict) -> None:
         """Write ``sid``'s status labels when the line changed or the last write is
