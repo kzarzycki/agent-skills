@@ -126,6 +126,12 @@ ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send fo
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
+# A host over either limit has no room for another session: they time out and fail there. Knobs,
+# since what a host carries depends on its hardware and what else runs on it.
+MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)
+MIN_AVAILABLE_MB = float(os.environ.get("OMNIGENT_MIN_AVAILABLE_MB") or 1536)
+CAPACITY_WAIT_SECONDS = 600.0  # start waits this long for room, then fails
+MEMINFO = Path("/proc/meminfo")
 
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -319,6 +325,7 @@ class Omnigent:
         model: str | None = None,
         top_level: bool = False,
         workspace: str | None = None,
+        permission_mode: str | None = None,
     ) -> str:
         body = {
             "agent_id": self.agent_id(AGENTS[agent]),
@@ -336,6 +343,12 @@ class Omnigent:
             body["parent_session_id"] = parent
         if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
             body["model_override"] = model
+        # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
+        # starts its terminal (the session fails "Codex native bridge state is missing").
+        if agent == "claude" and (
+            mode := permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+        ):
+            body["terminal_launch_args"] = ["--permission-mode", mode]
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
     def subscribe(self, subscriber: str, sid: str) -> None:
@@ -478,6 +491,17 @@ def questions_of(info: dict) -> list[str]:
     ]
 
 
+def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
+    """Send a message the caller then looks for in the history. A timeout is no failure here: a slow
+    server takes the message after the client gave up, and the history decides."""
+    try:
+        og.send(sid, text)
+    except Fail as e:
+        if not isinstance(getattr(e.__cause__, "reason", e.__cause__), TimeoutError):
+            raise
+        print(f"{e}; confirming from the history", file=sys.stderr)
+
+
 def delivered(
     og: Omnigent,
     sid: str,
@@ -589,7 +613,7 @@ def send(
             f"session {sid}: this message was already sent; waiting for that copy", file=sys.stderr
         )
     else:
-        og.send(sid, brief)
+        send_to_confirm(og, sid, brief)
     deadline, held = time.monotonic() + confirm_seconds, None
     while True:
         info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
@@ -655,6 +679,20 @@ def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
 
 
+def capacity() -> tuple[bool, str]:
+    """Whether this host has room for another session, and a line saying what it carries."""
+    load = os.getloadavg()[0] / (os.cpu_count() or 1)
+    # ponytail: this host only, the one start's config names; no /proc (macOS) leaves load alone.
+    found = (
+        re.search(r"^MemAvailable:\s+(\d+) kB", MEMINFO.read_text(), re.MULTILINE)
+        if MEMINFO.exists()
+        else None
+    )
+    mb = int(found.group(1)) / 1024 if found else float("inf")
+    line = f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g}), {mb:.0f} MB available (min {MIN_AVAILABLE_MB:g})"
+    return load <= MAX_LOAD_PER_CORE and mb >= MIN_AVAILABLE_MB, line
+
+
 def taken(e: Fail) -> bool:
     """Whether a create failed with 409: Omnigent refuses a title a sibling already holds."""
     return isinstance(e.__cause__, HTTPError) and e.__cause__.code == 409
@@ -672,8 +710,19 @@ def start(
     model: str | None = None,
     top_level: bool = False,
     workspace: str | None = None,
+    permission_mode: str | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed."""
+    if permission_mode and agent != "claude":
+        raise Fail(
+            f"--permission-mode is for claude sessions; a {agent} session fails to launch with it"
+        )
+    deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
+    while not (room := capacity())[0]:
+        if time.monotonic() >= deadline:
+            raise Fail(f"host over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
+        print(f"host over capacity, waiting: {room[1]}", file=sys.stderr)
+        time.sleep(POLL_SECONDS * 6)
     if span := EMPTY_SPAN.search(brief):
         line = brief[: span.start()].count("\n") + 1
         raise Fail(
@@ -718,7 +767,10 @@ def start(
             name = title if n == 0 else f"{title}-r{n + 1}"
             n += 1
             try:
-                sid, error = og.create(agent, name, model, top_level, workspace), None
+                sid, error = (
+                    og.create(agent, name, model, top_level, workspace, permission_mode),
+                    None,
+                )
             except Fail as e:
                 if not taken(e):
                     error = e
@@ -749,7 +801,7 @@ def start(
                 print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)
         try:
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
-                og.send(sid, text)
+                send_to_confirm(og, sid, text)
             if delivered(og, sid, text, confirm_seconds):
                 return sid, survivors
         except Fail as e:
@@ -839,7 +891,7 @@ def wait(
                     f"session {sid} ended ({status}) without {missing}; nudging once",
                     file=sys.stderr,
                 )
-                og.send(sid, nudge)
+                send_to_confirm(og, sid, nudge)
                 delivered(og, sid, nudge, 60.0)  # else its old last message ends the wait at once
                 idle_since, nudged = None, True
                 continue
@@ -1395,7 +1447,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("run", "start"):
-        p = sub.add_parser(name)
+        p = sub.add_parser(
+            name,
+            description="start a child and wait for its report in one process; a lead (--top-level)"
+            " uses start, then watch"
+            if name == "run"
+            else "start a child, or a lead with --top-level, and return once its brief landed",
+        )
         p.add_argument("agent", choices=AGENTS)
         p.add_argument("title")
         p.add_argument("brief", type=Path, help="file with the task specifics")
@@ -1405,6 +1463,11 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument(
             "--model",
             help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CODEX, else the harness default)",
+        )
+        p.add_argument(
+            "--permission-mode",
+            help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
+            " else the harness default); codex sessions take none",
         )
         p.add_argument(
             "--author",
@@ -1435,6 +1498,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("session")
     p.add_argument("message", type=Path, help="file with the message; it owes no report")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    sub.add_parser("capacity", description="exit 0 when this host has room for another session")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
     p = sub.add_parser("watch")
@@ -1484,6 +1548,10 @@ def main(argv: list[str] | None = None) -> int:
         owed = {s: r.resolve() for s, r in map(pair, getattr(args, "owed", []))}
         if args.cmd == "supervise" and not (owed or args.registry):
             raise Fail("supervise needs <session>=<report> pairs or --registry")
+        if args.cmd == "capacity":
+            ok, line = capacity()
+            print(line)
+            return 0 if ok else 1
         og = Omnigent()
         if args.cmd == "relay":
             print(relay(og, args.session, args.message.read_text(), args.confirm_seconds))
@@ -1582,6 +1650,7 @@ def main(argv: list[str] | None = None) -> int:
             args.role,
             args.confirm_seconds,
             model=args.model,
+            permission_mode=args.permission_mode,
             top_level=args.top_level,
             workspace=str(workspace),
         )

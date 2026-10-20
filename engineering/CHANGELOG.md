@@ -9,12 +9,21 @@
   - a release checks the standing decisions first;
   - an adopted session becomes a lead;
   - an overloaded host's leads park at a clean checkpoint;
-  - a lead rewriting a shared checkout has it to itself.
+  - a lead rewriting a shared checkout has it to itself;
   - a chief of staff counts why it involved the owner, and proposes a fix for a cause that
     repeats.
 
   The handover names the exact subscribe and info-only takeover calls, quotes the owner with
   the session id they spoke in, and records revives spent on every lead (#196's A1 dry run).
+- `omnigent_agent.py` under load (#226):
+  - `capacity` says whether this host has room for another session, and `start` and `run`
+    wait for it, failing after 10 minutes;
+  - a message whose POST timed out is confirmed from the history instead of failing the
+    `start`, which had archived sessions that took their brief;
+  - `run`'s usage says a lead (`--top-level`) uses `start`, then `watch`.
+- `omnigent_agent.py start` and `run` take `--permission-mode <mode>`, defaulting from
+  `$OMNIGENT_PERMISSION_MODE`, for a Claude child (#213). Omnigent applies it at terminal launch.
+  Codex takes none: its CLI fails to start with the flag, so `start` refuses it there.
 - New owned skill `omnigent-telemetry` (#206): `scripts/omnigent_telemetry.py` reports
   Omnigent spend, tokens by model, session trees, scheduled-task health and Codex rate limits
   over the last N days from the API, the server's Postgres and local Codex rollouts, with

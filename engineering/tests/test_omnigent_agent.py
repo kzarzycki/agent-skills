@@ -54,6 +54,7 @@ class FakeOmnigent:
         model: str | None = None,
         top_level: bool = False,
         workspace: str | None = None,
+        permission_mode: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -144,6 +145,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda: (True, ""))  # else a busy host waits
 
 
 def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
@@ -479,11 +481,66 @@ def test_stalled_server_timeout_reaches_cleanup(
     try:
         og = Local(f"http://127.0.0.1:{server.server_port}")
         monkeypatch.setattr(omnigent_agent, "HTTP_SECONDS", 0.05)
-        with pytest.raises(omnigent_agent.Fail, match="s0: POST .*TimeoutError"):
+        # the timed-out POST leaves delivery to the history, which this server cannot show
+        with pytest.raises(omnigent_agent.Fail, match="s0: GET .*HTTP 501"):
             omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
         assert og.archived == ["s0"]
     finally:
         server.shutdown()
+
+
+def test_a_start_whose_send_timed_out_keeps_the_session_the_history_shows_took_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from urllib.error import URLError
+
+    class Late(FakeOmnigent):
+        def send(self, sid: str, text: str) -> None:
+            super().send(sid, text)  # the server took it, after the client gave up
+            raise omnigent_agent.Fail("POST events: timed out") from URLError(
+                TimeoutError("timed out")
+            )
+
+    og = Late()
+    sid = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0]
+    assert og.archived == [] and og.posts == 1
+
+    # a timeout only: a reset still fails, as Omnigent.send itself does on any error (the
+    # supervisor's sends advance their state on its return)
+    def reset(sid: str, text: str) -> None:
+        raise omnigent_agent.Fail("POST events: reset") from ConnectionResetError("reset")
+
+    monkeypatch.setattr(og, "send", reset)
+    with pytest.raises(omnigent_agent.Fail, match="reset"):
+        omnigent_agent.send_to_confirm(og, sid, "go")
+
+
+def test_start_waits_while_the_host_is_over_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.undo()  # the real capacity check, on a faked host
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 16000000 kB\nMemAvailable: 1048576 kB\n")
+    monkeypatch.setattr(omnigent_agent, "MEMINFO", meminfo)
+    monkeypatch.setattr(omnigent_agent.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (300.0, 0.0, 0.0))
+    assert omnigent_agent.main(["capacity"]) == 1
+    assert capsys.readouterr().out == "load 37.5 per core (max 4), 1024 MB available (min 1536)\n"
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
+    og = FakeOmnigent()
+    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: load 37.5"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.sessions == {}
+
+    loads = iter([300.0, 8.0])
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (next(loads), 0.0, 0.0))
+    meminfo.write_text("MemAvailable: 4194304 kB\n")
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 60)
+    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert "host over capacity, waiting: load 37.5" in capsys.readouterr().err
+    assert og.sessions  # started once the load fell
 
 
 def test_stalled_error_body_reaches_cleanup(
@@ -561,6 +618,39 @@ def test_create_files_the_session_under_the_project(
     monkeypatch.setenv("OMNIGENT_PROJECT", "S_hop")
     omnigent_agent.Omnigent().create("claude", "t")
     assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
+
+
+def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {"/v1/agents": agents, "/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}}[
+            path
+        ]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    og = omnigent_agent.Omnigent()
+    og.create("claude", "t")
+    assert "terminal_launch_args" not in bodies[-1]  # the harness default
+    og.create("claude", "t", permission_mode="plan")
+    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "plan"]
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")
+    og.create("claude", "t")
+    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "acceptEdits"]
+    og.create("codex", "t")  # codex-native would hand it to the codex CLI, which fails to start
+    assert "terminal_launch_args" not in bodies[-1]
+    with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
+        omnigent_agent.start(
+            FakeOmnigent(), "codex", "t", "do X", tmp_path / "r.md", None, 0, permission_mode="plan"
+        )
 
 
 @pytest.mark.parametrize(
@@ -984,8 +1074,10 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     titles: list[str] = []
     create = og.create
-    og.create = lambda agent, title, model=None, top_level=False, workspace=None: (
-        titles.append(title) or create(agent, title)
+    og.create = (
+        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None: (
+            titles.append(title) or create(agent, title)
+        )
     )  # type: ignore[method-assign]
     og.fail.add("archive")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
@@ -1366,7 +1458,9 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
+    og.create = lambda a, t, m=None, top=False, w=None, p=None: (models.append(m), create(a, t, m))[
+        1
+    ]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     monkeypatch.chdir(tmp_path)
