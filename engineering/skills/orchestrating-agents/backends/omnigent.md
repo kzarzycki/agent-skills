@@ -298,6 +298,54 @@ time was not stuck; a prompt or a failure, each once per occurrence; and `archiv
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
 
+**`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
+state file, an events log, status labels, a progress deadline and settled events kept across
+restarts. Without it `supervise --registry` writes none of them, and the paragraphs above are
+all it does. With it, each event is posted once, also across a restart: a terminal event found
+again after one only drops the line it already posted, and a followed lead's failure or prompt is
+one event per occurrence (`occurrences` in the state counts each entry into one), so the same
+error again after a recovery is news and the one a restart finds again is not.
+
+A followed lead also has a progress deadline, since a lead that reads running for good, or goes
+quiet a second time with the same last message, makes none of those events. Its progress,
+`progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
+none) and its live children's activity, read on first sight, then once a minute and again when
+the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
+lead with neither counts from first sight. With
+no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
+lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
+(`nudges` in the state) gets a second, `no progress <n>m after a nudge`, 10 minutes later. The
+wait comes from the lead's last message: `parked` for a `PARKED` ending, the thing a `STILL
+WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`), else `unknown`. None for a
+parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
+none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
+then waits on its follower, who was told. Each deadline is one event per
+lead and `progress_at`, so new progress starts a new chain. Nothing sends the nudge yet; the
+budgets in the state are kept at 0 until something does.
+
+`--console` keeps its state next to the registry, named from it (`leads.registry`:
+`leads.state.json`, `leads.events.jsonl`), so two supervisors in one directory never share one.
+
+- `<name>.state.json`, schema `cos-state/1`, rewritten every poll through a temp file and a
+  rename, so a reader never sees half of one, with `written_at`: under `leads` an entry per
+  registry session (title, host, report, brief files, whether it is followed, `waits_on`,
+  state, wait, error, ending, first line of its last message, `progress_at`, `nudges`,
+  `revives`, `occurrences`, the labels last written); under `settled` the ids of the events posted (or
+  printed, without `--notify`), the newest 20 per session; and `intents`, `attention`,
+  `pending_posts` and `rate` (`next_post_at`, `model_calls`), kept for the routing that fills
+  them. It is loaded on start, so a restart re-raises no settled event and keeps `progress_at`,
+  budgets and labels. A session gone from the registry leaves it; an unreadable file or another
+  schema is a warning and a fresh start.
+- `<name>.events.jsonl`: one JSON line per settled event (`at`, `id`, `session`, `kind`,
+  `line`, `settled`: `posted` or `printed`).
+- Two labels on each session, for the web UI: `status.line`, its state in under 200
+  characters (`running · waits on verifier`, `turn ended: DONE …`, `blocked on a prompt`,
+  `failed: …`), since Omnigent cuts a label value to its first 256 without an error, and
+  `status.at`, the Unix seconds it was observed. They are written (`PATCH /v1/sessions/{id}`
+  `labels`) only when the line changed or the last write is a minute old, so `status.at` stays
+  fresh while the supervisor runs and the browser can mark a line from a dead one stale past 10
+  minutes. Display only: never read back. A failed write is logged once and the poll goes on.
+
 A lead supervises this way a child no `run`, `send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
 names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its `run` and
 `send`. An in-session background command or a session cron dies when the session restarts,
