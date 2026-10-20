@@ -2487,6 +2487,29 @@ def test_progress_starts_from_the_leads_real_activity_not_from_first_sight(
         assert time.time() - 60 < progress <= time.time()
 
 
+def test_a_childs_activity_reaches_the_state_once_a_minute_before_any_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: waiting on worker", 50))
+    og.snap = {"status": "running"}
+    start, reads, progress = time.time(), [], []
+    real = og.active
+    og.active = lambda sid: reads.append(sid) or real(sid)  # type: ignore[method-assign]
+    at = {1: 30.0, 2: 61.0}
+
+    def later(poll: int) -> None:
+        progress.append(state_of(registry)["leads"]["a"]["progress_at"])
+        offset[0] = at[poll]
+        og.kids["a"] = start + 20 * poll  # its worker writes at 20, then at 40
+
+    supervised(og, registry, monkeypatch, 3, later, console=True)
+    progress.append(state_of(registry)["leads"]["a"]["progress_at"])
+    assert reads == ["a", "a"]  # at 0 and at 61, none at 30
+    assert progress[1] == progress[0] and progress[2] == start + 40
+
+
 def test_a_second_quiet_spell_with_the_same_ending_raises_a_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -307,8 +307,9 @@ again after one only drops the line it already posted.
 A followed lead also has a progress deadline, since a lead that reads running for good, or goes
 quiet a second time with the same last message, makes none of those events. Its progress,
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
-none) and its live children's activity, also on first sight, so a lead already stuck when the
-supervisor starts is overdue at once; a lead with neither counts from first sight. With
+none) and its live children's activity, read on first sight, then once a minute and again when
+the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
+lead with neither counts from first sight. With
 no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
 lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
 (`nudges` in the state) gets a second, `no progress <n>m after a nudge`, 10 minutes later. The

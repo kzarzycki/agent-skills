@@ -1607,6 +1607,7 @@ def supervise_registry(
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
     hosts: dict[str, str] | None = None  # ponytail: read once; a host added later shows its id
+    looked: dict[str, float] = {}  # when each session's children were last read
     ended: dict[str, float] = {}
     resumed: dict[str, float] = {}
     idle_since: dict[str, tuple] = {}  # followed leads, as ``follow`` keeps them
@@ -1743,7 +1744,8 @@ def supervise_registry(
             for i in items
             if not from_user(i) and i.get("type") != "resource_event"
         ]
-        if "progress_at" not in lead:  # first sight: its children's activity too
+        if time.monotonic() - looked.get(sid, -LABEL_SECONDS) >= LABEL_SECONDS:
+            looked[sid] = time.monotonic()  # its children too, one read a minute
             own.append(active(sid))
         # with no activity at all, progress counts from now
         lead["progress_at"] = max([lead.get("progress_at") or 0.0, *own]) or time.time()
