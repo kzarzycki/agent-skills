@@ -8,6 +8,19 @@
   instead of interrupting it, which held the message up to 7 minutes (kzarzycki/omnigent#14).
   A chief of staff runs `approve` on the owner's word, and quotes an approval in a lead's
   brief word for word.
+- The chief-of-staff skill states how to work delegated and under load (#224):
+  - a delegated decision is reported as options, a recommendation and the action taken;
+  - a chief of staff records an owner's approval as a label with a quoted comment, and leaves
+    the written record to the owner;
+  - a release checks the standing decisions first;
+  - an adopted session becomes a lead;
+  - an overloaded host's leads park at a clean checkpoint;
+  - a lead rewriting a shared checkout has it to itself;
+  - a chief of staff counts why it involved the owner, and proposes a fix for a cause that
+    repeats.
+
+  The handover names the exact subscribe and info-only takeover calls, quotes the owner with
+  the session id they spoke in, and records revives spent on every lead (#196's A1 dry run).
 - `omnigent_agent.py` under load (#226):
   - `capacity` says whether this host has room for another session, and `start` and `run`
     wait for it, failing after 10 minutes;
