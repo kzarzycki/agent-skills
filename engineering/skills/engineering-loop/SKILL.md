@@ -189,9 +189,11 @@ needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
 is missing. An agent merges only with `python3 scripts/approvals.py land <pr>` (the
-project's `loop:land` task): it runs every merge proof, marks a draft ready and waits for
-the CI that starts, and on a ready PR merges it pinned to its head, or turns on auto-merge
-while only required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand,
+project's `loop:land` task): it runs every merge proof, refuses a head behind or in
+conflict with its base, marks a draft ready and waits for the CI that starts, and on a ready
+PR merges it pinned to its head, or turns on auto-merge while only required checks are
+pending. With `--wait` it is one background command that ends when the PR merges or needs
+someone. Never run `gh pr ready` or `gh pr merge` by hand,
 because `land` is what refuses a PR whose proof is missing. A repo without
 `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A rule GitHub can enforce,
@@ -323,8 +325,8 @@ verifier, review angles run as native subagents, never as full harness sessions.
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open and
-  the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr>`, which
-  marks it ready and merges it, or turns on auto-merge. The PR merges only when the newest
+  the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
+  which marks it ready and merges it, or turns on auto-merge and waits for the merge. The PR merges only when the newest
   verdict covers the head that lands, the required checks are green there, and, where the
   change is high risk (Approvals and proof), the owner's `approved:merge` label is on.
   The verdict's commit is the head itself: any commit after it, a merge of main included,
