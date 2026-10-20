@@ -1,6 +1,7 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -2908,3 +2909,92 @@ def test_resolve_posts_the_verdict_to_omnigent_s_elicitation_route(
         ),
         ("POST", "/v1/sessions/s1/elicitations/e2/resolve", {"action": "decline"}),
     ]
+
+
+def serve_files(monkeypatch: pytest.MonkeyPatch, files: dict[str, dict]) -> list[str]:
+    """A file API on localhost answering `files` by request path (404 for the rest); returns the
+    request paths it saw. `main` talks to it through the real `Omnigent.call`."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    seen: list[str] = []
+    real = omnigent_agent.Omnigent
+
+    class Files(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append(self.path)
+            body = files.get(self.path)
+            self.send_response(404 if body is None else 200)
+            self.end_headers()
+            self.wfile.write(json.dumps(body or {}).encode())
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Files)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def make() -> omnigent_agent.Omnigent:
+        og = object.__new__(real)
+        og.base, og._token = f"http://127.0.0.1:{server.server_port}", "synthetic"
+        return og
+
+    monkeypatch.setattr(omnigent_agent, "Omnigent", make)
+    return seen
+
+
+FS = "/v1/sessions/s9/resources/environments/default/filesystem"
+
+
+def test_report_reads_an_absolute_path_from_the_host_with_each_segment_encoded(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = f"{FS}/Users/k/my%20dir/r%23.md?base=host"
+    seen = serve_files(monkeypatch, {path: {"content": "# done\n"}})
+    assert omnigent_agent.main(["report", "s9", "/Users/k/my dir/r#.md"]) == 0
+    assert seen == [path]  # no leading %2F, '/' kept between segments
+    assert capsys.readouterr().out == "# done\n\n"
+
+
+def test_report_reads_a_relative_path_in_the_workspace_without_base(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen = serve_files(monkeypatch, {f"{FS}/tmp/r.md": {"content": "hi"}})
+    assert omnigent_agent.main(["report", "s9", "tmp/r.md"]) == 0
+    assert seen == [f"{FS}/tmp/r.md"]
+
+
+def test_report_lists_a_directory_one_entry_per_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    listing = {"data": [{"name": "a.md", "type": "file"}, {"name": "sub", "type": "directory"}]}
+    serve_files(monkeypatch, {f"{FS}/tmp?base=host": listing})
+    assert omnigent_agent.main(["report", "s9", "/tmp"]) == 0
+    assert capsys.readouterr().out == "a.md\nsub/\n"
+
+
+def test_report_exits_4_naming_a_missing_file_and_1_for_other_statuses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    serve_files(monkeypatch, {})
+    assert omnigent_agent.main(["report", "s9", "/nope.md"]) == 4
+    assert "/nope.md" in capsys.readouterr().err
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", ())
+    og = omnigent_agent.Omnigent()
+    og.base = "http://127.0.0.1:1"  # nothing listens: not a 404
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["report", "s9", "/x.md"]) == 1
+
+
+def test_report_without_a_path_reads_the_registry_line_else_exits_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = tmp_path / "leads.registry"
+    registry.write_text("s9=/Users/k/r.md\n")
+    path = f"{FS}/Users/k/r.md?base=host"
+    seen = serve_files(monkeypatch, {path: {"content": "x"}})
+    assert omnigent_agent.main(["report", "s9", "--registry", str(registry)]) == 0
+    assert seen == [path]
+    assert omnigent_agent.main(["report", "s8", "--registry", str(registry)]) == 2
+    assert omnigent_agent.main(["report", "s9"]) == 2
+    assert "OMNIGENT_SUPERVISE_REGISTRY" in capsys.readouterr().err
