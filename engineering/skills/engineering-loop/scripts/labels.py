@@ -44,6 +44,7 @@ from approvals import (  # the label names, defined once
     TRACKER,
     Refused,
     items,
+    one_repo,
     qualified,
     read,
     section,
@@ -249,6 +250,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
+        one_repo()
         return sync(args.dry_run)
     except Refused as exc:
         print(exc)
