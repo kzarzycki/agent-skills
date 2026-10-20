@@ -81,8 +81,9 @@ design, wireframes included for a UI, and delegate the rest.
    with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
-   both are yours (worker.md, Gates and push). Its model is the default, or the one
-   loop.md's `Worker model:` line names where the issue matches (SKILL.md, Models).
+   both are yours (worker.md, Gates and push). Its model is the default, or, where the
+   issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
+   names (SKILL.md, Models).
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.

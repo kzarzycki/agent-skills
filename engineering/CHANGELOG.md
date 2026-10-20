@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-- A project may name its worker model in loop.md, `Worker model: <model> for <condition>`
-  (#245): the lead passes it to a worker whose issue matches, and the harness default applies
+- A project may name its worker model in loop.md as a tier, `Worker model: <top|mid|small> for
+  <condition>` (#245, #247): the lead starts a worker whose issue matches on that tier's model
+  from the worker family's newest generation, the closest higher tier there when that
+  generation lacks it and never an older generation's model, and on the harness default
   otherwise, so a cheaper worker model is one line the owner can change.
 - A chief of staff wakes only on a lead's news (#238). `supervise --registry` follows a lead
   whose line ends in `follow`, posting to `--notify` a turn end that names `DONE`, `USER NEEDED`
