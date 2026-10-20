@@ -1498,8 +1498,17 @@ def toplevel() -> Path:
         raise Refused("not in a git checkout: run from the repo's checkout") from exc
 
 
-# a remote's GitHub repository, as `owner/repo`, from its https or ssh URL
-GITHUB_REMOTE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$", re.IGNORECASE)
+# a remote URL's host and `owner/repo`: `scheme://[user@]host[:port]/owner/repo` or scp-like `[user@]host:owner/repo`,
+# matched once trailing slashes and `.git` are cut (post_demo.sh parses it the same way)
+REMOTE_URL = re.compile(
+    r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]*@)?([^/:]+)(?::\d+)?[:/]([^/]+/[^/]+)", re.IGNORECASE
+)
+
+
+def github_repo(url: str) -> str | None:
+    """The `owner/repo` a GitHub remote URL names, lowercased; None for another host."""
+    found = REMOTE_URL.fullmatch(re.sub(r"(?:\.git)?/*$", "", url.rstrip("/")))
+    return found[2].lower() if found and found[1].lower() == "github.com" else None
 
 
 def one_repo() -> None:
@@ -1509,9 +1518,9 @@ def one_repo() -> None:
     remotes = subprocess.run(["git", "remote", "-v"], capture_output=True, text=True, check=False)
     repos = sorted(
         {
-            found[1].lower()
+            repo
             for line in remotes.stdout.splitlines()
-            if len(fields := line.split()) > 1 and (found := GITHUB_REMOTE.search(fields[1]))
+            if len(fields := line.split()) > 1 and (repo := github_repo(fields[1]))
         }
     )
     chosen = subprocess.run(
