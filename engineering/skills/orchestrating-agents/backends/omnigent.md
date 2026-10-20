@@ -270,7 +270,8 @@ each follow-up in order. Not before, because until the
 message lands the turn before's report or question reads as newer than the last instruction,
 a false event. `run`, `send` and `wait` remove the line once they return the report or a
 question, since their caller has it; a race can still deliver both, and the second line is no
-news. A failed wait keeps it, so the supervisor watches on. A failed arm is a warning, since
+news. `reap` with the registry drops the line of each session it finishes, before finishing it,
+so the supervisor posts `archived` only for a session someone else archived. A failed wait keeps it, so the supervisor watches on. A failed arm is a warning, since
 the command's own wait still covers the session. Every edit locks the file (`fcntl.flock`), so
 an arm and a drop of two sessions at once lose neither line. A drop of the same session keeps
 the line when the session was instructed after the event's own instruction (the resume and
@@ -321,7 +322,7 @@ return, which ends its agent process and keeps its transcript; a session that as
 question stays, since the answer goes to it. Finishing archives the session, a sub-agent
 too: Omnigent leaves the runner it shares with its parent up, on a build with
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
-`python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]` finishes each
+`python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
 each, and prints which it kept. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still

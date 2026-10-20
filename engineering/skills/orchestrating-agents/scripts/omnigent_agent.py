@@ -8,7 +8,7 @@
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
-    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]
+    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [<session>=<report>...]
 
@@ -55,7 +55,8 @@ session's line once posted; an error or an event-less ``--timeout`` is logged an
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
 count its report); ``run``, ``send`` and ``wait`` disarm it when they
-return the report or a question.
+return the report or a question; ``reap`` drops the line of each session it finishes, before
+finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
 question; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
@@ -946,10 +947,13 @@ def wait(
     return str(report)
 
 
-def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> tuple[list[str], bool]:
+def reap(
+    og: Omnigent, sessions: list[str], parent: str | None = None, registry: Path | None = None
+) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
-    saying which: ``archived``, or kept and why, and whether any finish failed.
+    saying which: ``archived``, or kept and why, and whether any finish failed. Each session it
+    finishes first leaves ``registry``: the caller is the one the supervisor would tell.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
     reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it."""
@@ -969,6 +973,9 @@ def reap(og: Omnigent, sessions: list[str], parent: str | None = None) -> tuple[
             )
             lines.append(f"{sid} {info.get('title') or ''}: kept ({busy})")
             continue
+        # ponytail: a supervisor that read the registry just before this drop can still post
+        # `archived` once, and a finish that then fails leaves the session unfollowed; reap again.
+        arm_quietly(registry, sid)
         try:
             og.archive(sid)
         except Fail as e:  # one refused finish leaves the rest to reap
@@ -1658,12 +1665,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         if p.prog.split()[-1] not in ("start", "reap", "relay", "approve", "status"):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
-        if p.prog.split()[-1] in ("run", "start", "send", "wait"):
+        if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap"):
             p.add_argument(
                 "--registry",
                 type=Path,
                 default=os.environ.get("OMNIGENT_SUPERVISE_REGISTRY") or None,
-                help="supervisor registry to arm with session=report (default: $OMNIGENT_SUPERVISE_REGISTRY)",
+                help="supervisor registry to arm with session=report, or for reap to drop each"
+                " finished session from (default: $OMNIGENT_SUPERVISE_REGISTRY)",
             )
     args = ap.parse_args(argv)
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
@@ -1695,7 +1703,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "reap":
             if not args.sessions and not args.children:
                 raise Fail("reap needs a session or --children <parent>")
-            lines, failed = reap(og, args.sessions, args.children)
+            lines, failed = reap(og, args.sessions, args.children, args.registry)
             print("\n".join(lines))
             return 1 if failed else 0
         if args.cmd == "supervise":

@@ -1745,6 +1745,32 @@ def test_reap_exits_1_when_a_finish_fails(
     ]
 
 
+def test_reap_drops_each_session_it_finishes_from_the_registry_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The supervisor would post `archived` into the session that ran the reap (#249)."""
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    states = {"done": "idle", "busy": "running", "env": "idle"}
+    og.info = lambda s: {"status": states[s], "title": f"t-{s}"}  # type: ignore[method-assign]
+    registry = tmp_path / "registry"
+    registry.write_text("".join(f"{s}=/r/{s}.md\tfollow\n" for s in [*states, "other"]))
+    at_archive: list[str] = []
+    archive = og.archive
+
+    def archiving(s: str) -> None:
+        at_archive.append(registry.read_text())
+        archive(s)
+
+    og.archive = archiving  # type: ignore[method-assign]
+    assert omnigent_agent.main(["reap", "done", "busy", "--registry", str(registry)]) == 0
+    assert "done=" not in at_archive[0]
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    assert omnigent_agent.main(["reap", "env"]) == 0
+    assert og.archived == ["done", "env"]
+    assert registry.read_text() == "busy=/r/busy.md\tfollow\nother=/r/other.md\tfollow\n"
+
+
 def test_run_archives_on_its_report_but_not_on_a_question(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2662,6 +2688,20 @@ def test_relay_answers_a_question_with_the_message_instead_of_posting_it(
     assert relay(og, sid, tmp_path, monkeypatch, "use main\n") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "use main"})]
     assert og.posts == 0
+    assert "answered its open question" in capsys.readouterr().out
+
+
+def test_relay_rerun_answers_a_question_raised_behind_its_own_pending_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Its own copy is no other input: waiting on it would exit 5 behind the question for good."""
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert og.resolved == [(sid, "e1", "accept", {"Which base?": "go"})]
+    assert og.posts == 1
     assert "answered its open question" in capsys.readouterr().out
 
 
