@@ -7,6 +7,9 @@
   its own across projects (#230). A handover file in a repo with a remote is pushed after
   each rewrite and pulled on takeover, and a restart into another permission mode or harness
   is a fresh session that takes over from the file.
+- A project may name its worker model in loop.md, `Worker model: <model> for <condition>`
+  (#245): the lead passes it to a worker whose issue matches, and the harness default applies
+  otherwise, so a cheaper worker model is one line the owner can change.
 - A chief of staff wakes only on a lead's news (#238). `supervise --registry` follows a lead
   whose line ends in `follow`, posting to `--notify` a turn end that names `DONE`, `USER NEEDED`
   or `PARKED`, any other turn end once the lead and its live children were quiet for 300 s, a
