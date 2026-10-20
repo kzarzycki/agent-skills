@@ -51,6 +51,10 @@ for a verifier, whose report then counts only with its ``SATISFIED:`` line, and 
 the same way, printing every line with the local time and, with ``--notify``, posting it into that
 session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal event drops the
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
+Each poll it writes ``<registry stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a
+restart re-posts no event it settled), appends each event to ``<registry stem>.events.jsonl``,
+labels each session with ``status.line`` and ``status.at``, and raises ``deadline`` for a
+followed lead with no progress for 20 minutes.
 ``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
@@ -137,6 +141,19 @@ ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end
 # is news. Shorter, and a lead between its own workers' turns wakes the chief of staff for nothing.
 FOLLOW_QUIET_SECONDS = 300.0
+# A followed lead with no progress (its own history, its live children) this long: a ``deadline``
+# event, whatever its status reads; this much more once it was nudged.
+DEADLINE_SECONDS = 1200.0
+NUDGED_SECONDS = 600.0
+# What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline.
+# ponytail: one regex over the lead's own words; a wait named any other way reads as unknown, which
+# only adds the nudge step. Upgrade: a structured wait line in the lead's report.
+WAIT = re.compile(r"STILL WORKING\b.*?\b((?i:verifier|worker|lead|merge)|CI)s?\b", re.DOTALL)
+STATE_SCHEMA = "cos-state/1"
+# A lead's unchanged status labels are written again once the last write is this old.
+# ponytail: a knob; the browser marks a line stale past 10 min, so keep it well under that.
+LABEL_SECONDS = 60.0
+SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -376,6 +393,14 @@ class Omnigent:
             why = "names several hosts" if ids else "names no host"
             raise Fail(f"--host {name} {why}; hosts: {known}")
         return ids[0]
+
+    def hosts(self) -> dict[str, str]:
+        """Each host's name by its ``host_id``."""
+        return {h["host_id"]: h["name"] for h in self.call("GET", "/v1/hosts")["hosts"]}
+
+    def label(self, sid: str, labels: dict[str, str]) -> None:
+        """Upsert ``labels`` on ``sid``; an empty value clears one."""
+        self.call("PATCH", f"/v1/sessions/{sid}", {"labels": labels})
 
     def subscribe(self, subscriber: str, sid: str) -> None:
         """Have Omnigent tell ``subscriber`` each time ``sid`` ends a turn or waits on a prompt."""
@@ -1013,7 +1038,7 @@ def observe(
     elif sid not in idle_since or idle_since[sid][0] != lid:  # (last message id, idle since)
         idle_since[sid] = (lid, time.monotonic() - (IDLE_GRACE_SECONDS if baseline else 0))
     if prompts := prompts_of(info):
-        ids = tuple(str(e.get("elicitation_id") or e) for e in info["pending_elicitations"])
+        ids = ",".join(str(e.get("elicitation_id") or e) for e in info["pending_elicitations"])
         return ("blocked", ids), f"{head}: blocked on a prompt: {'; '.join(prompts)}{tail}"
     if status == "failed":
         e = info.get("last_task_error") or {}  # an object of strings: title, message, code, ...
@@ -1253,33 +1278,33 @@ def follow(
     told: dict,
     holding: dict[str, tuple[tuple, float]],
     quiet_seconds: float = FOLLOW_QUIET_SECONDS,
-) -> tuple[str, bool]:
-    """One look at a followed lead: the line for its follower, else empty, and whether the lead is
-    archived. A prompt or a failure is news once per occurrence; a turn end naming ``DONE``, ``USER
-    NEEDED`` or ``PARKED`` once it holds as ``watch`` counts an end; any other turn end only once
-    the lead and its live children wrote nothing for ``quiet_seconds`` since it. Each is told once
+) -> tuple[str, tuple]:
+    """One look at a followed lead: the line for its follower, else empty, and the lead's state as
+    ``observe`` keys it. A prompt or a failure is news once per occurrence; a turn end naming
+    ``DONE``, ``USER NEEDED`` or ``PARKED`` once it holds as ``watch`` counts an end; any other
+    turn end only once the lead and its live children wrote nothing for ``quiet_seconds`` since it. Each is told once
     per message, so ``told`` keeps the ending last told per lead (kept while the runner flaps to
     running, since only a new message is a new ending) and the prompt or failure last told, and
     ``holding`` the end not yet held; all are the caller's across looks.
     """
     key, line = observe(og, sid, idle_since)
     if key[0] == "archived":
-        return line, True
+        return line, key
     if key[0] != "ended":
         holding.pop(sid, None)
         if key[0] == "running":
             told.pop(("occurrence", sid), None)
         elif told.get(("occurrence", sid)) != key:
             told[("occurrence", sid)] = key
-            return line, False
-        return "", False
+            return line, key
+        return "", key
     if told.get(sid) == key:
-        return "", False
+        return "", key
     held = holding.get(sid)
     if not held or held[0] != key:
         held = holding[sid] = (key, time.monotonic())
     if time.monotonic() - held[1] < TURN_END_SECONDS:
-        return "", False
+        return "", key
     items = og.items(sid)
     last = last_message(items)
     if not (last and last.get("role") != "user" and ENDING.search(text_of(last))):
@@ -1290,10 +1315,10 @@ def follow(
         ended_at = time.time() - (time.monotonic() - held[1])
         quiet = time.time() - max(written, og.active(sid), ended_at)
         if quiet < quiet_seconds:
-            return "", False
+            return "", key
         line = line.replace(": turn ended\n", f": turn ended, quiet {quiet:.0f}s\n", 1)
     told[sid] = key
-    return line, False
+    return line, key
 
 
 def pair(text: str) -> tuple[str, Path]:
@@ -1415,6 +1440,108 @@ def arm_quietly(
             )
 
 
+class Recorded:
+    """``og`` keeping the last ``info`` and ``items`` it returned per session, so the supervisor's
+    state is built from what its look just read, with no second read."""
+
+    def __init__(self, og: Omnigent) -> None:
+        self.og, self.seen = og, {}
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.og, name)
+
+    def info(self, sid: str) -> dict:
+        self.seen.setdefault(sid, {})["info"] = info = self.og.info(sid)
+        return info
+
+    def items(self, sid: str) -> list[dict]:
+        self.seen.setdefault(sid, {})["items"] = items = self.og.items(sid)
+        return items
+
+
+def fresh_state() -> dict:
+    """An empty ``state.json``. ``intents``, ``attention``, ``pending_posts`` and ``rate`` are kept
+    for the routing that fills them."""
+    return {
+        "schema": STATE_SCHEMA,
+        "written_at": 0,
+        "leads": {},
+        "settled": {},
+        "intents": [],
+        "attention": [],
+        "pending_posts": [],
+        "rate": {"next_post_at": 0, "model_calls": {"hour": 0, "count": 0}},
+    }
+
+
+def load_state(path: Path) -> dict:
+    """``path``'s state, else a fresh one: missing, unreadable or of another schema, with a warning
+    for the last two, since a fresh state only re-posts what the old one had settled."""
+    try:
+        state = json.loads(path.read_text())
+    except FileNotFoundError:
+        return fresh_state()
+    except (OSError, ValueError) as e:
+        print(f"{path}: {type(e).__name__}: {e}; starting fresh", file=sys.stderr)
+        return fresh_state()
+    if not isinstance(state, dict) or state.get("schema") != STATE_SCHEMA:
+        print(f"{path}: not {STATE_SCHEMA}; starting fresh", file=sys.stderr)
+        return fresh_state()
+    return {**fresh_state(), **state}
+
+
+def write_state(path: Path, state: dict) -> None:
+    """Write ``state`` atomically: a temp file in the same directory, then a rename, so a reader
+    sees the old file or the new one, never half of one."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(state, indent=1) + "\n")
+    os.replace(tmp, path)
+
+
+def lead_status(info: dict, items: list[dict]) -> dict:
+    """A session's state (``running``, ``idle``, ``blocked``, ``failed``, ``archived``), its last
+    message's ending and first line, and what it waits on: ``parked``, the wait its ``STILL
+    WORKING`` names, else ``unknown``."""
+    said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+    text = text_of(said[-1]).strip() if said else ""
+    e = info.get("last_task_error") or {}
+    if info.get("archived"):
+        state = "archived"
+    elif prompts_of(info):
+        state = "blocked"
+    elif str(info.get("status")) == "failed":
+        state = "failed"
+    else:
+        state = "running" if str(info.get("status")) in RUNNING else "idle"
+    ending = m.group(1) if (m := ENDING.search(text)) else None
+    wait = "parked" if ending == "PARKED" else "unknown"
+    if wait == "unknown" and (m := WAIT.search(text)):
+        wait = m.group(1) if m.group(1) == "CI" else m.group(1).lower()
+    error = e.get("message") or e.get("title") or "(no error recorded)"
+    return {
+        "state": state,
+        "error": error if state == "failed" else None,
+        "ending": ending,
+        "wait": wait,
+        "last_line": text.splitlines()[0][:200] if text else "",
+    }
+
+
+def status_line(lead: dict) -> str:
+    """A lead's ``status.line`` label: its state in one short line, under 200 characters."""
+    if lead["state"] == "blocked":
+        line = "blocked on a prompt"
+    elif lead["state"] == "failed":
+        line = f"failed: {lead['error']}"
+    else:
+        line = "running" if lead["state"] == "running" else "turn ended"
+        if lead["wait"] not in ("unknown", "parked"):
+            line += f" · waits on {lead['wait']}"
+        if lead["state"] != "running" and lead["last_line"]:
+            line += f": {lead['last_line']}"
+    return line if len(line) < 200 else line[:198] + "…"
+
+
 def supervise_registry(
     og: Omnigent,
     registry: Path,
@@ -1425,14 +1552,26 @@ def supervise_registry(
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. Every line goes to stdout with the local time and, with ``notify``, into that
     session as ``Supervisor: <line>``. A line marked ``follow`` is a lead followed, not owed a
-    report: ``follow`` says when it is news, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
+    report: ``follow`` says when it is news, a lead with no progress past its deadline raises a
+    ``deadline`` event, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
     first, stopping at the first failure. A terminal event drops the session's line once its own
     line is posted, and a session whose terminal line waits is not checked again. The drop keeps
     the line when the session was instructed since the event's instruction: the caller armed it
     again for a newer brief, once that brief was in the history. An error is
     logged to stderr, once until it clears, and never stops the loop; so is ``timeout`` with no
     event.
+
+    Each poll writes ``<registry>.state.json`` (``fresh_state``, one entry per registry session)
+    and labels each session with its ``status.line`` and ``status.at``; every event posted (or
+    printed, without ``notify``) is settled there by its id and appended to
+    ``<registry>.events.jsonl``. The state is loaded on start, so a restart re-raises no settled
+    event and keeps each lead's ``progress_at``, budgets and last labels.
     """
+    rec = Recorded(og)
+    state_path = registry.with_suffix(".state.json")
+    events_path = registry.with_suffix(".events.jsonl")
+    state = load_state(state_path)
+    hosts: dict[str, str] | None = None  # ponytail: read once; a host added later shows its id
     ended: dict[str, float] = {}
     resumed: dict[str, float] = {}
     idle_since: dict[str, tuple] = {}  # followed leads, as ``follow`` keeps them
@@ -1440,11 +1579,11 @@ def supervise_registry(
     holding: dict[str, tuple[tuple, float]] = {}
     unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
-    # Each line not yet posted (None once it is), with what a terminal line drops: its session,
-    # report and the instruction its check measured from.
+    # Each line not yet posted (None once it is), with what a terminal line drops (its session,
+    # report and the instruction its check measured from), its event id, session and kind.
     # ponytail: in memory, so a restart loses the revive and resume lines waiting in it; a terminal
     # event keeps its registry line until posted, and the restarted supervisor finds it again.
-    outbox: list[tuple[str | None, tuple[str, Path, float] | None]] = []
+    outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
     window = time.monotonic()
 
     def stamp(line: str) -> str:
@@ -1490,49 +1629,166 @@ def supervise_registry(
         unsent.discard(sid)
         return True
 
+    def settle(eid: str, sid: str, kind: str, line: str) -> None:
+        kept = state["settled"].setdefault(sid, [])
+        kept.append(eid)
+        del kept[:-SETTLED_KEPT]
+        how = "posted" if notify else "printed"
+        event = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind, "line": line}
+        try:
+            with open(events_path, "a") as f:
+                f.write(json.dumps({**event, "settled": how}) + "\n")
+        except OSError as e:
+            log("events", f"{events_path}: {reason(e)}")
+        else:
+            log("events", None)
+
     def flush() -> None:
         while outbox:
-            line, event = outbox[0]
-            if line is not None and not post(line):
-                return
+            line, event, eid, sid, kind = outbox[0]
+            if line is not None:
+                if not post(line):
+                    return
+                settle(eid, sid, kind, line)
             if event and not drop(*event):
-                outbox[0] = (None, event)  # posted; only the drop is retried
+                outbox[0] = (None, event, eid, sid, kind)  # posted; only the drop is retried
                 return
             outbox.pop(0)
 
-    def say(line: str, event: tuple[str, Path, float] | None = None) -> None:
+    def say(
+        line: str,
+        sid: str,
+        eid: str = "",
+        kind: str = "notice",
+        event: tuple[str, Path, float] | None = None,
+    ) -> None:
+        """Print and post ``line``, unless its event ``eid`` is settled (then only drop ``event``'s
+        line) or already waits to be posted."""
+        if any(o[2] == eid for o in outbox):
+            return
+        if eid in state["settled"].get(sid, ()):
+            if event:
+                outbox.append((None, event, eid, sid, kind))
+                flush()
+            return
         print(stamp(line), flush=True)
-        outbox.append((line, event))
+        outbox.append((line, event, eid or f"notice:{sid}:{time.time():.0f}", sid, kind))
         flush()
+
+    def track(sid: str, report: Path, briefs: list[Path], followed: bool) -> dict:
+        """``sid``'s state entry, updated from what its look just read."""
+        nonlocal hosts
+        seen = rec.seen.pop(sid, {})
+        lead = state["leads"].setdefault(
+            sid,
+            {"progress_at": time.time(), "nudges": 0, "revives": 0, "waits_on": [], "label": {}},
+        )
+        if "info" not in seen or "items" not in seen:
+            return lead
+        info, items = seen["info"], seen["items"]
+        if hosts is None:
+            try:
+                hosts = og.hosts()
+            except Exception as e:  # noqa: BLE001 - a host shows as its id meanwhile
+                log("hosts", f"hosts: {reason(e)}")
+            else:
+                log("hosts", None)
+        host = str(info.get("host_id") or "")
+        lead.update(
+            title=info.get("title") or "",
+            host=(hosts or {}).get(host, host),
+            report=str(report),
+            briefs=[str(b) for b in briefs],
+            follow=followed,
+            **lead_status(info, items),
+        )
+        # its own history counts, not a message to it: a nudge is no progress
+        own = [
+            float(i.get("created_at") or 0)
+            for i in items
+            if not from_user(i) and i.get("type") != "resource_event"
+        ]
+        lead["progress_at"] = max([lead["progress_at"], *own])
+        return lead
+
+    def label(sid: str, lead: dict) -> None:
+        """Write ``sid``'s status labels when the line changed or the last write is
+        ``LABEL_SECONDS`` old, so a quiet poll writes nothing."""
+        if lead.get("state") in (None, "archived"):
+            return
+        line, now = status_line(lead), time.time()
+        last = lead["label"]
+        if line == last.get("line") and now - float(last.get("at") or 0) < LABEL_SECONDS:
+            return
+        at = str(int(now))
+        try:
+            og.label(sid, {"status.line": line, "status.at": at})
+        except Exception as e:  # noqa: BLE001 - display only; written again next poll
+            log(("label", sid), f"{sid}: labels not written: {reason(e)}")
+            return
+        log(("label", sid), None)
+        lead["label"] = {"line": line, "at": at}
+
+    def overdue(sid: str, lead: dict) -> None:
+        """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
+        for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. Each is one
+        event per ``progress_at``, so new progress starts a new chain."""
+        if lead["state"] in ("blocked", "failed", "archived") or (
+            lead["state"] == "idle" and lead["ending"]
+        ):
+            return  # its follower was told and it waits on them, or a parked one waits on capacity
+        if time.time() - lead["progress_at"] < DEADLINE_SECONDS:
+            return
+        lead["progress_at"] = max(lead["progress_at"], og.active(sid))  # read only once due
+        quiet = time.time() - lead["progress_at"]
+        steps = [(DEADLINE_SECONDS, "")]
+        if lead["wait"] == "unknown" and lead["nudges"]:
+            steps.append((DEADLINE_SECONDS + NUDGED_SECONDS, ":nudged"))
+        for after, nudged in steps:
+            if quiet >= after:
+                head = f"{sid} {lead['title']}".rstrip()
+                why = f"no progress {quiet / 60:.0f}m{' after a nudge' * bool(nudged)}"
+                line = f"{head}: {why} ({lead['wait']})\nlast message: {lead['last_line']}"
+                say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 
     while True:
         flush()
         try:
             owed, bad = registered(registry)
         except Exception as e:  # noqa: BLE001 - never fatal
-            owed, bad = {}, []
+            owed, bad, read = {}, [], False
             log("registry", f"{registry}: {reason(e)}")
         else:
+            read = True
             log("registry", None)
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
         for sid, (report, briefs, verdict, followed) in owed.items():
-            if any(e and e[0] == sid for _, e in outbox):
+            if any(o[1] and o[1][0] == sid for o in outbox):
                 continue  # its event is found; it waits to be posted
             try:
                 if followed:  # never revived or nudged: its lead owes no report
-                    event, gone = follow(og, sid, idle_since, told, holding)
-                    since = time.time()
-                    if not gone:
+                    event, key = follow(rec, sid, idle_since, told, holding)
+                    lead = track(sid, report, briefs, followed)
+                    since, eid, kind = time.time(), ":".join((key[0], sid, *key[1:])), key[0]
+                    if kind != "archived":
                         log(sid, None)
+                        label(sid, lead)
                         if event:
                             window = time.monotonic()
-                            say(event)
+                            say(event, sid, eid, kind)
+                        overdue(sid, lead)
                         continue
                 else:
+
+                    def notice(line: str, sid: str = sid) -> None:
+                        say(line, sid)
+
                     event, since = check(
-                        og, sid, report, silent, resumed, unsent, say, briefs, verdict, ended
+                        rec, sid, report, silent, resumed, unsent, notice, briefs, verdict, ended
                     )
+                    label(sid, track(sid, report, briefs, followed))
+                    eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
                 continue
@@ -1540,7 +1796,17 @@ def supervise_registry(
             if not event:
                 continue
             window = time.monotonic()
-            say(event, (sid, report, since))
+            say(event, sid, eid, kind, (sid, report, since))
+        if read:  # a session gone from the registry leaves the state with it
+            for part in ("leads", "settled"):
+                state[part] = {s: v for s, v in state[part].items() if s in owed}
+        state["written_at"] = int(time.time())
+        try:
+            write_state(state_path, state)
+        except OSError as e:
+            log("state", f"{state_path}: {reason(e)}")
+        else:
+            log("state", None)
         if time.monotonic() - window >= timeout:
             print(
                 stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),

@@ -1,6 +1,7 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -2070,9 +2071,20 @@ class Fleet:
         self.broken: dict[str, Exception] = {}
         self.offline: set[str] = set()
         self.refuse = 0
+        self.labels: list[tuple[str, dict]] = []  # each label write
+        self.unlabelled = 0  # the next label writes that fail
 
     def active(self, sid: str) -> float:
         return self.kids.get(sid, 0.0)
+
+    def hosts(self) -> dict[str, str]:
+        return {"h": "here"}
+
+    def label(self, sid: str, labels: dict[str, str]) -> None:
+        if self.unlabelled:
+            self.unlabelled -= 1
+            raise omnigent_agent.Fail(f"PATCH /v1/sessions/{sid}: HTTP 503")
+        self.labels.append((sid, labels))
 
     def info(self, sid: str) -> dict:
         self.reads.append(sid)
@@ -2298,6 +2310,205 @@ def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its
     assert "blocked on a prompt" in lines[0] and ": failed: boom" in lines[1]
     assert ": archived" in lines[2]
     assert registry.read_text() == ""  # archived dropped it; the other events kept it
+
+
+def state_of(registry: Path) -> dict:
+    return json.loads(registry.with_suffix(".state.json").read_text())
+
+
+def test_one_poll_writes_the_state_and_labels_and_an_unchanged_poll_within_a_minute_writes_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    owing = tmp_path / "b.md"
+    registry.write_text(registry.read_text() + f"b={owing}\n")
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("DONE: shipped\nPR #1 merged", 5))
+    og.histories["b"] = [told("brief", 60)]
+    og.snap = {"host_id": "h"}
+    at = {1: 30.0, 2: 61.0}
+    snapshots: list[dict] = []
+
+    def later(poll: int) -> None:
+        snapshots.append(state_of(registry))
+        offset[0] = at[poll]
+
+    supervised(og, registry, monkeypatch, 3, later)
+    first = snapshots[0]
+    assert first["schema"] == "cos-state/1" and first["written_at"] >= time.time() - 120
+    lead = first["leads"]["a"]
+    assert {k: lead[k] for k in ("title", "host", "report", "follow", "state", "wait")} == {
+        "title": "t-a",
+        "host": "here",
+        "report": str(tmp_path / "a.md"),
+        "follow": True,
+        "state": "idle",
+        "wait": "unknown",
+    }
+    assert (lead["ending"], lead["last_line"], lead["waits_on"]) == ("DONE", "DONE: shipped", [])
+    assert (lead["nudges"], lead["revives"], lead["briefs"]) == (
+        0,
+        0,
+        [str(tmp_path / "a.md.brief")],
+    )
+    assert first["leads"]["b"]["report"] == str(owing) and first["leads"]["b"]["follow"] is False
+    assert first["settled"]["a"] == ["ended:a:mDONE: shipped\nPR #1 merged5"]
+    assert (first["intents"], first["attention"], first["pending_posts"]) == ([], [], [])
+    assert first["rate"]["next_post_at"] == 0
+    a_labels = [labels for sid, labels in og.labels if sid == "a"]
+    assert [labels["status.line"] for labels in a_labels] == ["turn ended: DONE: shipped"] * 2
+    assert int(a_labels[1]["status.at"]) - int(a_labels[0]["status.at"]) >= 60  # none at 30 s
+    assert lead["label"] == {"line": a_labels[0]["status.line"], "at": a_labels[0]["status.at"]}
+    events = [json.loads(e) for e in registry.with_suffix(".events.jsonl").read_text().splitlines()]
+    assert [(e["id"], e["session"], e["kind"], e["settled"]) for e in events] == [
+        (first["settled"]["a"][0], "a", "ended", "printed")
+    ]
+
+
+def test_a_status_line_stays_under_200_characters() -> None:
+    lead = {"state": "idle", "wait": "verifier", "last_line": "x" * 300}
+    line = omnigent_agent.status_line(lead)
+    assert len(line) == 199 and line.startswith("turn ended · waits on verifier: xx")
+
+
+def test_a_restart_raises_no_settled_event_again_and_keeps_budgets_and_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 800), ending("STILL WORKING: carrying on", 600))
+    at = {1: 301.0, 2: 1201.0}
+    supervised(
+        og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]), notify="cos"
+    )
+    assert [p.split("\n")[0] for p in posted(og)] == [
+        "Supervisor: a t-a: turn ended, quiet 301s",
+        "Supervisor: a t-a: no progress 20m (unknown)",
+    ]
+    state = state_of(registry)
+    progress = state["leads"]["a"]["progress_at"]
+    state["leads"]["a"].update(nudges=1, revives=1)  # what the routing will count
+    registry.with_suffix(".state.json").write_text(json.dumps(state))
+    og.inbox.clear()
+    at = {1: 1210.0, 2: 1801.0}  # the end found again; then 30 min since the progress
+    supervised(
+        og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]), notify="cos"
+    )
+    assert [p.split("\n")[0] for p in posted(og)] == [
+        "Supervisor: a t-a: no progress 30m after a nudge (unknown)"
+    ]
+    lead = state_of(registry)["leads"]["a"]
+    assert (lead["nudges"], lead["revives"], lead["progress_at"]) == (1, 1, progress)
+
+
+def test_a_lead_stuck_running_raises_one_deadline_for_its_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 50))
+    og.snap = {"status": "running"}
+    at = {1: 1199.0, 2: 1201.0, 3: 1300.0, 4: 2500.0}
+
+    def later(poll: int) -> None:
+        offset[0] = at[poll]
+        og.refuse = 2 if poll == 1 else og.refuse  # its post fails at two polls: it waits, once
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos")
+    assert posted(og) == [
+        "Supervisor: a t-a: no progress 20m (unknown)\nlast message: STILL WORKING: on it"
+    ]
+    assert state_of(registry)["settled"]["a"][0].startswith("deadline:a:")
+
+
+def test_a_second_quiet_spell_with_the_same_ending_raises_a_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 800), ending("STILL WORKING: waiting on the verifier", 600))
+    steps = {1: (301.0, "idle"), 2: (400.0, "running"), 3: (500.0, "idle"), 4: (1201.0, "idle")}
+
+    def later(poll: int) -> None:
+        offset[0], status = steps[poll]
+        og.snap = {"status": status}
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos")
+    assert [p.split("\n")[0] for p in posted(og)] == [
+        "Supervisor: a t-a: turn ended, quiet 301s",  # the first spell, told once
+        "Supervisor: a t-a: no progress 20m (verifier)",  # the second, the same message
+    ]
+
+
+def test_a_parked_lead_has_no_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("PARKED: the host is full", 5))
+    at = {1: 1300.0, 2: 5000.0}
+    supervised(
+        og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]), notify="cos"
+    )
+    assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: turn ended"]
+    assert state_of(registry)["leads"]["a"]["wait"] == "parked"
+
+
+def test_a_live_child_is_progress_and_the_deadline_counts_from_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 50))
+    og.snap = {"status": "running"}
+    og.kids["a"] = time.time() + 1100  # its worker wrote at 1100
+    at = {1: 1201.0, 2: 2299.0, 3: 2301.0}
+    before: list[int] = []
+
+    def later(poll: int) -> None:
+        before.append(len(posted(og)))
+        offset[0] = at[poll]
+
+    supervised(og, registry, monkeypatch, 4, later, notify="cos")
+    assert before == [0, 0, 0]
+    assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: no progress 20m (worker)"]
+
+
+def test_a_reader_never_sees_a_half_written_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("DONE: shipped", 5))
+    real, renames = os.replace, []
+
+    def replace(src: Path, dst: Path) -> None:
+        assert Path(src).parent == Path(dst).parent  # a rename, never a copy across filesystems
+        json.loads(Path(src).read_text())  # complete before it takes the name
+        if Path(dst).exists():
+            json.loads(Path(dst).read_text())  # what a reader sees meanwhile: the old one, whole
+        renames.append(dst)
+        real(src, dst)
+
+    monkeypatch.setattr(omnigent_agent.os, "replace", replace)
+    supervised(og, registry, monkeypatch, 2)
+    assert renames == [registry.with_suffix(".state.json")] * 2
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_failed_label_write_is_logged_once_and_the_poll_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("DONE: shipped", 5))
+    og.unlabelled = 2
+    supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: turn ended"]
+    assert og.labels == [
+        (
+            "a",
+            {"status.line": "turn ended: DONE: shipped", "status.at": og.labels[0][1]["status.at"]},
+        )
+    ]
+    err = capsys.readouterr().err
+    assert err.count("a: labels not written: PATCH /v1/sessions/a: HTTP 503") == 1
 
 
 def test_a_followed_lead_is_never_revived_or_nudged(
