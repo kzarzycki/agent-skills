@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Post demo videos to a PR as one `## Demo` comment and minimize the earlier ones as outdated.
+# gh cannot attach a file to a comment and GitHub has no API for the inline upload, so each
+# video becomes an asset of the repo's `demos` prerelease and the comment links it.
 # Usage: post_demo.sh [--pr <number>] "<what it shows>" <video>...
 set -euo pipefail
 
@@ -16,11 +18,8 @@ fi
 caption="$1"
 shift
 
-attach=()
 for video in "$@"; do
   [ -s "$video" ] || { echo "post_demo: $video is missing or empty" >&2; exit 2; }
-  # gh refuses alt text on a video, so attach the bare path.
-  attach+=(--attach "$video")
 done
 
 pr="${pr:-$(gh pr view --json number --jq .number)}"
@@ -41,9 +40,29 @@ me="$(gh api user --jq .login)"
 old="$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate \
   --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"## Demo\"))) | .node_id")"
 
+# Each asset is named after the PR and commit, so a later recording never replaces the video
+# an earlier comment links; a re-recording of the same commit replaces that commit's video.
+gh release view demos >/dev/null 2>&1 ||
+  gh release create demos --prerelease --title Demos \
+    --notes "Demo videos linked from pull request comments." >/dev/null
+download="$(gh repo view --json url --jq .url)/releases/download/demos"
+staging="$(mktemp -d)"
+trap 'rm -rf "$staging"' EXIT
+links=""
+i=0
+for video in "$@"; do
+  i=$((i + 1))
+  name="pr$pr-${head:0:7}-$i.mp4"
+  cp "$video" "$staging/$name"
+  gh release upload demos "$staging/$name" --clobber
+  links+="
+- [$name]($download/$name)"
+done
+
 gh pr comment "$pr" --body "## Demo
 
-$caption, on ${head:0:7}." "${attach[@]}"
+$caption, on ${head:0:7}.
+$links"
 
 for id in $old; do
   # shellcheck disable=SC2016  # $id is a GraphQL variable, not a shell one.
