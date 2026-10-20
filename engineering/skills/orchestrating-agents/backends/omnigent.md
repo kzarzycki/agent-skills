@@ -58,8 +58,8 @@ time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default (Codex: `~/.codex/config.toml`), a
-verifier included. Pass `--model` only when the owner asked for that model: a lead never
-picks one on its own, so the user's configuration decides model and cost in one place. A
+verifier included. Pass `--model` only when the owner asked for that model or the project's instructions
+name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
 launch that fails on capacity (`server_overloaded`, a rate limit) is retried later with
 backoff on the same model, never on another, which would leave the work on a model nobody
 chose.

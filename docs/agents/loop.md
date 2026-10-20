@@ -5,6 +5,14 @@ The engineering loop's values for this repo. `engineering/skills/engineering-loo
 
 Orchestration backend: omnigent
 
+Worker model: claude-sonnet-5-5 for size:S or smaller (Claude workers only)
+
+A one-week trial to 2026-10-27, decided under the owner's standing decision of 2026-10-20
+(chief-of-staff session 13cd3ad1) to approve reversible progress (#245, evidence on #228): a
+Sonnet worker cost about half an Opus one per item. At its end, telemetry compares verifier
+passes per PR against the Opus workers of 2026-10-18..20. Leads and verifiers keep their
+defaults.
+
 ## Approvals
 
 - spec: auto
