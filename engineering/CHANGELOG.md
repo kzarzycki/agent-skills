@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The package's file inventory leaves out `__pycache__` and `*.pyc` (#223), so a script imported
+  from a skill folder no longer fails `vendor-engineering-check` on a bytecode cache git ignores.
 - `post_demo.sh` uploads each video as an asset of the repo's `demos` prerelease and links it
   in the `## Demo` comment (#234), since `gh pr comment` has no `--attach` and every post with
   a video failed. The video is a download link, not an inline player.
