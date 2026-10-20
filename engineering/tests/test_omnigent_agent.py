@@ -2312,6 +2312,28 @@ def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its
     assert registry.read_text() == ""  # archived dropped it; the other events kept it
 
 
+def test_without_console_the_supervisor_writes_no_state_labels_or_deadline_and_reposts_on_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    report = aged(tmp_path / "b.md", 10)
+    registry.write_text(registry.read_text() + f"b={report}\n")
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 50))
+    og.histories["b"] = [told("brief", 60)]
+    og.snap = {"status": "running"}  # stuck: --console would raise its deadline at 1300 s
+    supervised(og, registry, monkeypatch, 2, lambda poll: offset.__setitem__(0, 1300), notify="cos")
+    assert posted(og) == [f"Supervisor: b t-b: report written: {report}"]
+    og.inbox.clear()
+    og.snap = {"status": "idle"}
+    og.histories["a"].append(ending("DONE: shipped", 0))
+    for _ in range(2):  # a restart posts an end it finds again
+        supervised(og, registry, monkeypatch, 1, notify="cos")
+    assert posted(og) == ["Supervisor: a t-a: turn ended\nlast message: DONE: shipped"] * 2
+    assert og.labels == []
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.md", "registry"]
+
+
 def state_of(registry: Path) -> dict:
     return json.loads(registry.with_suffix(".state.json").read_text())
 
@@ -2333,7 +2355,7 @@ def test_one_poll_writes_the_state_and_labels_and_an_unchanged_poll_within_a_min
         snapshots.append(state_of(registry))
         offset[0] = at[poll]
 
-    supervised(og, registry, monkeypatch, 3, later)
+    supervised(og, registry, monkeypatch, 3, later, console=True)
     first = snapshots[0]
     assert first["schema"] == "cos-state/1" and first["written_at"] >= time.time() - 120
     lead = first["leads"]["a"]
@@ -2379,7 +2401,13 @@ def test_a_restart_raises_no_settled_event_again_and_keeps_budgets_and_progress(
     og = Lead(told("brief", 800), ending("STILL WORKING: carrying on", 600))
     at = {1: 301.0, 2: 1201.0}
     supervised(
-        og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]), notify="cos"
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, at[poll]),
+        notify="cos",
+        console=True,
     )
     assert [p.split("\n")[0] for p in posted(og)] == [
         "Supervisor: a t-a: turn ended, quiet 301s",
@@ -2392,7 +2420,13 @@ def test_a_restart_raises_no_settled_event_again_and_keeps_budgets_and_progress(
     og.inbox.clear()
     at = {1: 1210.0, 2: 1801.0}  # the end found again; then 30 min since the progress
     supervised(
-        og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]), notify="cos"
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, at[poll]),
+        notify="cos",
+        console=True,
     )
     assert [p.split("\n")[0] for p in posted(og)] == [
         "Supervisor: a t-a: no progress 30m after a nudge (unknown)"
@@ -2414,7 +2448,7 @@ def test_a_lead_stuck_running_raises_one_deadline_for_its_progress(
         offset[0] = at[poll]
         og.refuse = 2 if poll == 1 else og.refuse  # its post fails at two polls: it waits, once
 
-    supervised(og, registry, monkeypatch, 5, later, notify="cos")
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
     assert posted(og) == [
         "Supervisor: a t-a: no progress 20m (unknown)\nlast message: STILL WORKING: on it"
     ]
@@ -2433,7 +2467,7 @@ def test_a_second_quiet_spell_with_the_same_ending_raises_a_deadline(
         offset[0], status = steps[poll]
         og.snap = {"status": status}
 
-    supervised(og, registry, monkeypatch, 5, later, notify="cos")
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
     assert [p.split("\n")[0] for p in posted(og)] == [
         "Supervisor: a t-a: turn ended, quiet 301s",  # the first spell, told once
         "Supervisor: a t-a: no progress 20m (verifier)",  # the second, the same message
@@ -2446,7 +2480,13 @@ def test_a_parked_lead_has_no_deadline(tmp_path: Path, monkeypatch: pytest.Monke
     og = Lead(told("brief", 60), ending("PARKED: the host is full", 5))
     at = {1: 1300.0, 2: 5000.0}
     supervised(
-        og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]), notify="cos"
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, at[poll]),
+        notify="cos",
+        console=True,
     )
     assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: turn ended"]
     assert state_of(registry)["leads"]["a"]["wait"] == "parked"
@@ -2467,7 +2507,7 @@ def test_a_live_child_is_progress_and_the_deadline_counts_from_it(
         before.append(len(posted(og)))
         offset[0] = at[poll]
 
-    supervised(og, registry, monkeypatch, 4, later, notify="cos")
+    supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
     assert before == [0, 0, 0]
     assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: no progress 20m (worker)"]
 
@@ -2488,7 +2528,7 @@ def test_a_reader_never_sees_a_half_written_state(
         real(src, dst)
 
     monkeypatch.setattr(omnigent_agent.os, "replace", replace)
-    supervised(og, registry, monkeypatch, 2)
+    supervised(og, registry, monkeypatch, 2, console=True)
     assert renames == [registry.with_suffix(".state.json")] * 2
     assert not list(tmp_path.glob("*.tmp"))
 
@@ -2499,7 +2539,7 @@ def test_a_failed_label_write_is_logged_once_and_the_poll_goes_on(
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("DONE: shipped", 5))
     og.unlabelled = 2
-    supervised(og, registry, monkeypatch, 3, notify="cos")
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
     assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: turn ended"]
     assert og.labels == [
         (

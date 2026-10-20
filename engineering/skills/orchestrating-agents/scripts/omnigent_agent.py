@@ -11,7 +11,7 @@
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
-    python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [<session>=<report>...]
+    python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console] [<session>=<report>...]
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -56,10 +56,11 @@ for a verifier, whose report then counts only with its ``SATISFIED:`` line, and 
 the same way, printing every line with the local time and, with ``--notify``, posting it into that
 session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal event drops the
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
-Each poll it writes ``<registry stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a
-restart re-posts no event it settled), appends each event to ``<registry stem>.events.jsonl``,
-labels each session with ``status.line`` and ``status.at``, and raises ``deadline`` for a
-followed lead with no progress for 20 minutes.
+With ``--console``, the chief of staff's console, each poll it also writes ``<registry
+stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
+settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
+``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
+20 minutes; without it, it writes none of these.
 ``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
@@ -1581,12 +1582,12 @@ def supervise_registry(
     notify: str | None = None,
     silent: float = 1800.0,
     timeout: float = 3 * 3600,
+    console: bool = False,
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. Every line goes to stdout with the local time and, with ``notify``, into that
     session as ``Supervisor: <line>``. A line marked ``follow`` is a lead followed, not owed a
-    report: ``follow`` says when it is news, a lead with no progress past its deadline raises a
-    ``deadline`` event, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
+    report: ``follow`` says when it is news, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
     first, stopping at the first failure. A terminal event drops the session's line once its own
     line is posted, and a session whose terminal line waits is not checked again. The drop keeps
     the line when the session was instructed since the event's instruction: the caller armed it
@@ -1594,16 +1595,17 @@ def supervise_registry(
     logged to stderr, once until it clears, and never stops the loop; so is ``timeout`` with no
     event.
 
-    Each poll writes ``<registry>.state.json`` (``fresh_state``, one entry per registry session)
+    With ``console``, each poll also writes ``<registry>.state.json`` (``fresh_state``, one entry per registry session)
     and labels each session with its ``status.line`` and ``status.at``; every event posted (or
     printed, without ``notify``) is settled there by its id and appended to
     ``<registry>.events.jsonl``. The state is loaded on start, so a restart re-raises no settled
-    event and keeps each lead's ``progress_at``, budgets and last labels.
+    event and keeps each lead's ``progress_at``, budgets and last labels; and a followed lead with
+    no progress past its deadline raises a ``deadline`` event. Without it, none of these.
     """
-    rec = Recorded(og)
+    rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
-    state = load_state(state_path)
+    state = load_state(state_path) if console else fresh_state()
     hosts: dict[str, str] | None = None  # ponytail: read once; a host added later shows its id
     ended: dict[str, float] = {}
     resumed: dict[str, float] = {}
@@ -1682,7 +1684,8 @@ def supervise_registry(
             if line is not None:
                 if not post(line):
                     return
-                settle(eid, sid, kind, line)
+                if console:
+                    settle(eid, sid, kind, line)
             if event and not drop(*event):
                 outbox[0] = (None, event, eid, sid, kind)  # posted; only the drop is retried
                 return
@@ -1696,10 +1699,10 @@ def supervise_registry(
         event: tuple[str, Path, float] | None = None,
     ) -> None:
         """Print and post ``line``, unless its event ``eid`` is settled (then only drop ``event``'s
-        line) or already waits to be posted."""
-        if any(o[2] == eid for o in outbox):
+        line) or already waits to be posted; both only with ``console``."""
+        if console and any(o[2] == eid for o in outbox):
             return
-        if eid in state["settled"].get(sid, ()):
+        if console and eid in state["settled"].get(sid, ()):
             if event:
                 outbox.append((None, event, eid, sid, kind))
                 flush()
@@ -1802,15 +1805,17 @@ def supervise_registry(
             try:
                 if followed:  # never revived or nudged: its lead owes no report
                     event, key = follow(rec, sid, idle_since, told, holding)
-                    lead = track(sid, report, briefs, followed)
+                    lead = track(sid, report, briefs, followed) if console else {}
                     since, eid, kind = time.time(), ":".join((key[0], sid, *key[1:])), key[0]
                     if kind != "archived":
                         log(sid, None)
-                        label(sid, lead)
+                        if console:
+                            label(sid, lead)
                         if event:
                             window = time.monotonic()
                             say(event, sid, eid, kind)
-                        overdue(sid, lead)
+                        if console:
+                            overdue(sid, lead)
                         continue
                 else:
 
@@ -1820,7 +1825,8 @@ def supervise_registry(
                     event, since = check(
                         rec, sid, report, silent, resumed, unsent, notice, briefs, verdict, ended
                     )
-                    label(sid, track(sid, report, briefs, followed))
+                    if console:
+                        label(sid, track(sid, report, briefs, followed))
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
@@ -1830,16 +1836,17 @@ def supervise_registry(
                 continue
             window = time.monotonic()
             say(event, sid, eid, kind, (sid, report, since))
-        if read:  # a session gone from the registry leaves the state with it
-            for part in ("leads", "settled"):
-                state[part] = {s: v for s, v in state[part].items() if s in owed}
-        state["written_at"] = int(time.time())
-        try:
-            write_state(state_path, state)
-        except OSError as e:
-            log("state", f"{state_path}: {reason(e)}")
-        else:
-            log("state", None)
+        if console:
+            if read:  # a session gone from the registry leaves the state with it
+                for part in ("leads", "settled"):
+                    state[part] = {s: v for s, v in state[part].items() if s in owed}
+            state["written_at"] = int(time.time())
+            try:
+                write_state(state_path, state)
+            except OSError as e:
+                log("state", f"{state_path}: {reason(e)}")
+            else:
+                log("state", None)
         if time.monotonic() - window >= timeout:
             print(
                 stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),
@@ -1953,6 +1960,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--notify", metavar="SESSION", help="with --registry, post each line here too")
     p.add_argument(
+        "--console",
+        action="store_true",
+        help="with --registry, the chief of staff's console: state file, events log, status labels,"
+        " progress deadline, settled events kept across restarts",
+    )
+    p.add_argument(
         "--silent-seconds",
         type=float,
         default=1800.0,
@@ -2028,7 +2041,7 @@ def main(argv: list[str] | None = None) -> int:
                 for s, r in owed.items():
                     arm(args.registry, s, r)
                 supervise_registry(
-                    og, args.registry, args.notify, args.silent_seconds, args.timeout
+                    og, args.registry, args.notify, args.silent_seconds, args.timeout, args.console
                 )
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
