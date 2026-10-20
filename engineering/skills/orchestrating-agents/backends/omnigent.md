@@ -302,7 +302,9 @@ A restart posts an end it finds again.
 state file, an events log, status labels, a progress deadline and settled events kept across
 restarts. Without it `supervise --registry` writes none of them, and the paragraphs above are
 all it does. With it, each event is posted once, also across a restart: a terminal event found
-again after one only drops the line it already posted.
+again after one only drops the line it already posted, and a followed lead's failure or prompt is
+one event per occurrence (`occurrences` in the state counts each entry into one), so the same
+error again after a recovery is news and the one a restart finds again is not.
 
 A followed lead also has a progress deadline, since a lead that reads running for good, or goes
 quiet a second time with the same last message, makes none of those events. Its progress,
@@ -327,7 +329,7 @@ budgets in the state are kept at 0 until something does.
   rename, so a reader never sees half of one, with `written_at`: under `leads` an entry per
   registry session (title, host, report, brief files, whether it is followed, `waits_on`,
   state, wait, error, ending, first line of its last message, `progress_at`, `nudges`,
-  `revives`, the labels last written); under `settled` the ids of the events posted (or
+  `revives`, `occurrences`, the labels last written); under `settled` the ids of the events posted (or
   printed, without `--notify`), the newest 20 per session; and `intents`, `attention`,
   `pending_posts` and `rate` (`next_post_at`, `model_calls`), kept for the routing that fills
   them. It is loaded on start, so a restart re-raises no settled event and keeps `progress_at`,

@@ -2510,6 +2510,28 @@ def test_a_childs_activity_reaches_the_state_once_a_minute_before_any_deadline(
     assert progress[1] == progress[0] and progress[2] == start + 40
 
 
+def test_the_same_failure_again_after_a_recovery_is_news_and_a_restart_posts_neither_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
+    og.snap = {"status": "failed", "last_task_error": {"message": "runner lost"}}
+
+    def recover_then_fail(poll: int) -> None:
+        og.snap["status"] = "running" if poll == 1 else "failed"
+
+    supervised(og, registry, monkeypatch, 3, recover_then_fail, notify="cos", console=True)
+    failures = [p.split("\n")[0] for p in posted(og)]
+    assert failures == ["Supervisor: a t-a: failed: runner lost"] * 2
+    og.inbox.clear()
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # a restart, still failed
+    assert posted(og) == []
+    assert [i for i in state_of(registry)["settled"]["a"] if i.startswith("failed:")] == [
+        "failed:a:1:runner lost",
+        "failed:a:2:runner lost",
+    ]
+
+
 def test_a_second_quiet_spell_with_the_same_ending_raises_a_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1717,11 +1717,12 @@ def supervise_registry(
         nonlocal hosts
         seen = rec.seen.pop(sid, {})
         lead = state["leads"].setdefault(
-            sid, {"nudges": 0, "revives": 0, "waits_on": [], "label": {}}
+            sid, {"nudges": 0, "revives": 0, "waits_on": [], "label": {}, "occurrences": 0}
         )
         if "info" not in seen or "items" not in seen:
             return lead
         info, items = seen["info"], seen["items"]
+        was = lead.get("state")
         if hosts is None:
             try:
                 hosts = og.hosts()
@@ -1738,6 +1739,9 @@ def supervise_registry(
             follow=followed,
             **lead_status(info, items),
         )
+        if lead["state"] in ("blocked", "failed") and lead["state"] != was:
+            # a new failure or prompt, also with the same error: its own event, kept on restart
+            lead["occurrences"] = lead.get("occurrences", 0) + 1
         # its own history counts, not a message to it: a nudge is no progress
         own = [
             float(i.get("created_at") or 0)
@@ -1820,7 +1824,9 @@ def supervise_registry(
                 if followed:  # never revived or nudged: its lead owes no report
                     event, key = follow(rec, sid, idle_since, told, holding)
                     lead = track(sid, report, briefs, followed) if console else {}
-                    since, eid, kind = time.time(), ":".join((key[0], sid, *key[1:])), key[0]
+                    since, kind = time.time(), key[0]
+                    nth = [str(lead.get("occurrences"))] if kind in ("blocked", "failed") else []
+                    eid = ":".join((kind, sid, *nth, *key[1:]))
                     if kind != "archived":
                         log(sid, None)
                         if console:
