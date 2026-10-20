@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `post_demo.sh` uploads each video as an asset of the repo's `demos` prerelease and links it
+  in the `## Demo` comment (#234), since `gh pr comment` has no `--attach` and every post with
+  a video failed. The video is a download link, not an inline player.
 - `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
   through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
   session blocked only on a question answers it with the message through the same route,
