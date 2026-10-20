@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
+  through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
+  session blocked only on a question answers it with the message through the same route,
+  instead of interrupting it, which held the message up to 7 minutes (kzarzycki/omnigent#14).
+  A chief of staff runs `approve` on the owner's word, and quotes an approval in a lead's
+  brief word for word.
 - `omnigent_agent.py start --top-level --host <name|id>` starts a lead on another Omnigent
   host (#215), since an agent's `sys_session_create` makes only children, which run on their
   parent's runner. On another host `--workspace` and the report are absolute paths there, the
@@ -50,8 +56,7 @@
 - A chief of staff relays an owner message to a lead in one call (#202): `omnigent_agent.py
   relay` returns at once with exit 0 (delivered), 5 (queued, and it will land) or 4 (not
   deliverable, and why), whatever the lead is doing and on whichever host. A lead blocked on
-  a question is interrupted first, so the message lands instead of being dropped; an approval
-  prompt never is. `status` reads a lead's state, queued inputs and last message in one call.
+  a question gets the message as its answer (#229); an approval prompt never does. `status` reads a lead's state, queued inputs and last message in one call.
 - A chief of staff reports to the owner at task level (#199): a task started, what blocks it,
   a decision the owner must make, its result. A lead's interim progress, such as a verifier
   pass, a gate re-run or a worker's hand-off, stays in the lead's session.

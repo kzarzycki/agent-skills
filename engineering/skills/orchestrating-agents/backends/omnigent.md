@@ -162,14 +162,19 @@ rerun sends no second one. Exit 5: queued, held until the lead's current step en
 foreground command) or until a person answers the approval prompt it prints; it lands then
 with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
 neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
-revived in place first, as `send` does. A lead blocked on a question (Claude's
+revived in place first, as `send` does. A lead blocked only on questions (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
-prompts) holds every message until the question is answered, and Omnigent drops the messages
-pending when an interrupt lands, so `relay` interrupts the turn first and then posts. A Claude lead
-still holds that message until up to 7 minutes after it asked (kzarzycki/omnigent#14), and
-`relay` then exits 5 saying so. While another input waits pending (a subscription notice,
-text typed into the session), it does not interrupt, since the interrupt would drop that
-too, and exits 5 naming the question. It never interrupts an approval prompt.
+prompts) holds every message until the question is answered, so `relay` answers each with the
+message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
+the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
+message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+
+**Approving a prompt.** `python3 scripts/omnigent_agent.py approve <session> [--decline]`
+accepts, or declines, every approval prompt the session has pending, never a question, and
+prints each tool call it answered; exit 1 when none was pending or a resolve failed. It posts
+`{"action": "accept"|"decline"}` to `POST /v1/sessions/<id>/elicitations/<elicitation_id>/resolve`,
+the call the UI makes. Whether an agent may approve, and on whose word, is the project's
+policy.
 
 **Reading a session.** `python3 scripts/omnigent_agent.py status <session>...` prints, per
 session, its state (`turn ended`, its running status, `blocked on a prompt: <what it asks>`,
@@ -188,8 +193,8 @@ session tells no parent when its turn ends or it blocks, and the UI's "Completed
 no agent, so a session that follows one without a subscription (below) learns it this way. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
 except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
 every few seconds; the session stream pushes the same changes faster but per session and
-without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
-API: a person approves it in the UI, so a watched prompt still waits for one.
+without replay, which a wake does not need. A watched prompt waits for its answer: a
+person's in the UI, or `approve` (Approving a prompt).
 
 **Subscribing to sessions.** A session subscribes to another (Omnigent's
 `sys_session_subscribe` tool, or `POST /v1/sessions/<subscriber>/subscriptions` with

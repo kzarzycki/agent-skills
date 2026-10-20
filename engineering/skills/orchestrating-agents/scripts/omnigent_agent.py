@@ -5,6 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID]] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py relay <session> <message-file>
+    python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]
@@ -26,9 +27,12 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
-delivered (archived, a failed revive, neither pending nor in the history). A session blocked on a
-question (``ask_user_question``) is interrupted first, since its pending inputs wait on the answer
-and an interrupt drops them; an approval prompt never is. ``status`` prints one line per session:
+delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
+on questions (``ask_user_question``) gets the message as each question's answer instead, exit 0,
+since its pending inputs wait on the answer; an approval prompt it never answers. ``approve``
+accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
+tool call it answered; exit 1 when none was pending or a resolve failed. Whether an agent may
+approve is the project's policy, not this script's. ``status`` prints one line per session:
 its state, queued inputs and last assistant message (``(none)`` before its first).
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
 a prompt or fails, printing each one's id, title, that change and its last assistant message; it is how a
@@ -375,9 +379,12 @@ class Omnigent:
             "POST", f"/v1/sessions/{sid}/events", {"type": "retry_session", "data": {}}
         )
 
-    def interrupt(self, sid: str) -> None:
-        """Cancel the session's turn; Omnigent drops the inputs pending at that moment."""
-        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt", "data": {}})
+    def resolve(self, sid: str, eid: str, action: str, content: dict | None = None) -> None:
+        """Answer a pending prompt: ``accept`` or ``decline``; a question's ``content`` maps each
+        question's text to its answer (Claude reads it as ``tool_input.answers``, Codex by question
+        id with the text as fallback)."""
+        body = {"action": action, **({"content": content} if content else {})}
+        self.call("POST", f"/v1/sessions/{sid}/elicitations/{eid}/resolve", body)
 
     def send(self, sid: str, text: str) -> None:
         self.call(
@@ -659,39 +666,47 @@ def send(
 def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
     the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
-    is interrupted first: its pending inputs wait on the answer, and an interrupt drops the ones
-    pending when it lands, so it goes before the post; but not while another input waits (a
-    worker's notice, the owner's own typing), which it would drop too. An approval prompt waits
-    for a person."""
+    gets ``text`` as each one's answer instead: its pending inputs wait on the answer, and an
+    interrupt would drop them and hold input until the question's hook marker goes stale
+    (kzarzycki/omnigent#14). An approval prompt it never answers."""
     info = og.info(sid)
+    pending = info.get("pending_elicitations") or []
     asks = questions_of(info)
-    others = [i for i in info.get("pending_inputs") or [] if text_of(i).strip() != text.strip()]
-    if asks and len(asks) == len(info["pending_elicitations"]) and not others:
-        og.interrupt(sid)
-        deadline = time.monotonic() + confirm_seconds
-        while prompts_of(og.info(sid)):
-            if time.monotonic() >= deadline:
-                raise Gone(f"session {sid}: its question is still open after an interrupt")
-            time.sleep(POLL_SECONDS)
-        print(f"session {sid}: interrupted its open question: {'; '.join(asks)}", file=sys.stderr)
+    if asks and len(asks) == len(pending):
+        for e in pending:
+            questions = e["params"]["ask_user_question"].get("questions") or []
+            answer = text.strip()  # a message file's trailing newline would reach the answer
+            og.resolve(
+                sid, e["elicitation_id"], "accept", {q["question"]: answer for q in questions}
+            )
+        return f"session {sid}: answered its open question: {'; '.join(asks)}"
     outcome = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":
         prompts = prompts_of(og.info(sid))
         if prompts:
-            why = f"behind a prompt a person answers in the UI: {'; '.join(prompts)}"
-            if asks and others:
-                n = len(others)
-                why += f" (not interrupted: that would drop {n} other queued input{'s' * (n > 1)})"
-        elif asks:
-            # Omnigent holds input after an interrupted claude-native question until its hook
-            # marker goes stale (kzarzycki/omnigent#14).
-            why = (
-                "until the interrupted question releases input, up to 7 minutes after it was asked"
-            )
+            why = f"behind a prompt (`approve` answers an approval): {'; '.join(prompts)}"
         else:
             why = "until the session's current step ends"
         raise Queued(f"session {sid}: queued {why}; it lands then")
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+
+
+def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], bool]:
+    """Resolve each pending approval prompt of ``sid``, never a question (``relay`` answers those):
+    a line per prompt, and whether a resolve failed. Fail when none is pending."""
+    info, lines, failed = og.info(sid), [], False
+    for e, what in zip(info.get("pending_elicitations") or [], prompts_of(info)):
+        if (e.get("params") or {}).get("ask_user_question"):
+            continue
+        try:
+            og.resolve(sid, str(e["elicitation_id"]), "decline" if decline else "accept")
+            lines.append(f"session {sid}: {'declined' if decline else 'accepted'} {what}")
+        except Fail as x:
+            failed = True
+            lines.append(f"session {sid}: not answered: {what}: {x}")
+    if not lines:
+        raise Fail(f"session {sid}: no approval prompt pending")
+    return lines, failed
 
 
 def capacity() -> tuple[bool, str]:
@@ -1522,6 +1537,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("message", type=Path, help="file with the message; it owes no report")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     sub.add_parser("capacity", description="exit 0 when this host has room for another session")
+    p = sub.add_parser("approve")
+    p.add_argument("session")
+    p.add_argument("--decline", action="store_true", help="decline instead of accept")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
     p = sub.add_parser("watch")
@@ -1556,7 +1574,7 @@ def main(argv: list[str] | None = None) -> int:
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
-        if p.prog.split()[-1] not in ("start", "reap", "relay", "status"):
+        if p.prog.split()[-1] not in ("start", "reap", "relay", "approve", "status"):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
@@ -1579,6 +1597,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "relay":
             print(relay(og, args.session, args.message.read_text(), args.confirm_seconds))
             return 0
+        if args.cmd == "approve":
+            lines, failed = approve(og, args.session, args.decline)
+            print("\n".join(lines))
+            return 1 if failed else 0
         if args.cmd == "status":
             # a snapshot: an idle look reads as a turn ended, which a notice has confirmed
             print("\n".join(observe(og, s, {}, baseline=True)[1] for s in args.sessions))
