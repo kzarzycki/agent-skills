@@ -79,7 +79,8 @@ its landing order.
   from then on: subscribe to it as above, add it to Live leads, and answer its reversible
   questions under the owner's standing decisions (Authority).
 - **Host load.** Before starting or resuming sessions on a host, check its capacity: load
-  average per core and available memory (`uptime`, `MemAvailable` in `/proc/meminfo`). Over it,
+  average per core and available memory, in one call on that host with `python3 <script> capacity`
+  (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,
   start nothing there: tell each lead on it to finish its current step, land a PR that is
   one landing away, write its state and end its turn `PARKED` with the next step. It then
   runs at most one child and only focused tests. Resume the leads one at a time once
