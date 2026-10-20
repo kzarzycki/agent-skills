@@ -139,8 +139,10 @@ post that reaches you has already been through that, so the rows below that say 
 it was routed, the lead's status row and the first 5 lines of its report. Act on it from that, as
 the table above says: `status <session>` or `report <session> <path>` only when the post doesn't
 settle the question, since reading each lead on every post was most of a notice turn's tool
-calls. An `[owner]` post goes to the owner as it stands, in one line per event: the supervisor
-queued it because only they can answer, so your own reading adds a turn, not an answer. A batch
+calls. A post's header names the batch's highest route only, so handle each event by its own: an `[owner]` event goes to
+the owner as it stands, in one line, since the supervisor queued it because only they can answer and your own
+reading adds a turn, not an answer; an `[act]` event in the same post is yours to act on (a `DONE` to report
+and reap, say), and forwarding the whole post would hand the owner routine work. A batch
 id you already handled (it shows in your history, or in the board's Follow line) gets no reply:
 a restart can post it again, and answering twice acts twice. A parked lead is resumed only after
 checking the host's capacity (Host load), as before.
