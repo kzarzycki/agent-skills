@@ -54,6 +54,7 @@ class FakeOmnigent:
         model: str | None = None,
         top_level: bool = False,
         workspace: str | None = None,
+        permission_mode: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -563,6 +564,39 @@ def test_create_files_the_session_under_the_project(
     assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
 
 
+def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {"/v1/agents": agents, "/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}}[
+            path
+        ]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    og = omnigent_agent.Omnigent()
+    og.create("claude", "t")
+    assert "terminal_launch_args" not in bodies[-1]  # the harness default
+    og.create("claude", "t", permission_mode="plan")
+    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "plan"]
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "acceptEdits")
+    og.create("claude", "t")
+    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "acceptEdits"]
+    og.create("codex", "t")  # codex-native would hand it to the codex CLI, which fails to start
+    assert "terminal_launch_args" not in bodies[-1]
+    with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
+        omnigent_agent.start(
+            FakeOmnigent(), "codex", "t", "do X", tmp_path / "r.md", None, 0, permission_mode="plan"
+        )
+
+
 @pytest.mark.parametrize(
     ("names", "name", "picked"),
     [
@@ -984,8 +1018,10 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     titles: list[str] = []
     create = og.create
-    og.create = lambda agent, title, model=None, top_level=False, workspace=None: (
-        titles.append(title) or create(agent, title)
+    og.create = (
+        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None: (
+            titles.append(title) or create(agent, title)
+        )
     )  # type: ignore[method-assign]
     og.fail.add("archive")
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
@@ -1366,7 +1402,9 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None: (models.append(m), create(a, t, m))[1]  # type: ignore[method-assign]
+    og.create = lambda a, t, m=None, top=False, w=None, p=None: (models.append(m), create(a, t, m))[
+        1
+    ]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     monkeypatch.chdir(tmp_path)

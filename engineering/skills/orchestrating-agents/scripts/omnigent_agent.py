@@ -319,6 +319,7 @@ class Omnigent:
         model: str | None = None,
         top_level: bool = False,
         workspace: str | None = None,
+        permission_mode: str | None = None,
     ) -> str:
         body = {
             "agent_id": self.agent_id(AGENTS[agent]),
@@ -336,6 +337,12 @@ class Omnigent:
             body["parent_session_id"] = parent
         if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
             body["model_override"] = model
+        # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
+        # starts its terminal (the session fails "Codex native bridge state is missing").
+        if agent == "claude" and (
+            mode := permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+        ):
+            body["terminal_launch_args"] = ["--permission-mode", mode]
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
     def subscribe(self, subscriber: str, sid: str) -> None:
@@ -672,8 +679,13 @@ def start(
     model: str | None = None,
     top_level: bool = False,
     workspace: str | None = None,
+    permission_mode: str | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed."""
+    if permission_mode and agent != "claude":
+        raise Fail(
+            f"--permission-mode is for claude sessions; a {agent} session fails to launch with it"
+        )
     if span := EMPTY_SPAN.search(brief):
         line = brief[: span.start()].count("\n") + 1
         raise Fail(
@@ -718,7 +730,10 @@ def start(
             name = title if n == 0 else f"{title}-r{n + 1}"
             n += 1
             try:
-                sid, error = og.create(agent, name, model, top_level, workspace), None
+                sid, error = (
+                    og.create(agent, name, model, top_level, workspace, permission_mode),
+                    None,
+                )
             except Fail as e:
                 if not taken(e):
                     error = e
@@ -1407,6 +1422,11 @@ def main(argv: list[str] | None = None) -> int:
             help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CODEX, else the harness default)",
         )
         p.add_argument(
+            "--permission-mode",
+            help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
+            " else the harness default); codex sessions take none",
+        )
+        p.add_argument(
             "--author",
             choices=AGENTS,
             help="model family that wrote the diff; a verifier of the same family needs --same-family",
@@ -1582,6 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
             args.role,
             args.confirm_seconds,
             model=args.model,
+            permission_mode=args.permission_mode,
             top_level=args.top_level,
             workspace=str(workspace),
         )

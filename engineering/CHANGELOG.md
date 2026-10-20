@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `omnigent_agent.py start` and `run` take `--permission-mode <mode>`, defaulting from
+  `$OMNIGENT_PERMISSION_MODE`, for a Claude child (#213). Omnigent applies it at terminal launch.
+  Codex takes none: its CLI fails to start with the flag, so `start` refuses it there.
 - New owned skill `omnigent-telemetry` (#206): `scripts/omnigent_telemetry.py` reports
   Omnigent spend, tokens by model, session trees, scheduled-task health and Codex rate limits
   over the last N days from the API, the server's Postgres and local Codex rollouts, with
