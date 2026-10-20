@@ -2142,6 +2142,125 @@ def test_a_terminal_event_is_posted_to_the_notify_session_and_drops_only_its_lin
     assert re.fullmatch(f"{STAMP}a t-a: report written: {report}\n", capsys.readouterr().out)
 
 
+class Lead(Fleet):
+    """One followed lead, ``a``, whose ``snap`` fields (status, prompts, error, archived) the test sets."""
+
+    def __init__(self, *items: dict) -> None:
+        super().__init__(a=list(items))
+        self.snap: dict = {}
+
+    def info(self, sid: str) -> dict:
+        return {**super().info(sid), **self.snap}
+
+
+def ending(text: str, ago: float) -> dict:
+    return {**said("assistant", text, f"m{text}{ago}"), "created_at": time.time() - ago}
+
+
+def following(tmp_path: Path) -> Path:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\t{tmp_path / 'a.md.brief'}\tfollow\n")
+    return registry
+
+
+def posted(og: Fleet) -> list[str]:
+    return [t for s, t in og.inbox if s == "cos"]
+
+
+def test_a_followed_lead_that_ends_still_working_is_news_only_after_it_is_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 400), ending("STILL WORKING: verifier running", 10))
+    # briefed again within the window: the quiet count restarts, nothing is posted
+    briefed = lambda poll: og.histories["a"].append(told("go on", 0))
+    supervised(og, registry, monkeypatch, 3, briefed, notify="cos")
+    assert posted(og) == []
+    og.histories["a"][:] = [told("brief", 800), ending("STILL WORKING: verifier running", 301)]
+    supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert len(posted(og)) == 1  # once for the message, not once per poll
+    assert re.fullmatch(
+        r"Supervisor: a t-a: turn ended, quiet 30\ds\nlast message: STILL WORKING: verifier running",
+        posted(og)[0],
+    )
+    assert "follow" in registry.read_text()
+
+
+@pytest.mark.parametrize("word", ["DONE", "USER NEEDED", "PARKED"])
+def test_a_followed_lead_ending_with_a_named_ending_is_news_at_once_and_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, word: str
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending(f"**{word}** the result", 1))
+    supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert posted(og) == [f"Supervisor: a t-a: turn ended\nlast message: **{word}** the result"]
+
+
+def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 800), ending("STILL WORKING: its worker runs", 400))
+    og.kids["a"] = time.time() - 20
+    supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert posted(og) == []
+
+
+def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING", 5))
+    og.snap = {
+        "status": "running",
+        "pending_elicitations": [{"elicitation_id": "e1", "message": "ok?"}],
+    }
+    steps = [
+        {"status": "running"},
+        {"status": "failed", "last_task_error": {"message": "boom"}},
+        {"status": "running"},
+        {"status": "idle", "archived": True},
+    ]
+
+    def next_state(poll: int) -> None:
+        og.snap = steps[poll - 1]
+
+    supervised(og, registry, monkeypatch, 5, next_state, notify="cos")
+    lines = posted(og)
+    assert len(lines) == 3
+    assert "blocked on a prompt" in lines[0] and ": failed: boom" in lines[1]
+    assert ": archived" in lines[2]
+    assert registry.read_text() == ""  # archived dropped it; the other events kept it
+
+
+def test_a_followed_lead_is_never_revived_or_nudged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 9000))  # silent far past --silent-seconds, its runner gone
+    og.offline.add("a")
+    supervised(og, registry, monkeypatch, 3, notify="cos", silent=1)
+    assert og.inbox == [] and og.retried == []
+
+
+def test_a_top_level_start_with_a_registry_arms_a_follow_line_and_does_not_subscribe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "own_id", lambda: "chief")
+    monkeypatch.chdir(tmp_path)
+    registry, brief = tmp_path / "registry", tmp_path / "b.md"
+    brief.write_text("do X")
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "a.md"), "--top-level"]
+    assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
+    assert registry.read_text() == f"s0={tmp_path / 'a.md'}\t{tmp_path / 'a.md.brief'}\tfollow\n"
+    assert og.subscriptions == []
+    args[4] = str(tmp_path / "c.md")
+    assert omnigent_agent.main(args) == 0  # no registry: subscribes as before
+    assert og.subscriptions == [("chief", "s1")] and "s1" not in registry.read_text()
+
+
 def test_a_failed_post_keeps_the_line_and_the_event_is_posted_once_when_a_post_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

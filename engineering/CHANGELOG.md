@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A chief of staff wakes only on a lead's news (#238). `supervise --registry` follows a lead
+  whose line ends in `follow`, posting to `--notify` a turn end that names `DONE`, `USER NEEDED`
+  or `PARKED`, any other turn end once the lead and its live children were quiet for 300 s, a
+  prompt, a failure, and `archived`, which drops the line; it never revives or nudges one.
+  `start --top-level` with a registry arms that line and subscribes nobody, since 404 of 521
+  subscription-woken chief-of-staff turns changed nothing; without one it subscribes as before.
+  The chief-of-staff skill follows leads through one detached supervisor, and its handover names
+  it.
 - `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
   through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
   session blocked only on a question answers it with the message through the same route,

@@ -130,6 +130,12 @@ NUDGE = "Your turn ended without the report. Run any long command in the foregro
 REVIVED = "Your session was restarted and may have lost its context."
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
+FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
+# A followed lead's turn end that names one of these is news at once; any other waits for quiet.
+ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
+# A followed lead and its live children writing nothing for this long since a turn end: the end
+# is news. Shorter, and a lead between its own workers' turns wakes the chief of staff for nothing.
+FOLLOW_QUIET_SECONDS = 300.0
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -742,8 +748,10 @@ def start(
     workspace: str | None = None,
     permission_mode: str | None = None,
     host_id: str | None = None,
+    subscribe: bool = True,
 ) -> tuple[str, list[str]]:
-    """Return the confirmed session id and any abandoned sessions whose finish failed."""
+    """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
+    lead subscribes its starter unless ``subscribe`` is false: a supervisor follows it instead."""
     if permission_mode and agent != "claude":
         raise Fail(
             f"--permission-mode is for claude sessions; a {agent} session fails to launch with it"
@@ -824,7 +832,7 @@ def start(
             sid = found
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
-        if top_level:
+        if top_level and subscribe:
             # A top-level lead has no parent to tell: the session starting it hears its turn ends
             # and prompts instead, revived for them if its runner was reaped.
             try:
@@ -1231,6 +1239,52 @@ def supervise(
         time.sleep(POLL_SECONDS)
 
 
+def follow(
+    og: Omnigent,
+    sid: str,
+    idle_since: dict[str, tuple],
+    told: dict[str, tuple],
+    holding: dict[str, tuple[tuple, float]],
+    quiet_seconds: float = FOLLOW_QUIET_SECONDS,
+) -> tuple[str, bool]:
+    """One look at a followed lead: the line for its follower, else empty, and whether the lead is
+    archived. A prompt or a failure is news once per occurrence; a turn end naming ``DONE``, ``USER
+    NEEDED`` or ``PARKED`` once it holds as ``watch`` counts an end; any other turn end only once
+    the lead and its live children wrote nothing for ``quiet_seconds`` since it. Each is told once
+    per message, so ``told`` keeps the key last told per lead and ``holding`` the end not yet held;
+    both are the caller's across looks.
+    """
+    key, line = observe(og, sid, idle_since)
+    if key[0] == "archived":
+        return line, True
+    if key[0] != "ended":
+        holding.pop(sid, None)
+        if key[0] == "running":
+            told.pop(sid, None)
+        elif told.get(sid) != key:
+            told[sid] = key
+            return line, False
+        return "", False
+    if told.get(sid) == key:
+        return "", False
+    held = holding.get(sid)
+    if not held or held[0] != key:
+        held = holding[sid] = (key, time.monotonic())
+    if time.monotonic() - held[1] < TURN_END_SECONDS:
+        return "", False
+    items = og.items(sid)
+    last = last_message(items)
+    if not (last and last.get("role") != "user" and ENDING.search(text_of(last))):
+        # ponytail: item and child clocks against the local one, as check does
+        written = max((float(i.get("created_at") or 0) for i in items), default=0.0)
+        quiet = time.time() - max(written, og.active(sid))
+        if quiet < quiet_seconds:
+            return "", False
+        line = line.replace(": turn ended\n", f": turn ended, quiet {quiet:.0f}s\n", 1)
+    told[sid] = key
+    return line, False
+
+
 def pair(text: str) -> tuple[str, Path]:
     sid, eq, path = text.strip().partition("=")
     if not (sid.strip() and eq and path.strip()):
@@ -1259,18 +1313,26 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         return []
 
 
-def entry(line: str) -> tuple[str, Path, list[Path], bool]:
-    """A registry line: ``session=report``, then the session's brief files, each after a tab, and
+def entry(line: str) -> tuple[str, Path, list[Path], bool, bool]:
+    """A registry line: ``session=report``, then the session's brief files, each after a tab,
     whether its report is a verifier's (a ``verdict`` field, which ``run``, ``start`` and ``send``
-    write for one)."""
+    write for one) and whether it is a lead followed (a ``follow`` field, which ``start
+    --top-level`` writes), whose report ``follow`` never reads."""
     head, *fields = line.split("\t")
     sid, report = pair(head)
     fields = [f.strip() for f in fields if f.strip()]
-    return sid, report, [Path(f) for f in fields if f != VERDICT_FIELD], VERDICT_FIELD in fields
+    marks = (VERDICT_FIELD, FOLLOW_FIELD)
+    return (
+        sid,
+        report,
+        [Path(f) for f in fields if f not in marks],
+        VERDICT_FIELD in fields,
+        FOLLOW_FIELD in fields,
+    )
 
 
-def registered(path: Path) -> tuple[dict[str, tuple[Path, list[Path], bool]], list[str]]:
-    """The registry's sessions with the reports they owe, their brief files and verdict flags, the last line
+def registered(path: Path) -> tuple[dict[str, tuple[Path, list[Path], bool, bool]], list[str]]:
+    """The registry's sessions with the reports they owe, their brief files, verdict and follow flags, the last line
     winning for a session listed twice, and its malformed lines. Blank lines and ``#`` comments
     are skipped."""
     owed, bad = {}, []
@@ -1293,9 +1355,10 @@ def arm(
     then: Path | None = None,
     unless: Callable[[], bool] = lambda: False,
     verdict: bool = False,
+    followed: bool = False,
 ) -> None:
-    """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
-    the ``verdict`` field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
+    """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``
+    or ``followed``, that field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
     goes after the brief files the line had, else after the one ``start`` wrote."""
 
     def names(line: str) -> bool:
@@ -1314,7 +1377,7 @@ def arm(
             except Fail:
                 had = []
             files = [b for b in briefs_for(report, had) if b != then] + [then]
-        flag = [VERDICT_FIELD] if verdict else []
+        flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
         return rest + ["\t".join([f"{sid}={report}", *map(str, files), *flag])]
 
     edit_registry(path, edit)
@@ -1327,12 +1390,13 @@ def arm_quietly(
     briefs: list[Path] | None = None,
     then: Path | None = None,
     verdict: bool = False,
+    followed: bool = False,
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
     if path:
         try:
-            arm(path, sid, report, briefs, then, verdict=verdict)
+            arm(path, sid, report, briefs, then, verdict=verdict, followed=followed)
         except OSError as e:
             print(
                 f"registry {path}: {sid} not {'armed' if report else 'disarmed'}: {e}",
@@ -1349,7 +1413,8 @@ def supervise_registry(
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. Every line goes to stdout with the local time and, with ``notify``, into that
-    session as ``Supervisor: <line>``. Lines wait in order until posted, and each poll posts them
+    session as ``Supervisor: <line>``. A line marked ``follow`` is a lead followed, not owed a
+    report: ``follow`` says when it is news, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
     first, stopping at the first failure. A terminal event drops the session's line once its own
     line is posted, and a session whose terminal line waits is not checked again. The drop keeps
     the line when the session was instructed since the event's instruction: the caller armed it
@@ -1359,6 +1424,9 @@ def supervise_registry(
     """
     ended: dict[str, float] = {}
     resumed: dict[str, float] = {}
+    idle_since: dict[str, tuple] = {}  # followed leads, as ``follow`` keeps them
+    told: dict[str, tuple] = {}
+    holding: dict[str, tuple[tuple, float]] = {}
     unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
     # Each line not yet posted (None once it is), with what a terminal line drops: its session,
@@ -1437,13 +1505,23 @@ def supervise_registry(
             log("registry", None)
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
-        for sid, (report, briefs, verdict) in owed.items():
+        for sid, (report, briefs, verdict, followed) in owed.items():
             if any(e and e[0] == sid for _, e in outbox):
                 continue  # its event is found; it waits to be posted
             try:
-                event, since = check(
-                    og, sid, report, silent, resumed, unsent, say, briefs, verdict, ended
-                )
+                if followed:  # never revived or nudged: its lead owes no report
+                    event, gone = follow(og, sid, idle_since, told, holding)
+                    since = time.time()
+                    if not gone:
+                        log(sid, None)
+                        if event:
+                            window = time.monotonic()
+                            say(event)
+                        continue
+                else:
+                    event, since = check(
+                        og, sid, report, silent, resumed, unsent, say, briefs, verdict, ended
+                    )
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
                 continue
@@ -1712,9 +1790,17 @@ def main(argv: list[str] | None = None) -> int:
             top_level=args.top_level,
             workspace=str(workspace),
             host_id=host,
+            subscribe=not (registry and args.top_level),  # the supervisor follows it instead
         )
-        if not remote:
-            arm_quietly(registry, sid, report, [brief_of(report)], verdict=verifier)
+        if not remote or (registry and args.top_level):
+            arm_quietly(
+                registry,
+                sid,
+                report,
+                [brief_of(report)] if not remote else None,
+                verdict=verifier,
+                followed=args.top_level,
+            )
         print(sid, flush=True)
         if args.cmd == "run":
             print(wait(og, sid, report, args.timeout, verifier, launched))
