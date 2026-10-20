@@ -1649,7 +1649,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``revived`` once, and whether any standing ``decisions`` exist; ``head`` is the first line of
     the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
-    ``owner`` and why, and only picks the route, since its input holds a lead's own words.
+    ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
+    and only picks the route, since its input holds a lead's own words. Only its ``act`` on a
+    quiet end nudges; ``unsure`` acts.
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``revive``, ``done``
     (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
@@ -1704,14 +1706,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if wait != "unknown":
         return "rule", "record", f"names its wait: {wait}"
     answer, why = ask()
-    return "model", {"none": "record", "owner": "owner"}.get(answer, "nudge"), why
+    return "model", {"none": "record", "owner": "owner", "act": "nudge"}.get(answer, "act"), why
 
 
 def triage(event: str, decisions: str) -> tuple[str, str]:
     """The small model's route for ``event`` (``none``, ``act`` or ``owner``) and why, under the
     standing ``decisions``. One headless call with no tools, settings or MCP servers, the event
     on stdin; an answer other than one JSON line naming a route, a missing ``claude``, a non-zero
-    exit or ``MODEL_SECONDS`` passing is ``act``."""
+    exit or ``MODEL_SECONDS`` passing is ``unsure``, which ``route`` acts on."""
     cmd = ["claude", "-p", "--model", os.environ.get("OMNIGENT_SMALL_MODEL") or SMALL_MODEL]
     cmd += [
         "--tools",
@@ -1734,9 +1736,9 @@ def triage(event: str, decisions: str) -> tuple[str, str]:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
-        return "act", f"small model: {type(e).__name__}"
+        return "unsure", f"small model: {type(e).__name__}"
     if out.returncode:
-        return "act", f"small model: exit {out.returncode}"
+        return "unsure", f"small model: exit {out.returncode}"
     for line in out.stdout.splitlines():
         try:
             answer = json.loads(line)
@@ -1744,7 +1746,7 @@ def triage(event: str, decisions: str) -> tuple[str, str]:
             continue
         if isinstance(answer, dict) and answer.get("route") in ("none", "act", "owner"):
             return answer["route"], str(answer.get("why") or "")[:200]
-    return "act", "small model: no route in its answer"
+    return "unsure", "small model: no route in its answer"
 
 
 def standing(path: Path | None) -> str:
@@ -1977,7 +1979,7 @@ def supervise_registry(
             now = time.time()
             calls = [t for t in rate["model_calls"] if now - t < 3600]
             if len(calls) >= MODEL_HOURLY:
-                return "act", f"over {MODEL_HOURLY} small-model calls an hour"
+                return "unsure", f"over {MODEL_HOURLY} small-model calls an hour"
             rate["model_calls"] = [*calls, now]
             save()
             return triage(line, found)

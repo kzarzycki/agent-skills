@@ -332,7 +332,7 @@ lead and `progress_at`, so new progress starts a new chain.
 |---|---|---|
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED`, a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
-| a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them |
+| a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act; unknown: the nudge, then act at the deadline after it; parked: none |
 | failed | rule | the first time a revive, after it act |
@@ -349,10 +349,10 @@ The small model only routes, since its input holds a lead's own words: one `clau
 `claude-haiku-5-5`, the event (cut to 4,000 characters) on stdin, 200 output tokens
 (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`), 20 s. Its answer is one JSON line, `{"route":
 "none"|"act"|"owner", "why": …}`; anything else, a missing `claude`, a non-zero exit or the
-timeout routes act. The standing decisions it weighs are `--decisions <file>`'s section under a
+timeout routes act, never the nudge, which only the model's own `act` on a quiet end sends. The standing decisions it weighs are `--decisions <file>`'s section under a
 `## Standing decisions` heading, else the whole file, read at each call. At most 30 calls in a
 rolling hour (`rate.model_calls`, written before each call); past them, an event routes act with
-no model.
+no model, a quiet end too.
 
 The supervisor's own actions, the nudge (`Supervisor: your turn ended with no ending and no named
 wait. Carry on to your next step, and end your turn with DONE, STILL WORKING naming what you wait

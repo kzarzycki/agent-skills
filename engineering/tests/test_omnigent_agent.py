@@ -3417,6 +3417,7 @@ ROUTES = [
     ("quiet, mid-work", {"kind": "ended", "last": "on it"}, "none", ("model", "record")),
     ("quiet, stalled", {"kind": "ended", "last": "on it"}, "act", ("model", "nudge")),
     ("quiet, for the owner", {"kind": "ended", "last": "hm"}, "owner", ("model", "owner")),
+    ("quiet, no model answer", {"kind": "ended", "last": "hm"}, "unsure", ("model", "act")),
     ("deadline, unknown", {"kind": "deadline", "last": "on it"}, None, ("rule", "nudge")),
     (
         "deadline, after a nudge",
@@ -3583,10 +3584,11 @@ def test_an_unparseable_failed_or_timed_out_model_answer_routes_to_act(
 ) -> None:
     model_answers(monkeypatch, answer)
     route, why = REAL_TRIAGE("an event", "")
-    assert route == "act" and why
-    event = {"kind": "ended", "last": "USER NEEDED: x", "decisions": True}
+    assert route == "unsure" and why
     ask = lambda: REAL_TRIAGE("an event", "d")
-    assert omnigent_agent.route(event, ask)[:2] == ("model", "act")
+    for last in ("USER NEEDED: x", "on it"):  # a question, a quiet end: act, never a nudge
+        event = {"kind": "ended", "last": last, "decisions": True}
+        assert omnigent_agent.route(event, ask)[:2] == ("model", "act")
 
 
 def test_standing_decisions_are_their_section_else_the_whole_file_else_none(
@@ -3935,3 +3937,30 @@ def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     assert [s for s, t in og.inbox] == ["cos"]
     assert "the supervisor's tell was not delivered: it waits on a prompt" in posted(og)[0]
+
+
+@pytest.mark.parametrize("why", ["model failed", "allowance spent"])
+def test_a_quiet_end_the_model_could_not_route_goes_to_the_chief_of_staff_not_a_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "triage", REAL_TRIAGE)
+    model_answers(monkeypatch, FileNotFoundError("claude"))
+    if why == "allowance spent":
+        state = omnigent_agent.fresh_state()
+        state["rate"]["model_calls"] = [time.time()] * 30
+        registry.with_suffix(".state.json").write_text(json.dumps(state))
+    og = Lead(told("brief", 60), ending("Reading code.", 0))
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        2,
+        lambda p: offset.__setitem__(0, 301.0),
+        notify="cos",
+        console=True,
+    )
+    assert [s for s, t in og.inbox] == ["cos"]  # no nudge to the lead
+    assert events_of(registry)[-1]["action"] == "act"
+    assert "[act] a t-a: turn ended, quiet 301s" in posted(og)[0]
