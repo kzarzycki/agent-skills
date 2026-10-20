@@ -3,6 +3,8 @@
 The engineering loop's values for this repo. `engineering/skills/engineering-loop/SKILL.md`
 (Approvals and proof) defines what each line approves and what still waits for the owner.
 
+Orchestration backend: omnigent
+
 ## Approvals
 
 - spec: auto unless risk
