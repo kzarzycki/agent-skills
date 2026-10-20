@@ -288,7 +288,8 @@ that brief is in the history.
 
 A line ending in the field `follow` (`<session>=<report>`, the brief file, `follow`: what `start
 --top-level` writes with a registry) is a lead the supervisor follows, which owes no report and is
-never revived, nudged or given up on. Its lines go to `--notify` as the others do, but only
+never given up on, nor revived or sent the resume line as a session owing a report is (with
+`--console` its routing may nudge or revive it). Its lines go to `--notify` as the others do, but only
 when they are news, so the notified session is not woken for a turn that changed nothing:
 a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED`, once it holds
 as `watch` counts an end; any other turn end only once the lead and its live children wrote
@@ -299,10 +300,11 @@ only event that drops the line, so a relay needs no re-arm. Each is posted once 
 A restart posts an end it finds again.
 
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
-state file, an events log, status labels, a progress deadline and settled events kept across
-restarts. Without it `supervise --registry` writes none of them, and the paragraphs above are
-all it does. With it, each event is posted once, also across a restart: a terminal event found
-again after one only drops the line it already posted, and a followed lead's failure or prompt is
+state file, an events log, status labels, a progress deadline, settled events kept across
+restarts, and routing (below). Without it `supervise --registry` writes none of them, and the paragraphs above are
+all it does. With it, each event is routed once, also across a restart, and posted only when its
+route sends it to the notified session (Routing, below): a terminal event found again after one
+only drops the line it already settled, and a followed lead's failure or prompt is
 one event per occurrence (`occurrences` in the state counts each entry into one), so the same
 error again after a recovery is news and the one a restart finds again is not.
 
@@ -314,14 +316,77 @@ the deadline falls due, so a lead already stuck when the supervisor starts is ov
 lead with neither counts from first sight. With
 no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
 lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
-(`nudges` in the state) gets a second, `no progress <n>m after a nudge`, 10 minutes later. The
+on this chain (`nudged_at`, the `progress_at` its nudge was sent at) gets a second, `no progress
+<n>m after a nudge`, 10 minutes later. The
 wait comes from the lead's last message: `parked` for a `PARKED` ending, the thing a `STILL
 WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`), else `unknown`. None for a
 parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
 none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
 then waits on its follower, who was told. Each deadline is one event per
-lead and `progress_at`, so new progress starts a new chain. Nothing sends the nudge yet; the
-budgets in the state are kept at 0 until something does.
+lead and `progress_at`, so new progress starts a new chain.
+
+**Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
+`route`'s table (the design's § Routing an event), and settles what needs no decision itself.
+
+| Event | Settled by | What happens |
+|---|---|---|
+| `archived` | rule | its line and state entry dropped; no post |
+| `PARKED`, a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
+| a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
+| a quiet end again with no progress since the nudge | rule | act |
+| `deadline` | rule | a named wait: act; unknown: the nudge, then act at the deadline after it; parked: none |
+| failed | rule | the first time a revive, after it act |
+| `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
+| a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
+| `USER NEEDED` | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
+| an approval prompt | rule | the owner; nothing in the supervisor approves |
+| a question | rule | act, for one `relay` |
+| a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
+
+The small model only routes, since its input holds a lead's own words: one `claude -p --model
+<model> --tools "" --setting-sources "" --strict-mcp-config --no-session-persistence
+--system-prompt <routing prompt>` call, the model `$OMNIGENT_SMALL_MODEL`, else
+`claude-haiku-5-5`, the event (cut to 4,000 characters) on stdin, 200 output tokens
+(`CLAUDE_CODE_MAX_OUTPUT_TOKENS`), 20 s. Its answer is one JSON line, `{"route":
+"none"|"act"|"owner", "why": …}`; anything else, a missing `claude`, a non-zero exit or the
+timeout routes act, never the nudge, which only the model's own `act` on a quiet end sends. The standing decisions it weighs are `--decisions <file>`'s section under a
+`## Standing decisions` heading, else the whole file, read at each call. At most 30 calls in a
+rolling hour (`rate.model_calls`, written before each call); past them, an event routes act with
+no model, a quiet end too.
+
+The supervisor's own actions, the nudge (`Supervisor: your turn ended with no ending and no named
+wait. Carry on to your next step, and end your turn with DONE, STILL WORKING naming what you wait
+on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through `relay`, which
+revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
+budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
+before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
+`relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
+a restart an intent still open is looked up in the lead's history: its text there, no older than
+the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
+it done,
+else it is escalated as act, never sent again. A state write that fails before a small-model call, an
+action or a post stops it: nothing is asked or sent, what the event had settled is undone, and it
+is settled again at the next poll. A budget already spent stays spent: a model call made before
+a later write failed keeps its place in the hour, and the retry acts on its answer.
+
+What needs the notified session waits in the state's `attention` queue and goes out as one post,
+at most one per 5 minutes (`rate.next_post_at`, written before the post), so a restart or a
+successor keeps the window: `Supervisor [act] b-<id>: <n> events`, or `[owner]` when one is the
+owner's, one line per event with why, then each lead's status row and the first 5 lines of its
+report (read through the file API, from any host; a failed read is noted). The post is pending in
+the state with its batch id before the send and delivered after, and its events leave the queue
+only then, so nothing waiting for the owner is dropped; a session owing a report has its event
+written to the queue before its registry line is dropped. A pending post (a crash or a failed send
+left it) is looked up in the notified session's history by its id, a page of 100 at a time back
+to its pending time, and in its `pending_inputs`: found, it was delivered; not found, it is sent again with its id, and that
+retry reserves the next 5 minutes as a new post would. The
+notified session's own `status.line` reads `needs you: <n>` while owner events wait. Without
+`--notify` the post is printed (`would post:`), so a run on a copy of the registry shows the
+routing. `--fyi post` posts every line as without `--console` too; the default, `skip`, posts
+only what is routed.
+
+A lead that waits on another is started with `start --top-level --after <session>`, which adds
+`after=<session>` to its registry line; the state mirrors it as `waits_on`.
 
 `--console` keeps its state next to the registry, named from it (`leads.registry`:
 `leads.state.json`, `leads.events.jsonl`), so two supervisors in one directory never share one.
@@ -330,14 +395,16 @@ budgets in the state are kept at 0 until something does.
   rename, so a reader never sees half of one, with `written_at`: under `leads` an entry per
   registry session (title, host, report, brief files, whether it is followed, `waits_on`,
   state, wait, error, ending, first line of its last message, `progress_at`, `nudges`,
-  `revives`, `occurrences`, the labels last written); under `settled` the ids of the events posted (or
-  printed, without `--notify`), the newest 20 per session; and `intents`, `attention`,
-  `pending_posts` and `rate` (`next_post_at`, `model_calls`), kept for the routing that fills
-  them. It is loaded on start, so a restart re-raises no settled event and keeps `progress_at`,
-  budgets and labels. A session gone from the registry leaves it; an unreadable file or another
+  `revives`, `nudged_at`, `occurrences`, the last event, the labels last written); under
+  `settled` the ids of the events routed, the newest 20 per session; `intents` (each open, done,
+  failed or escalated; the newest 50 closed ones), `attention`, `pending_posts`, `rate`
+  (`next_post_at`, `model_calls`: the times of this hour's calls) and `notify_label`. It is
+  loaded on start, so a restart re-raises no settled event and keeps `progress_at`, budgets,
+  open intents, the queue, a pending post, the rate windows and labels. A session gone from the registry leaves it; an unreadable file or another
   schema is a warning and a fresh start.
-- `<name>.events.jsonl`: one JSON line per settled event (`at`, `id`, `session`, `kind`,
-  `line`, `settled`: `posted` or `printed`).
+- `<name>.events.jsonl`: one JSON line per routed event (`at`, `id`, `session`, `kind`,
+  `line`, `settled`: `rule` or `model`, `action`, `why`), so a wrong call can be found and the
+  rules tuned.
 - Two labels on each session, for the web UI: `status.line`, its state in under 200
   characters (`running · waits on verifier`, `turn ended: DONE …`, `blocked on a prompt`,
   `failed: …`), since Omnigent cuts a label value to its first 256 without an error, and
