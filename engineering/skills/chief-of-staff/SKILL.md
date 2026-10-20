@@ -65,7 +65,16 @@ its landing order.
   which reports you can read, so the report stays under your `tmp/loop/`, inside both.
   Asks in different repos that only need a landing order get a lead each, the later
   brief naming the PR it waits on, since the order is all they share.
-- **Follow.** `start --top-level` subscribes you to the lead it starts: Omnigent posts
+- **Follow.** Run one detached supervisor, `python3 <script> supervise --registry <file>
+  --notify <your session id>` (`../orchestrating-agents/backends/omnigent.md`, Running the
+  supervisor detached), and start leads with `OMNIGENT_SUPERVISE_REGISTRY=<file>`. `start
+  --top-level` then arms the lead with `follow` and subscribes you to nothing, and the
+  supervisor posts `Supervisor: <line>` into your session only for news: a turn end naming
+  `DONE`, `USER NEEDED` or `PARKED`; any other end after the lead and its children wrote nothing
+  for 300 s (`turn ended, quiet <n>s`); a prompt; a failure; `archived`. Each line is what
+  `status` prints, so act on it as the table below says. A subscription wakes you with a full
+  context on every turn end, and most of those change nothing, so it is the fallback:
+  `start --top-level` without a registry subscribes you to the lead it starts, and Omnigent posts
   `[System: session <title> (<id>) ended its turn (completed|cancelled|failed). Read it with
   sys_session_get_history.]` or `[System: session <title> (<id>) is waiting on a prompt. Read
   it with sys_session_get_info.]` into your session, and revives your runner for it if it was
@@ -100,7 +109,7 @@ its landing order.
 A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`, and
 with `PARKED` when you told it to park (Starting a lead, Host load).
 
-| A notice or `watch` says | You do |
+| A supervisor line, notice or `watch` says | You do |
 |---|---|
 | Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it. Then archive the lead once its report says it cleaned up. |
 | Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
@@ -198,7 +207,8 @@ a successor on any host reads the current one:
   - Closed: one line per lead that finished, with its PR, issue or report link and when you
     told the owner, dropped once they have sent a message since, which shows they read it,
     and the lead is archived.
-  - Follow: only a lead followed by a `watch` instead of a subscription, with the command.
+  - Follow: the supervisor's command and registry file, and any lead followed by a `watch`
+    instead, with its command.
 
   It holds no history: finished work lives on its PR, issue or report, and the file links
   it. A journal grows past what a successor can read cheaply and buries the live state.
@@ -218,11 +228,15 @@ a successor on any host reads the current one:
   from transcripts is what the file exists to avoid. Once the predecessor's turn has ended,
   archive it (`reap <session>`, which keeps its transcript): archiving drops its
   subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
-  staff would both act, and it marks every file that names it in Owner contact as stale.
+  staff would both act, and it marks every file that names it in Owner contact as stale. Stop
+  its supervisor too (Follow in the file), since it notifies the archived id, and start yours
+  on the same registry with your own: the `follow` lines stay in it.
   Then recall with the query `owner standing decisions` (Memory), read each live lead's
   state from its session info alone (`sys_session_get_info(session_id=<id>)`; `status` also
-  prints its last message), subscribe to it (`sys_session_subscribe(session_id=<id>)`), and rewrite the file with what
-  you found: Owner contact, any row a status contradicts, and any recalled decision it
+  prints its last message), subscribe to it (`sys_session_subscribe(session_id=<id>)`) only
+  when you follow it by subscription, never beside the supervisor: the subscription wakes
+  you on every turn and bypasses the supervisor's filter. Rewrite the file with what you
+  found: Owner contact, any row a status contradicts, and any recalled decision it
   lacks. Carry on without greeting the owner again. Read no transcript or report to rebuild
   state, since that is what the file saves; read one only when a lead's notice or the
   owner's question needs it.
@@ -232,10 +246,10 @@ a successor on any host reads the current one:
 `python3 <this skill's folder>/scripts/memory.py recall <query>` and `retain <text>`, the
 folder named by its path from the checkout you run them in (where the pack installed this
 skill, such as `.agents/skills/chief-of-staff/`), reach the Hindsight bank of the repo whose
-directory they run in, the one its hooks use, when the machine has Hindsight configured.
-Which bank holds what (a home's bank for cross-project decisions, a project's for its own)
-is the project's instructions'; without them, the bank of the repo you run in; otherwise each prints
-`memory: not configured` and you work from the board and the handover file alone.
+directory they run in, the one its hooks use, when the machine has Hindsight configured;
+otherwise each prints `memory: not configured` and you work from the board and the handover
+file alone. Which bank holds what (a home's bank for cross-project decisions, a project's for
+its own) is the project's instructions'; without them, the bank of the repo you run in.
 
 - **Recall** when you start or take over, and on each new ask, with the ask's subject as the
   query, in each repo the ask touches. A remembered preference or decision of the owner's goes into a lead's brief as a

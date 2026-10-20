@@ -2142,6 +2142,166 @@ def test_a_terminal_event_is_posted_to_the_notify_session_and_drops_only_its_lin
     assert re.fullmatch(f"{STAMP}a t-a: report written: {report}\n", capsys.readouterr().out)
 
 
+class Lead(Fleet):
+    """One followed lead, ``a``, whose ``snap`` fields (status, prompts, error, archived) the test sets."""
+
+    def __init__(self, *items: dict) -> None:
+        super().__init__(a=list(items))
+        self.snap: dict = {}
+
+    def info(self, sid: str) -> dict:
+        return {**super().info(sid), **self.snap}
+
+
+def ending(text: str, ago: float) -> dict:
+    return {**said("assistant", text, f"m{text}{ago}"), "created_at": time.time() - ago}
+
+
+def following(tmp_path: Path) -> Path:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\t{tmp_path / 'a.md.brief'}\tfollow\n")
+    return registry
+
+
+def posted(og: Fleet) -> list[str]:
+    return [t for s, t in og.inbox if s == "cos"]
+
+
+def skewed(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The wall and monotonic clocks, ahead of the real ones by the number in the returned list."""
+    offset, real, mono = [0.0], time.time, time.monotonic
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: real() + offset[0])
+    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: mono() + offset[0])
+    return offset
+
+
+def test_a_followed_lead_that_ends_still_working_is_news_only_after_it_is_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    # its last message is 600 s old when the end is seen: quiet counts from that end, not from it
+    og = Lead(told("brief", 800), ending("STILL WORKING: verifier running", 600))
+    # it writes again at 100 s: the quiet count restarts, so 301 s from the first end is not news
+    at = {1: 100.0, 2: 301.0, 3: 401.0, 4: 402.0}
+
+    def later(poll: int) -> None:
+        offset[0] = at[poll]
+        if poll == 1:
+            og.histories["a"].append(ending("STILL WORKING: verifier running", 0))
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos")
+    assert len(posted(og)) == 1  # once for the message, not once per poll
+    assert re.fullmatch(
+        r"Supervisor: a t-a: turn ended, quiet 30\ds\nlast message: STILL WORKING: verifier running",
+        posted(og)[0],
+    )
+    assert "follow" in registry.read_text()
+
+
+@pytest.mark.parametrize("word", ["DONE", "USER NEEDED", "PARKED"])
+def test_a_followed_lead_ending_with_a_named_ending_is_news_at_once_and_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, word: str
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending(f"**{word}** the result", 1))
+    supervised(og, registry, monkeypatch, 3, notify="cos")
+    assert posted(og) == [f"Supervisor: a t-a: turn ended\nlast message: **{word}** the result"]
+
+
+def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 800), ending("STILL WORKING: its worker runs", 400))
+    og.kids["a"] = time.time() + 100  # its worker wrote at 100, after the end seen at 0
+    at = {1: 350.0, 2: 399.0, 3: 401.0}  # 250 s, then 299 s, then 301 s since the worker wrote
+    before: list[int] = []  # notices after the looks at 0, 350 and 399
+
+    def later(poll: int) -> None:
+        before.append(len(posted(og)))
+        offset[0] = at[poll]
+
+    supervised(og, registry, monkeypatch, 4, later, notify="cos")
+    assert before == [0, 0, 0]  # past the end's 300 s at 350 and 399, but the child is younger
+    assert len(posted(og)) == 1  # news only at 401: the child, not the end, held it
+
+
+def test_a_named_ending_already_told_stays_told_while_the_runner_flaps_to_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("DONE: finished", 1))
+    states = {1: "running", 2: "idle", 3: "idle"}
+
+    def flap(poll: int) -> None:
+        og.snap = {"status": states.get(poll, "idle")}
+        if poll == 4:
+            og.histories["a"].append(ending("DONE: again", 0))  # a new message, a new ending
+
+    supervised(og, registry, monkeypatch, 6, flap, notify="cos")
+    assert [p.splitlines()[1] for p in posted(og)] == [
+        "last message: DONE: finished",
+        "last message: DONE: again",
+    ]
+
+
+def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING", 5))
+    og.snap = {
+        "status": "running",
+        "pending_elicitations": [{"elicitation_id": "e1", "message": "ok?"}],
+    }
+    steps = [
+        {"status": "running"},
+        {"status": "failed", "last_task_error": {"message": "boom"}},
+        {"status": "running"},
+        {"status": "idle", "archived": True},
+    ]
+
+    def next_state(poll: int) -> None:
+        og.snap = steps[poll - 1]
+
+    supervised(og, registry, monkeypatch, 5, next_state, notify="cos")
+    lines = posted(og)
+    assert len(lines) == 3
+    assert "blocked on a prompt" in lines[0] and ": failed: boom" in lines[1]
+    assert ": archived" in lines[2]
+    assert registry.read_text() == ""  # archived dropped it; the other events kept it
+
+
+def test_a_followed_lead_is_never_revived_or_nudged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 9000))  # silent far past --silent-seconds, its runner gone
+    og.offline.add("a")
+    supervised(og, registry, monkeypatch, 3, notify="cos", silent=1)
+    assert og.inbox == [] and og.retried == []
+
+
+def test_a_top_level_start_with_a_registry_arms_a_follow_line_and_does_not_subscribe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "own_id", lambda: "chief")
+    monkeypatch.chdir(tmp_path)
+    registry, brief = tmp_path / "registry", tmp_path / "b.md"
+    brief.write_text("do X")
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "a.md"), "--top-level"]
+    assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
+    assert registry.read_text() == f"s0={tmp_path / 'a.md'}\t{tmp_path / 'a.md.brief'}\tfollow\n"
+    assert og.subscriptions == []
+    args[4] = str(tmp_path / "c.md")
+    assert omnigent_agent.main(args) == 0  # no registry: subscribes as before
+    assert og.subscriptions == [("chief", "s1")] and "s1" not in registry.read_text()
+
+
 def test_a_failed_post_keeps_the_line_and_the_event_is_posted_once_when_a_post_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

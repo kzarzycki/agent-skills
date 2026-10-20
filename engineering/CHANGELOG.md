@@ -7,6 +7,14 @@
   its own across projects (#230). A handover file in a repo with a remote is pushed after
   each rewrite and pulled on takeover, and a restart into another permission mode or harness
   is a fresh session that takes over from the file.
+- A chief of staff wakes only on a lead's news (#238). `supervise --registry` follows a lead
+  whose line ends in `follow`, posting to `--notify` a turn end that names `DONE`, `USER NEEDED`
+  or `PARKED`, any other turn end once the lead and its live children were quiet for 300 s, a
+  prompt, a failure, and `archived`, which drops the line; it never revives or nudges one.
+  `start --top-level` with a registry arms that line and subscribes nobody, since 404 of 521
+  subscription-woken chief-of-staff turns changed nothing; without one it subscribes as before.
+  The chief-of-staff skill follows leads through one detached supervisor, and its handover names
+  it.
 - `approvals.py`, `board.py`, `labels.py` and the demo skill's `post_demo.sh` refuse to run
   in a checkout whose remotes name several GitHub repos while `gh repo set-default` names
   none (#236). gh then reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, so a

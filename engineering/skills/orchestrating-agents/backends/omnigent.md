@@ -209,7 +209,10 @@ only a sub-agent's parent is told; `start --top-level` subscribes the session it
 (`OMNIGENT_SESSION_ID`, `OMNIGENT_TERMINAL_LAUNCH_SESSION_ID` or
 `OMNIGENT_RUNNER_PRIMARY_SESSION_ID`; a native Codex one names none before Omnigent 567625d35)
 subscribes nobody;
-follow that lead with `watch`). It says nothing of a session silent
+follow that lead with `watch`). With a registry (`--registry` or `$OMNIGENT_SUPERVISE_REGISTRY`)
+it subscribes nobody and arms the lead's line with `follow` instead (Supervising sessions): a
+subscription wakes its session with a full-context turn on every turn end, and most of those
+change nothing. It says nothing of a session silent
 mid-turn, which `supervise` still catches. Archiving or deleting either side drops it.
 
 **Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a
@@ -271,6 +274,18 @@ the line when the session was instructed after the event's own instruction (the 
 revive lines are no instruction): a `send` that
 armed it again for the next brief while the event was being posted, which it does only once
 that brief is in the history.
+
+A line ending in the field `follow` (`<session>=<report>`, the brief file, `follow`: what `start
+--top-level` writes with a registry) is a lead the supervisor follows, which owes no report and is
+never revived, nudged or given up on. Its lines go to `--notify` as the others do, but only
+when they are news, so the notified session is not woken for a turn that changed nothing:
+a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED`, once it holds
+as `watch` counts an end; any other turn end only once the lead and its live children wrote
+nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
+another's merge and a question with no ending), since a lead briefed or active again within that
+time was not stuck; a prompt or a failure, each once per occurrence; and `archived`, which is the
+only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
+A restart posts an end it finds again.
 
 A lead supervises this way a child no `run`, `send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
 names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its `run` and
