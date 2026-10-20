@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A chief of staff's handover file and memory bank come from the project's instructions, with
+  `tmp/loop/chief-of-staff.md` and the repo's bank as defaults, so it can run from a home of
+  its own across projects (#230). A handover file in a repo with a remote is pushed after
+  each rewrite and pulled on takeover, and a restart into another permission mode or harness
+  is a fresh session that takes over from the file.
 - `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
   through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
   session blocked only on a question answers it with the message through the same route,

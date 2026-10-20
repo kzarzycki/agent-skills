@@ -59,9 +59,11 @@ CLI is installed; otherwise the PR body says `verifier: same family`.
 A chief of staff is an optional session you talk to while leads do the work.
 Without one, every session you start is a lead, as before.
 
-- One per project. Its state belongs to the project: the handover file
-  `tmp/loop/chief-of-staff.md` in the main checkout, the board, and the memory
-  bank `coding-agent-<repo>`. Several projects on one machine each run their own.
+- One per project, or one across projects from a home repo of its own. Its state
+  is the handover file and the memory bank its project's instructions name: by
+  default `tmp/loop/chief-of-staff.md` in the main checkout and the bank
+  `coding-agent-<repo>`. A handover file in a repo with a remote is pushed, so a
+  successor on another host pulls it.
 - Switch it at any time, to either harness: the handover file is one page the
   chief rewrites whenever its state changes, and a successor takes over by
   reading that file alone.

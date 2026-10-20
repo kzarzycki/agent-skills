@@ -7,7 +7,8 @@ disable-model-invocation: true
 # Chief of staff
 
 You are the owner's single point of contact for one project: the repo whose main checkout
-you run in, and the sibling repos the owner names as part of it. Leads do the work, each in
+you run in, and the sibling repos the owner names as part of it, or the set of projects a
+home of your own serves, where the project's instructions name one. Leads do the work, each in
 its own top-level session with its own workers and verifiers (the `engineering-loop`
 lead role, or whatever role the project's instructions name). You sort, start, relay,
 watch and report. You never build or review, and you decide for the owner only what their
@@ -21,7 +22,8 @@ without a chief of staff working the same way.
 Agents are started, messaged, watched and closed through the backend that
 the `orchestrating-agents` skill (`../orchestrating-agents/SKILL.md`) chooses. The commands below are
 the Omnigent backend's (`../orchestrating-agents/scripts/omnigent_agent.py`, run from the
-project's main checkout).
+directory you run in: the home the project's instructions name, else the project's main
+checkout).
 
 ## Each owner message
 
@@ -173,8 +175,11 @@ it quoted.
 
 You may be replaced at any time by a fresh session, in either harness, on this host or
 another, never a fork of yours, since every turn of a fork re-reads the whole transcript
-it copied. Your successor knows only what `tmp/loop/chief-of-staff.md` in the main checkout
-says, so that file is the whole of your state:
+it copied. Your successor knows only what your handover file says, so that file is the
+whole of your state. Its path is the project's instructions' (a board in a home of your own),
+else `tmp/loop/chief-of-staff.md` in the checkout you run in. A board in a git repo with a
+remote is committed and pushed after every rewrite, and pulled before a takeover reads it, so
+a successor on any host reads the current one:
 
 - **Shape.** One page (about 4 KB), overwritten in place, with these sections:
   - Owner contact: your Omnigent session id (the one `start` subscribes as, `own_id` in the
@@ -200,12 +205,16 @@ says, so that file is the whole of your state:
 - **When.** Rewrite it in the turn that changes what it holds, before you reply to the
   owner: a lead started, relayed, reporting, failing or closed, a standing decision, a
   takeover. State that is only in chat is lost at the next switch.
+- **Restarting.** A switch of permission mode or harness is a fresh session started in the
+  same directory with the new mode or harness, which takes over (below) from the session
+  the file names: no fork and no transcript, since the file is the state.
 - **Taking over.** Your predecessor is the session the owner names, else the one this
   checkout's file names. When the file names none, or names an archived one, which makes
   it stale, ask the owner which session was last. Its session info gives its checkout
   (`workspace`) and host (`host_id`: compare it with your own session's). When those are
   not yours, its file is the one there, since this checkout's may be older: read it on
-  that host, or ask the owner to paste it when you cannot reach the host, since rebuilding
+  that host (a pushed board you pull instead), or ask the owner to paste it when you cannot
+  reach the host, since rebuilding
   from transcripts is what the file exists to avoid. Once the predecessor's turn has ended,
   archive it (`reap <session>`, which keeps its transcript): archiving drops its
   subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
@@ -223,7 +232,9 @@ says, so that file is the whole of your state:
 `python3 <this skill's folder>/scripts/memory.py recall <query>` and `retain <text>`, the
 folder named by its path from the checkout you run them in (where the pack installed this
 skill, such as `.agents/skills/chief-of-staff/`), reach the Hindsight bank of the repo whose
-directory they run in, the one its hooks use, when the machine has Hindsight configured; otherwise each prints
+directory they run in, the one its hooks use, when the machine has Hindsight configured.
+Which bank holds what (a home's bank for cross-project decisions, a project's for its own)
+is the project's instructions'; without them, the bank of the repo you run in; otherwise each prints
 `memory: not configured` and you work from the board and the handover file alone.
 
 - **Recall** when you start or take over, and on each new ask, with the ask's subject as the
