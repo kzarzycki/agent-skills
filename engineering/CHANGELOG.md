@@ -6,6 +6,8 @@
   in a checkout whose remotes name several GitHub repos while `gh repo set-default` names
   none (#236). gh then reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, so a
   verdict posted from a fork's checkout landed on the upstream PR of the same number.
+- The package's file inventory leaves out `__pycache__` and `*.pyc` (#223), so a script imported
+  from a skill folder no longer fails `vendor-engineering-check` on a bytecode cache git ignores.
 - `post_demo.sh` uploads each video as an asset of the repo's `demos` prerelease and links it
   in the `## Demo` comment (#234), since `gh pr comment` has no `--attach` and every post with
   a video failed. The video is a download link, not an inline player.
