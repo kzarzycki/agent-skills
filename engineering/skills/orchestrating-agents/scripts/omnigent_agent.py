@@ -1826,6 +1826,8 @@ def supervise_registry(
     unchecked = [i["id"] for i in state["intents"] if i.get("status") == "open"]
     # events whose settling a failed state write undid, settled again at the next poll
     retry: list[tuple[str, str, str, str, tuple[str, Path, float] | None]] = []
+    # ponytail: in memory, so a restart asks the model again for an event a failed write undid
+    answers: dict[str, tuple[str, str]] = {}  # the small model's answer per event id, kept for it
     looks: dict[str, tuple[dict, list[dict]]] = {}  # what each session's look this poll read
     owed: dict[str, tuple[Path, list[Path], bool, bool, str]] = {}
     hosts: dict[str, str] | None = None  # ponytail: read once; a host added later shows its id
@@ -1903,13 +1905,25 @@ def supervise_registry(
 
     def undoing(step: Callable[[], None]) -> None:
         """Run ``step``; when it raises, put the state back as it was before it and re-raise, so
-        nothing it counted or settled in memory outlives a write that failed."""
+        nothing it settled in memory outlives a write that failed. ``rate`` stays: what
+        ``reserve`` kept there was spent (a model call made, a post window taken)."""
         before = copy.deepcopy(state)
         try:
             step()
         except BaseException:
+            rate = state["rate"]
             state.clear()
-            state.update(before)
+            state.update(before, rate=rate)
+            raise
+
+    def reserve(key: str, value: object) -> None:
+        """Spend a budget: ``rate[key] = value``, written before what it pays for; a failed
+        write puts the old value back, since nothing was spent."""
+        old, state["rate"][key] = state["rate"][key], value
+        try:
+            save()
+        except Fail:
+            state["rate"][key] = old
             raise
 
     def queue(eid: str, sid: str, to: str, line: str, why: str) -> None:
@@ -2009,13 +2023,15 @@ def supervise_registry(
         }
 
         def ask() -> tuple[str, str]:
+            if eid in answers:  # asked before a later write failed: the call is spent
+                return answers[eid]
             now = time.time()
             calls = [t for t in state["rate"]["model_calls"] if now - t < 3600]
             if len(calls) >= MODEL_HOURLY:
                 return "unsure", f"over {MODEL_HOURLY} small-model calls an hour"
-            state["rate"]["model_calls"] = [*calls, now]
-            save()
-            return triage(line, found)
+            reserve("model_calls", [*calls, now])
+            answers[eid] = triage(line, found)
+            return answers[eid]
 
         by, action, why = route(event, ask)
         if action == "read-report":
@@ -2098,8 +2114,7 @@ def supervise_registry(
                 log("post", f"post {out['id']} not looked up: {reason(e)}")
                 return
             if not found:
-                state["rate"]["next_post_at"] = time.time() + POST_SECONDS
-                save()
+                reserve("next_post_at", time.time() + POST_SECONDS)
         else:
             if not state["attention"] or time.time() < state["rate"]["next_post_at"]:
                 return
@@ -2107,8 +2122,7 @@ def supervise_registry(
             out = {"id": bid, "events": [e["id"] for e in state["attention"]], "at": time.time()}
             out["text"] = compose(bid, state["attention"])
             pending.append(out)
-            state["rate"]["next_post_at"] = time.time() + POST_SECONDS
-            save()
+            reserve("next_post_at", time.time() + POST_SECONDS)
             found = False
         if not found:
             if not notify:
@@ -2178,6 +2192,7 @@ def supervise_registry(
                 retry.append((line, sid, eid, kind, event))
                 return
             log(("settle", eid), None)
+            answers.pop(eid, None)
             if fyi != "post":
                 if event:  # posted as routed, not as a line
                     outbox.append((None, event, eid, sid, kind))

@@ -4145,3 +4145,38 @@ def test_a_copy_still_pending_after_a_crash_counts_as_delivered(
     assert final["pending_posts"] == [] and final["attention"] == []
     if held == "intent":
         assert final["intents"][0]["status"] == "done"
+
+
+def test_a_write_failing_after_the_model_answered_keeps_the_spent_call_and_its_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    state = omnigent_agent.fresh_state()
+    state["rate"]["model_calls"] = [time.time()] * 29
+    registry.with_suffix(".state.json").write_text(json.dumps(state))
+    og = Lead(told("brief", 60), ending("Reading code.", 0))
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        omnigent_agent, "triage", lambda *args: calls.append(args) or ("act", "stalled")
+    )
+    real, failed = omnigent_agent.write_state, []
+
+    def write_state(path: Path, state: dict) -> None:
+        if state["intents"] and not failed:  # the nudge's intent, once: the model has answered
+            failed.append(path)
+            raise OSError("disk full")
+        real(path, state)
+
+    monkeypatch.setattr(omnigent_agent, "write_state", write_state)
+    seen: list[tuple] = []
+
+    def later(poll: int) -> None:
+        seen.append((len(calls), len(state_of(registry)["rate"]["model_calls"]), list(og.inbox)))
+        offset[0] = 301.0
+
+    supervised(og, registry, monkeypatch, 3, later, notify="cos", console=True)
+    assert seen[1] == (1, 30, [])  # the write failed: one call, spent and kept, nothing sent
+    assert len(calls) == 1  # the retry acts on the answer it has
+    assert [t for s, t in og.inbox] == [omnigent_agent.LEAD_NUDGE]
+    assert len(state_of(registry)["rate"]["model_calls"]) == 30

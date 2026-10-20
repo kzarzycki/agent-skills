@@ -365,8 +365,9 @@ a restart an intent still open is looked up in the lead's history: its text ther
 the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
 it done,
 else it is escalated as act, never sent again. A state write that fails before a small-model call, an
-action or a post stops it: nothing is asked or sent, what the event had counted is undone, and it
-is settled again at the next poll.
+action or a post stops it: nothing is asked or sent, what the event had settled is undone, and it
+is settled again at the next poll. A budget already spent stays spent: a model call made before
+a later write failed keeps its place in the hour, and the retry acts on its answer.
 
 What needs the notified session waits in the state's `attention` queue and goes out as one post,
 at most one per 5 minutes (`rate.next_post_at`, written before the post), so a restart or a
