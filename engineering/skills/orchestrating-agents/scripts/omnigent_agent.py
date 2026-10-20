@@ -1275,9 +1275,12 @@ def follow(
     items = og.items(sid)
     last = last_message(items)
     if not (last and last.get("role") != "user" and ENDING.search(text_of(last))):
-        # ponytail: item and child clocks against the local one, as check does
+        # ponytail: item and child clocks against the local one, as check does; the end is when
+        # this loop first saw it, so a poll interval late. Upgrade: the turn's end time, if Omnigent
+        # reports one.
         written = max((float(i.get("created_at") or 0) for i in items), default=0.0)
-        quiet = time.time() - max(written, og.active(sid))
+        ended_at = time.time() - (time.monotonic() - held[1])
+        quiet = time.time() - max(written, og.active(sid), ended_at)
         if quiet < quiet_seconds:
             return "", False
         line = line.replace(": turn ended\n", f": turn ended, quiet {quiet:.0f}s\n", 1)

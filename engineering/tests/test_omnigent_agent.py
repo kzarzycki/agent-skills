@@ -2167,17 +2167,30 @@ def posted(og: Fleet) -> list[str]:
     return [t for s, t in og.inbox if s == "cos"]
 
 
+def skewed(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The wall and monotonic clocks, ahead of the real ones by the number in the returned list."""
+    offset, real, mono = [0.0], time.time, time.monotonic
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: real() + offset[0])
+    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: mono() + offset[0])
+    return offset
+
+
 def test_a_followed_lead_that_ends_still_working_is_news_only_after_it_is_quiet(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
-    og = Lead(told("brief", 400), ending("STILL WORKING: verifier running", 10))
-    # briefed again within the window: the quiet count restarts, nothing is posted
-    briefed = lambda poll: og.histories["a"].append(told("go on", 0))
-    supervised(og, registry, monkeypatch, 3, briefed, notify="cos")
-    assert posted(og) == []
-    og.histories["a"][:] = [told("brief", 800), ending("STILL WORKING: verifier running", 301)]
-    supervised(og, registry, monkeypatch, 3, notify="cos")
+    offset = skewed(monkeypatch)
+    # its last message is 600 s old when the end is seen: quiet counts from that end, not from it
+    og = Lead(told("brief", 800), ending("STILL WORKING: verifier running", 600))
+    # it writes again at 100 s: the quiet count restarts, so 301 s from the first end is not news
+    at = {1: 100.0, 2: 301.0, 3: 401.0, 4: 402.0}
+
+    def later(poll: int) -> None:
+        offset[0] = at[poll]
+        if poll == 1:
+            og.histories["a"].append(ending("STILL WORKING: verifier running", 0))
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos")
     assert len(posted(og)) == 1  # once for the message, not once per poll
     assert re.fullmatch(
         r"Supervisor: a t-a: turn ended, quiet 30\ds\nlast message: STILL WORKING: verifier running",
@@ -2200,10 +2213,16 @@ def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pend
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
+    offset = skewed(monkeypatch)
     og = Lead(told("brief", 800), ending("STILL WORKING: its worker runs", 400))
-    og.kids["a"] = time.time() - 20
-    supervised(og, registry, monkeypatch, 3, notify="cos")
-    assert posted(og) == []
+    og.kids["a"] = time.time() + 100  # its worker wrote at 100, after the end seen at 0
+    at = {1: 350.0, 2: 399.0, 3: 401.0}  # 250 s, then 299 s, then 301 s since the worker wrote
+
+    def later(poll: int) -> None:
+        offset[0] = at[poll]
+
+    supervised(og, registry, monkeypatch, 4, later, notify="cos")
+    assert len(posted(og)) == 1  # news only at 401: the child, not the end, held it
 
 
 def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its_line(
