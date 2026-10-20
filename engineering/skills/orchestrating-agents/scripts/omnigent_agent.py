@@ -7,6 +7,7 @@
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py status <session>...
+    python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
@@ -34,6 +35,10 @@ accepts (``--decline``: declines) every pending approval prompt, never a questio
 tool call it answered; exit 1 when none was pending or a resolve failed. Whether an agent may
 approve is the project's policy, not this script's. ``status`` prints one line per session:
 its state, queued inputs and last assistant message (``(none)`` before its first).
+``report`` prints a file through the session's file API, from any host: an absolute ``<path>`` is
+read on the session's host, a relative one in its workspace, and no path is the report in its
+registry line (``--registry``, else ``$OMNIGENT_SUPERVISE_REGISTRY``; neither, or no line: exit 2).
+A directory prints its entries one per line; exit 4 for a missing file, 1 for any other failure.
 ``watch`` exits 0 as soon as one of the given sessions (or a parent's sub-agents) ends a turn, blocks on
 a prompt or fails, printing each one's id, title, that change and its last assistant message; it is how a
 lead or chief of staff learns of a session no ``run``, ``send`` or ``wait`` is waiting on.
@@ -438,6 +443,33 @@ class Omnigent:
     def info(self, sid: str) -> dict:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
         return self.call("GET", f"/v1/sessions/{sid}")
+
+    def read_file(self, sid: str, path: str) -> str:
+        """``path`` through ``sid``'s file API, whichever host the session runs on: an absolute
+        path is read from the host (``base=host``), a relative one from the session's workspace.
+        A file's text, or a directory's entries one per line (``/`` after a subdirectory); a
+        missing file is ``Gone``. Each segment is encoded alone, with no leading ``%2F``. An
+        absolute path inside the session's workspace is read relative to it, since a host on an
+        older Omnigent answers 404 to an absolute file read (``base=host``) it serves relative."""
+        if path.startswith("/"):
+            try:  # no workspace known: the absolute read reports its own error
+                root = str(self.info(sid).get("workspace") or "").rstrip("/") + "/"
+            except Fail:
+                root = "/"
+            path = path[len(root) :] if root != "/" and path.startswith(root) else path
+        segments = "/".join(quote(s, safe="") for s in path.split("/") if s)
+        url = f"/v1/sessions/{sid}/resources/environments/default/filesystem/{segments}"
+        try:
+            out = self.call("GET", url + ("?base=host" if path.startswith("/") else ""))
+        except Fail as e:
+            if isinstance(e.__cause__, HTTPError) and e.__cause__.code == 404:
+                raise Gone(f"{path}: not found") from e
+            raise
+        if "content" in out:
+            return out["content"]
+        return "\n".join(
+            e["name"] + ("/" if e.get("type") == "directory" else "") for e in out.get("data", [])
+        )
 
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
@@ -1898,6 +1930,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
+    p = sub.add_parser("report", description="print a file of a session's workspace or host")
+    p.add_argument("session")
+    p.add_argument("path", nargs="?", help="default: the report in the session's registry line")
+    p.add_argument(
+        "--registry", type=Path, default=os.environ.get("OMNIGENT_SUPERVISE_REGISTRY") or None
+    )
     p = sub.add_parser("watch")
     p.add_argument("sessions", nargs="*")
     p.add_argument("--children", metavar="PARENT", help="also watch this session's sub-agents")
@@ -1950,7 +1988,19 @@ def main(argv: list[str] | None = None) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
+        if args.cmd == "report" and not args.path:
+            line = registry and registered(registry)[0].get(sid)
+            if not line:
+                usage = Fail(
+                    f"report {sid} needs a path: no --registry / $OMNIGENT_SUPERVISE_REGISTRY line for it"
+                )
+                usage.code = 2  # argparse's usage exit
+                raise usage
+            args.path = str(line[0])
         og = Omnigent()
+        if args.cmd == "report":
+            print(og.read_file(sid, args.path))
+            return 0
         if args.cmd == "relay":
             print(relay(og, args.session, args.message.read_text(), args.confirm_seconds))
             return 0
