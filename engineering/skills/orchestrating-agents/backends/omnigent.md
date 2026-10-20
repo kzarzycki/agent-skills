@@ -324,11 +324,11 @@ the one-shot `supervise` writes none.
   `line`, `settled`: `posted` or `printed`).
 - Two labels on each session, for the web UI: `status.line`, its state in under 200
   characters (`running · waits on verifier`, `turn ended: DONE …`, `blocked on a prompt`,
-  `failed: …`), and `status.at`, the Unix seconds it was observed. They are written
-  (`PATCH /v1/sessions/{id}` `labels`) only when the line changed or the last write is a minute
-  old, so `status.at` stays fresh while the supervisor runs and the browser can mark a line
-  from a dead one stale past 10 minutes. Display only: never read back. A
-  failed write is logged once and the poll goes on.
+  `failed: …`), since Omnigent cuts a label value to its first 256 without an error, and
+  `status.at`, the Unix seconds it was observed. They are written (`PATCH /v1/sessions/{id}`
+  `labels`) only when the line changed or the last write is a minute old, so `status.at` stays
+  fresh while the supervisor runs and the browser can mark a line from a dead one stale past 10
+  minutes. Display only: never read back. A failed write is logged once and the poll goes on.
 
 A lead supervises this way a child no `run`, `send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
 names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its `run` and

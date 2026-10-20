@@ -1528,7 +1528,8 @@ def lead_status(info: dict, items: list[dict]) -> dict:
 
 
 def status_line(lead: dict) -> str:
-    """A lead's ``status.line`` label: its state in one short line, under 200 characters."""
+    """A lead's ``status.line`` label: its state in one short line, under 200 characters, since
+    Omnigent cuts a label value to its first 256 without an error."""
     if lead["state"] == "blocked":
         line = "blocked on a prompt"
     elif lead["state"] == "failed":
