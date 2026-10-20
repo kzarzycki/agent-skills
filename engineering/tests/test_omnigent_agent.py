@@ -3344,3 +3344,201 @@ def test_report_without_a_path_reads_the_registry_line_else_exits_2(
     assert omnigent_agent.main(["report", "s8", "--registry", str(registry)]) == 2
     assert omnigent_agent.main(["report", "s9"]) == 2
     assert "OMNIGENT_SUPERVISE_REGISTRY" in capsys.readouterr().err
+
+
+# Every row of the design's routing table (§ Routing an event): the event, what the small model
+# would answer if asked, and the expected (settled by, action). None: the model is never asked.
+ROUTES = [
+    ("archived", {"kind": "archived"}, None, ("rule", "absorb")),
+    ("parked", {"kind": "ended", "last": "PARKED: the host is full"}, None, ("rule", "record")),
+    (
+        "still working, named wait",
+        {"kind": "ended", "last": "STILL WORKING: waiting on the verifier"},
+        None,
+        ("rule", "record"),
+    ),
+    ("exact repeat", {"kind": "ended", "last": "on it", "repeat": True}, None, ("rule", "record")),
+    ("quiet, mid-work", {"kind": "ended", "last": "on it"}, "none", ("model", "record")),
+    ("quiet, stalled", {"kind": "ended", "last": "on it"}, "act", ("model", "nudge")),
+    ("quiet, for the owner", {"kind": "ended", "last": "hm"}, "owner", ("model", "owner")),
+    ("deadline, unknown", {"kind": "deadline", "last": "on it"}, None, ("rule", "nudge")),
+    (
+        "deadline, after a nudge",
+        {"kind": "deadline", "last": "on it", "nudged": True},
+        None,
+        ("rule", "act"),
+    ),
+    (
+        "deadline, named wait",
+        {"kind": "deadline", "last": "STILL WORKING: CI is running"},
+        None,
+        ("rule", "act"),
+    ),
+    ("deadline, parked", {"kind": "deadline", "last": "PARKED: full"}, None, ("rule", "record")),
+    (
+        "quiet again after a nudge",
+        {"kind": "ended", "last": "on it", "nudged": True},
+        None,
+        ("rule", "act"),
+    ),
+    ("failed, first", {"kind": "failed"}, None, ("rule", "revive")),
+    ("failed, again", {"kind": "failed", "revived": True}, None, ("rule", "act")),
+    ("done", {"kind": "ended", "last": "**DONE** PR #1 merged"}, None, ("rule", "done")),
+    ("report path", {"kind": "ended", "last": "/r/a.md"}, None, ("rule", "read-report")),
+    (
+        "report head, done",
+        {"kind": "ended", "last": "/r/a.md", "head": "DONE: merged"},
+        None,
+        ("rule", "done"),
+    ),
+    (
+        "report head, still working on CI",
+        {"kind": "ended", "last": "/r/a.md", "head": "STILL WORKING: CI running"},
+        None,
+        ("rule", "record"),
+    ),
+    (
+        "report head, no ending",
+        {"kind": "ended", "last": "/r/a.md", "head": "BLOCKED: no access"},
+        None,
+        ("rule", "act"),
+    ),
+    (
+        "user needed, covered",
+        {"kind": "ended", "last": "USER NEEDED: merge?", "decisions": True},
+        "act",
+        ("model", "act"),
+    ),
+    (
+        "user needed, not covered",
+        {"kind": "ended", "last": "USER NEEDED: delete prod?", "decisions": True},
+        "owner",
+        ("model", "owner"),
+    ),
+    (
+        "user needed, the model unsure",
+        {"kind": "ended", "last": "USER NEEDED: x", "decisions": True},
+        "none",
+        ("model", "act"),
+    ),
+    (
+        "user needed, no standing decisions",
+        {"kind": "ended", "last": "USER NEEDED: x"},
+        None,
+        ("rule", "owner"),
+    ),
+    ("approval prompt", {"kind": "blocked"}, None, ("rule", "owner")),
+    ("question", {"kind": "blocked", "question": True}, None, ("rule", "act")),
+    (
+        "owed report, outcome",
+        {"kind": "terminal", "line": "a t: report written: /r.md"},
+        None,
+        ("rule", "act"),
+    ),
+    (
+        "owed report, prompt",
+        {"kind": "terminal", "line": "a t: blocked on a prompt: Bash(x)"},
+        None,
+        ("rule", "owner"),
+    ),
+    ("owed report, a notice", {"kind": "notice"}, None, ("rule", "record")),
+]
+
+
+@pytest.mark.parametrize(("row", "event", "answer", "routed"), ROUTES, ids=[r[0] for r in ROUTES])
+def test_each_row_of_the_routing_table_settles_its_event(
+    row: str, event: dict, answer: str | None, routed: tuple[str, str]
+) -> None:
+    asked: list[bool] = []
+
+    def ask() -> tuple[str, str]:
+        asked.append(True)
+        return answer or "act", "the model's why"
+
+    by, action, why = omnigent_agent.route(event, ask)
+    assert (by, action) == routed and why
+    assert asked == ([True] if answer else [])
+
+
+@pytest.mark.parametrize("answer", ["none", "act", "owner"])
+def test_no_model_answer_routes_an_approval_prompt_anywhere_but_the_owner(answer: str) -> None:
+    for event in ({"kind": "blocked"}, {"kind": "terminal", "line": "a: blocked on a prompt: x"}):
+        assert omnigent_agent.route(event, lambda: (answer, "x"))[1] == "owner"
+
+
+def model_answers(monkeypatch: pytest.MonkeyPatch, answer: object) -> list[dict]:
+    """``claude -p`` faked: each call is recorded; ``answer`` is its stdout, an exit code, or an
+    exception to raise."""
+    calls: list[dict] = []
+
+    def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        calls.append({"cmd": cmd, **kw})
+        if isinstance(answer, BaseException):
+            raise answer
+        code, out = (answer, "") if isinstance(answer, int) else (0, str(answer))
+        return subprocess.CompletedProcess(cmd, code, out, "")
+
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", run)
+    return calls
+
+
+def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = model_answers(monkeypatch, 'thinking\n{"route": "none", "why": "mid-work"}\n')
+    assert omnigent_agent.triage("x" * 5000, "- merge on green") == ("none", "mid-work")
+    cmd, kw = calls[0]["cmd"], calls[0]
+    assert cmd[:4] == ["claude", "-p", "--model", "claude-haiku-5-5"]
+    for flag, value in (("--tools", ""), ("--setting-sources", "")):
+        assert cmd[cmd.index(flag) + 1] == value
+    assert "--strict-mcp-config" in cmd
+    assert "- merge on green" in cmd[cmd.index("--system-prompt") + 1]
+    assert kw["input"] == "x" * 4000 and kw["timeout"] == 20
+    assert kw["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "200"
+    monkeypatch.setenv("OMNIGENT_SMALL_MODEL", "claude-other")
+    omnigent_agent.triage("e", "")
+    assert calls[1]["cmd"][3] == "claude-other"
+    assert "(none)" in calls[1]["cmd"][calls[1]["cmd"].index("--system-prompt") + 1]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "route: none",
+        '{"route": "approve"}',
+        '["none"]',
+        "",
+        1,
+        subprocess.TimeoutExpired("claude", 20),
+        FileNotFoundError("claude"),
+    ],
+    ids=[
+        "unparseable",
+        "no such route",
+        "not an object",
+        "empty",
+        "failed",
+        "timed out",
+        "missing",
+    ],
+)
+def test_an_unparseable_failed_or_timed_out_model_answer_routes_to_act(
+    monkeypatch: pytest.MonkeyPatch, answer: object
+) -> None:
+    model_answers(monkeypatch, answer)
+    route, why = omnigent_agent.triage("an event", "")
+    assert route == "act" and why
+    event = {"kind": "ended", "last": "USER NEEDED: x", "decisions": True}
+    ask = lambda: omnigent_agent.triage("an event", "d")
+    assert omnigent_agent.route(event, ask)[:2] == ("model", "act")
+
+
+def test_standing_decisions_are_their_section_else_the_whole_file_else_none(
+    tmp_path: Path,
+) -> None:
+    board = tmp_path / "board.md"
+    board.write_text("# Board\n## Standing decisions (owner's)\n- merge on green\n## Next\nx\n")
+    assert omnigent_agent.standing(board) == "- merge on green"
+    board.write_text("- approve reversible progress\n")
+    assert omnigent_agent.standing(board) == "- approve reversible progress"
+    assert omnigent_agent.standing(None) == "" == omnigent_agent.standing(tmp_path / "gone.md")
