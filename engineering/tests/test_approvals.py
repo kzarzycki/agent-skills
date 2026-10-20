@@ -2754,6 +2754,7 @@ def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
     return state
 
 
@@ -3322,3 +3323,64 @@ def test_parking_removes_only_the_assignee_the_loop_added(
         "#3: kept @ann, whose claim it is",
         "#4: removed @ann, whom the loop assigned",
     ]
+
+
+FORK, THEM = "https://github.com/me/fork.git", "git@github.com:them/fork"
+POST_DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "post_demo.sh"
+
+
+@pytest.mark.parametrize(
+    ("remotes", "default", "refused"),
+    [
+        ({"origin": FORK}, False, False),
+        ({"origin": FORK, "upstream": THEM}, False, True),
+        ({"origin": FORK, "upstream": THEM}, True, False),
+        ({"origin": FORK, "upstream": "https://github.com/them/fork.git/"}, False, True),
+        ({"origin": FORK, "upstream": "https://GITHUB.COM/them/fork"}, False, True),
+        ({"origin": FORK, "upstream": "ssh://git@github.com:22/them/fork.git"}, False, True),
+        ({"origin": FORK, "upstream": "git@github.com:/them/fork.git"}, False, True),
+        ({"origin": FORK, "upstream": "ssh://git@github.com//them/fork.git"}, False, True),
+        ({"origin": FORK, "mirror": "https://gitlab.com/me/fork.git"}, False, False),
+        ({"origin": FORK, "mirror": "https://gitlab.com/github.com/them/fork.git"}, False, False),
+        ({"origin": FORK, "mirror": "https://notgithub.com/them/fork.git"}, False, False),
+        ({"origin": FORK, "push": "git@github.com:Me/Fork.git"}, False, False),
+    ],
+)
+def test_one_repo_refuses_several_github_remotes_without_a_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remotes: dict[str, str],
+    default: bool,
+    refused: bool,
+) -> None:
+    """gh reads `{owner}/{repo}` as `upstream`'s when several GitHub remotes have no default: approvals.py and
+    post_demo.sh refuse, naming them, before any gh call."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    for name, url in remotes.items():
+        subprocess.run(["git", "-C", str(tmp_path), "remote", "add", name, url], check=True)
+    if default:
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "remote.origin.gh-resolved", "base"], check=True
+        )
+    monkeypatch.chdir(tmp_path)
+    if refused:
+        with pytest.raises(approvals.Refused, match="me/fork, them/fork.*gh repo set-default"):
+            approvals.one_repo()
+    else:
+        approvals.one_repo()
+    # post_demo.sh: a gh that exits 77 on any call shows whether the guard let it through
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    (shim / "gh").write_text("#!/bin/sh\nexit 77\n")
+    (shim / "gh").chmod(0o755)
+    (tmp_path / "v.mp4").write_bytes(b"x")
+    shell = subprocess.run(
+        ["bash", str(POST_DEMO), "x", "v.mp4"],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{shim}:/usr/bin:/bin", "HOME": str(tmp_path)},
+        check=False,
+    )
+    assert (shell.returncode, "me/fork them/fork" in shell.stderr) == (
+        (1, True) if refused else (77, False)
+    )
