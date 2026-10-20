@@ -61,7 +61,7 @@ time to compare.
 verifier included. Pass `--model` only when the owner asked for that model or the project's instructions
 name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
 tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
-its models in `~/.codex/models_cache.json`, each `description` saying its generation and role; a Claude Code
+its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
 lead's own instructions name its family's newest models, and `sys_list_models` lists none for Claude. A
 launch that fails on capacity (`server_overloaded`, a rate limit) is retried later with
 backoff on the same model, never on another, which would leave the work on a model nobody
