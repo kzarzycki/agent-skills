@@ -2,7 +2,7 @@
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
     python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
-    python3 scripts/approvals.py land <pr>                  # every merge proof, then ready and merge; exit 0, 1 or 3
+    python3 scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
     python3 scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     python3 scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
@@ -47,8 +47,9 @@ workflow posts success and its author merges it their usual way; `land` prints t
 loop never merges it or turns auto-merge on for it. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec: auto` every issue is covered.
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
-PR when one fails. A draft it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing
-about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
+PR when one fails, or when GitHub's merge state says the head is behind a base that requires it up to date
+(`BEHIND`) or conflicts with it (`DIRTY`): merge the base in, rerun the gates and get a verdict on the merge. A draft
+it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
 protection; a base requiring none requires every check on the head green). A private repo on GitHub's free plan
 has neither, nor auto-merge: GitHub's 403 on its rules reads as none required, and `land` says GitHub enforces nothing
 there, so its proofs are the only gate. With every required check
@@ -56,6 +57,11 @@ green and the label where the change is high risk: `gh pr merge --squash --match
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
 exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
 merged PR: exit 0; a closed one: exit 1.
+`land --wait` runs it again every 30 seconds, printing each new state, while what waits is CI on the head: a draft it
+marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
+once. With auto-merge on, whoever turned it on, it waits for the merge (exit 0); auto-merge turned off without a merge
+is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
+a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
@@ -117,11 +123,14 @@ list item under `## Components` and `## Extra categories`. Reads and writes thro
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
+import io
 import json
 import re
 import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable
@@ -167,7 +176,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -215,6 +224,12 @@ RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP
 # the commit status the project's approvals workflow posts; its target is the Actions run that posted it
 APPROVALS = "loop:approvals"
 RUN = re.compile(r"/actions/runs/(\d+)")
+# land --wait: seconds between reads of the PR, and how long it waits in all before it exits 3
+POLL, CEILING = 30, 2 * 60 * 60
+# what land --wait polls for: CI on the head, or GitHub's auto-merge
+ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge)"
+# GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
+STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
 
 
 def links(body: str) -> dict[int, str]:
@@ -1537,45 +1552,97 @@ def check(point: str, pr: int | None) -> int:
     return 1 if found else WAITING if waiting else 0
 
 
-def land(pr: int) -> int:
+def land(pr: int, wait: bool = False) -> int:
+    """landing() once, or with `wait` again every POLL seconds while it polls, printing what changed: until it
+    ends, or exit 3 at CEILING."""
+    if not wait:
+        return landing(pr)[0]
+    deadline, said, polled = time.monotonic() + CEILING, "", None
+    reran: set[str] = set()
+    while True:
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code, polled = landing(pr, reran, polled == ON_MERGE)
+        finally:
+            # a background command's log: each state once, not every 30 seconds
+            if out.getvalue() != said:
+                print(out.getvalue(), end="", flush=True)
+            said = out.getvalue()
+        if polled is None:
+            return code
+        if time.monotonic() + POLL > deadline:
+            print(
+                f"PR #{pr}: land --wait stopped after {CEILING // 3600} hours, still waiting for {polled}"
+            )
+            return WAITING
+        time.sleep(POLL)
+
+
+def landing(
+    pr: int, reran: set[str] | None = None, merging: bool = False
+) -> tuple[int, str | None]:
     """Every merge proof; a draft is then marked ready and waits (exit 3) for the CI that starts. A ready PR merges
     pinned to the head: at once when nothing waits, else auto-merge while only the base's required checks are pending
     and the repo allows it; exit 3 while anything else waits. When a red `loop:approvals` status is all that
-    waits, its Actions run is rerun: exit 3."""
+    waits, its Actions run is rerun: exit 3. A head behind its base, or in conflict, is refused first.
+    With `reran` (land --wait), also what a wait would poll for (ON_CI, ON_MERGE), else None: it ends here. Then
+    auto-merge already on is watched rather than turned on again, `merging` says this wait turned it on, and each
+    approvals run is rerun once."""
     tracker, loop = project()
     cap(loop)  # an unreadable `cap:` line is refused before any proof or `gh pr ready`
     pull = pull_request(pr)
     where, head = f"PR #{pr}", pull["headRefOid"]
+    watching = reran is not None
     if pull["state"] == "MERGED":
         print(f"{where} is merged")
-        return 0
+        return 0, None
     if pull["state"] != "OPEN":
         raise Refused(f"{where} is closed: nothing to land")
+    auto = pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]
+    if merging and not auto:
+        raise Refused(f"{where}: auto-merge was turned off without a merge")
     if why := outside(pull, loop):
         # land is the loop's merge: auto-merge on a PR no verifier saw would merge it on CI alone
         raise Refused(why)
+    # GitHub says this as a required check `expected`; ponytail: UNKNOWN (not computed yet) passes, the next read
+    # of a waiting land refuses it before the merge
+    if stale := STALE_BASE.get(pull["mergeStateStatus"]):
+        raise Refused(
+            f"{where} {stale} {pull['baseRefName']}: merge origin/{pull['baseRefName']} in, rerun the gates, get a"
+            " verdict on the merge (lead.md step 8), then land again"
+        )
     found, issues = gated("merge", pull, tracker, loop)
     if found:  # never ready on a missing proof: ready starts CI and, with auto-merge, the merge
         for line in holds(pull, issues, loop) + found:
             print(line)
-        return 1
+        return 1, None
     for line in flag(pull, issues, loop):
         print(line)
     if pull["isDraft"]:
         # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
         gh("pr", "ready", str(pr))
         print(f"{where} is ready now: CI starts on ready, run land again")
-        return WAITING
+        return WAITING, ON_CI
     required = required_checks(pull["baseRefName"])
     checking, owner = ran(pull, loop, required), owner_waits(pull, issues, loop)
     # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the repo's
     # delete_branch_on_merge removes the remote one. Add it when a repo lacks that setting.
     merge = ["pr", "merge", str(pr), "--squash", "--match-head-commit", head]
+    checks = head_checks(pull, required)[0]  # ran() already waits for a draft-only skip
+    red = [(name, state) for name, state in checks if state not in GREEN]
+    # GitHub merges once the required checks pass; a red one it never merges past
+    if watching and auto:
+        if not RED.intersection(state for _, state in red):
+            print(f"{where}: auto-merge is on at {head}")
+            return WAITING, ON_MERGE
+        for line in checking + owner:
+            print(line)
+        return WAITING, None
     if not checking + owner:
         gh(*merge)
         print(f"{where} merges at {head}")
-        return 0
-    checks = head_checks(pull, required)[0]  # ran() already waits for a draft-only skip
+        return 0, None
     # a required check not on the head yet may be a draft's skipped run, which GitHub's auto-merge counts as passing
     pending = (
         not owner
@@ -1586,8 +1653,7 @@ def land(pr: int) -> int:
     if pending and required and auto_merge_allowed():
         gh(*merge, "--auto")
         print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
-        return 0
-    red = [(name, state) for name, state in checks if state not in GREEN]
+        return 0, ON_MERGE
     statuses = [
         node
         # a head no check ran on has a null rollup
@@ -1614,7 +1680,7 @@ def land(pr: int) -> int:
                 f"{stale}, and the status names no Actions run to rerun:"
                 " rerun the workflow that posts it, then run land again"
             )
-            return WAITING
+            return WAITING, None
         # gh resolves the id in this checkout's repo; a target naming another repo's run, or one that is gone, fails
         try:
             run = json.loads(gh("run", "view", found[1], "--json", "status,url"))
@@ -1625,22 +1691,29 @@ def land(pr: int) -> int:
                 f"{stale}, and its target names no Actions run of this repo:"
                 " rerun the workflow that posts it, then run land again"
             )
-            return WAITING
+            return WAITING, None
         if run.get("status") != "completed":
             print(
                 f"{stale}: its run {found[1]} is {run.get('status')}, so the status is not posted yet; run land again"
             )
-            return WAITING
+            return WAITING, ON_CI
+        if reran is not None and found[1] in reran:
+            print(f"{stale}, again after land --wait reran run {found[1]}: read its log")
+            return WAITING, None
         # ponytail: a status forged to name another workflow's run reruns that run; whoever can post statuses
         # can rerun runs anyway. Pin the context to the approvals app in the ruleset to close it.
         gh("run", "rerun", found[1])
+        if reran is not None:
+            reran.add(found[1])
         print(
             f"{stale}: reran run {found[1]}, since resolving a review thread starts no workflow; run land again"
         )
-        return WAITING
+        return WAITING, ON_CI
     for line in checking + owner:
         print(line)
-    return WAITING
+    # CI may still clear what waits while a required check is pending and none is red; the owner is asked after it
+    pending = checking and not no_ci(loop) and not RED.intersection(state for _, state in red)
+    return WAITING, ON_CI if pending else None
 
 
 def approve(point: str, number: int) -> int:
@@ -1843,8 +1916,9 @@ def main(argv: list[str]) -> int:
     posting.add_argument("report", type=Path)
     recording = commands.add_parser("local-ci")
     recording.add_argument("pr", type=int)
-    landing = commands.add_parser("land")
-    landing.add_argument("pr", type=int)
+    merging = commands.add_parser("land")
+    merging.add_argument("pr", type=int)
+    merging.add_argument("--wait", action="store_true")
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
@@ -1856,7 +1930,7 @@ def main(argv: list[str]) -> int:
         if args.command == "local-ci":
             return local_ci(args.pr)
         if args.command == "land":
-            return land(args.pr)
+            return land(args.pr, args.wait)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)

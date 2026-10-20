@@ -151,6 +151,9 @@ def pull(
         author={"login": "worker"},
         state="OPEN",
         isDraft=False,
+        mergeStateStatus="BLOCKED",
+        autoMergeRequest=None,
+        isInMergeQueue=False,
         body=body,
         baseRefName="main",
         baseRefOid=BASE,
@@ -2245,6 +2248,187 @@ def test_land_says_a_merged_pr_is_merged_and_refuses_a_closed_one(
     assert landed(capsys, landing) == (0, ["PR #7 is merged"], [])
     landing["pull"]["state"] = "CLOSED"
     assert landed(capsys, landing) == (1, ["PR #7 is closed: nothing to land"], [])
+
+
+# --- land --wait: one background command that ends at merged, refused, the owner or the ceiling ---
+
+
+@pytest.fixture
+def later(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """`land --wait` against `landing`: each sleep moves the clock POLL seconds on, and GitHub's PR to the next one
+    in this list (the last stays)."""
+    states: list[dict[str, Any]] = []
+    clock = [0.0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        if states:
+            landing["pull"] = states.pop(0)
+
+    monkeypatch.setattr(approvals.time, "sleep", sleep)
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: clock[0])
+    return states
+
+
+def proven(check: str | None = "SUCCESS", **fields: Any) -> dict[str, Any]:
+    """A proven PR whose `check` is in state `check` on the head (None: not there yet), with GitHub's fields changed."""
+    files = fields.pop("files", ("app.py",))
+    pr = pull(reviews=(VERDICT,), files=files, checks=(("check", check),) if check else ())
+    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
+    return {**pr, **fields}
+
+
+def waited(
+    capsys: pytest.CaptureFixture[str], landing: dict[str, Any]
+) -> tuple[int, list[str], list[tuple[str, ...]]]:
+    code = approvals.main(["land", "7", "--wait"])
+    return code, capsys.readouterr().out.splitlines(), landing["calls"]
+
+
+def test_land_wait_marks_a_draft_ready_and_merges_it_once_its_ci_is_green(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"] = proven("SKIPPED", isDraft=True)
+    later += [proven(None), proven(None), proven("SUCCESS")]
+    assert waited(capsys, landing) == (
+        0,
+        [
+            "PR #7 is ready now: CI starts on ready, run land again",
+            "PR #7: no `check` on the head commit yet",  # printed once for its two reads
+            f"PR #7 merges at {HEAD}",
+        ],
+        [READY, MERGE],
+    )
+
+
+def test_land_wait_ends_with_exit_3_when_a_pending_check_turns_red(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing.update(auto=False, pull=proven("IN_PROGRESS"))
+    later += [proven("FAILURE")]
+    assert waited(capsys, landing) == (
+        approvals.WAITING,
+        [
+            "PR #7: `check` is IN_PROGRESS on the head commit",
+            "PR #7: `check` is FAILURE on the head commit",
+        ],
+        [],
+    )
+
+
+def test_land_wait_asks_for_the_owners_label_only_once_ci_has_passed_the_head(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"] = proven("IN_PROGRESS", files=(".github/ci.yml",))
+    later += [proven("SUCCESS", files=(".github/ci.yml",))]
+    assert waited(capsys, landing) == (
+        approvals.WAITING,
+        ["PR #7: `check` is IN_PROGRESS on the head commit", GITHUB, GITHUB],
+        [],
+    )
+
+
+def test_land_wait_turns_on_auto_merge_and_ends_once_github_merges(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"] = proven("IN_PROGRESS")
+    on = {"enabledAt": "2026-10-01T12:00:00Z"}
+    later += [
+        proven("IN_PROGRESS", autoMergeRequest=on),
+        proven("SUCCESS", isInMergeQueue=True),  # a merge queue takes it over from auto-merge
+        proven("SUCCESS", state="MERGED"),
+    ]
+    assert waited(capsys, landing) == (
+        0,
+        [
+            f"PR #7: auto-merge on at {HEAD}, once check pass",
+            f"PR #7: auto-merge is on at {HEAD}",
+            "PR #7 is merged",
+        ],
+        [(*MERGE, "--auto")],
+    )
+
+
+def test_land_wait_says_auto_merge_was_turned_off_without_a_merge(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"] = proven("IN_PROGRESS")
+    later += [proven("IN_PROGRESS")]
+    assert waited(capsys, landing) == (
+        1,
+        [
+            f"PR #7: auto-merge on at {HEAD}, once check pass",
+            "PR #7: auto-merge was turned off without a merge",
+        ],
+        [(*MERGE, "--auto")],
+    )
+
+
+def test_land_wait_ends_with_exit_3_on_a_red_check_under_auto_merge_already_on(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    on = {"enabledAt": "2026-10-01T12:00:00Z"}
+    landing["pull"] = proven("IN_PROGRESS", autoMergeRequest=on)
+    later += [proven("FAILURE", autoMergeRequest=on)]
+    assert waited(capsys, landing) == (
+        approvals.WAITING,
+        [f"PR #7: auto-merge is on at {HEAD}", "PR #7: `check` is FAILURE on the head commit"],
+        [],
+    )
+
+
+def test_land_wait_reruns_a_red_approvals_run_once(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    approvals_red(landing)
+    later += [landing["pull"]]
+    code, lines, calls = waited(capsys, landing)
+    assert (code, calls) == (
+        approvals.WAITING,
+        [("run", "view", "12345"), ("run", "rerun", "12345"), ("run", "view", "12345")],
+    )
+    assert lines[-1] == (
+        "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit, again after land --wait reran"
+        " run 12345: read its log"
+    )
+
+
+def test_land_wait_stops_at_its_ceiling_naming_what_it_waits_for(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing.update(auto=False, pull=proven("QUEUED"))
+    assert waited(capsys, landing) == (
+        approvals.WAITING,
+        [
+            "PR #7: `check` is QUEUED on the head commit",
+            "PR #7: land --wait stopped after 2 hours, still waiting for CI on the head",
+        ],
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "stale"), [("BEHIND", "is behind"), ("DIRTY", "conflicts with")]
+)
+@pytest.mark.parametrize("argv", [["land", "7"], ["land", "7", "--wait"]])
+def test_land_refuses_a_head_behind_or_in_conflict_with_its_base_before_marking_it_ready(
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    status: str,
+    stale: str,
+    argv: list[str],
+) -> None:
+    """GitHub's refusal of a branch behind a base that requires it up to date reads `Required status check
+    "qualify" is expected`; land names the cause first."""
+    landing["pull"] = proven("SKIPPED", isDraft=True, mergeStateStatus=status)
+    assert approvals.main(argv) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        (
+            f"PR #7 {stale} main: merge origin/main in, rerun the gates, get a verdict on the merge"
+            " (lead.md step 8), then land again"
+        )
+    ]
+    assert landing["calls"] == []
 
 
 # --- opt-out: a person keeps their PR out of the loop ---
