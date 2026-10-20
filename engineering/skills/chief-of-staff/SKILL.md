@@ -226,7 +226,7 @@ a successor on any host reads the current one:
   - Closed: one line per lead that finished, with its PR, issue or report link and when you
     told the owner, dropped once they have sent a message since, which shows they read it,
     and the lead is archived.
-  - Follow: the supervisor's command and registry file (its `<registry>.state.json` holds every
+  - Follow: the supervisor's command and registry file (its state file, the registry's name with the suffix replaced by `.state.json`, so `leads.registry` → `leads.state.json`, holds every
     lead's title, host, report, wait, nudges and revives, so the board keeps no leads table), and
     any lead followed by a `watch` or a subscription instead, with its command.
 
@@ -255,9 +255,9 @@ a successor on any host reads the current one:
   owner events and rate windows, so nothing is nudged twice or re-raised. A registry not on your
   host (a takeover elsewhere, which pulled only the board) you copy before starting yours: the
   supervisor is stopped, so read both files from the predecessor's host through the file API,
-  `report <predecessor> <path>` for `<registry>` and for `<registry>.state.json` (a path is read on
+  `report <predecessor> <path>` for the registry and for its state file (`leads.registry` and `leads.state.json`; a path is read on
   the session's host; the predecessor is archived but still has its host), write them beside
-  each other under the same names on your host, and point `--registry` at that copy. The state is
+  each other under the same names on your host (the state's name is derived from the registry's), and point `--registry` at that copy. The state is
   found by the registry's name, so the two must keep it; a registry without its state file
   starts fresh, which re-raises every event, and a copy of the registry alone follows its leads
   but forgets their budgets. Nothing is written back to the predecessor's files.
