@@ -4067,3 +4067,27 @@ def test_a_late_retry_of_a_pending_post_reserves_its_own_window(
         offset[0] = t
         supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
     assert at == [299.0, 600.0]
+
+
+def test_a_crash_right_after_a_terminal_line_is_dropped_keeps_its_owner_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")
+    og = Lead(told("brief", 60))
+    prompt = {"elicitation_id": "e1", "params": {"content_preview": "Bash(rm example)"}}
+    og.snap = {"pending_elicitations": [prompt]}
+    arm = omnigent_agent.arm
+
+    def crash(*args: object, **kwargs: object) -> None:
+        arm(*args, **kwargs)  # type: ignore[arg-type]
+        raise Stop  # the line is gone; the supervisor dies before the poll's end
+
+    monkeypatch.setattr(omnigent_agent, "arm", crash)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert registry.read_text() == ""
+    monkeypatch.setattr(omnigent_agent, "arm", arm)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the restart
+    [post] = posted(og)
+    assert post.startswith("Supervisor [owner] b-")
+    assert "[owner] a t-a: blocked on a prompt: Bash(rm example)" in post

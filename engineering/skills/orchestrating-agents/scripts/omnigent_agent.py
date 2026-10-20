@@ -2160,8 +2160,14 @@ def supervise_registry(
         print(stamp(line), flush=True)
         eid = eid or f"notice:{sid}:{time.time():.0f}"
         if console:
+
+            def settled() -> None:
+                settle(line, sid, eid, kind)
+                if event:  # on disk before its line goes, so what it queued outlives a crash
+                    save()
+
             try:
-                undoing(lambda: settle(line, sid, eid, kind))
+                undoing(settled)
             except Exception as e:  # noqa: BLE001 - never fatal; settled again next poll
                 log(("settle", eid), f"{eid}: not settled: {reason(e)}")
                 retry.append((line, sid, eid, kind, event))

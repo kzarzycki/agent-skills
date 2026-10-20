@@ -372,7 +372,8 @@ successor keeps the window: `Supervisor [act] b-<id>: <n> events`, or `[owner]` 
 owner's, one line per event with why, then each lead's status row and the first 5 lines of its
 report (read through the file API, from any host; a failed read is noted). The post is pending in
 the state with its batch id before the send and delivered after, and its events leave the queue
-only then, so nothing waiting for the owner is dropped. A pending post (a crash or a failed send
+only then, so nothing waiting for the owner is dropped; a session owing a report has its event
+written to the queue before its registry line is dropped. A pending post (a crash or a failed send
 left it) is looked up in the notified session's history by its id, a page of 100 at a time back
 to its pending time: found, it was delivered; not found, it is sent again with its id, and that
 retry reserves the next 5 minutes as a new post would. The
