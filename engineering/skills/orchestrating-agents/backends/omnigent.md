@@ -316,9 +316,10 @@ no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>
 lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
 (`nudges` in the state) gets a second, `no progress <n>m after a nudge`, 10 minutes later. The
 wait comes from the lead's last message: `parked` for a `PARKED` ending, the thing a `STILL
-WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`), else `unknown`. None while the
-lead is out of its turn with an ending (`DONE`, `USER NEEDED`, `PARKED`), blocked or failed,
-since it then waits on its follower, who was told, or on capacity. Each deadline is one event per
+WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`), else `unknown`. None for a
+parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
+none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
+then waits on its follower, who was told. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. Nothing sends the nudge yet; the
 budgets in the state are kept at 0 until something does.
 

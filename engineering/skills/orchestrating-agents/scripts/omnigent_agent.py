@@ -1787,10 +1787,12 @@ def supervise_registry(
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. Each is one
         event per ``progress_at``, so new progress starts a new chain."""
+        if lead["wait"] == "parked":
+            return  # it waits on capacity, also while its lost turn end reads running
         if lead["state"] in ("blocked", "failed", "archived") or (
             lead["state"] == "idle" and lead["ending"]
         ):
-            return  # its follower was told and it waits on them, or a parked one waits on capacity
+            return  # its follower was told and it waits on them
         if time.time() - lead["progress_at"] < DEADLINE_SECONDS:
             return
         lead["progress_at"] = max(lead["progress_at"], og.active(sid))  # read only once due

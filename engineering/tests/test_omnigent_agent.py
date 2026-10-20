@@ -2551,10 +2551,14 @@ def test_a_second_quiet_spell_with_the_same_ending_raises_a_deadline(
     ]
 
 
-def test_a_parked_lead_has_no_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("status", ["idle", "running"])  # running: its turn end was lost
+def test_a_parked_lead_has_no_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
     og = Lead(told("brief", 60), ending("PARKED: the host is full", 5))
+    og.snap = {"status": status}
     at = {1: 1300.0, 2: 5000.0}
     supervised(
         og,
@@ -2565,7 +2569,8 @@ def test_a_parked_lead_has_no_deadline(tmp_path: Path, monkeypatch: pytest.Monke
         notify="cos",
         console=True,
     )
-    assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: turn ended"]
+    ends = ["Supervisor: a t-a: turn ended"] if status == "idle" else []
+    assert [p.split("\n")[0] for p in posted(og)] == ends
     assert state_of(registry)["leads"]["a"]["wait"] == "parked"
 
 
