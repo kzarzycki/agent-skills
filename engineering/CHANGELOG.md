@@ -4,12 +4,14 @@
 
 - `approvals.py land <pr> --wait` is the one background command a lead starts to land
   (#235): it marks a draft ready, waits while required checks are pending with none red,
-  merges, or turns on auto-merge and waits for GitHub's merge (exit 0), and ends on every
-  other outcome: auto-merge turned off (exit 1), what CI won't clear (exit 3, so the owner is
+  merges, or turns on auto-merge, and waits for GitHub's merge, through a merge queue too
+  (exit 0 only once merged), and ends on every other outcome: auto-merge turned off or the PR
+  out of the queue (exit 1), what CI won't clear (exit 3, so the owner is
   asked only about a head CI has passed) or 2 hours (exit 3). It replaces lead.md's two
   hand-written waiters, one of which watched a check named `check` that a repo may not have
   and so never ended. `land` also refuses (exit 1) a head GitHub reports `BEHIND` or `DIRTY`,
-  naming the fix, where GitHub's own refusal read as a required check `expected`.
+  naming the fix, where GitHub's own refusal read as a required check `expected`, and marks
+  nothing ready nor merges while that merge state is `UNKNOWN` (exit 3; `--wait` reads again).
 - `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
   through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
   session blocked only on a question answers it with the message through the same route,

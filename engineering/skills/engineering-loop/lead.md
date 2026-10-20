@@ -142,13 +142,15 @@ design, wireframes included for a UI, and delegate the rest.
      items meanwhile. Exit 1 names each missing proof, and nothing on the PR changed: add the
      proof. A head behind main, or in conflict with it, is refused (exit 1) before anything
      else, since GitHub's own refusal reads as a required check `expected`: merge `origin/main`
-     in as the first bullet says, then land again. On a draft it marks the PR ready, which starts the full list on GitHub since CI
+     in as the first bullet says, then land again. While GitHub has not computed that merge
+     state yet it waits, marking nothing ready. On a draft it marks the PR ready, which starts the full list on GitHub since CI
      skips a draft, and waits for that CI. It merges pinned to the head
      (`--match-head-commit`) once the base's required checks are green, or turns on auto-merge
-     pinned to the head while they are pending and waits for GitHub's merge: exit 0, merged.
+     pinned to the head while they are pending, and waits for GitHub's merge, through the merge
+     queue where the base requires one: exit 0, merged.
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
-     `setup:github` sets with `allow_auto_merge`). Auto-merge turned off without a merge is
-     exit 1. Exit 3 is what CI won't clear, once no required check is still pending: a red
+     `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
+     merge queue, without a merge is exit 1. Exit 3 is what CI won't clear, once no required check is still pending: a red
      check, the owner's label, `CI: none` without a `local-ci` record, a repository without
      auto-merge or a base with no required checks whose CI has finished, or 2 hours of waiting;
      run it again once that clears. When every proof holds and only `loop:approvals` is red
