@@ -230,7 +230,10 @@ a successor on any host reads the current one:
   subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
   staff would both act, and it marks every file that names it in Owner contact as stale. Stop
   its supervisor too (Follow in the file), since it notifies the archived id, and start yours
-  on the same registry with your own: the `follow` lines stay in it.
+  on the same registry with your own: the `follow` lines stay in it. A registry not on your
+  host (a takeover elsewhere, which pulled only the board) you rebuild before starting yours,
+  one line per Live leads row, `<session>=<report>`, a tab, `follow`, since a supervisor on
+  an empty registry follows no lead and nothing would wake you.
   Then recall with the query `owner standing decisions` (Memory), read each live lead's
   state from its session info alone (`sys_session_get_info(session_id=<id>)`; `status` also
   prints its last message), subscribe to it (`sys_session_subscribe(session_id=<id>)`) only
