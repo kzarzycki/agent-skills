@@ -2407,6 +2407,29 @@ def test_land_wait_stops_at_its_ceiling_naming_what_it_waits_for(
     )
 
 
+def test_land_wait_ends_with_exit_3_on_more_checks_than_the_gate_reads(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CI never clears a query's one page: the refusal ends the wait instead of polling it to the ceiling."""
+    landing.update(auto=False, rulesets=[], pull=proven(None))
+    rollup = landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
+    rollup["nodes"] = [
+        {
+            "__typename": "CheckRun",
+            "name": f"check-{n}",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+        }
+        for n in range(100)
+    ]
+    rollup["totalCount"] = 101
+    assert waited(capsys, landing) == (
+        approvals.WAITING,
+        ["PR #7 has more than 100 CI checks: the gate reads one page"],
+        [],
+    )
+
+
 @pytest.mark.parametrize(
     ("status", "stale"), [("BEHIND", "is behind"), ("DIRTY", "conflicts with")]
 )

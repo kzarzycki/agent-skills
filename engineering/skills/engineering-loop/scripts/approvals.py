@@ -230,6 +230,8 @@ POLL, CEILING = 30, 2 * 60 * 60
 ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge)"
 # GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
 STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
+# how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
+PAGED = "CI checks: the gate reads one page"
 
 
 def links(body: str) -> dict[int, str]:
@@ -1249,7 +1251,7 @@ def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> li
     else:  # every check of none would pass a head CI has not reached yet, or one only the draft skipped
         missing = [f"`{name}`" for name in sorted(drafts)] or ([] if checks else ["check"])
     if more is not None and (missing or not wanted):
-        return [f"{where} has more than {more} CI checks: the gate reads one page"]
+        return [f"{where} has more than {more} {PAGED}"]
     # ponytail: a job that skips for another reason in a workflow without `ready_for_review` never reruns, so it waits
     # for good; the line names the cause. Bound the wait by time since ready if a project hits it.
     late = " since the PR went ready (its workflow may lack the `ready_for_review` type)"
@@ -1712,7 +1714,12 @@ def landing(
     for line in checking + owner:
         print(line)
     # CI may still clear what waits while a required check is pending and none is red; the owner is asked after it
-    pending = checking and not no_ci(loop) and not RED.intersection(state for _, state in red)
+    pending = (
+        checking
+        and not no_ci(loop)
+        and not RED.intersection(state for _, state in red)
+        and not any(line.endswith(PAGED) for line in checking)
+    )
     return WAITING, ON_CI if pending else None
 
 
