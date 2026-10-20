@@ -1914,32 +1914,40 @@ def supervise_registry(
             {"id": eid, "session": sid, "route": to, "line": line, "why": why, "at": at}
         )
 
-    def act_on(sid: str, action: str, text: str, eid: str) -> None:
-        """Relay ``text`` to ``sid`` as an intent: in the state before the send (the caller has
-        counted its budget), marked done after. Once a send fails, the chief of staff is told,
-        and nothing sends it again."""
-        intent = {"id": f"{action}:{sid}:{eid}", "session": sid, "action": action, "text": text}
-        intent.update(event=eid, at=time.time(), status="open")
-        state["intents"].append(intent)
+    def act_on(eid: str, sends: list[tuple[str, str, str]]) -> None:
+        """Relay each ``(session, action, text)`` of ``sends`` as an intent: all of them in the
+        state before the first send (the caller has counted their budgets), so a crash between
+        two sends leaves each unsent one for ``recover``; each marked done after its send. Once a
+        send fails, the chief of staff is told, and nothing sends it again."""
+        intents = []
+        for sid, action, text in sends:
+            intent = {"id": f"{action}:{sid}:{eid}", "session": sid, "action": action}
+            intent.update(text=text, event=eid, at=time.time(), status="open")
+            intents.append(intent)
+        if not intents:
+            return
+        state["intents"] += intents
         save()
-        try:
-            if prompts_of(og.info(sid)):  # relay would give the text as a question's answer
-                raise Fail("it waits on a prompt, which the supervisor never answers")
-            relay(og, sid, text, ACTION_SECONDS)
-        except Queued:
-            pass  # held by the session's current step: it lands when the step ends
-        except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
-            intent["status"] = "failed"
-            title = state["leads"].get(sid, {}).get("title") or ""
-            line = f"{sid} {title}: the supervisor's {action} was not delivered: {reason(e)}"
-            queue(f"failed:{intent['id']}", sid, "act", line, "a supervisor action failed")
-        if intent["status"] == "open":
-            intent["status"] = "done"
-        intents = state["intents"]  # the newest closed ones, and every open one
+        for intent in intents:
+            sid, action, text = intent["session"], intent["action"], intent["text"]
+            try:
+                if prompts_of(og.info(sid)):  # relay would give the text as a question's answer
+                    raise Fail("it waits on a prompt, which the supervisor never answers")
+                relay(og, sid, text, ACTION_SECONDS)
+            except Queued:
+                pass  # held by the session's current step: it lands when the step ends
+            except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
+                intent["status"] = "failed"
+                head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
+                line = f"{head}: the supervisor's {action} was not delivered: {reason(e)}"
+                queue(f"failed:{intent['id']}", sid, "act", line, "a supervisor action failed")
+            if intent["status"] == "open":
+                intent["status"] = "done"
+            save(strict=False)  # sent: an intent left open is looked up after a restart
+        kept = state["intents"]  # the newest closed ones, and every open one
         state["intents"] = [
-            i for n, i in enumerate(intents) if i["status"] == "open" or len(intents) - n <= 50
+            i for n, i in enumerate(kept) if i["status"] == "open" or len(kept) - n <= 50
         ]
-        save(strict=False)  # sent: an intent left open is looked up after a restart
 
     def recover() -> None:
         """Settle each intent a crash left open: done when its text is in its lead's history,
@@ -1965,9 +1973,9 @@ def supervise_registry(
             unchecked.remove(iid)
             intent["status"] = "done" if landed else "escalated"
             if not landed:
-                title = state["leads"].get(sid, {}).get("title") or ""
+                head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
                 line = (
-                    f"{sid} {title}: the supervisor's {intent['action']} may not have reached it"
+                    f"{head}: the supervisor's {intent['action']} may not have reached it"
                     " (a restart found it open); not sent again"
                 )
                 queue(f"escalated:{intent['id']}", sid, "act", line, "an action open at a restart")
@@ -2023,17 +2031,18 @@ def supervise_registry(
             state["leads"].pop(sid, None)
         elif action == "nudge":
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
-            act_on(sid, "nudge", LEAD_NUDGE, eid)
+            act_on(eid, [(sid, "nudge", LEAD_NUDGE)])
         elif action == "revive":
             lead["revives"] = lead.get("revives", 0) + 1
-            act_on(sid, "revive", LEAD_REVIVE, eid)
+            act_on(eid, [(sid, "revive", LEAD_REVIVE)])
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
         if action == "done":
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
-            for other, (*_, after) in owed.items():
-                if after == sid:
-                    act_on(other, "tell", result, eid)
+            act_on(
+                eid,
+                [(other, "tell", result) for other, (*_, after) in owed.items() if after == sid],
+            )
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
         try:

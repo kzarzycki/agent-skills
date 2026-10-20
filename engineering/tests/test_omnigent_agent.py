@@ -4006,3 +4006,34 @@ def test_a_failed_state_write_stops_the_side_effect_it_guards_and_the_next_poll_
     assert [i["status"] for i in state_of(registry)["intents"]] == ["done"] * (
         needed_by == "action"
     )
+
+
+def test_a_crash_while_telling_the_first_waiting_lead_leaves_the_others_recoverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b", "c", after={"b": "a", "c": "a"})
+    og = Leads(
+        a=[told("brief", 60), ending("DONE: shipped", 5)],
+        b=[told("brief", 60)],
+        c=[told("brief", 60)],
+    )
+    real = og.send
+
+    def crash(sid: str, text: str) -> None:
+        real(sid, text)
+        if sid == "b":
+            raise Stop  # b was told; the supervisor dies before c's turn
+
+    og.send = crash  # type: ignore[method-assign]
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert sorted(i["session"] for i in state_of(registry)["intents"]) == ["b", "c"]
+    og.send = real  # type: ignore[method-assign]
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # the restart
+    assert [s for s, t in og.inbox if s != "cos"] == ["b"]  # never sent again
+    status = {i["session"]: i["status"] for i in state_of(registry)["intents"]}
+    assert status == {"b": "done", "c": "escalated"}
+    assert re.search(
+        r"^\[act\] c( t-c)?: the supervisor's tell may not have reached it",
+        posted(og)[0],
+        re.MULTILINE,
+    )

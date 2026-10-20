@@ -359,7 +359,7 @@ wait. Carry on to your next step, and end your turn with DONE, STILL WORKING nam
 on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through `relay`, which
 revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
 budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
-before the send and marked done after; one to a lead waiting on a prompt is not sent, since
+before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
 `relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there marks it done,
 else it is escalated as act, never sent again. A state write that fails before a small-model call, an
