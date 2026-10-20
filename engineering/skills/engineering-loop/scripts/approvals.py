@@ -59,7 +59,8 @@ exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a r
 merged PR: exit 0; a closed one: exit 1.
 `land --wait` runs it again every 30 seconds, printing each new state, while what waits is CI on the head: a draft it
 marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
-once. With auto-merge on, whoever turned it on, it waits for the merge (exit 0); auto-merge turned off without a merge
+once. With auto-merge on, whoever turned it on, it waits for the merge (exit 0) unless the owner's label or a local-ci
+record holds it, which GitHub never supplies; auto-merge turned off without a merge
 is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -1633,8 +1634,9 @@ def landing(
     merge = ["pr", "merge", str(pr), "--squash", "--match-head-commit", head]
     checks = head_checks(pull, required)[0]  # ran() already waits for a draft-only skip
     red = [(name, state) for name, state in checks if state not in GREEN]
-    # GitHub merges once the required checks pass; a red one it never merges past
-    if watching and auto:
+    # GitHub merges once the required checks pass; a red one it never merges past. The owner's label and a local-ci
+    # record are no check of GitHub's, so either hold ends the wait below instead.
+    if watching and auto and not owner and not (no_ci(loop) and checking):
         if not RED.intersection(state for _, state in red):
             print(f"{where}: auto-merge is on at {head}")
             return WAITING, ON_MERGE

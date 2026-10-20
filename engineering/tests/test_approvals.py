@@ -2377,6 +2377,35 @@ def test_land_wait_ends_with_exit_3_on_a_red_check_under_auto_merge_already_on(
     )
 
 
+@pytest.mark.parametrize(
+    ("loop", "files", "hold"),
+    [
+        (GITHUB_RULE, (".github/ci.yml",), GITHUB),
+        (
+            GITHUB_RULE + "\nCI: none\n",
+            ("app.py",),
+            (
+                "PR #7: the project has no CI (loop.md `CI: none`), and no local check passed on the head"
+                " (approvals.py local-ci)"
+            ),
+        ),
+    ],
+)
+def test_land_wait_ends_on_an_owner_or_local_ci_hold_under_auto_merge_already_on(
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+    loop: str,
+    files: tuple[str, ...],
+    hold: str,
+) -> None:
+    """GitHub's auto-merge supplies neither the owner's label nor a local-ci record: the hold ends the wait."""
+    Path("docs/agents/loop.md").write_text(loop)
+    on = {"enabledAt": "2026-10-01T12:00:00Z"}
+    landing["pull"] = proven("SUCCESS", files=files, autoMergeRequest=on)
+    assert waited(capsys, landing) == (approvals.WAITING, [hold], [])
+
+
 def test_land_wait_reruns_a_red_approvals_run_once(
     landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
 ) -> None:
