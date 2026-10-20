@@ -49,7 +49,10 @@ design, wireframes included for a UI, and delegate the rest.
    matches, it waits for the owner the same way. At triage, add `risk:high` to an issue
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
    `priority:`).
-3. **Branch and notes.** Cut the PR branch off a freshly fetched `origin/main`, or, one
+3. **Branch and notes.** In a checkout whose remotes name more than one GitHub repo (a
+   fork with `upstream`), run `gh repo set-default <owner>/<repo>` once, naming the repo the
+   PRs live in: otherwise gh reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, and the
+   loop's scripts refuse to run. Cut the PR branch off a freshly fetched `origin/main`, or, one
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and

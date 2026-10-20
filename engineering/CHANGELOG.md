@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `approvals.py`, `board.py`, `labels.py` and the demo skill's `post_demo.sh` refuse to run
+  in a checkout whose remotes name several GitHub repos while `gh repo set-default` names
+  none (#236). gh then reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, so a
+  verdict posted from a fork's checkout landed on the upstream PR of the same number.
 - `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
   through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
   session blocked only on a question answers it with the message through the same route,

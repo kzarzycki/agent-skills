@@ -1498,6 +1498,34 @@ def toplevel() -> Path:
         raise Refused("not in a git checkout: run from the repo's checkout") from exc
 
 
+# a remote's GitHub repository, as `owner/repo`, from its https or ssh URL
+GITHUB_REMOTE = re.compile(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$", re.IGNORECASE)
+
+
+def one_repo() -> None:
+    """Refuse a checkout whose remotes name several GitHub repos while none is gh's default (`gh repo set-default`,
+    kept as `remote.<name>.gh-resolved`): gh then reads `{owner}/{repo}` and every `gh pr` as `upstream`, and a
+    review or label lands on a repo nobody chose. Outside a checkout it passes, and gh says why it can't run."""
+    remotes = subprocess.run(["git", "remote", "-v"], capture_output=True, text=True, check=False)
+    repos = sorted(
+        {
+            found[1].lower()
+            for line in remotes.stdout.splitlines()
+            if len(fields := line.split()) > 1 and (found := GITHUB_REMOTE.search(fields[1]))
+        }
+    )
+    chosen = subprocess.run(
+        ["git", "config", "--get-regexp", r"^remote\..*\.gh-resolved$"],
+        capture_output=True,
+        check=False,
+    )
+    if len(repos) > 1 and chosen.returncode:
+        raise Refused(
+            f"this checkout's remotes name {', '.join(repos)} and gh has no default among them, so gh would pick one"
+            " itself: run `gh repo set-default <owner>/<repo>` once, naming the repo the PRs live in"
+        )
+
+
 def project() -> tuple[str | None, str | None]:
     """The checkout's docs/agents/issue-tracker.md and loop.md, None for one it lacks: a repo without the loop's
     files has no rules, and its issues no label shape."""
@@ -1849,6 +1877,7 @@ def main(argv: list[str]) -> int:
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
     try:
+        one_repo()
         if args.command == "check":
             return check(args.point, args.pr)
         if args.command == "approve":

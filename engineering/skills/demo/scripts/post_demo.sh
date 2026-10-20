@@ -23,6 +23,14 @@ for video in "$@"; do
   attach+=(--attach "$video")
 done
 
+# With several GitHub remotes and no `gh repo set-default`, gh reads the PR as `upstream`'s: refuse rather than
+# post to a repo nobody chose.
+repos="$(git remote -v | awk '{print $2}' | sed -nE 's#.*github\.com[:/]([^/]+/[^/]+)$#\1#p' | sed -E 's#(\.git)?/?$##' | tr 'A-Z' 'a-z' | sort -u)"
+if [ "$(printf '%s' "$repos" | grep -c .)" -gt 1 ] && ! git config --get-regexp '^remote\..*\.gh-resolved$' >/dev/null; then
+  echo "post_demo: this checkout's remotes name $(echo $repos) and gh has no default among them: run gh repo set-default <owner>/<repo>" >&2
+  exit 2
+fi
+
 pr="${pr:-$(gh pr view --json number --jq .number)}"
 head="$(git rev-parse HEAD)"
 pr_head="$(gh pr view "$pr" --json headRefOid --jq .headRefOid)"

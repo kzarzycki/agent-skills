@@ -2469,6 +2469,7 @@ def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
     return state
 
 
@@ -3037,3 +3038,55 @@ def test_parking_removes_only_the_assignee_the_loop_added(
         "#3: kept @ann, whose claim it is",
         "#4: removed @ann, whom the loop assigned",
     ]
+
+
+@pytest.mark.parametrize(
+    ("remotes", "default", "refused"),
+    [
+        ({"origin": "https://github.com/me/fork.git"}, False, False),
+        (
+            {"origin": "https://github.com/me/fork.git", "upstream": "git@github.com:them/fork"},
+            False,
+            True,
+        ),
+        (
+            {"origin": "https://github.com/me/fork.git", "upstream": "git@github.com:them/fork"},
+            True,
+            False,
+        ),
+        (
+            {
+                "origin": "https://github.com/me/fork.git",
+                "mirror": "https://gitlab.com/me/fork.git",
+            },
+            False,
+            False,
+        ),
+        (
+            {"origin": "https://github.com/me/fork.git", "push": "git@github.com:Me/Fork.git"},
+            False,
+            False,
+        ),
+    ],
+)
+def test_one_repo_refuses_several_github_remotes_without_a_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    remotes: dict[str, str],
+    default: bool,
+    refused: bool,
+) -> None:
+    """gh reads `{owner}/{repo}` as `upstream`'s when several GitHub remotes have no default: refuse, naming them."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    for name, url in remotes.items():
+        subprocess.run(["git", "-C", str(tmp_path), "remote", "add", name, url], check=True)
+    if default:
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "remote.origin.gh-resolved", "base"], check=True
+        )
+    monkeypatch.chdir(tmp_path)
+    if refused:
+        with pytest.raises(approvals.Refused, match="me/fork, them/fork.*gh repo set-default"):
+            approvals.one_repo()
+    else:
+        approvals.one_repo()
