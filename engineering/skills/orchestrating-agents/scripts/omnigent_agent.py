@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
-    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -11,7 +11,7 @@
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
-    python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console] [<session>=<report>...]
+    python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -60,7 +60,13 @@ With ``--console``, the chief of staff's console, each poll it also writes ``<re
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
-20 minutes; without it, it writes none of these.
+20 minutes; and it routes each event instead of posting it: the supervisor settles the routine ones
+itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
+``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
+what its rules can't settle, and posts what needs the notified session or the owner as
+``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
+minutes; ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
+standing decisions for the small model. Without it, it writes none of these and posts every line.
 ``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
@@ -139,9 +145,20 @@ NUDGE = "Your turn ended without the report. Run any long command in the foregro
 # The line after a revive, which can relaunch a session with its context dropped: it names the
 # brief files and the report. Like the resume line, no instruction; found by this fixed start.
 REVIVED = "Your session was restarted and may have lost its context."
+# The console's own messages to a followed lead; fixed text, so a restart finds each in its history.
+LEAD_NUDGE = (
+    "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
+    " end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+)
+LEAD_REVIVE = (
+    "Supervisor: your session failed and was resumed. Carry on from your last step, and end your"
+    " turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+)
+LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
+AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
 # A followed lead's turn end that names one of these is news at once; any other waits for quiet.
 ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end
@@ -159,6 +176,10 @@ REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a repo
 STATE_SCHEMA = "cos-state/1"
 # The small model that routes what the rules can't settle, with its limits; any failure routes act.
 SMALL_MODEL = "claude-haiku-5-5"  # $OMNIGENT_SMALL_MODEL overrides it
+MODEL_HOURLY = 30  # small-model calls in a rolling hour; past it, events route act with no model
+POST_SECONDS = 300.0  # at most one post to the notified session this often; the rest are combined
+REPORT_HEAD = 5  # a post carries this many first lines of each lead's report
+ACTION_SECONDS = 30.0  # a supervisor action's relay waits this long for its message to land
 MODEL_SECONDS = 20.0
 MODEL_CHARS = 4000  # the event is cut to this
 MODEL_TOKENS = (
@@ -460,6 +481,12 @@ class Omnigent:
     def items(self, sid: str) -> list[dict]:
         page = self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc")
         return list(reversed(page.get("data", [])))
+
+    def older(self, sid: str, after: str = "") -> dict:
+        """A page of ``sid``'s history, newest first: its newest 100 items, or with ``after`` (an
+        item id) the 100 before that item; ``data``, ``last_id`` and ``has_more``."""
+        cursor = f"&after={quote(after, safe='')}" if after else ""
+        return self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc{cursor}")
 
     def info(self, sid: str) -> dict:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
@@ -1160,6 +1187,24 @@ def from_user(item: dict) -> bool:
     return item.get("type") == "message" and item.get("role") == "user"
 
 
+def in_history(og: Omnigent, sid: str, found: Callable[[dict], bool], since: float) -> bool:
+    """Whether an item of ``sid``'s history is ``found``, read back a page at a time from the
+    newest until a page reaches items older than ``since`` (epoch seconds) or the history ends,
+    so a match older than the newest 100 items is found too."""
+    # ponytail: the server's item clock against the local one, as check does; a minute's margin
+    # covers a small skew. Upgrade: a client id on the message, once Omnigent has one.
+    after = ""
+    while True:
+        page = og.older(sid, after)
+        data = page.get("data") or []
+        if any(found(i) for i in data):
+            return True
+        oldest = min((float(i.get("created_at") or 0) for i in data), default=0.0)
+        if not data or not page.get("has_more") or oldest < since - 60:
+            return False
+        after = str(page.get("last_id") or data[-1].get("id"))
+
+
 def instruction(item: dict, resume: str) -> bool:
     """A user message that tells the session its task: not the resume line, nor the revive line."""
     text = text_of(item).strip()
@@ -1402,26 +1447,32 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         return []
 
 
-def entry(line: str) -> tuple[str, Path, list[Path], bool, bool]:
+def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str]:
     """A registry line: ``session=report``, then the session's brief files, each after a tab,
     whether its report is a verifier's (a ``verdict`` field, which ``run``, ``start`` and ``send``
-    write for one) and whether it is a lead followed (a ``follow`` field, which ``start
-    --top-level`` writes), whose report ``follow`` never reads."""
+    write for one), whether it is a lead followed (a ``follow`` field, which ``start
+    --top-level`` writes), whose report ``follow`` never reads, and the lead it waits on (an
+    ``after=<session>`` field, which ``start --top-level --after`` writes), else empty."""
     head, *fields = line.split("\t")
     sid, report = pair(head)
     fields = [f.strip() for f in fields if f.strip()]
+    after = next((f.removeprefix(AFTER_FIELD) for f in fields if f.startswith(AFTER_FIELD)), "")
     marks = (VERDICT_FIELD, FOLLOW_FIELD)
     return (
         sid,
         report,
-        [Path(f) for f in fields if f not in marks],
+        [Path(f) for f in fields if f not in marks and not f.startswith(AFTER_FIELD)],
         VERDICT_FIELD in fields,
         FOLLOW_FIELD in fields,
+        after,
     )
 
 
-def registered(path: Path) -> tuple[dict[str, tuple[Path, list[Path], bool, bool]], list[str]]:
-    """The registry's sessions with the reports they owe, their brief files, verdict and follow flags, the last line
+def registered(
+    path: Path,
+) -> tuple[dict[str, tuple[Path, list[Path], bool, bool, str]], list[str]]:
+    """The registry's sessions with the reports they owe, their brief files, verdict and follow
+    flags and the lead each waits on, the last line
     winning for a session listed twice, and its malformed lines. Blank lines and ``#`` comments
     are skipped."""
     owed, bad = {}, []
@@ -1445,9 +1496,10 @@ def arm(
     unless: Callable[[], bool] = lambda: False,
     verdict: bool = False,
     followed: bool = False,
+    after: str = "",
 ) -> None:
-    """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``
-    or ``followed``, that field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
+    """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
+    ``followed`` or ``after``, that field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
     goes after the brief files the line had, else after the one ``start`` wrote."""
 
     def names(line: str) -> bool:
@@ -1467,6 +1519,7 @@ def arm(
                 had = []
             files = [b for b in briefs_for(report, had) if b != then] + [then]
         flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
+        flag += [AFTER_FIELD + after] if after else []
         return rest + ["\t".join([f"{sid}={report}", *map(str, files), *flag])]
 
     edit_registry(path, edit)
@@ -1480,12 +1533,13 @@ def arm_quietly(
     then: Path | None = None,
     verdict: bool = False,
     followed: bool = False,
+    after: str = "",
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
     if path:
         try:
-            arm(path, sid, report, briefs, then, verdict=verdict, followed=followed)
+            arm(path, sid, report, briefs, then, verdict=verdict, followed=followed, after=after)
         except OSError as e:
             print(
                 f"registry {path}: {sid} not {'armed' if report else 'disarmed'}: {e}",
@@ -1513,8 +1567,7 @@ class Recorded:
 
 
 def fresh_state() -> dict:
-    """An empty ``state.json``. ``intents``, ``attention``, ``pending_posts`` and ``rate`` are kept
-    for the routing that fills them."""
+    """An empty ``state.json``."""
     return {
         "schema": STATE_SCHEMA,
         "written_at": 0,
@@ -1523,7 +1576,8 @@ def fresh_state() -> dict:
         "intents": [],
         "attention": [],
         "pending_posts": [],
-        "rate": {"next_post_at": 0, "model_calls": {"hour": 0, "count": 0}},
+        "rate": {"next_post_at": 0, "model_calls": []},
+        "notify_label": {},
     }
 
 
@@ -1626,8 +1680,6 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "a session owing a report: its outcome"
     if kind == "notice":
         return "rule", "record", "the supervisor's own revive or resume line"
-    if event.get("repeat"):
-        return "rule", "record", "an exact repeat of its last event"
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -1636,6 +1688,10 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not ENDING.search(text) and wait == "unknown":
             return "rule", "act", "its report names no ending"
     ending = m.group(1) if (m := ENDING.search(text)) else None
+    if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
+        return "rule", "act", "quiet again after its nudge"
+    if event.get("repeat"):
+        return "rule", "record", "an exact repeat of its last event"
     if ending == "PARKED":
         return "rule", "record", "parked: waits on host capacity"
     if ending == "DONE":
@@ -1647,8 +1703,6 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "model", "owner" if answer == "owner" else "act", why
     if wait != "unknown":
         return "rule", "record", f"names its wait: {wait}"
-    if event.get("nudged"):
-        return "rule", "act", "quiet again after its nudge"
     answer, why = ask()
     return "model", {"none": "record", "owner": "owner"}.get(answer, "nudge"), why
 
@@ -1728,6 +1782,8 @@ def supervise_registry(
     silent: float = 1800.0,
     timeout: float = 3 * 3600,
     console: bool = False,
+    fyi: str = "skip",
+    decisions: Path | None = None,
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. Every line goes to stdout with the local time and, with ``notify``, into that
@@ -1741,16 +1797,28 @@ def supervise_registry(
     event.
 
     With ``console``, each poll also writes ``<registry>.state.json`` (``fresh_state``, one entry per registry session)
-    and labels each session with its ``status.line`` and ``status.at``; every event posted (or
-    printed, without ``notify``) is settled there by its id and appended to
-    ``<registry>.events.jsonl``. The state is loaded on start, so a restart re-raises no settled
+    and labels each session with its ``status.line`` and ``status.at``; every event is settled
+    there by its id and appended to ``<registry>.events.jsonl``. The state is loaded on start, so a restart re-raises no settled
     event and keeps each lead's ``progress_at``, budgets and last labels; and a followed lead with
     no progress past its deadline raises a ``deadline`` event. Without it, none of these.
+
+    With ``console`` each event is also routed (``route``) instead of posted: the supervisor
+    settles what the rules or the small model can (``settle``), and only what needs the chief of
+    staff or the owner reaches ``notify``, combined into at most one post per ``POST_SECONDS``
+    (``deliver``); with ``fyi`` ``post`` every line is posted as without it too. The standing
+    decisions the small model weighs are ``decisions``' (``standing``).
     """
     rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
+    rate = state["rate"]
+    if not isinstance(rate.get("model_calls"), list):
+        rate["model_calls"] = []  # the shape before the routing counted calls
+    # what a crash left open: each is looked up in its lead's history, never sent again
+    unchecked = [i for i in state["intents"] if i.get("status") == "open"]
+    looks: dict[str, tuple[dict, list[dict]]] = {}  # what each session's look this poll read
+    owed: dict[str, tuple[Path, list[Path], bool, bool, str]] = {}
     hosts: dict[str, str] | None = None  # ponytail: read once; a host added later shows its id
     looked: dict[str, float] = {}  # when each session's children were last read
     ended: dict[str, float] = {}
@@ -1777,14 +1845,14 @@ def supervise_registry(
             logged[key] = error
             print(stamp(error), file=sys.stderr, flush=True)
 
-    def post(line: str) -> bool:
+    def post(text: str) -> bool:
         if not notify:
             return True
         try:
             # a message to a reaped session answers `queued` and never arrives
             if not og.info(notify).get("runner_online", True):
                 revive(og, notify)
-            og.send(notify, f"Supervisor: {line}")
+            og.send(notify, text)
         except Exception as e:  # noqa: BLE001 - never fatal; the event is found again
             log("post", f"post to {notify} failed: {reason(e)}")
             return False
@@ -1810,28 +1878,230 @@ def supervise_registry(
         unsent.discard(sid)
         return True
 
-    def settle(eid: str, sid: str, kind: str, line: str) -> None:
+    def save() -> None:
+        """Write the state now: at the end of a poll, and before a small-model call, an action or
+        a post, so a crash after it spends no budget twice."""
+        state["written_at"] = int(time.time())
+        try:
+            write_state(state_path, state)
+        except OSError as e:
+            log("state", f"{state_path}: {reason(e)}")
+        else:
+            log("state", None)
+
+    def queue(eid: str, sid: str, to: str, line: str, why: str) -> None:
+        """Put an event in the attention queue, for the chief of staff (``act``) or the owner."""
+        at = int(time.time())
+        state["attention"].append(
+            {"id": eid, "session": sid, "route": to, "line": line, "why": why, "at": at}
+        )
+
+    def act_on(sid: str, action: str, text: str, eid: str) -> None:
+        """Relay ``text`` to ``sid`` as an intent: in the state before the send (the caller has
+        counted its budget), marked done after. Once a send fails, the chief of staff is told,
+        and nothing sends it again."""
+        intent = {"id": f"{action}:{sid}:{eid}", "session": sid, "action": action, "text": text}
+        intent.update(event=eid, at=time.time(), status="open")
+        state["intents"].append(intent)
+        save()
+        try:
+            if prompts_of(og.info(sid)):  # relay would give the text as a question's answer
+                raise Fail("it waits on a prompt, which the supervisor never answers")
+            relay(og, sid, text, ACTION_SECONDS)
+        except Queued:
+            pass  # held by the session's current step: it lands when the step ends
+        except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
+            intent["status"] = "failed"
+            title = state["leads"].get(sid, {}).get("title") or ""
+            line = f"{sid} {title}: the supervisor's {action} was not delivered: {reason(e)}"
+            queue(f"failed:{intent['id']}", sid, "act", line, "a supervisor action failed")
+        if intent["status"] == "open":
+            intent["status"] = "done"
+        intents = state["intents"]  # the newest closed ones, and every open one
+        state["intents"] = [
+            i for n, i in enumerate(intents) if i["status"] == "open" or len(intents) - n <= 50
+        ]
+        save()
+
+    def recover() -> None:
+        """Settle each intent a crash left open: done when its text is in its lead's history,
+        else escalated to the chief of staff, never sent again. One the history can't be read
+        for waits for the next poll."""
+        for intent in list(unchecked):
+            sid, text = intent["session"], intent["text"]
+            try:
+                landed = in_history(
+                    og,
+                    sid,
+                    lambda i, t=text: from_user(i) and text_of(i).strip() == t,
+                    intent["at"],
+                )
+            except Exception as e:  # noqa: BLE001 - looked up again next poll
+                log(("intent", intent["id"]), f"{intent['id']}: not looked up: {reason(e)}")
+                continue
+            log(("intent", intent["id"]), None)
+            unchecked.remove(intent)
+            intent["status"] = "done" if landed else "escalated"
+            if not landed:
+                title = state["leads"].get(sid, {}).get("title") or ""
+                line = (
+                    f"{sid} {title}: the supervisor's {intent['action']} may not have reached it"
+                    " (a restart found it open); not sent again"
+                )
+                queue(f"escalated:{intent['id']}", sid, "act", line, "an action open at a restart")
+
+    def settle(line: str, sid: str, eid: str, kind: str) -> None:
+        """Route one event and do what the route says: record it, act on the lead (a nudge, a
+        revive, telling the leads waiting on a ``DONE``), or queue it for ``deliver``; then log
+        how it was settled to ``events.jsonl``."""
+        lead = state["leads"].get(sid, {})
+        info, items = looks.get(sid, ({}, []))
+        said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+        last = text_of(said[-1]).strip() if said else ""
+        key = re.sub(r"quiet \d+s", "quiet", line)  # the same quiet spell is a repeat
+        pending = info.get("pending_elicitations") or []
+        found = standing(decisions) if decisions else ""
+        event = {
+            "kind": kind,
+            "line": line,
+            "last": last,
+            "repeat": key == lead.get("last_event"),
+            "question": bool(pending) and len(questions_of(info)) == len(pending),
+            "nudged": lead.get("nudged_at") is not None
+            and lead.get("nudged_at") == lead.get("progress_at"),
+            "revived": bool(lead.get("revives")),
+            "decisions": bool(found),
+        }
+
+        def ask() -> tuple[str, str]:
+            now = time.time()
+            calls = [t for t in rate["model_calls"] if now - t < 3600]
+            if len(calls) >= MODEL_HOURLY:
+                return "act", f"over {MODEL_HOURLY} small-model calls an hour"
+            rate["model_calls"] = [*calls, now]
+            save()
+            return triage(line, found)
+
+        by, action, why = route(event, ask)
+        if action == "read-report":
+            try:
+                head = og.read_file(sid, last).strip().splitlines()
+            except Exception as e:  # noqa: BLE001 - an unread report routes act
+                head, why = [], f"report {last} not read: {reason(e)}"
+            event["head"] = head[0] if head else ""
+            by, action, routed = route(event, ask)
+            why = f"{routed}; {why}" if not head else routed
+        if lead:
+            lead["last_event"] = key
         kept = state["settled"].setdefault(sid, [])
         kept.append(eid)
         del kept[:-SETTLED_KEPT]
-        how = "posted" if notify else "printed"
-        event = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind, "line": line}
+        logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
+        logged_line.update(line=line, settled=by, action=action, why=why)
         try:
             with open(events_path, "a") as f:
-                f.write(json.dumps({**event, "settled": how}) + "\n")
+                f.write(json.dumps(logged_line) + "\n")
         except OSError as e:
             log("events", f"{events_path}: {reason(e)}")
         else:
             log("events", None)
+        print(stamp(f"{eid}: {by}: {action} ({why})"), flush=True)
+        head = f"{sid} {lead.get('title') or ''}".rstrip()
+        if action == "absorb":
+            state["leads"].pop(sid, None)
+        elif action == "nudge":
+            lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
+            act_on(sid, "nudge", LEAD_NUDGE, eid)
+        elif action == "revive":
+            lead["revives"] = lead.get("revives", 0) + 1
+            act_on(sid, "revive", LEAD_REVIVE, eid)
+        elif action in ("act", "owner", "done"):
+            queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
+        if action == "done":
+            result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
+            for other, (*_, after) in owed.items():
+                if after == sid:
+                    act_on(other, "tell", result, eid)
+
+    def compose(bid: str, events: list[dict]) -> str:
+        """A post of ``events``: one line each, then each lead's status row and report head."""
+        to = "owner" if any(e["route"] == "owner" for e in events) else "act"
+        n = len(events)
+        lines = [f"Supervisor [{to}] {bid}: {n} event{'s' * (n > 1)}"]
+        lines += [f"[{e['route']}] {e['line']} ({e['why']})" for e in events]
+        for sid in dict.fromkeys(e["session"] for e in events):
+            lead = state["leads"].get(sid) or {}
+            if "state" not in lead:
+                continue  # gone from the registry, or never read
+            lines += ["", f"{sid} {lead['title']}: {status_line(lead)}"]
+            try:
+                head = og.read_file(sid, lead["report"]).splitlines()[:REPORT_HEAD]
+            except Exception as e:  # noqa: BLE001 - never fatal: the post goes without it
+                lines.append(f"report {lead['report']} not read: {reason(e)}")
+            else:
+                lines += [f"report {lead['report']}:", *head]
+        return "\n".join(lines)
+
+    def deliver() -> None:
+        """Post the attention queue to ``notify`` (print it, without one), one post per
+        ``POST_SECONDS``, each pending in the state with its batch id before the send, and its
+        events off the queue once delivered. A pending post (a crash or a failed send left it) is
+        looked up in ``notify``'s history by its id first: found, it was delivered; not, it is
+        sent again, in the window it already took."""
+        pending = state["pending_posts"]
+        if pending:
+            out = pending[0]
+            try:
+                found = bool(notify) and in_history(
+                    og,
+                    notify,
+                    lambda i: from_user(i) and out["id"] in text_of(i).split("\n", 1)[0],
+                    out["at"],
+                )
+            except Exception as e:  # noqa: BLE001 - looked up again next poll
+                log("post", f"post {out['id']} not looked up: {reason(e)}")
+                return
+        else:
+            if not state["attention"] or time.time() < rate["next_post_at"]:
+                return
+            bid = f"b-{int(time.time())}"
+            out = {"id": bid, "events": [e["id"] for e in state["attention"]], "at": time.time()}
+            out["text"] = compose(bid, state["attention"])
+            pending.append(out)
+            rate["next_post_at"] = time.time() + POST_SECONDS
+            save()
+            found = False
+        if not found:
+            if not notify:
+                print(stamp(f"would post:\n{out['text']}"), flush=True)
+            elif not post(out["text"]):
+                return
+        ids = set(out["events"])
+        state["attention"] = [e for e in state["attention"] if e["id"] not in ids]
+        pending.remove(out)
+        save()
+
+    def needs_you() -> None:
+        """``notify``'s own ``status.line``: how many owner events wait, kept fresh as a lead's."""
+        n = sum(e["route"] == "owner" for e in state["attention"])
+        line, now, last = f"needs you: {n}" if n else "", time.time(), state["notify_label"]
+        if line == last.get("line", "") and (
+            not line or now - float(last.get("at") or 0) < LABEL_SECONDS
+        ):
+            return
+        try:
+            og.label(notify, {"status.line": line, "status.at": str(int(now)) if line else ""})
+        except Exception as e:  # noqa: BLE001 - display only; written again next poll
+            log(("label", notify), f"{notify}: labels not written: {reason(e)}")
+            return
+        log(("label", notify), None)
+        state["notify_label"] = {"line": line, "at": str(int(now))}
 
     def flush() -> None:
         while outbox:
             line, event, eid, sid, kind = outbox[0]
-            if line is not None:
-                if not post(line):
-                    return
-                if console:
-                    settle(eid, sid, kind, line)
+            if line is not None and not post(f"Supervisor: {line}"):
+                return
             if event and not drop(*event):
                 outbox[0] = (None, event, eid, sid, kind)  # posted; only the drop is retried
                 return
@@ -1854,13 +2124,22 @@ def supervise_registry(
                 flush()
             return
         print(stamp(line), flush=True)
-        outbox.append((line, event, eid or f"notice:{sid}:{time.time():.0f}", sid, kind))
+        eid = eid or f"notice:{sid}:{time.time():.0f}"
+        if console:
+            settle(line, sid, eid, kind)
+            if fyi != "post":
+                if event:  # posted as routed, not as a line
+                    outbox.append((None, event, eid, sid, kind))
+                    flush()
+                return
+        outbox.append((line, event, eid, sid, kind))
         flush()
 
-    def track(sid: str, report: Path, briefs: list[Path], followed: bool) -> dict:
+    def track(sid: str, report: Path, briefs: list[Path], followed: bool, after: str) -> dict:
         """``sid``'s state entry, updated from what its look just read."""
         nonlocal hosts
         seen = rec.seen.pop(sid, {})
+        looks[sid] = (seen.get("info") or {}, seen.get("items") or [])
         lead = state["leads"].setdefault(
             sid, {"nudges": 0, "revives": 0, "waits_on": [], "label": {}, "occurrences": 0}
         )
@@ -1882,6 +2161,7 @@ def supervise_registry(
             report=str(report),
             briefs=[str(b) for b in briefs],
             follow=followed,
+            waits_on=[after] if after else [],
             **lead_status(info, items),
         )
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
@@ -1943,7 +2223,8 @@ def supervise_registry(
         lead["progress_at"] = max(lead["progress_at"], og.active(sid))  # read only once due
         quiet = time.time() - lead["progress_at"]
         steps = [(DEADLINE_SECONDS, "")]
-        if lead["wait"] == "unknown" and lead["nudges"]:
+        # one nudge per progress chain: the chain it was spent on is the one that waits longer
+        if lead["wait"] == "unknown" and lead.get("nudged_at") == lead["progress_at"]:
             steps.append((DEADLINE_SECONDS + NUDGED_SECONDS, ":nudged"))
         for after, nudged in steps:
             if quiet >= after:
@@ -1954,6 +2235,8 @@ def supervise_registry(
 
     while True:
         flush()
+        if console:
+            recover()
         try:
             owed, bad = registered(registry)
         except Exception as e:  # noqa: BLE001 - never fatal
@@ -1964,13 +2247,13 @@ def supervise_registry(
             log("registry", None)
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
-        for sid, (report, briefs, verdict, followed) in owed.items():
+        for sid, (report, briefs, verdict, followed, after) in owed.items():
             if any(o[1] and o[1][0] == sid for o in outbox):
                 continue  # its event is found; it waits to be posted
             try:
                 if followed:  # never revived or nudged: its lead owes no report
                     event, key = follow(rec, sid, idle_since, told, holding)
-                    lead = track(sid, report, briefs, followed) if console else {}
+                    lead = track(sid, report, briefs, followed, after) if console else {}
                     since, kind = time.time(), key[0]
                     nth = [str(lead.get("occurrences"))] if kind in ("blocked", "failed") else []
                     eid = ":".join((kind, sid, *nth, *key[1:]))
@@ -1993,7 +2276,7 @@ def supervise_registry(
                         rec, sid, report, silent, resumed, unsent, notice, briefs, verdict, ended
                     )
                     if console:
-                        label(sid, track(sid, report, briefs, followed))
+                        label(sid, track(sid, report, briefs, followed, after))
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
@@ -2007,13 +2290,10 @@ def supervise_registry(
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
                     state[part] = {s: v for s, v in state[part].items() if s in owed}
-            state["written_at"] = int(time.time())
-            try:
-                write_state(state_path, state)
-            except OSError as e:
-                log("state", f"{state_path}: {reason(e)}")
-            else:
-                log("state", None)
+            deliver()
+            if notify:
+                needs_you()
+            save()
         if time.monotonic() - window >= timeout:
             print(
                 stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),
@@ -2089,6 +2369,12 @@ def main(argv: list[str] | None = None) -> int:
             "--host",
             help="with --top-level, the Omnigent host (name or id) to start the lead on",
         )
+        p.add_argument(
+            "--after",
+            metavar="SESSION",
+            help="with --top-level and a registry, the lead this one waits on: the supervisor"
+            " --console tells it that lead's DONE",
+        )
     p = sub.add_parser("send")
     p.add_argument("session")
     p.add_argument("brief", type=Path, help="file with the answer or follow-up")
@@ -2130,7 +2416,19 @@ def main(argv: list[str] | None = None) -> int:
         "--console",
         action="store_true",
         help="with --registry, the chief of staff's console: state file, events log, status labels,"
-        " progress deadline, settled events kept across restarts",
+        " progress deadline, settled events kept across restarts, routing",
+    )
+    p.add_argument(
+        "--fyi",
+        choices=("skip", "post"),
+        help="with --console: post every line as without it too (post), or only what is routed"
+        " to the chief of staff or the owner (skip, the default)",
+    )
+    p.add_argument(
+        "--decisions",
+        type=Path,
+        help="with --console, the file holding the owner's standing decisions for the small model"
+        " (its '## Standing decisions' section, else the whole file)",
     )
     p.add_argument(
         "--silent-seconds",
@@ -2164,6 +2462,12 @@ def main(argv: list[str] | None = None) -> int:
         owed = {s: r.resolve() for s, r in map(pair, getattr(args, "owed", []))}
         if args.cmd == "supervise" and not (owed or args.registry):
             raise Fail("supervise needs <session>=<report> pairs or --registry")
+        if args.cmd == "supervise" and (args.fyi or args.decisions) and not args.console:
+            raise Fail("--fyi and --decisions need --console")
+        if getattr(args, "after", None) and not (args.top_level and registry):
+            raise Fail(
+                "--after needs --top-level and a registry: it marks the lead's registry line"
+            )
         if args.cmd == "capacity":
             ok, line = capacity()
             print(line)
@@ -2208,7 +2512,14 @@ def main(argv: list[str] | None = None) -> int:
                 for s, r in owed.items():
                     arm(args.registry, s, r)
                 supervise_registry(
-                    og, args.registry, args.notify, args.silent_seconds, args.timeout, args.console
+                    og,
+                    args.registry,
+                    args.notify,
+                    args.silent_seconds,
+                    args.timeout,
+                    args.console,
+                    args.fyi or "skip",
+                    args.decisions,
                 )
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
@@ -2309,6 +2620,7 @@ def main(argv: list[str] | None = None) -> int:
                 [brief_of(report)] if not remote else None,
                 verdict=verifier,
                 followed=args.top_level,
+                after=args.after or "",
             )
         print(sid, flush=True)
         if args.cmd == "run":

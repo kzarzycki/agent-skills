@@ -1,6 +1,7 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
 import importlib.util
+import inspect
 import json
 import os
 import re
@@ -141,6 +142,20 @@ class FakeOmnigent:
         if "archive" in self.fail:
             raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
         self.archived.append(sid)
+
+
+REAL_TRIAGE = omnigent_agent.triage
+
+
+@pytest.fixture(autouse=True)
+def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The small model faked: never a real call. Each event it is asked about is recorded, and
+    it answers ``none`` (mid-work)."""
+    asked: list[str] = []
+    monkeypatch.setattr(
+        omnigent_agent, "triage", lambda event, decisions: asked.append(event) or ("none", "fake")
+    )
+    return asked
 
 
 @pytest.fixture(autouse=True)
@@ -2073,6 +2088,22 @@ class Fleet:
         self.refuse = 0
         self.labels: list[tuple[str, dict]] = []  # each label write
         self.unlabelled = 0  # the next label writes that fail
+        self.files: dict[str, str] = {}  # what read_file finds, by path
+        self.pages = 0  # history pages read back
+
+    def read_file(self, sid: str, path: str) -> str:
+        if path not in self.files:
+            raise omnigent_agent.Gone(f"{path}: not found")
+        return self.files[path]
+
+    def older(self, sid: str, after: str = "") -> dict:
+        self.pages += 1
+        newest = list(reversed(self.histories.get(sid, [])))
+        ids = [str(i.get("id")) for i in newest]
+        start = ids.index(after) + 1 if after else 0
+        data = newest[start : start + 100]
+        more = start + 100 < len(newest)
+        return {"data": data, "last_id": data[-1]["id"] if data else None, "has_more": more}
 
     def active(self, sid: str) -> float:
         return self.kids.get(sid, 0.0)
@@ -2190,6 +2221,12 @@ class Lead(Fleet):
     def info(self, sid: str) -> dict:
         return {**super().info(sid), **self.snap}
 
+    def send(self, sid: str, text: str) -> None:  # a message to a lead lands in its history
+        super().send(sid, text)
+        if sid in self.histories and sid not in self.offline:
+            n = len(self.histories[sid])
+            self.histories[sid].append({**said("user", text, f"u{n}"), "created_at": time.time()})
+
 
 def ending(text: str, ago: float) -> dict:
     return {**said("assistant", text, f"m{text}{ago}"), "created_at": time.time() - ago}
@@ -2203,6 +2240,11 @@ def following(tmp_path: Path) -> Path:
 
 def posted(og: Fleet) -> list[str]:
     return [t for s, t in og.inbox if s == "cos"]
+
+
+def fyis(og: Fleet) -> list[str]:
+    """The lines posted as without --console, which --fyi post keeps."""
+    return [t for t in posted(og) if t.startswith("Supervisor: ")]
 
 
 def skewed(monkeypatch: pytest.MonkeyPatch) -> list[float]:
@@ -2376,14 +2418,14 @@ def test_one_poll_writes_the_state_and_labels_and_an_unchanged_poll_within_a_min
     assert first["leads"]["b"]["report"] == str(owing) and first["leads"]["b"]["follow"] is False
     assert first["settled"]["a"] == ["ended:a:mDONE: shipped\nPR #1 merged5"]
     assert (first["intents"], first["attention"], first["pending_posts"]) == ([], [], [])
-    assert first["rate"]["next_post_at"] == 0
+    assert first["rate"]["next_post_at"] > time.time()  # its DONE printed as a post would go
     a_labels = [labels for sid, labels in og.labels if sid == "a"]
     assert [labels["status.line"] for labels in a_labels] == ["turn ended: DONE: shipped"] * 2
     assert int(a_labels[1]["status.at"]) - int(a_labels[0]["status.at"]) >= 60  # none at 30 s
     assert lead["label"] == {"line": a_labels[0]["status.line"], "at": a_labels[0]["status.at"]}
     events = [json.loads(e) for e in registry.with_suffix(".events.jsonl").read_text().splitlines()]
-    assert [(e["id"], e["session"], e["kind"], e["settled"]) for e in events] == [
-        (first["settled"]["a"][0], "a", "ended", "printed")
+    assert [(e["id"], e["session"], e["kind"], e["settled"], e["action"]) for e in events] == [
+        (first["settled"]["a"][0], "a", "ended", "rule", "done")
     ]
 
 
@@ -2408,8 +2450,9 @@ def test_a_restart_raises_no_settled_event_again_and_keeps_budgets_and_progress(
         lambda poll: offset.__setitem__(0, at[poll]),
         notify="cos",
         console=True,
+        fyi="post",
     )
-    assert [p.split("\n")[0] for p in posted(og)] == [
+    assert [p.split("\n")[0] for p in fyis(og)] == [
         "Supervisor: a t-a: turn ended, quiet 301s",
         "Supervisor: a t-a: no progress 20m (unknown)",
     ]
@@ -2427,8 +2470,9 @@ def test_a_restart_raises_no_settled_event_again_and_keeps_budgets_and_progress(
         lambda poll: offset.__setitem__(0, at[poll]),
         notify="cos",
         console=True,
+        fyi="post",
     )
-    assert [p.split("\n")[0] for p in posted(og)] == [
+    assert [p.split("\n")[0] for p in fyis(og)] == [
         "Supervisor: a t-a: no progress 30m after a nudge (unknown)"
     ]
     lead = state_of(registry)["leads"]["a"]
@@ -2448,9 +2492,10 @@ def test_a_lead_stuck_running_raises_one_deadline_for_its_progress(
         offset[0] = at[poll]
         og.refuse = 2 if poll == 1 else og.refuse  # its post fails at two polls: it waits, once
 
-    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
-    assert posted(og) == [
-        "Supervisor: a t-a: no progress 20m (unknown)\nlast message: STILL WORKING: on it"
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True, fyi="post")
+    assert fyis(og) == [  # raised once each: the deadline, then (nudged at it) the one after
+        "Supervisor: a t-a: no progress 20m (unknown)\nlast message: STILL WORKING: on it",
+        "Supervisor: a t-a: no progress 42m after a nudge (unknown)\nlast message: STILL WORKING: on it",
     ]
     assert state_of(registry)["settled"]["a"][0].startswith("deadline:a:")
 
@@ -2476,8 +2521,8 @@ def test_progress_starts_from_the_leads_real_activity_not_from_first_sight(
     og.snap = {"status": "running"}
     if child_ago:
         og.kids["a"] = time.time() - child_ago
-    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
-    assert [p.split("\n")[0] for p in posted(og)] == (
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert [p.split("\n")[0] for p in fyis(og)] == (
         [f"Supervisor: a t-a: {deadline}"] if deadline else []
     )
     progress = state_of(registry)["leads"]["a"]["progress_at"]
@@ -2520,12 +2565,16 @@ def test_the_same_failure_again_after_a_recovery_is_news_and_a_restart_posts_nei
     def recover_then_fail(poll: int) -> None:
         og.snap["status"] = "running" if poll == 1 else "failed"
 
-    supervised(og, registry, monkeypatch, 3, recover_then_fail, notify="cos", console=True)
-    failures = [p.split("\n")[0] for p in posted(og)]
+    supervised(
+        og, registry, monkeypatch, 3, recover_then_fail, notify="cos", console=True, fyi="post"
+    )
+    failures = [p.split("\n")[0] for p in fyis(og)]
     assert failures == ["Supervisor: a t-a: failed: runner lost"] * 2
     og.inbox.clear()
-    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # a restart, still failed
-    assert posted(og) == []
+    supervised(
+        og, registry, monkeypatch, 2, notify="cos", console=True, fyi="post"
+    )  # a restart, still failed
+    assert fyis(og) == []
     assert [i for i in state_of(registry)["settled"]["a"] if i.startswith("failed:")] == [
         "failed:a:1:runner lost",
         "failed:a:2:runner lost",
@@ -2544,8 +2593,8 @@ def test_a_second_quiet_spell_with_the_same_ending_raises_a_deadline(
         offset[0], status = steps[poll]
         og.snap = {"status": status}
 
-    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
-    assert [p.split("\n")[0] for p in posted(og)] == [
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True, fyi="post")
+    assert [p.split("\n")[0] for p in fyis(og)] == [
         "Supervisor: a t-a: turn ended, quiet 301s",  # the first spell, told once
         "Supervisor: a t-a: no progress 20m (verifier)",  # the second, the same message
     ]
@@ -2568,9 +2617,10 @@ def test_a_parked_lead_has_no_deadline(
         lambda poll: offset.__setitem__(0, at[poll]),
         notify="cos",
         console=True,
+        fyi="post",
     )
     ends = ["Supervisor: a t-a: turn ended"] if status == "idle" else []
-    assert [p.split("\n")[0] for p in posted(og)] == ends
+    assert [p.split("\n")[0] for p in fyis(og)] == ends
     assert state_of(registry)["leads"]["a"]["wait"] == "parked"
 
 
@@ -2586,12 +2636,12 @@ def test_a_live_child_is_progress_and_the_deadline_counts_from_it(
     before: list[int] = []
 
     def later(poll: int) -> None:
-        before.append(len(posted(og)))
+        before.append(len(fyis(og)))
         offset[0] = at[poll]
 
-    supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
+    supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True, fyi="post")
     assert before == [0, 0, 0]
-    assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: no progress 20m (worker)"]
+    assert [p.split("\n")[0] for p in fyis(og)] == ["Supervisor: a t-a: no progress 20m (worker)"]
 
 
 def test_a_reader_never_sees_a_half_written_state(
@@ -2611,7 +2661,7 @@ def test_a_reader_never_sees_a_half_written_state(
 
     monkeypatch.setattr(omnigent_agent.os, "replace", replace)
     supervised(og, registry, monkeypatch, 2, console=True)
-    assert renames == [registry.with_suffix(".state.json")] * 2
+    assert set(renames) == {registry.with_suffix(".state.json")} and len(renames) >= 2
     assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -2621,8 +2671,8 @@ def test_a_failed_label_write_is_logged_once_and_the_poll_goes_on(
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("DONE: shipped", 5))
     og.unlabelled = 2
-    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
-    assert [p.split("\n")[0] for p in posted(og)] == ["Supervisor: a t-a: turn ended"]
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True, fyi="post")
+    assert [p.split("\n")[0] for p in fyis(og)] == ["Supervisor: a t-a: turn ended"]
     assert og.labels == [
         (
             "a",
@@ -3358,6 +3408,12 @@ ROUTES = [
         ("rule", "record"),
     ),
     ("exact repeat", {"kind": "ended", "last": "on it", "repeat": True}, None, ("rule", "record")),
+    (
+        "quiet again after a nudge, the same words",
+        {"kind": "ended", "last": "on it", "repeat": True, "nudged": True},
+        None,
+        ("rule", "act"),
+    ),
     ("quiet, mid-work", {"kind": "ended", "last": "on it"}, "none", ("model", "record")),
     ("quiet, stalled", {"kind": "ended", "last": "on it"}, "act", ("model", "nudge")),
     ("quiet, for the owner", {"kind": "ended", "last": "hm"}, "owner", ("model", "owner")),
@@ -3486,7 +3542,7 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = model_answers(monkeypatch, 'thinking\n{"route": "none", "why": "mid-work"}\n')
-    assert omnigent_agent.triage("x" * 5000, "- merge on green") == ("none", "mid-work")
+    assert REAL_TRIAGE("x" * 5000, "- merge on green") == ("none", "mid-work")
     cmd, kw = calls[0]["cmd"], calls[0]
     assert cmd[:4] == ["claude", "-p", "--model", "claude-haiku-5-5"]
     for flag, value in (("--tools", ""), ("--setting-sources", "")):
@@ -3496,7 +3552,7 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
     assert kw["input"] == "x" * 4000 and kw["timeout"] == 20
     assert kw["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "200"
     monkeypatch.setenv("OMNIGENT_SMALL_MODEL", "claude-other")
-    omnigent_agent.triage("e", "")
+    REAL_TRIAGE("e", "")
     assert calls[1]["cmd"][3] == "claude-other"
     assert "(none)" in calls[1]["cmd"][calls[1]["cmd"].index("--system-prompt") + 1]
 
@@ -3526,10 +3582,10 @@ def test_an_unparseable_failed_or_timed_out_model_answer_routes_to_act(
     monkeypatch: pytest.MonkeyPatch, answer: object
 ) -> None:
     model_answers(monkeypatch, answer)
-    route, why = omnigent_agent.triage("an event", "")
+    route, why = REAL_TRIAGE("an event", "")
     assert route == "act" and why
     event = {"kind": "ended", "last": "USER NEEDED: x", "decisions": True}
-    ask = lambda: omnigent_agent.triage("an event", "d")
+    ask = lambda: REAL_TRIAGE("an event", "d")
     assert omnigent_agent.route(event, ask)[:2] == ("model", "act")
 
 
@@ -3542,3 +3598,340 @@ def test_standing_decisions_are_their_section_else_the_whole_file_else_none(
     board.write_text("- approve reversible progress\n")
     assert omnigent_agent.standing(board) == "- approve reversible progress"
     assert omnigent_agent.standing(None) == "" == omnigent_agent.standing(tmp_path / "gone.md")
+
+
+class Leads(Lead):
+    """Followed leads, each with its own history and ``snaps`` fields (status, prompts, ...)."""
+
+    def __init__(self, **histories: list[dict]) -> None:
+        Fleet.__init__(self, **histories)
+        self.snap: dict = {}
+        self.snaps: dict[str, dict] = {}
+
+    def info(self, sid: str) -> dict:
+        return {**Fleet.info(self, sid), **self.snaps.get(sid, {})}
+
+
+def follows(tmp_path: Path, *sids: str, after: dict[str, str] | None = None) -> Path:
+    registry = tmp_path / "registry"
+    after = after or {}
+    registry.write_text(
+        "".join(
+            f"{s}={tmp_path / s}.md\tfollow" + (f"\tafter={after[s]}" if s in after else "") + "\n"
+            for s in sids
+        )
+    )
+    return registry
+
+
+def events_of(registry: Path) -> list[dict]:
+    lines = registry.with_suffix(".events.jsonl").read_text().splitlines()
+    return [json.loads(e) for e in lines]
+
+
+def test_a_second_stall_without_progress_escalates_and_sends_no_second_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "triage", lambda event, decisions: ("act", "stalled"))
+    og = Lead(told("brief", 60), ending("Looked at the logs.", 0))
+    # quiet 300 s: the model says stalled, so the nudge; it lands, and the lead stays quiet
+    at = {1: 301.0, 2: 302.0, 3: 333.0, 4: 634.0}
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        5,
+        lambda p: offset.__setitem__(0, at[p]),
+        notify="cos",
+        console=True,
+    )
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_NUDGE]
+    [post] = posted(og)
+    assert post.startswith("Supervisor [act] b-")
+    assert "[act] a t-a: turn ended, quiet 301s (quiet again after its nudge)" in post
+    assert [(e["settled"], e["action"]) for e in events_of(registry)] == [
+        ("model", "nudge"),
+        ("rule", "act"),
+    ]
+    lead = state_of(registry)["leads"]["a"]
+    assert lead["nudges"] == 1 and lead["nudged_at"] == lead["progress_at"]
+    assert [i["status"] for i in state_of(registry)["intents"]] == ["done"]
+
+
+def test_a_quiet_lead_the_model_finds_mid_work_is_recorded_and_not_posted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_model: list[str]
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("Reading the diff.", 0))
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        2,
+        lambda p: offset.__setitem__(0, 301.0),
+        notify="cos",
+        console=True,
+    )
+    assert og.inbox == [] and len(no_model) == 1 and "Reading the diff." in no_model[0]
+    assert [(e["settled"], e["action"], e["why"]) for e in events_of(registry)] == [
+        ("model", "record", "fake")
+    ]
+
+
+@pytest.mark.parametrize("landed", [True, False])
+def test_a_crash_between_an_actions_send_and_done_never_sends_it_again_after_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, landed: bool
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 0))
+    og.snap = {"status": "running"}
+    real = og.send
+
+    def crash(sid: str, text: str) -> None:
+        if sid == "a":
+            if landed:
+                real(sid, text)
+            raise Stop  # the supervisor dies before it marks the nudge done
+        real(sid, text)
+
+    og.send = crash  # type: ignore[method-assign]
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda p: offset.__setitem__(0, 1201.0),
+        notify="cos",
+        console=True,
+    )
+    [intent] = state_of(registry)["intents"]
+    assert (intent["action"], intent["status"]) == ("nudge", "open")
+    assert state_of(registry)["leads"]["a"]["nudges"] == 1  # counted before the send
+    og.send = real  # type: ignore[method-assign]
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # the restart
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_NUDGE] * landed
+    [intent] = state_of(registry)["intents"]
+    assert intent["status"] == ("done" if landed else "escalated")
+    escalated = [p for p in posted(og) if "may not have reached it" in p]
+    assert len(escalated) == (0 if landed else 1)
+
+
+@pytest.mark.parametrize("landed", [True, False])
+def test_a_crash_right_after_a_post_is_accepted_posts_it_once_after_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, landed: bool
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("DONE: shipped", 5))
+    og.histories["cos"] = []
+    real = og.send
+
+    def crash(sid: str, text: str) -> None:
+        if sid == "cos":
+            if landed:
+                real(sid, text)
+                for n in range(150):  # newer items push it past the newest page of 100
+                    og.histories["cos"].append(
+                        {**said("assistant", "ok", f"c{n}"), "created_at": time.time()}
+                    )
+            raise Stop  # accepted, and the supervisor dies before it marks it delivered
+        real(sid, text)
+
+    og.send = crash  # type: ignore[method-assign]
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    [pending] = state_of(registry)["pending_posts"]
+    assert pending["id"].startswith("b-") and state_of(registry)["attention"]
+    og.send = real  # type: ignore[method-assign]
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # the restart
+    posts = posted(og)
+    assert len(posts) == 1 and posts[0].startswith(f"Supervisor [act] {pending['id']}: 1 event")
+    if landed:
+        assert og.pages >= 2  # found on the second page of the history
+    state = state_of(registry)
+    assert (state["pending_posts"], state["attention"]) == ([], [])
+
+
+def test_a_restart_inside_the_post_window_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b")
+    offset = skewed(monkeypatch)
+    og = Leads(
+        a=[told("brief", 60), ending("DONE: one", 5)],
+        b=[told("brief", 60), ending("STILL WORKING: waiting on CI", 5)],
+    )
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert len(posted(og)) == 1
+    offset[0] = 60.0
+    og.histories["b"].append(ending("DONE: two", 0))
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)  # a restart at 60 s
+    assert len(posted(og)) == 1  # the window from the first post holds across it
+    assert [e["session"] for e in state_of(registry)["attention"]] == ["b"]
+    offset[0] = 301.0
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert len(posted(og)) == 2 and "[act] b t-b: turn ended" in posted(og)[1]
+
+
+def test_a_restart_inside_the_model_window_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_model: list[str]
+) -> None:
+    registry = follows(tmp_path, "a", "b")
+    board = tmp_path / "board.md"
+    board.write_text("## Standing decisions\n- merge on green\n")
+    offset = skewed(monkeypatch)
+    og = Leads(a=[told("brief", 60)], b=[told("brief", 60)])
+    supervised(og, registry, monkeypatch, 1, console=True, decisions=board)
+    state = state_of(registry)
+    state["rate"]["model_calls"] = [time.time() - 3500] * 30  # the hour's calls, spent
+    registry.with_suffix(".state.json").write_text(json.dumps(state))
+    og.histories["a"].append(ending("USER NEEDED: merge it?", 0))
+    supervised(og, registry, monkeypatch, 1, console=True, decisions=board)  # the restart
+    assert no_model == []
+    assert events_of(registry)[-1]["why"] == "over 30 small-model calls an hour"
+    offset[0] = 101.0  # the oldest calls are past the hour
+    og.histories["b"].append(ending("USER NEEDED: merge it?", 0))
+    supervised(og, registry, monkeypatch, 1, console=True, decisions=board)
+    assert len(no_model) == 1 and len(state_of(registry)["rate"]["model_calls"]) == 1
+
+
+def test_twenty_events_in_a_minute_make_one_post_then_one_combined_post_with_every_owner_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sids = [f"l{i}" for i in range(20)]
+    registry = follows(tmp_path, *sids)
+    offset = skewed(monkeypatch)
+    og = Leads(**{s: [told("brief", 60), ending("STILL WORKING: on it", 50)] for s in sids})
+
+    def blocked(i: int) -> dict:  # an approval prompt for an even lead, a question for an odd one
+        params = (
+            {"ask_user_question": {"questions": [{"question": "which?"}]}, "message": "which?"}
+            if i % 2
+            else {"content_preview": f"Bash(rm {i})"}
+        )
+        return {"pending_elicitations": [{"elicitation_id": f"e{i}", "params": params}]}
+
+    og.snaps["l0"] = blocked(0)
+    waiting: list[str] = []
+
+    def later(poll: int) -> None:
+        if poll < 20:
+            offset[0] = poll * 3.0
+            og.snaps[f"l{poll}"] = blocked(poll)
+        else:
+            waiting.extend(line["status.line"] for s, line in og.labels if s == "cos")
+            offset[0] = 301.0
+
+    supervised(og, registry, monkeypatch, 21, later, notify="cos", console=True)
+    first, combined = posted(og)
+    assert first.startswith("Supervisor [owner] b-") and "1 event\n" in first
+    assert combined.startswith("Supervisor [owner] b-") and "19 events\n" in combined
+    for i in range(1, 20):
+        to = "act" if i % 2 else "owner"
+        assert f"[{to}] l{i} t-l{i}: blocked on a prompt: " in combined
+    assert waiting[-1] == "needs you: 9"  # the owner events waiting for the second post
+    assert [line["status.line"] for s, line in og.labels if s == "cos"][-1] == ""
+    assert state_of(registry)["attention"] == []
+
+
+def test_the_supervisor_never_approves_a_prompt() -> None:
+    source = inspect.getsource(omnigent_agent.supervise_registry)
+    assert "approve(" not in source and "resolve(" not in source
+
+
+def test_an_archived_lead_is_absorbed_with_no_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("DONE: shipped", 5))
+    og.snap = {"archived": True}
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    assert posted(og) == [] and registry.read_text() == ""
+    assert state_of(registry)["leads"] == {}
+    assert [(e["kind"], e["action"]) for e in events_of(registry)] == [("archived", "absorb")]
+
+
+def test_a_done_is_told_to_each_lead_waiting_on_it_and_posted_with_its_report_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b", "c", after={"b": "a"})
+    og = Leads(
+        a=[told("brief", 60), ending("DONE: PR #7 merged\nmore", 5)],
+        b=[told("brief", 60), ending("STILL WORKING: waiting on lead a", 5)],
+        c=[told("brief", 60), ending("STILL WORKING: waiting on CI", 5)],
+    )
+    og.files[f"{tmp_path / 'a'}.md"] = "DONE: merged\n" + "".join(f"l{n}\n" for n in range(9))
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    told_b = "Supervisor: a t-a, the lead you wait on, ended: DONE: PR #7 merged"
+    assert [(s, t) for s, t in og.inbox if s != "cos"] == [("b", told_b)]
+    [post] = posted(og)
+    assert (
+        f"a t-a: turn ended: DONE: PR #7 merged\nreport {tmp_path / 'a'}.md:\nDONE: merged\n"
+        in post
+    )
+    assert post.endswith("l3")  # the report's first 5 lines
+    assert state_of(registry)["leads"]["b"]["waits_on"] == ["a"]
+
+
+def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
+    og.snap = {"status": "failed", "last_task_error": {"message": "runner lost"}}
+    states = {1: "running", 2: "failed"}
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda p: og.snap.update(status=states[p]),
+        notify="cos",
+        console=True,
+    )
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_REVIVE]
+    [post] = posted(og)
+    assert "[act] a t-a: failed: runner lost (failed again after its revive)" in post
+    assert state_of(registry)["leads"]["a"]["revives"] == 1
+
+
+def test_fyi_and_decisions_need_console_and_after_needs_a_top_level_start_with_a_registry(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = str(tmp_path / "registry")
+    assert omnigent_agent.main(["supervise", "--registry", registry, "--fyi", "post"]) == 1
+    assert "--fyi and --decisions need --console" in capsys.readouterr().err
+    brief = tmp_path / "b.md"
+    brief.write_text("x")
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "a.md"), "--after", "s9"]
+    assert omnigent_agent.main(args) == 1
+    assert "--after needs --top-level and a registry" in capsys.readouterr().err
+
+
+def test_a_top_level_start_after_another_lead_writes_the_after_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    registry, brief = tmp_path / "registry", tmp_path / "b.md"
+    brief.write_text("do X")
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "a.md"), "--top-level"]
+    assert omnigent_agent.main([*args, "--registry", str(registry), "--after", "s9"]) == 0
+    line = registry.read_text().strip()
+    assert line.endswith("\tfollow\tafter=s9")
+    assert omnigent_agent.entry(line)[2:] == ([tmp_path / "a.md.brief"], False, True, "s9")
+
+
+def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b", after={"b": "a"})
+    og = Leads(a=[told("brief", 60), ending("DONE: merged", 5)], b=[told("brief", 60)])
+    question = {"ask_user_question": {"questions": [{"question": "go?"}]}, "message": "go?"}
+    og.snaps["b"] = {"pending_elicitations": [{"elicitation_id": "e", "params": question}]}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert [s for s, t in og.inbox] == ["cos"]
+    assert "the supervisor's tell was not delivered: it waits on a prompt" in posted(og)[0]
