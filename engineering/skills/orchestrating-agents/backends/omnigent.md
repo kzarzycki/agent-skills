@@ -187,6 +187,13 @@ for what a subscription notice names, in place of session info plus history. It 
 snapshot: a native Claude session reads idle while quiet mid-turn, so an idle look reads as
 `turn ended`, which a notice has already confirmed.
 
+**Reading a report.** `python3 scripts/omnigent_agent.py report <session> [<path>]` prints a
+file of a session's workspace through Omnigent's file API, from any host, so a lead's report on
+another host costs no session. An absolute path is read on the session's host, a relative one in
+its workspace; no path is the report in the session's registry line (`--registry`, else
+`$OMNIGENT_SUPERVISE_REGISTRY`; neither: exit 2). A directory prints its entries one per line.
+Exit 4 is a missing file (a report not yet written), 1 an offline host or any other HTTP status.
+
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
 run as a background command, exits 0 as soon as one of them ends a turn (an end that has
 held for 30s, since a native Claude session reads idle while quiet mid-turn), blocks on an
