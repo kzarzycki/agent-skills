@@ -48,7 +48,8 @@ loop never merges it or turns auto-merge on for it. Risk rules and `risk:high` h
 unchanged. A spec a policy covers is no trail, since under `spec: auto` every issue is covered.
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
 PR when one fails, or when GitHub's merge state says the head is behind a base that requires it up to date
-(`BEHIND`) or conflicts with it (`DIRTY`): merge the base in, rerun the gates and get a verdict on the merge. A draft
+(`BEHIND`) or conflicts with it (`DIRTY`): merge the base in, rerun the gates and get a verdict on the merge. While
+GitHub has not computed that state yet (`UNKNOWN`) it neither marks ready nor merges: exit 3, run it again. A draft
 it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
 protection; a base requiring none requires every check on the head green). A private repo on GitHub's free plan
 has neither, nor auto-merge: GitHub's 403 on its rules reads as none required, and `land` says GitHub enforces nothing
@@ -57,8 +58,8 @@ green and the label where the change is high risk: `gh pr merge --squash --match
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
 exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
 merged PR: exit 0; a closed one: exit 1.
-`land --wait` runs it again every 30 seconds, printing each new state, while what waits is CI on the head: a draft it
-marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
+`land --wait` runs it again every 30 seconds, printing each new state, while what waits is GitHub's merge state or CI
+on the head: a draft it marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
 once. With auto-merge on, whoever turned it on, it waits for the merge (exit 0) unless the owner's label or a local-ci
 record holds it, which GitHub never supplies; auto-merge turned off without a merge
 is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
@@ -227,8 +228,9 @@ APPROVALS = "loop:approvals"
 RUN = re.compile(r"/actions/runs/(\d+)")
 # land --wait: seconds between reads of the PR, and how long it waits in all before it exits 3
 POLL, CEILING = 30, 2 * 60 * 60
-# what land --wait polls for: CI on the head, or GitHub's auto-merge
+# what land --wait polls for: CI on the head, GitHub's auto-merge, or its merge state
 ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge)"
+ON_STATE = "GitHub to compute its merge state"
 # GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
 STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
@@ -1608,8 +1610,7 @@ def landing(
     if why := outside(pull, loop):
         # land is the loop's merge: auto-merge on a PR no verifier saw would merge it on CI alone
         raise Refused(why)
-    # GitHub says this as a required check `expected`; ponytail: UNKNOWN (not computed yet) passes, the next read
-    # of a waiting land refuses it before the merge
+    # GitHub says this as a required check `expected`
     if stale := STALE_BASE.get(pull["mergeStateStatus"]):
         raise Refused(
             f"{where} {stale} {pull['baseRefName']}: merge origin/{pull['baseRefName']} in, rerun the gates, get a"
@@ -1622,11 +1623,6 @@ def landing(
         return 1, None
     for line in flag(pull, issues, loop):
         print(line)
-    if pull["isDraft"]:
-        # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
-        gh("pr", "ready", str(pr))
-        print(f"{where} is ready now: CI starts on ready, run land again")
-        return WAITING, ON_CI
     required = required_checks(pull["baseRefName"])
     checking, owner = ran(pull, loop, required), owner_waits(pull, issues, loop)
     # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the repo's
@@ -1643,6 +1639,16 @@ def landing(
         for line in checking + owner:
             print(line)
         return WAITING, None
+    # GitHub computes the merge state after a push or a base change; ready or merge before it may expose a head the
+    # next read refuses as behind or in conflict
+    if pull["mergeStateStatus"] == "UNKNOWN":
+        print(f"{where}: GitHub hasn't computed whether it can merge yet: run land again")
+        return WAITING, ON_STATE
+    if pull["isDraft"]:
+        # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
+        gh("pr", "ready", str(pr))
+        print(f"{where} is ready now: CI starts on ready, run land again")
+        return WAITING, ON_CI
     if not checking + owner:
         gh(*merge)
         print(f"{where} merges at {head}")

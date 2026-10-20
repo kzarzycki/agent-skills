@@ -2459,6 +2459,27 @@ def test_land_wait_ends_with_exit_3_on_more_checks_than_the_gate_reads(
     )
 
 
+UNKNOWN = "PR #7: GitHub hasn't computed whether it can merge yet: run land again"
+
+
+def test_land_neither_readies_nor_merges_before_github_computes_the_merge_state(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"] = proven(mergeStateStatus="UNKNOWN")
+    assert landed(capsys, landing) == (approvals.WAITING, [UNKNOWN], [])
+
+
+def test_land_wait_rereads_an_unknown_merge_state_before_marking_a_draft_ready(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A draft whose merge state resolves to a conflict is refused while still a draft."""
+    landing["pull"] = proven("SKIPPED", isDraft=True, mergeStateStatus="UNKNOWN")
+    later += [proven("SKIPPED", isDraft=True, mergeStateStatus="DIRTY")]
+    code, lines, calls = waited(capsys, landing)
+    assert (code, lines[0], calls) == (1, UNKNOWN, [])
+    assert lines[1].startswith("PR #7 conflicts with main")
+
+
 @pytest.mark.parametrize(
     ("status", "stale"), [("BEHIND", "is behind"), ("DIRTY", "conflicts with")]
 )
