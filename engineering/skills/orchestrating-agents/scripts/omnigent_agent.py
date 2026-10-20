@@ -1243,7 +1243,7 @@ def follow(
     og: Omnigent,
     sid: str,
     idle_since: dict[str, tuple],
-    told: dict[str, tuple],
+    told: dict,
     holding: dict[str, tuple[tuple, float]],
     quiet_seconds: float = FOLLOW_QUIET_SECONDS,
 ) -> tuple[str, bool]:
@@ -1251,8 +1251,9 @@ def follow(
     archived. A prompt or a failure is news once per occurrence; a turn end naming ``DONE``, ``USER
     NEEDED`` or ``PARKED`` once it holds as ``watch`` counts an end; any other turn end only once
     the lead and its live children wrote nothing for ``quiet_seconds`` since it. Each is told once
-    per message, so ``told`` keeps the key last told per lead and ``holding`` the end not yet held;
-    both are the caller's across looks.
+    per message, so ``told`` keeps the ending last told per lead (kept while the runner flaps to
+    running, since only a new message is a new ending) and the prompt or failure last told, and
+    ``holding`` the end not yet held; all are the caller's across looks.
     """
     key, line = observe(og, sid, idle_since)
     if key[0] == "archived":
@@ -1260,9 +1261,9 @@ def follow(
     if key[0] != "ended":
         holding.pop(sid, None)
         if key[0] == "running":
-            told.pop(sid, None)
-        elif told.get(sid) != key:
-            told[sid] = key
+            told.pop(("occurrence", sid), None)
+        elif told.get(("occurrence", sid)) != key:
+            told[("occurrence", sid)] = key
             return line, False
         return "", False
     if told.get(sid) == key:
@@ -1428,7 +1429,7 @@ def supervise_registry(
     ended: dict[str, float] = {}
     resumed: dict[str, float] = {}
     idle_since: dict[str, tuple] = {}  # followed leads, as ``follow`` keeps them
-    told: dict[str, tuple] = {}
+    told: dict = {}
     holding: dict[str, tuple[tuple, float]] = {}
     unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)

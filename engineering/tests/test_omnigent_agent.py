@@ -2225,6 +2225,25 @@ def test_a_live_child_updated_within_the_window_keeps_a_followed_lead_quiet_pend
     assert len(posted(og)) == 1  # news only at 401: the child, not the end, held it
 
 
+def test_a_named_ending_already_told_stays_told_while_the_runner_flaps_to_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("DONE: finished", 1))
+    states = {1: "running", 2: "idle", 3: "idle"}
+
+    def flap(poll: int) -> None:
+        og.snap = {"status": states.get(poll, "idle")}
+        if poll == 4:
+            og.histories["a"].append(ending("DONE: again", 0))  # a new message, a new ending
+
+    supervised(og, registry, monkeypatch, 6, flap, notify="cos")
+    assert [p.splitlines()[1] for p in posted(og)] == [
+        "last message: DONE: finished",
+        "last message: DONE: again",
+    ]
+
+
 def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
