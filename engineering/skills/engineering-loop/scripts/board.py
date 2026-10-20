@@ -29,7 +29,7 @@ from typing import Any
 # importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
 sys.dont_write_bytecode = True
 # the label names and the docs' reading, defined once
-from approvals import NEEDS_OWNER, READY, TRACKER, Refused, read, section, toplevel
+from approvals import NEEDS_OWNER, READY, TRACKER, Refused, one_repo, read, section, toplevel
 
 # ponytail: the repo's first linked project is the board; pick by title when a second one is linked.
 LOOKUP = """query($owner: String!, $name: String!, $issue: Int!) {
@@ -144,6 +144,11 @@ def column_of(repo: dict[str, Any], mapped: dict[str, str] | None = None) -> str
 
 
 def main(argv: list[str]) -> int:
+    try:
+        one_repo()
+    except Refused as exc:
+        print(exc, file=sys.stderr)
+        return 1
     if len(argv) == 2 and argv[0] == "column" and argv[1].isdigit():
         try:
             mapped = mapping(tracker_file())

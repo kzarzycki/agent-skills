@@ -10,6 +10,10 @@
   subscription-woken chief-of-staff turns changed nothing; without one it subscribes as before.
   The chief-of-staff skill follows leads through one detached supervisor, and its handover names
   it.
+- `approvals.py`, `board.py`, `labels.py` and the demo skill's `post_demo.sh` refuse to run
+  in a checkout whose remotes name several GitHub repos while `gh repo set-default` names
+  none (#236). gh then reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, so a
+  verdict posted from a fork's checkout landed on the upstream PR of the same number.
 - `approvals.py land <pr> --wait` is the one background command a lead starts to land
   (#235): it marks a draft ready, waits while required checks are pending with none red,
   merges, or turns on auto-merge, and waits for GitHub's merge, through a merge queue too
