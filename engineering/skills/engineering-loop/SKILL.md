@@ -316,10 +316,12 @@ verifier, review angles run as native subagents, never as full harness sessions.
   which the owner sets, unless the owner names one for a task or loop.md's `Worker model:
   <tier> for <condition>` line names a tier for a worker whose issue matches the condition
   (read as a `risk:` rule's labels are), so the choice and its reason sit in one file the
-  owner can change. The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku; each
-  family names its own), so one line holds for every family and outlives a release. Resolve
-  it at launch from the worker's family's newest generation only: its model of that tier,
-  else its closest higher tier (its highest when none is higher), never an older
+  owner can change. The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
+  Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
+  and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
+  Astra) is no tier and never runs, because it costs several times `top`. Resolve the tier
+  at launch from the newest generation of the family's tier models only: its model of that
+  tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
   family's current lineup (the backend's Model section) leaves the default. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
