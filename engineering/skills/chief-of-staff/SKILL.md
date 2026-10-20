@@ -224,8 +224,10 @@ says, so that file is the whole of your state:
   on the same registry with your own: the `follow` lines stay in it.
   Then recall with the query `owner standing decisions` (Memory), read each live lead's
   state from its session info alone (`sys_session_get_info(session_id=<id>)`; `status` also
-  prints its last message), subscribe to it (`sys_session_subscribe(session_id=<id>)`), and rewrite the file with what
-  you found: Owner contact, any row a status contradicts, and any recalled decision it
+  prints its last message), subscribe to it (`sys_session_subscribe(session_id=<id>)`) only
+  when you follow it by subscription, never beside the supervisor: the subscription wakes
+  you on every turn and bypasses the supervisor's filter. Rewrite the file with what you
+  found: Owner contact, any row a status contradicts, and any recalled decision it
   lacks. Carry on without greeting the owner again. Read no transcript or report to rebuild
   state, since that is what the file saves; read one only when a lead's notice or the
   owner's question needs it.
