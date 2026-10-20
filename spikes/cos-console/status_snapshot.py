@@ -74,7 +74,7 @@ def snapshot(src: str) -> dict:
             info = og.info(lead["id"])
             items = og.items(lead["id"])
         except o.Fail as e:
-            leads.append({**lead, "state": "unknown", "error": str(e)})
+            leads.append({**lead, "title": lead["board_title"], "state": "unknown", "error": str(e)})
             continue
         last = o.last_said(items)
         leads.append({

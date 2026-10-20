@@ -79,17 +79,23 @@ export const register: Register = (on, options) => {
       r = { ...r, route: picked, why: `${model}: ${answer.isAnswered ? answer.text.trim().slice(0, 120) : answer.reason}` }
     }
     await update($, events, list => [...list, { at: now, session: notice.session, kind: r.kind, route: r.route, why: r.why } as CosEvent].slice(-200))
-    if (r.route !== 'cos') {
+    if (r.route === 'absorb') {
       $.ui.toast(`cos-console: ${r.kind} for ${notice.title || notice.session.slice(0, 8)} (${r.route})`)
       // Claude puts a dropped prompt back in the box; Omnigent re-sends Enter while its pasted
-      // draft is still there, so clear it once the drop has landed.
-      $.clock.after(300, () => $.prompt.fill({ text: '', mode: 'replace' }))
+      // draft is still there, so clear it once the drop has landed: only while the box still holds
+      // this notice, so a message typed or queued since is never erased.
+      // ponytail: read-then-fill is not atomic; a draft landing between the two is erased. The build defaults to --fyi skip instead.
+      $.clock.after(300, async () => {
+        const box = await $.prompt.read()
+        if (box.text.trim() === e.text.trim()) await $.prompt.fill({ text: '', mode: 'replace' })
+      })
       return { drop: `cos-console: ${r.route} ${r.kind}: ${r.why}` }
     }
     // Escalated: give the model the lead's row so it skips the `status` call.
     const lead = (await read($, status))?.leads.find(l => l.id === notice.session)
     const row = lead ? `cos-console: this lead's status row: ${JSON.stringify(lead)}` : 'cos-console: lead not in the status file'
-    return next({ ...e, context: [...(e.context ?? []), `cos-console routed this as ${r.kind}: ${r.why}`, row] })
+    const note = r.route === 'owner' ? `cos-console: FOR THE OWNER (${r.kind}): put it to them; do not answer it yourself. ${r.why}` : `cos-console routed this as ${r.kind}: ${r.why}`
+    return next({ ...e, context: [...(e.context ?? []), note, row] })
   }).catch(($, e, next) => next(e)) // fail open: the notice reaches the model, as without the mod
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

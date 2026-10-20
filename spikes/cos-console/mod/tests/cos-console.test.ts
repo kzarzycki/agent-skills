@@ -55,6 +55,18 @@ test('an escalated notice reaches the model with what was routed, and the owner 
   expect(seen[1]!.context?.[0]).toMatch(/handled without you.*\n- ba7c500f archived/)
 })
 
+test('owner events reach the model marked for the owner, never dropped', async ($, on) => {
+  mock.clock(on, { now: 1_792_500_000_000 })
+  on('model.complete', () => ({ value: { isAnswered: true, text: '{"route":"owner","why":"not reversible"}', usage: USAGE } }) as never)
+  const seen: (readonly string[] | undefined)[] = []
+  on('prompt.submit', ($, e) => { seen.push(e.context); return { text: e.text } })
+  await $.prompt.submit({ text: notice('blocked on a prompt: Bash(git push --force)', 'x'), wait: false, origin: { kind: 'unclassified' } })
+  await $.prompt.submit({ text: notice('turn ended', 'USER NEEDED: delete the prod bucket?'), wait: false, origin: { kind: 'unclassified' } })
+  expect(seen).toHaveLength(2)
+  expect(seen[0]?.[0]).toMatch(/FOR THE OWNER \(prompt\)/)
+  expect(seen[1]?.[0]).toMatch(/FOR THE OWNER \(user-needed\)/)
+})
+
 test('the pane says when there is no status file', async ($, on) => {
   mock.clock(on, { now: 1_792_500_000_000 })
   await $.command.run({ command: 'leads' } as never)

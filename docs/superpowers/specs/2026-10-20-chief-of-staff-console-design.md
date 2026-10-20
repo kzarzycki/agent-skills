@@ -4,20 +4,21 @@
 
 - **Most chief-of-staff (CoS) tokens go to waking up for nothing.** In the current CoS session, 74 of 119 turns were started by a lead's notice, not by you. Each wake re-reads the whole transcript (about 120k tokens on average), so a notice that changes nothing still costs about $0.03 per model call, and a typical notice turn makes three calls.
 - **Recommendation: move the routine work out of the Opus session, in three layers.**
-  1. The supervisor (the Python process that already watches every lead) writes one status file and a one-line status label on each lead, and settles routine events with fixed rules: record a park, nudge a stall once, revive a failure once, archive a finished lead.
+  1. The supervisor (the Python process that already watches every lead) writes one state file and a one-line status label on each lead, and settles routine events with fixed rules: record a park, nudge a stall once, revive a failure once, archive a finished lead.
   2. What the rules can't settle goes to a small model (Haiku, or Luna on Codex) for one routing decision: nothing to do, the CoS must act, or only you can decide. Measured: about 870 tokens and $0.00007 per event, against about $0.08 for an Opus notice turn.
   3. The Opus CoS wakes only for real decisions, and each wake arrives with the lead's status and report already attached, so it skips the `status` call and the report read.
-- **You see the same status in the web UI** as a short line under each lead in the sidebar, kept live by Omnigent's own sidebar updates. That needs a small change on the fork (about 40 lines of code); the spike is built and tested.
-- **A Claude Code mod is a thin layer on top, not the brain.** It drops the notices the supervisor marks as FYI before they become a model turn (you still see them in chat), attaches the live status to your own messages, and shows a status line and a `/leads` pane in the terminal. The rules live in one place, the supervisor, so a Codex CoS gets the same behaviour without the mod.
-- **Expected saving: about 25 to 50% of the CoS session's cost** (estimate, from the current session's turn log; method under Savings). The small model adds well under a cent a day.
+- **You see the same status in the web UI** as a short line under each lead in the sidebar, kept live by Omnigent's own sidebar updates. That needs a small change on the fork (about 40 lines of code); the spike is built and tested; it still needs the browser-side stale mark.
+- **Routine events are filtered in the supervisor, not in the chat.** The supervisor simply doesn't post them (`--fyi skip`), so nothing has to be dropped from the CoS's input box. You see them in the sidebar line instead.
+- **A Claude Code mod is optional, a convenience, not the brain.** It attaches the live status to your own messages and shows a status line and a `/leads` pane in the terminal. The spike shows a mod can also drop a notice before it becomes a turn, but that is unsafe through Omnigent's delivery (see Two limits), so the recommended mod drops nothing.
+- **Expected saving: about 20 to 40% of the CoS session's cost; 25% is the target, not a floor** (estimate from the current session's turn log; method and assumptions under Savings). The small model adds well under a cent a day.
 
-What is proven, with spikes on branches (details under What the platforms can do):
+What the spikes show (commands and outputs in `spikes/cos-console/EVIDENCE.md` on branch `explore/cos-mod`; the engine tests there are mocked, the rest ran live):
 
-- A mod's `prompt.submit` hook drops a notice with zero model turns, in a real interactive session fed through Omnigent's exact tmux paste.
-- A mod's in-session `$.model.complete({ model: "haiku" })` call routes a notice in under a second, and a headless `claude -p --model haiku` call does the same from the supervisor.
-- A supervisor can write a session label, and the sidebar list carries it.
-- Omnigent's file API reads a lead's report on another host with no session started there.
-- The fork change renders the label on sidebar rows, their hover cards and Canvas cards; 235 web tests pass.
+- Live: a mod's `prompt.submit` hook drops a notice with zero model turns, headless and in an interactive session fed through Omnigent's tmux paste. The same replay shows why the build should not rely on it.
+- Live: a mod's `$.model.complete({ model: "haiku" })` routes a notice in under a second; a headless `claude -p --model haiku` call does the same from the supervisor for $0.00007.
+- Live: a supervisor can write a session label, and the session list carries it.
+- Live: Omnigent's file API reads a file on another host with no session started there.
+- Fork tests: the change renders the label on sidebar rows, their hover cards and Canvas cards; 235 web tests pass. It does not yet age the line in the browser (see The web UI).
 
 ## What happens today
 
@@ -55,22 +56,22 @@ A mod is a Claude Code plugin with a TypeScript hooks module. What matters here:
 
 | Capability | API | Proven |
 |---|---|---|
-| Stop a prompt before the model sees it | `prompt.submit` hook answering `{ drop }` | Yes: `num_turns: 0`, `total_cost_usd: 0`, 50 ms, headless; and interactive, through Omnigent's tmux paste |
-| Add text the model reads beside a prompt | `prompt.submit` with `next({ ...e, context })` | Yes, in engine tests |
-| Call a small model with no transcript | `$.model.complete({ model: "haiku" })`, uses the session's own login | Yes: a real quiet notice routed in 0.8 s |
-| Status line, toast, pane, slash command | `$.ui.status`, `$.ui.toast`, `$.ui.open` + `ui.render`, `$.command.register` | Yes, in a real terminal session |
-| Timers, files, host commands | `$.clock.every`, `$.fs.read`, `$.process.run` | `$.clock.every` and `$.fs.read` yes |
-| Fail open when a hook breaks | `.catch(($, e, next) => next(e))` | Yes: a broken triage call let the notice through |
+| Stop a prompt before the model sees it | `prompt.submit` hook answering `{ drop }` | Live: `num_turns: 0`, `total_cost_usd: 0`, 50 ms, headless; and interactive, through Omnigent's tmux paste |
+| Add text the model reads beside a prompt | `prompt.submit` with `next({ ...e, context })` | Engine tests only (mocked) |
+| Call a small model with no transcript | `$.model.complete({ model: "haiku" })`, uses the session's own login | Live: a real quiet notice routed in 0.8 s |
+| Status line, toast, pane, slash command | `$.ui.status`, `$.ui.toast`, `$.ui.open` + `ui.render`, `$.command.register` | Live, in a terminal session |
+| Timers, files, host commands | `$.clock.every`, `$.fs.read`, `$.process.run` | `$.clock.every` and `$.fs.read`, live |
+| Fail open when a hook breaks | `.catch(($, e, next) => next(e))` | Declared and validated; no retained test of a broken hook |
 
 Two limits shape the design:
 
-- **Claude puts a dropped prompt back in the input box.** Omnigent's delivery (`_paste_and_submit` in `omnigent/harnesses/claude_native/bridge.py`) re-sends Enter every second while its pasted draft is still in the box, for up to 20 s. So the mod clears the box 300 ms after a drop (`$.prompt.fill({ text: "", mode: "replace" })`). Replayed with Omnigent's exact paste in a local tmux pane: the box is empty before Omnigent's first retry. This depends on Claude Code's input behaviour, which can change, so it stays a tested assumption.
+- **Claude puts a dropped prompt back in the input box, and that makes dropping unsafe through Omnigent.** Omnigent's delivery (`_paste_and_submit` in `omnigent/harnesses/claude_native/bridge.py`) re-sends Enter while its pasted draft is still in the box: first after 1 s, then doubling up to 8 s, for up to 20 s. The spike clears the box 300 ms after a drop, and only while it still holds the dropped notice (`$.prompt.read()`, then `$.prompt.fill`). Replayed with Omnigent's paste in a local tmux pane, a lone drop clears in time. But text typed 100 ms after the Enter was appended to the restored notice: the clear rightly left it, and the next Enter would submit both, and the mod would drop both. Omnigent also doesn't wait for the mod's timer before releasing its next message. So the build doesn't drop in the mod at all.
 - **A mod draws only in the terminal.** The web UI chat is built from Claude's transcript file (`forward_claude_transcript_to_session`), which keeps user and assistant rows and drops system rows and meta user rows. So nothing the mod draws reaches you in the browser. The browser view has to come from Omnigent.
 - The mod API is early access and "may change between releases without notice" (its own types file). Every hook here fails open.
 
 ### Omnigent's web UI
 
-Omnigent turns a web message into a tmux paste into Claude's terminal, and marks the turn delivered once the paste is accepted (`omnigent/inner/claude_native_executor.py`, `run_turn`). Running and idle come from Claude's own `UserPromptSubmit` and `Stop` hooks. A prompt the mod drops never reaches those hooks, so the CoS session simply stays idle.
+Omnigent turns a web message into a tmux paste into Claude's terminal, and marks the turn delivered once the paste is accepted (`omnigent/inner/claude_native_executor.py`, `run_turn`). Running and idle come from Claude's own `UserPromptSubmit` and `Stop` hooks.
 
 | Extension point | Today | Fits a live status view? |
 |---|---|---|
@@ -87,13 +88,17 @@ Omnigent turns a web message into a tmux paste into Claude's terminal, and marks
 
 ### One status, two renderings
 
-The supervisor is the only writer. It already polls every lead, so on each poll it writes:
+The supervisor is the only writer. It already polls every lead, so on each poll it writes three things, all next to its registry:
 
-- **`status.json`** (schema `cos-status/1`) next to its registry: one row per lead with id, title, host, state (`running`, `idle`, `blocked`, `failed`, `archived`), what it waits on, its last ending (`DONE`, `USER NEEDED`, `PARKED`), the first line of its last message, nudges and revives spent, and a link. A `written_at` time lets every reader tell a stale file. Written atomically (temp file, then rename).
-- **A `status.line` label on each lead**: the same row in one short line, such as `waits on verifier · PR #252 · 3m`. This is what the web UI shows.
+- **`state.json`** (schema `cos-state/1`, versioned): what a successor needs to carry on, and the source for everything else. Written atomically (temp file, then rename), with a `written_at` time.
+  - Per lead: id, title, host, report path, the leads it waits on, state (`running`, `idle`, `blocked`, `failed`, `archived`), what it waits on, last ending (`DONE`, `USER NEEDED`, `PARKED`), the first line of its last message, `progress_at` (see Routing), nudges and revives spent.
+  - The ids of events already settled, so a restart doesn't settle one twice.
+  - Each automatic action as an intent written before it runs and marked done after (see Actions).
+  - The attention queue: events waiting for the CoS or for you (see Cost bounds).
+- **Two labels on each lead**: `status.line`, the row in one short line such as `waits on verifier · PR #252`, which the web UI shows; and `status.at`, the time the supervisor last observed that lead, as Unix seconds. The browser computes the age from `status.at` with its own clock, so a dead supervisor shows as stale (see The web UI).
 - **`events.jsonl`**: one line per event and how it was settled (rule, small model or CoS), so a wrong call can be found and the rules tuned.
 
-The labels live on the Omnigent server, which every host reaches. So a successor CoS on any host reads every lead's state from the API, and the board's hand-written Live leads table goes away: the board keeps your standing decisions, what needs you and the owner asks, which change rarely. That also answers your doubt about git as the database: lead state moves to the server; git keeps only the slow-changing part.
+A successor CoS on any host reads the predecessor's `state.json` and registry through Omnigent's file API (proven: it reads a file on another host with no session there). Until a takeover has been done that way, the board's Live leads table stays, and the CoS skill keeps writing it; once one has, the table is dropped and the board keeps only your standing decisions, what needs you and the owner asks, which change rarely. The existing handover rule stays: stop the old supervisor before starting the new one. Labels are display only; they are never read back as state.
 
 ### Routing an event
 
@@ -102,56 +107,76 @@ Each event goes through three steps, cheapest first.
 | Event | Settled by | What happens |
 |---|---|---|
 | `archived` | Rule | Drop the row; no post |
-| `PARKED` | Rule | Record what it waits on; FYI post |
-| `STILL WORKING` naming its wait (worker, verifier, CI) | Rule | Record the wait; FYI post |
-| Exact repeat of the last notice for that lead | Rule | Nothing |
-| Quiet, first time without progress | Small model | "Mid-work" → FYI. "Stalled" → the supervisor relays the CoS skill's nudge itself and records it |
+| `PARKED` | Rule | Record what it waits on; no post |
+| `STILL WORKING` naming its wait (worker, verifier, CI) | Rule | Record the wait; no post |
+| Exact repeat of the last notice for that lead | Rule | Nothing, unless the lead's progress deadline has passed |
+| Quiet, first time without progress | Small model | "Mid-work" → recorded, no post. "Stalled" → the supervisor relays the CoS skill's nudge itself and records it |
+| Progress deadline passed (no new message for 20 min, running or not) | Rule | Nudge once if none is spent, else act: to the CoS. Fires even when the ending is unchanged or the lead still reads running |
 | Quiet again after a nudge | Rule | Act: to the CoS |
 | Failed, first time | Rule | Revive in place, record it |
 | Failed again | Rule | Act: to the CoS with the error line |
 | `DONE` | Rule | Act: to the CoS with the result. The supervisor also tells each lead registered as waiting on this one |
 | Report path as the last message | Rule | Read the report's first line through the file API, then treat it as its `DONE`, `BLOCKED` or `STILL WORKING` |
-| `USER NEEDED` | Small model | Covered by a standing decision → act, with that decision quoted; not covered or not reversible → act, marked "for the owner" |
-| Blocked on an approval prompt | Rule | For the owner: the tool call, and the lead's link. Only you approve |
+| `USER NEEDED` | Small model | Covered by a standing decision → act, with that decision quoted; not covered or not reversible → act, marked "for the owner", and queued for you (see Cost bounds) |
+| Blocked on an approval prompt | Rule | For the owner: the tool call and the lead's link, queued for you. Only you approve |
 | Blocked on a question | Rule | Act: the question and its options, so the CoS answers with one `relay` |
 
 Rules for the small model:
 
 - It only routes. It never sends, approves or decides for you, because its input includes a lead's own words, and a lead's words must not steer what gets done.
 - It sees one event and the standing decisions, never a transcript.
-- Unsure or unparseable means "act". A mistake costs one Opus turn, never a missed decision.
+- Unsure, unparseable or timed out means "act". A wrong "act" costs one Opus turn. A wrong "mid-work" costs at most the progress deadline: a lead that sends no new message for 20 minutes is escalated whatever the model said.
+- Limits per call: 20 s timeout, the event cut to 4,000 characters, 200 output tokens. Past the limit, the event is routed "act".
 - Model by tier: small (Haiku for Claude, Luna for Codex). Never Fable or Astra.
 
 How it is called:
 
-- **From the supervisor**, as `claude -p --model haiku --tools "" --setting-sources "" --system-prompt …`. Measured: 870 tokens, $0.00007, 3.8 s wall time.
+- **From the supervisor**, as `claude -p --model haiku --tools "" --setting-sources "" --strict-mcp-config --system-prompt …`. Measured: 870 tokens, $0.00007, 3.8 s wall time.
 - **From the mod**, `$.model.complete` does the same in 0.8 s with the session's login. Recommended: the supervisor, so the decision is made once, logged once, and works for a Codex CoS too.
+
+A lead's progress is `progress_at`: the time its last message last changed. It lives in `state.json`, so absorbing an event, or restarting the supervisor, doesn't reset it. Today's `follow` gives no event for a lead that reads running for good, or for a second quiet spell with the same ending (shown by a probe in the review); the deadline is what covers both.
+
+### Actions
+
+The supervisor's own actions are a nudge, a revive, an archive (after #249 lands) and telling a waiting lead. Each is fixed text, reversible, and one-shot per lead. Each runs as:
+
+1. Write an intent to `state.json` (lead, action, event id) and count it against the lead's budget.
+2. Send it.
+3. Mark the intent done.
+
+On restart, an intent not marked done is checked against the lead's history: if the text is there, it is marked done; if not, it is escalated to the CoS rather than sent again. So a crash can lose one action, which the CoS then sees, but never spends a budget twice.
+
+### Cost bounds
+
+- Small model: at most 30 calls an hour. Past that, events are routed "act" without a model.
+- Opus wakes: at most one post to the CoS every 5 minutes. Events that arrive in between wait in the attention queue in `state.json` and go out as one combined post when the window opens. That bounds the CoS to 12 supervisor wakes an hour, whatever happens to the leads.
+- Owner events (approval prompts, `USER NEEDED` not covered by a decision) also wait in that queue, so a limit never drops them. The CoS's own `status.line` label shows how many are waiting (`needs you: 2`), so you see them in the sidebar even before the post goes out.
 
 ### What reaches the Opus CoS
 
-The supervisor posts two kinds of line:
+The supervisor posts only what needs the CoS or you, marked `[act]` or `[owner]`. Each post carries the lead's status row and the first lines of its report, read through the file API on any host, so the CoS can usually answer in one model call. Routine events are not posted (`--fyi skip`, the default); they show in the sidebar line and in `events.jsonl`.
 
-- `Supervisor [act]: …`: wakes the CoS. It carries the lead's status row and the first lines of its report, read through the file API on any host, so the CoS can usually answer in one model call.
-- `Supervisor [fyi]: …`: posted only so you see it in chat. The mod drops it before it becomes a turn. Without the mod (a Codex CoS), the supervisor doesn't post FYI lines at all (`--fyi skip`), and you read them in the sidebar.
+`--fyi post` keeps today's behaviour of posting every event, for when the supervisor's rules are being tuned. Each such post is an Opus turn, as today.
 
-When you write to the CoS, the mod attaches a short block: every lead's status line and the FYI events since its last turn. So "how's it going?" needs no tool call.
+When you write to the CoS, the mod (if enabled) attaches a short block: every lead's status line and the events handled since its last turn. So "how's it going?" needs no tool call. A Codex CoS gets the same by reading `state.json`.
 
 ### The mod
 
 `cos-console`, enabled only in the CoS home's project settings, so leads and other sessions never load it. Open question: confirm a marketplace plugin enabled in a project's `.claude/settings.json` loads in a session Omnigent launches there.
 
-- `prompt.submit`: drop `[fyi]` lines and clear the box; pass `[act]` lines through; attach the status digest to your messages.
+- `prompt.submit`: attach the status digest to your messages. It drops nothing.
 - Status line: `cos: leads 5: 3 running, 2 idle` or `cos: STALE 400s` when the file is old.
 - `/leads`: a pane with the full table and the last few events, for a terminal user.
-- No routing logic of its own beyond the `[fyi]` marker, so the rules have one home.
+- No routing logic, so the rules have one home.
 
-The spike mod also carries a rules table and its own Haiku triage, to prove the mechanisms. The recommended build moves both into the supervisor.
+The spike mod also carries a rules table, its own Haiku triage and the drop, to prove the mechanisms. The recommended build moves routing into the supervisor and leaves the drop out. Since you use the web UI, the mod's status line and pane are mostly for terminal users; its digest is the part that saves a round for you.
 
 ### The web UI
 
 Recommended: the fork change from the spike, `kzarzycki/omnigent` branch `spike/cos-status-line` (commit `ba5d0f533`):
 
 - A session's `status.line` label shows as a muted second line under its sidebar title, in its hover card, and on its Canvas card.
+- Still to build: read `status.at`, show the age (`· 3m`) from the browser's own clock, ticking every 30 s, and mark the line stale past 10 minutes. The spike shows the line as written, so a line from a dead supervisor would look current. The story includes a test that the line turns stale with no further updates from the server.
 - The label is generic: any orchestrator can set it, which makes it a reasonable upstream proposal later (draft in the report, not filed).
 - Acting stays where it is: a click opens the lead's chat, where approve, reply and archive already work.
 
@@ -166,9 +191,9 @@ Not recommended now:
 
 | Where the routing runs | For | Against |
 |---|---|---|
-| A. Supervisor only | One home for the rules, tested in Python. Works for Claude and Codex. Stops the wake before any post | Without the mod or the sidebar change, you'd stop seeing routine events in chat |
-| B. Mod only | Every event still lands in chat; the drop is free | Claude only. Logic in an early-access API. A second copy of rules the supervisor half-knows. The drop relies on clearing the input box in time |
-| **C. Supervisor decides, mod drops FYI lines (recommended)** | Rules in one place. You still see everything, in chat and in the sidebar. A Codex CoS works without the mod | Two small pieces to keep in step, joined only by the `[fyi]`/`[act]` marker |
+| **A. Supervisor only, no FYI posts (recommended)** | One home for the rules, tested in Python. Works for Claude and Codex. Stops the wake before any post. Nothing is dropped from the CoS's input | Routine events leave the chat; you see them in the sidebar line, so the fork change matters more |
+| B. Mod only | Every event still lands in chat; the drop is free | Claude only. Logic in an early-access API. The drop can swallow your own text typed while the box is restored (replayed) |
+| C. Supervisor decides, mod drops FYI lines | Rules in one place; you still see routine events in chat | Same drop hazard as B, plus two pieces kept in step by a marker |
 
 | Where you see the status | For | Against |
 |---|---|---|
@@ -181,45 +206,48 @@ Not recommended now:
 
 | Failure | How it shows | What catches it |
 |---|---|---|
-| Supervisor dies | Labels and `status.json` stop changing | `written_at` turns the mod's status line to `STALE`. The supervisor also writes a heartbeat label on the CoS session, which shows in its own sidebar row. Systemd `Restart=always`. A restart re-finds terminal events from the registry, as it does today |
-| A turn end is lost (Omnigent kzarzycki/omnigent#4) | A lead reads `running` for good | The quiet rule still fires on silence; unchanged from today |
-| The small model absorbs something that needed action | A lead waits | Only explicit cases are absorbed by rules. The model's absorb is limited to "mid-work". A second quiet notice without progress always escalates. Every absorb is in `events.jsonl` and visible in the sidebar line |
-| Cost runaway | Many triage calls or many Opus wakes | One triage call per event, at most N an hour (then "act" without a model). The supervisor counts Opus wakes an hour and posts one warning past a threshold |
-| The mod breaks after a Claude Code update | A dropped line comes back, or a hook throws | Every hook fails open: the notice reaches Opus as it does today. Its engine tests (`claude plugin test`) become part of the repo's checks |
-| Omnigent changes its submit retry | A dropped notice is re-sent until it times out | The tmux replay test, kept as a check. If it fails, use `--fyi skip` and rely on the sidebar |
+| Supervisor dies | Labels and `state.json` stop changing | The browser ages each line from `status.at` with its own clock and marks it stale past 10 minutes; the mod's status line reads `STALE` from `written_at`. Systemd `Restart=always`. A restart loads `state.json`: settled event ids, spent budgets, open intents and the attention queue survive |
+| A turn end is lost (kzarzycki/omnigent#4) | A lead reads `running` for good | The progress deadline fires on no new message for 20 minutes, running or not. Today's quiet rule doesn't cover this |
+| The small model absorbs something that needed action | A lead waits | Only explicit cases are absorbed by rules; the model's absorb is limited to "mid-work"; the progress deadline escalates it within 20 minutes; every absorb is in `events.jsonl` |
+| Crash between sending an action and recording it | A nudge or revive might be lost or sent twice | Intent before, done after; an open intent is checked against the lead's history and escalated rather than re-sent |
+| Cost runaway | Many triage calls or many Opus wakes | At most 30 small-model calls an hour; at most one CoS post per 5 minutes, the rest combined; owner events queued, never dropped |
+| The mod breaks after a Claude Code update | A hook throws | It only adds a digest, and every hook fails open, so your message reaches Opus as it would without it |
 | Labels have a size limit | A write fails | None found in source. The line is kept under 200 characters, and a failed write logs once and goes on |
-| Stale or wrong line in the sidebar | You act on old state | The line ends with its age (`· 3m`) |
 
 ## Savings
 
 These are estimates, from session `aa0cba18` (cost spread evenly per model call; per-turn usage is not in the API):
 
+Model calls are a proxy: one turn counts as its tool calls plus one, because per-turn token counts are not in the API.
+
 | Change | Model calls saved (of 417) | Share of session cost |
 |---|---|---|
-| Duplicate notices dropped | about 15 | about 4% |
-| "No change" notice turns become FYI | 48 | 11.5% |
+| Duplicate notices not posted | about 15 | about 4% |
+| "No change" notice turns not posted | 48 | 11.5% |
 | Pre-digested `[act]` posts (no `status` call, no report read) | up to 57 | up to 14% |
 | No hand-written leads table (42 rewrite-and-push turns) | about 40 to 60 | 10 to 15% |
-| Overlap between the rows above | | minus a few points |
+| Sum, before overlap | at most 180 | at most 43% |
 
-- Range: about 25% (only the sure parts) to about 50% (everything above lands).
+- The rows overlap (a "no change" turn often also rewrote the board), and the overlap was not computed per turn, so the honest range is about 20 to 40%. 25% is the target to check against, not a proven lower bound. The token research beside the spike gives 10 to 40% for the routing part alone, which agrees.
+- 35 of the 74 notice turns came from Omnigent's own subscription notices, not the supervisor. They count toward the saving only once the CoS stops subscribing and relies on the supervisor alone, which the CoS skill's Taking over already asks for.
 - The small model adds about $0.00007 per routed event: well under a cent a day at today's volume.
 - Fewer turns also slow the transcript's growth, which makes every later call cheaper. That effect is real but not measured here.
 - The 2026-10-27 token retro already scheduled on the board is the natural before-and-after check.
 
 ## Phases
 
-1. **Status and labels** (agent-skills). The supervisor writes `status.json`, `events.jsonl` and `status.line` labels. Nothing changes for the CoS yet. A `report <session>` subcommand reads a lead's report through the file API on any host.
-2. **Routing** (agent-skills). The rules table, small-model triage, `[act]` and `[fyi]` lines, the supervisor's own nudge, revive and archive (after #249 lands), and waking waiting leads. The CoS skill changes with it: Live leads are generated, and an `[act]` line arrives digested.
-3. **Sidebar line** (fork). Land the spike on `mine` and roll out to the hosts. A draft upstream proposal goes to you to file or not.
-4. **Mod** (agent-skills). `cos-console`, enabled in the CoS home only: drop FYI lines, attach the digest, status line and `/leads`.
+1. **State and labels** (agent-skills). The supervisor writes `state.json`, `events.jsonl`, and the `status.line` and `status.at` labels, and tracks `progress_at` with the progress deadline. Nothing changes for the CoS yet. A `report <session>` subcommand reads a lead's report through the file API on any host.
+2. **Routing** (agent-skills). The rules table, small-model triage, `[act]` and `[owner]` posts with `--fyi skip` as the default, the supervisor's own actions with intents, the cost bounds and the attention queue. The CoS skill changes with it: a takeover reads `state.json` through the file API, and an `[act]` post arrives digested. Live leads goes once a takeover has worked that way.
+3. **Sidebar line** (fork). Land the spike on `mine` with the browser-side age and stale mark, and roll out to the hosts. A draft upstream proposal goes to you to file or not.
+4. **Mod** (agent-skills, optional). `cos-console`, enabled in the CoS home only: the digest on your messages, the status line and `/leads`. No drop.
 5. **Measure.** Compare a day of CoS cost and turns before and after, in the 2026-10-27 retro.
 
-Phases 1 and 2 give most of the saving, and work for a Claude or a Codex CoS. Phase 3 is what makes the saving visible to you. Phase 4 is optional: it keeps routine events in your chat for free.
+Phases 1 and 2 give the saving, and work for a Claude or a Codex CoS. Phase 3 is what lets you see routine events once they leave the chat, so it should land with phase 2.
 
 ## Open questions
 
 - Does a marketplace plugin enabled in a project's `.claude/settings.json` load in a Claude session that Omnigent launches in that project? Settle it with one launched session in phase 4.
-- Do you want routine (FYI) events in the chat at all once the sidebar line exists? If not, phase 4 shrinks to the digest and the status line.
+- The design takes routine events out of the chat (`--fyi skip`). If you want them in the chat, they cost an Opus turn each, as today, because dropping them in the mod is unsafe (see Two limits).
+- Are the defaults right: a 20-minute progress deadline, 30 small-model calls an hour, one CoS post per 5 minutes? They are guesses from one session's volume, and phase 5 is where they get checked.
 - Canvas on this server needs `OMNIGENT_FEATURES=canvas` and a restart. Is a board view worth that, or is the sidebar enough?
 - Should the supervisor send the stall nudge itself (it's a fixed text in the CoS skill today), or only propose it to the CoS? The design says it sends it, because it's reversible and fixed.
