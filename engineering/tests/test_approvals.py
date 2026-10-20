@@ -3053,6 +3053,8 @@ POST_DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "post_demo.sh"
         ({"origin": FORK, "upstream": "https://github.com/them/fork.git/"}, False, True),
         ({"origin": FORK, "upstream": "https://GITHUB.COM/them/fork"}, False, True),
         ({"origin": FORK, "upstream": "ssh://git@github.com:22/them/fork.git"}, False, True),
+        ({"origin": FORK, "upstream": "git@github.com:/them/fork.git"}, False, True),
+        ({"origin": FORK, "upstream": "ssh://git@github.com//them/fork.git"}, False, True),
         ({"origin": FORK, "mirror": "https://gitlab.com/me/fork.git"}, False, False),
         ({"origin": FORK, "mirror": "https://gitlab.com/github.com/them/fork.git"}, False, False),
         ({"origin": FORK, "mirror": "https://notgithub.com/them/fork.git"}, False, False),

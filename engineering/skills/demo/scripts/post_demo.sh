@@ -25,7 +25,7 @@ done
 # With several GitHub remotes and no `gh repo set-default`, gh reads the PR as `upstream`'s: refuse rather than
 # post to a repo nobody chose.
 repos="$(git remote -v | awk '{print $2}' | sed -E 's#/+$##; s#\.git/*$##' |
-  sed -nE 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)?([^@/]*@)?([^/:]+)(:[0-9]+)?[:/]([^/]+/[^/]+)$#\3 \5#p' |
+  sed -nE 's#^([a-zA-Z][a-zA-Z0-9+.-]*://)?([^@/]*@)?([^/:]+)(:[0-9]+)?[:/]/*([^/]+/[^/]+)$#\3 \5#p' |
   awk 'tolower($1) == "github.com" { print tolower($2) }' | sort -u)"
 if [ "$(printf '%s' "$repos" | grep -c .)" -gt 1 ] && ! git config --get-regexp '^remote\..*\.gh-resolved$' >/dev/null; then
   echo "post_demo: this checkout's remotes name $(echo $repos) and gh has no default among them: run gh repo set-default <owner>/<repo>" >&2

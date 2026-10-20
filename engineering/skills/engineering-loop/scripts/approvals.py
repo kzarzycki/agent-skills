@@ -1499,9 +1499,10 @@ def toplevel() -> Path:
 
 
 # a remote URL's host and `owner/repo`: `scheme://[user@]host[:port]/owner/repo` or scp-like `[user@]host:owner/repo`,
-# matched once trailing slashes and `.git` are cut (post_demo.sh parses it the same way)
+# its path maybe led by extra slashes as gh allows, matched once trailing slashes and `.git` are cut (post_demo.sh
+# parses it the same way)
 REMOTE_URL = re.compile(
-    r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]*@)?([^/:]+)(?::\d+)?[:/]([^/]+/[^/]+)", re.IGNORECASE
+    r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]*@)?([^/:]+)(?::\d+)?[:/]/*([^/]+/[^/]+)", re.IGNORECASE
 )
 
 
