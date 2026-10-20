@@ -147,6 +147,13 @@ it parks a question is its role's (`--role`; under the engineering loop, `lead.m
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
 
+`--host <name|id>` starts the lead on another Omnigent host (`GET /v1/hosts` lists them).
+It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a host other
+than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
+in the first message, because its file would be on this host, so a Claude lead may read it as
+pasted text and ask for a go-ahead; and the report is written there, so follow the lead with
+`watch`, never `wait`.
+
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
 posts a message that owes no report, such as the owner's words for a top-level lead, and
 returns at once. It reads no file but the message, so the lead may run on another host.

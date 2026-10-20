@@ -46,6 +46,7 @@ class FakeOmnigent:
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
         self.interrupted: list[str] = []
+        self.host_id = "h"  # this host
 
     def create(
         self,
@@ -55,6 +56,7 @@ class FakeOmnigent:
         top_level: bool = False,
         workspace: str | None = None,
         permission_mode: str | None = None,
+        host_id: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -1075,7 +1077,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     titles: list[str] = []
     create = og.create
     og.create = (
-        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None: (
+        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None: (
             titles.append(title) or create(agent, title)
         )
     )  # type: ignore[method-assign]
@@ -1458,9 +1460,10 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None, p=None: (models.append(m), create(a, t, m))[
-        1
-    ]  # type: ignore[method-assign]
+    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None: (
+        models.append(m),
+        create(a, t, m),
+    )[1]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     monkeypatch.chdir(tmp_path)
@@ -2607,3 +2610,86 @@ def test_status_never_prints_a_user_message_as_the_last_message(
     og.send(sid, "go")
     assert omnigent_agent.main(["status", sid]) == 0
     assert capsys.readouterr().out.splitlines()[-1] == "last message: on it"
+
+
+HOSTS = {
+    "hosts": [
+        {"host_id": "h", "name": "here", "status": "online"},
+        {"host_id": "m1", "name": "mac", "status": "online"},
+        {"host_id": "t1", "name": "twin", "status": "offline"},
+        {"host_id": "t2", "name": "twin", "status": "online"},
+    ]
+}
+
+
+def test_host_resolves_a_name_or_an_id_and_refuses_none_or_several(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda self, m, p, b=None: HOSTS)
+    og = object.__new__(omnigent_agent.Omnigent)
+    assert og.host("mac") == og.host("m1") == "m1"
+    with pytest.raises(omnigent_agent.Fail, match=r"names no host; hosts: here \(online\), mac"):
+        og.host("nosuch")
+    with pytest.raises(omnigent_agent.Fail, match="names several hosts"):
+        og.host("twin")
+
+
+def test_a_lead_on_another_host_gets_its_host_and_the_brief_inline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bodies = create_bodies(monkeypatch)
+    omnigent_agent.Omnigent().create("claude", "t", top_level=True, host_id="m1")
+    assert bodies[-1]["host_id"] == "m1"
+    og = FakeOmnigent()
+    sid, _ = omnigent_agent.start(
+        og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True, host_id="m1"
+    )
+    text = omnigent_agent.text_of(og.sessions[sid][1])
+    assert text.startswith("Work on t. Your brief:") and text.endswith("do X")
+    assert not (tmp_path / "r.md.brief").exists()
+    omnigent_agent.start(
+        og, "claude", "u", "do Y", tmp_path / "u.md", None, 0, top_level=True, host_id="h"
+    )
+    assert (tmp_path / "u.md.brief").exists()  # this host: the brief stays a file
+
+
+def test_host_needs_top_level_and_another_host_needs_a_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda self, m, p, b=None: HOSTS)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    argv = ["start", "claude", "t", "b.md", "r.md", "--host", "mac"]
+    assert omnigent_agent.main(argv) == 1
+    assert "--host needs --top-level" in capsys.readouterr().err
+    assert omnigent_agent.main([*argv, "--top-level"]) == 1
+    assert "absolute paths there" in capsys.readouterr().err
+
+
+def test_a_remote_start_neither_resolves_nor_checks_its_paths_here(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", lambda self, m, p, b=None: HOSTS)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    started: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "start",
+        lambda og, a, t, b, report, *rest, workspace=None, **kw: (
+            started.append((str(report), str(workspace))) or ("s1", [])
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    (tmp_path / "w").symlink_to(tmp_path)  # a link here must not rewrite the path there
+    (tmp_path / "w" / "r.md").write_text("an unrelated file here")
+    w = tmp_path / "w"
+    argv = ["start", "claude", "t", "b.md", str(w / "r.md"), "--top-level", "--host", "mac"]
+    assert omnigent_agent.main([*argv, "--workspace", "w"]) == 1  # relative: whose cwd?
+    assert omnigent_agent.main([*argv, "--workspace", str(w)]) == 0
+    assert started == [(str(w / "r.md"), str(w))]
