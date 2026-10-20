@@ -145,6 +145,7 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda: (True, ""))  # else a busy host waits
 
 
 def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
@@ -480,11 +481,66 @@ def test_stalled_server_timeout_reaches_cleanup(
     try:
         og = Local(f"http://127.0.0.1:{server.server_port}")
         monkeypatch.setattr(omnigent_agent, "HTTP_SECONDS", 0.05)
-        with pytest.raises(omnigent_agent.Fail, match="s0: POST .*TimeoutError"):
+        # the timed-out POST leaves delivery to the history, which this server cannot show
+        with pytest.raises(omnigent_agent.Fail, match="s0: GET .*HTTP 501"):
             omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
         assert og.archived == ["s0"]
     finally:
         server.shutdown()
+
+
+def test_a_start_whose_send_timed_out_keeps_the_session_the_history_shows_took_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from urllib.error import URLError
+
+    class Late(FakeOmnigent):
+        def send(self, sid: str, text: str) -> None:
+            super().send(sid, text)  # the server took it, after the client gave up
+            raise omnigent_agent.Fail("POST events: timed out") from URLError(
+                TimeoutError("timed out")
+            )
+
+    og = Late()
+    sid = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)[0]
+    assert og.archived == [] and og.posts == 1
+
+    # a timeout only: a reset still fails, as Omnigent.send itself does on any error (the
+    # supervisor's sends advance their state on its return)
+    def reset(sid: str, text: str) -> None:
+        raise omnigent_agent.Fail("POST events: reset") from ConnectionResetError("reset")
+
+    monkeypatch.setattr(og, "send", reset)
+    with pytest.raises(omnigent_agent.Fail, match="reset"):
+        omnigent_agent.send_to_confirm(og, sid, "go")
+
+
+def test_start_waits_while_the_host_is_over_capacity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.undo()  # the real capacity check, on a faked host
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemTotal: 16000000 kB\nMemAvailable: 1048576 kB\n")
+    monkeypatch.setattr(omnigent_agent, "MEMINFO", meminfo)
+    monkeypatch.setattr(omnigent_agent.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (300.0, 0.0, 0.0))
+    assert omnigent_agent.main(["capacity"]) == 1
+    assert capsys.readouterr().out == "load 37.5 per core (max 4), 1024 MB available (min 1536)\n"
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
+    og = FakeOmnigent()
+    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: load 37.5"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert og.sessions == {}
+
+    loads = iter([300.0, 8.0])
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (next(loads), 0.0, 0.0))
+    meminfo.write_text("MemAvailable: 4194304 kB\n")
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 60)
+    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert "host over capacity, waiting: load 37.5" in capsys.readouterr().err
+    assert og.sessions  # started once the load fell
 
 
 def test_stalled_error_body_reaches_cleanup(
