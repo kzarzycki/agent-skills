@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
-    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID]] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py status <session>...
@@ -70,7 +70,11 @@ and briefs that one. ``start --top-level`` starts a lead: no parent session, so 
 in the sidebar and its own children report to it, under the lead preamble; ``run`` refuses it,
 since a lead asks the owner in its own session and writes no question for ``run`` to return.
 ``--workspace`` gives the child a workspace other than this directory, such as one holding
-several repos' checkouts for a change across them; its report must be inside it. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
+several repos' checkouts for a change across them; its report must be inside it. ``--host``
+starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1/hosts``); a
+child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
+report are absolute paths there, unchecked here, the brief goes inline in the first message since
+its file would be here, and the report is written there, so follow the lead with ``watch``. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Server and host come from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
 own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists it. Stdlib only.
 """
@@ -326,11 +330,12 @@ class Omnigent:
         top_level: bool = False,
         workspace: str | None = None,
         permission_mode: str | None = None,
+        host_id: str | None = None,
     ) -> str:
         body = {
             "agent_id": self.agent_id(AGENTS[agent]),
             "title": title,
-            "host_id": self.host_id,
+            "host_id": host_id or self.host_id,
             "workspace": workspace or os.getcwd(),
         }
         # Filed under the repo's project, when one exists, so spawned sessions don't crowd the top level.
@@ -350,6 +355,16 @@ class Omnigent:
         ):
             body["terminal_launch_args"] = ["--permission-mode", mode]
         return str(self.call("POST", "/v1/sessions", body)["id"])
+
+    def host(self, name: str) -> str:
+        """The ``host_id`` of the one host whose id or name is ``name``."""
+        hosts = self.call("GET", "/v1/hosts")["hosts"]
+        ids = [h["host_id"] for h in hosts if name in (h["host_id"], h["name"])]
+        if len(ids) != 1:
+            known = ", ".join(f"{h['name']} ({h['status']})" for h in hosts)
+            why = "names several hosts" if ids else "names no host"
+            raise Fail(f"--host {name} {why}; hosts: {known}")
+        return ids[0]
 
     def subscribe(self, subscriber: str, sid: str) -> None:
         """Have Omnigent tell ``subscriber`` each time ``sid`` ends a turn or waits on a prompt."""
@@ -711,6 +726,7 @@ def start(
     top_level: bool = False,
     workspace: str | None = None,
     permission_mode: str | None = None,
+    host_id: str | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed."""
     if permission_mode and agent != "claude":
@@ -728,20 +744,23 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    # The brief goes in a file beside the report and the message only names it: a child can receive
-    # an inline brief as pasted text, which it will not take instructions from.
-    brief_file = brief_of(report)
-    brief_file.parent.mkdir(parents=True, exist_ok=True)
-    brief_file.write_text(
-        (LEAD_PREAMBLE if top_level else PREAMBLE).format(
-            report=report,
-            role=f"Your role file is {role}; read it first.\n" if role else "",
-        )
-        + brief
-    )
+    full = (LEAD_PREAMBLE if top_level else PREAMBLE).format(
+        report=report,
+        role=f"Your role file is {role}; read it first.\n" if role else "",
+    ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
-    text = f"Work on {title}: read {brief_file} and do what it says."
+    if host_id and host_id != og.host_id:
+        # A file here is not on that host; inline, a Claude lead may read it as pasted text and
+        # ask its starter for a go-ahead.
+        text = f"Work on {title}. Your brief:\n\n{full}"
+    else:
+        # The brief goes in a file beside the report and the message only names it: a child can
+        # receive an inline brief as pasted text, which it will not take instructions from.
+        brief_file = brief_of(report)
+        brief_file.parent.mkdir(parents=True, exist_ok=True)
+        brief_file.write_text(full)
+        text = f"Work on {title}: read {brief_file} and do what it says."
     reasons: list[str] = []
     survivors: list[str] = []
 
@@ -768,7 +787,7 @@ def start(
             n += 1
             try:
                 sid, error = (
-                    og.create(agent, name, model, top_level, workspace, permission_mode),
+                    og.create(agent, name, model, top_level, workspace, permission_mode, host_id),
                     None,
                 )
             except Fail as e:
@@ -1489,6 +1508,10 @@ def main(argv: list[str] | None = None) -> int:
             type=Path,
             help="the child's workspace (default: this directory); the report must be inside it",
         )
+        p.add_argument(
+            "--host",
+            help="with --top-level, the Omnigent host (name or id) to start the lead on",
+        )
     p = sub.add_parser("send")
     p.add_argument("session")
     p.add_argument("brief", type=Path, help="file with the answer or follow-up")
@@ -1586,17 +1609,29 @@ def main(argv: list[str] | None = None) -> int:
             arm_quietly(registry, args.session)
             archive_delivered(og, args.session)
             return 0
-        report = args.report.resolve()
+        host = og.host(args.host) if getattr(args, "host", None) else og.host_id
+        remote = host != og.host_id  # paths on another host: neither resolved nor checked here
+        report = args.report if remote else args.report.resolve()
+        if args.cmd != "send" and args.host and not args.top_level:
+            raise Fail("--host needs --top-level: Omnigent runs a child on its parent's runner")
+        if remote and not (
+            args.workspace and args.workspace.is_absolute() and report.is_absolute()
+        ):
+            raise Fail(
+                f"--host {args.host} is another host: --workspace and the report are absolute paths there"
+            )
         if args.cmd == "send":  # a live session keeps its own workspace, wherever this runs
             workspace = Path(og.info(args.session).get("workspace") or Path.cwd()).resolve()
         else:
-            workspace = (getattr(args, "workspace", None) or Path.cwd()).resolve()
-            if not workspace.is_dir():
+            workspace = getattr(args, "workspace", None) or Path.cwd()
+            if not remote:
+                workspace = workspace.resolve()
+            if not remote and not workspace.is_dir():
                 raise Fail(f"--workspace {workspace} is not a directory")
         # A new child's workspace is this directory unless --workspace names one; outside it a Codex
         # sandbox refuses the write and Claude Code prompts for the read (denies it in auto mode),
         # which nobody answers. The child also saves its repro files beside the report.
-        if not report.is_relative_to(workspace):
+        if not remote and not report.is_relative_to(workspace):
             raise Fail(
                 f"{report} is outside the child's workspace {workspace}; use tmp/loop/ in the worktree"
             )
@@ -1633,14 +1668,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         # A report already there is a pass before (a fix pass reuses the path): only a newer one counts.
         # `wait` after a separate `start` has no launch time to compare, so `start` refuses it.
-        if args.cmd == "start" and report.exists():
+        if args.cmd == "start" and not remote and report.exists():
             raise Fail(
                 f"{report} already exists; wait would return at once (use run, or a new path)"
             )
         # The file's own mtime, never the clock: the kernel stamps files from a coarse clock that
         # lags time.time_ns() by up to a tick, so a report written that soon would read as older.
-        launched = report.stat().st_mtime_ns if report.exists() else None
-        report.parent.mkdir(parents=True, exist_ok=True)
+        launched = report.stat().st_mtime_ns if not remote and report.exists() else None
+        if not remote:  # a remote lead's report is written on its host, never read here
+            report.parent.mkdir(parents=True, exist_ok=True)
         sid, survivors = start(
             og,
             args.agent,
@@ -1653,8 +1689,10 @@ def main(argv: list[str] | None = None) -> int:
             permission_mode=args.permission_mode,
             top_level=args.top_level,
             workspace=str(workspace),
+            host_id=host,
         )
-        arm_quietly(registry, sid, report, [brief_of(report)], verdict=verifier)
+        if not remote:
+            arm_quietly(registry, sid, report, [brief_of(report)], verdict=verifier)
         print(sid, flush=True)
         if args.cmd == "run":
             print(wait(og, sid, report, args.timeout, verifier, launched))

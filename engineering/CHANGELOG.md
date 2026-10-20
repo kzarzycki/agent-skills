@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `omnigent_agent.py start --top-level --host <name|id>` starts a lead on another Omnigent
+  host (#215), since an agent's `sys_session_create` makes only children, which run on their
+  parent's runner. On another host `--workspace` and the report are absolute paths there, the
+  brief goes inline in the first message, and the lead is followed with `watch`.
 - The chief-of-staff skill states how to work delegated and under load (#224):
   - a delegated decision is reported as options, a recommendation and the action taken;
   - a chief of staff records an owner's approval as a label with a quoted comment, and leaves
