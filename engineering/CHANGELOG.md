@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
+  through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
+  session blocked only on a question answers it with the message through the same route,
+  instead of interrupting it, which held the message up to 7 minutes (kzarzycki/omnigent#14).
+  A chief of staff runs `approve` on the owner's word, and quotes an approval in a lead's
+  brief word for word.
 - `omnigent_agent.py` under load (#226):
   - `capacity` says whether this host has room for another session, and `start` and `run`
     wait for it, failing after 10 minutes;

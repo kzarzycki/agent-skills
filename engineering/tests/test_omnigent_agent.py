@@ -45,7 +45,7 @@ class FakeOmnigent:
         self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
-        self.interrupted: list[str] = []
+        self.resolved: list[tuple[str, str, str, dict | None]] = []
 
     def create(
         self,
@@ -128,11 +128,11 @@ class FakeOmnigent:
             info["workspace"] = self.workspaces[int(sid[1:])]
         return info
 
-    def interrupt(self, sid: str) -> None:
-        """Omnigent cancels the turn and drops the inputs pending then."""
-        self.interrupted.append(sid)
-        self.prompts = []
-        self.held = [h for h in self.held if h[0] != sid]
+    def resolve(self, sid: str, eid: str, action: str, content: dict | None = None) -> None:
+        if eid in self.fail:
+            raise omnigent_agent.Fail(f"POST resolve {eid}: HTTP 404 Not Found")
+        self.resolved.append((sid, eid, action, content))
+        self.prompts = [e for e in self.prompts if e["elicitation_id"] != eid]
 
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
@@ -2490,42 +2490,16 @@ def test_relay_of_the_same_words_after_the_session_replied_is_a_new_message(
     assert og.posts == 2
 
 
-def test_relay_to_a_session_blocked_on_a_question_interrupts_it_then_delivers(
+def test_relay_answers_a_question_with_the_message_instead_of_posting_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    og = FakeOmnigent()
+    og = FakeOmnigent(hold=10**6)  # an interrupt would leave it held (omnigent#14)
     sid = og.create("claude", "lead")
     og.prompts = [QUESTION]
     assert relay(og, sid, tmp_path, monkeypatch, "use main") == 0
-    assert og.interrupted == [sid]
-    assert "interrupted its open question" in capsys.readouterr().err
-    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
-
-
-def test_relay_says_when_an_interrupted_question_still_holds_the_message(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    og = FakeOmnigent(hold=10**6)  # claude-native buffers input after the interrupt (omnigent#14)
-    sid = og.create("claude", "lead")
-    og.prompts = [QUESTION]
-    assert relay(og, sid, tmp_path, monkeypatch, "use main") == omnigent_agent.QUEUED
-    assert "until the interrupted question releases input" in capsys.readouterr().err
-
-
-def test_relay_does_not_interrupt_a_question_that_other_queued_inputs_wait_behind(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    og = FakeOmnigent(hold=10**6)
-    sid = og.create("claude", "lead")
-    og.prompts = [QUESTION]
-    og.send(sid, "[System: session w1 ended its turn (completed).]")  # an interrupt drops it
-    assert relay(og, sid, tmp_path, monkeypatch, "use main") == omnigent_agent.QUEUED
-    assert og.interrupted == []
-    assert [t for _, t, _ in og.held] == [
-        "[System: session w1 ended its turn (completed).]",
-        "use main",
-    ]
-    assert "not interrupted: that would drop 1 other queued input" in capsys.readouterr().err
+    assert og.resolved == [(sid, "e1", "accept", {"Which base?": "use main"})]
+    assert og.posts == 0
+    assert "answered its open question" in capsys.readouterr().out
 
 
 def test_relay_revives_a_reaped_runner_then_delivers(
@@ -2551,15 +2525,36 @@ def test_relay_of_a_message_neither_pending_nor_landed_is_not_deliverable(
     assert "neither pending nor in history" in capsys.readouterr().err
 
 
-def test_relay_never_interrupts_an_approval_prompt_and_says_what_holds_it(
+def test_relay_never_answers_an_approval_prompt_and_says_what_holds_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(hold=10**6)
     sid = og.create("claude", "lead")
     og.prompts = [QUESTION, APPROVAL]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
-    assert og.interrupted == []
-    assert "queued behind a prompt a person answers in the UI: " in capsys.readouterr().err
+    assert og.resolved == []
+    assert "queued behind a prompt (`approve` answers an approval): " in capsys.readouterr().err
+
+
+def test_approve_resolves_each_approval_prompt_never_a_question(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    og.prompts = [QUESTION, APPROVAL]
+    assert omnigent_agent.main(["approve", sid]) == 0
+    assert og.resolved == [(sid, "e2", "accept", None)]
+    assert capsys.readouterr().out == f"session {sid}: accepted Bash(rm -rf build)\n"
+    assert omnigent_agent.main(["approve", sid]) == 1  # only the question is left
+    assert "no approval prompt pending" in capsys.readouterr().err
+    og.prompts = [APPROVAL, {**APPROVAL, "elicitation_id": "e3"}]
+    og.fail = {"e2"}
+    assert omnigent_agent.main(["approve", sid, "--decline"]) == 1  # e3 still answered
+    assert og.resolved[-1] == (sid, "e3", "decline", None)
+    out = capsys.readouterr().out
+    assert "not answered: Bash(rm -rf build): POST resolve e2: HTTP 404" in out
+    assert f"session {sid}: declined Bash(rm -rf build)" in out
 
 
 def test_relay_to_an_archived_session_is_not_deliverable(
@@ -2607,3 +2602,23 @@ def test_status_never_prints_a_user_message_as_the_last_message(
     og.send(sid, "go")
     assert omnigent_agent.main(["status", sid]) == 0
     assert capsys.readouterr().out.splitlines()[-1] == "last message: on it"
+
+
+def test_resolve_posts_the_verdict_to_omnigent_s_elicitation_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict | None]] = []
+    monkeypatch.setattr(omnigent_agent.Omnigent, "__init__", lambda self: None)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "call", lambda self, *a: calls.append(a) or {"queued": False}
+    )
+    omnigent_agent.Omnigent().resolve("s1", "e1", "accept", {"Which base?": "main"})
+    omnigent_agent.Omnigent().resolve("s1", "e2", "decline")
+    assert calls == [
+        (
+            "POST",
+            "/v1/sessions/s1/elicitations/e1/resolve",
+            {"action": "accept", "content": {"Which base?": "main"}},
+        ),
+        ("POST", "/v1/sessions/s1/elicitations/e2/resolve", {"action": "decline"}),
+    ]

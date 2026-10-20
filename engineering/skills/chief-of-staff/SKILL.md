@@ -45,7 +45,9 @@ its landing order.
   and the time), then only what a lead could not find itself: a project fact or a
   standing decision the owner gave you, and the default you chose where the ask forks. No
   deliverables, steps, tests or guardrails the owner never named, since the lead reads
-  every sentence as a requirement.
+  every sentence as a requirement. An approval the owner gave (a spec, a merge, a standing
+  rule) goes in word for word, with who said it, where and when: a lead refuses an approval it
+  is only told about, and stops to ask the owner.
 - **Start.** `python3 <script> start --top-level <claude|codex> <title> <brief-file>
   <report> --role <role-file>`, with the report under your `tmp/loop/` and the
   role the ask needs (an engineering ask: engineering-loop's `lead.md`, by absolute path),
@@ -85,7 +87,7 @@ A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEE
 | Turn ended, `USER NEEDED` | Put its question to the owner in one line, linked to the lead's session. Never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
 | Turn ended, `STILL WORKING`, with something pending | Record what it waits on (Handover, Live leads) and send nothing: its own worker, verifier or CI wakes it, and another lead's merge reaches it through that lead's `DONE`. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step. A second stall without progress goes to the owner. |
-| Blocked on a prompt | Tell the owner which session waits and on what. Only a person approves a prompt, in the UI. |
+| Blocked on a prompt | Tell the owner which session waits and on what. Once they approve it (or decline it), run `python3 <script> approve <session>` (`--decline`), which answers each approval prompt pending; their word is the approval, never yours. |
 | Failed, or gave up | Revive it in place (`relay` a nudge, which revives a reaped runner) once. If it fails again, give the owner the error line. |
 
 ## Relaying
@@ -101,15 +103,13 @@ the foreground and never poll the lead afterwards:
 | Exit | Means | You do |
 |---|---|---|
 | 0 | Delivered, or already in the lead's history unanswered (a rerun sends no second copy) | Tell the owner it went |
-| 5 | Queued: the lead holds it until its current step ends, until its interrupted question releases it, or until a person answers the approval prompt it names; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
+| 5 | Queued: the lead holds it until its current step ends, or until the approval prompt it names is answered; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
 | 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
 
-A lead blocked on a question (its own ask of the owner) is interrupted first and then
-given the message, because a question holds every message behind it until answered, and an
-interrupt drops the ones already queued. While another input already waits behind the
-question (a worker's notice, the owner typing into the lead), `relay` does not interrupt,
-since that would drop it too, and exits 5 saying so: the owner answers the question in the
-lead's session. An approval prompt is never interrupted, since only a person approves one.
+A lead blocked only on a question (its own ask of the owner) gets the message as the
+question's answer, because a question holds every message behind it until answered: relay
+the owner's answer to it the same way. `relay` never answers an approval prompt; `approve`
+does, on the owner's word (the table above).
 
 ## Authority
 
