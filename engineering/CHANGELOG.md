@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The package's file inventory leaves out `__pycache__` and `*.pyc` (#223), so a script imported
+  from a skill folder no longer fails `vendor-engineering-check` on a bytecode cache git ignores.
 - `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
   through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
   session blocked only on a question answers it with the message through the same route,
