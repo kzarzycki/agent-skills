@@ -103,6 +103,7 @@ own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists i
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import http.client
 import json
@@ -1814,11 +1815,12 @@ def supervise_registry(
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
-    rate = state["rate"]
-    if not isinstance(rate.get("model_calls"), list):
-        rate["model_calls"] = []  # the shape before the routing counted calls
-    # what a crash left open: each is looked up in its lead's history, never sent again
-    unchecked = [i for i in state["intents"] if i.get("status") == "open"]
+    if not isinstance(state["rate"].get("model_calls"), list):
+        state["rate"]["model_calls"] = []  # the shape before the routing counted calls
+    # what a crash left open, by id: each is looked up in its lead's history, never sent again
+    unchecked = [i["id"] for i in state["intents"] if i.get("status") == "open"]
+    # events whose settling a failed state write undid, settled again at the next poll
+    retry: list[tuple[str, str, str, str, tuple[str, Path, float] | None]] = []
     looks: dict[str, tuple[dict, list[dict]]] = {}  # what each session's look this poll read
     owed: dict[str, tuple[Path, list[Path], bool, bool, str]] = {}
     hosts: dict[str, str] | None = None  # ponytail: read once; a host added later shows its id
@@ -1880,16 +1882,30 @@ def supervise_registry(
         unsent.discard(sid)
         return True
 
-    def save() -> None:
+    def save(strict: bool = True) -> None:
         """Write the state now: at the end of a poll, and before a small-model call, an action or
-        a post, so a crash after it spends no budget twice."""
+        a post, so a crash after it spends no budget twice. A failed write is logged and, when
+        ``strict`` (a side effect waits on it), raised, so the side effect does not happen."""
         state["written_at"] = int(time.time())
         try:
             write_state(state_path, state)
         except OSError as e:
             log("state", f"{state_path}: {reason(e)}")
+            if strict:
+                raise Fail(f"{state_path} not written: {reason(e)}") from e
         else:
             log("state", None)
+
+    def undoing(step: Callable[[], None]) -> None:
+        """Run ``step``; when it raises, put the state back as it was before it and re-raise, so
+        nothing it counted or settled in memory outlives a write that failed."""
+        before = copy.deepcopy(state)
+        try:
+            step()
+        except BaseException:
+            state.clear()
+            state.update(before)
+            raise
 
     def queue(eid: str, sid: str, to: str, line: str, why: str) -> None:
         """Put an event in the attention queue, for the chief of staff (``act``) or the owner."""
@@ -1923,13 +1939,17 @@ def supervise_registry(
         state["intents"] = [
             i for n, i in enumerate(intents) if i["status"] == "open" or len(intents) - n <= 50
         ]
-        save()
+        save(strict=False)  # sent: an intent left open is looked up after a restart
 
     def recover() -> None:
         """Settle each intent a crash left open: done when its text is in its lead's history,
         else escalated to the chief of staff, never sent again. One the history can't be read
         for waits for the next poll."""
-        for intent in list(unchecked):
+        for iid in list(unchecked):
+            intent = next((i for i in state["intents"] if i["id"] == iid), None)
+            if intent is None:
+                unchecked.remove(iid)
+                continue
             sid, text = intent["session"], intent["text"]
             try:
                 landed = in_history(
@@ -1942,7 +1962,7 @@ def supervise_registry(
                 log(("intent", intent["id"]), f"{intent['id']}: not looked up: {reason(e)}")
                 continue
             log(("intent", intent["id"]), None)
-            unchecked.remove(intent)
+            unchecked.remove(iid)
             intent["status"] = "done" if landed else "escalated"
             if not landed:
                 title = state["leads"].get(sid, {}).get("title") or ""
@@ -1977,10 +1997,10 @@ def supervise_registry(
 
         def ask() -> tuple[str, str]:
             now = time.time()
-            calls = [t for t in rate["model_calls"] if now - t < 3600]
+            calls = [t for t in state["rate"]["model_calls"] if now - t < 3600]
             if len(calls) >= MODEL_HOURLY:
                 return "unsure", f"over {MODEL_HOURLY} small-model calls an hour"
-            rate["model_calls"] = [*calls, now]
+            state["rate"]["model_calls"] = [*calls, now]
             save()
             return triage(line, found)
 
@@ -1998,16 +2018,6 @@ def supervise_registry(
         kept = state["settled"].setdefault(sid, [])
         kept.append(eid)
         del kept[:-SETTLED_KEPT]
-        logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
-        logged_line.update(line=line, settled=by, action=action, why=why)
-        try:
-            with open(events_path, "a") as f:
-                f.write(json.dumps(logged_line) + "\n")
-        except OSError as e:
-            log("events", f"{events_path}: {reason(e)}")
-        else:
-            log("events", None)
-        print(stamp(f"{eid}: {by}: {action} ({why})"), flush=True)
         head = f"{sid} {lead.get('title') or ''}".rstrip()
         if action == "absorb":
             state["leads"].pop(sid, None)
@@ -2024,6 +2034,16 @@ def supervise_registry(
             for other, (*_, after) in owed.items():
                 if after == sid:
                     act_on(other, "tell", result, eid)
+        logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
+        logged_line.update(line=line, settled=by, action=action, why=why)
+        try:
+            with open(events_path, "a") as f:
+                f.write(json.dumps(logged_line) + "\n")
+        except OSError as e:
+            log("events", f"{events_path}: {reason(e)}")
+        else:
+            log("events", None)
+        print(stamp(f"{eid}: {by}: {action} ({why})"), flush=True)
 
     def compose(bid: str, events: list[dict]) -> str:
         """A post of ``events``: one line each, then each lead's status row and report head."""
@@ -2064,13 +2084,13 @@ def supervise_registry(
                 log("post", f"post {out['id']} not looked up: {reason(e)}")
                 return
         else:
-            if not state["attention"] or time.time() < rate["next_post_at"]:
+            if not state["attention"] or time.time() < state["rate"]["next_post_at"]:
                 return
             bid = f"b-{int(time.time())}"
             out = {"id": bid, "events": [e["id"] for e in state["attention"]], "at": time.time()}
             out["text"] = compose(bid, state["attention"])
             pending.append(out)
-            rate["next_post_at"] = time.time() + POST_SECONDS
+            state["rate"]["next_post_at"] = time.time() + POST_SECONDS
             save()
             found = False
         if not found:
@@ -2081,7 +2101,7 @@ def supervise_registry(
         ids = set(out["events"])
         state["attention"] = [e for e in state["attention"] if e["id"] not in ids]
         pending.remove(out)
-        save()
+        save(strict=False)  # delivered: a pending post left is looked up
 
     def needs_you() -> None:
         """``notify``'s own ``status.line``: how many owner events wait, kept fresh as a lead's."""
@@ -2128,7 +2148,13 @@ def supervise_registry(
         print(stamp(line), flush=True)
         eid = eid or f"notice:{sid}:{time.time():.0f}"
         if console:
-            settle(line, sid, eid, kind)
+            try:
+                undoing(lambda: settle(line, sid, eid, kind))
+            except Exception as e:  # noqa: BLE001 - never fatal; settled again next poll
+                log(("settle", eid), f"{eid}: not settled: {reason(e)}")
+                retry.append((line, sid, eid, kind, event))
+                return
+            log(("settle", eid), None)
             if fyi != "post":
                 if event:  # posted as routed, not as a line
                     outbox.append((None, event, eid, sid, kind))
@@ -2239,6 +2265,9 @@ def supervise_registry(
         flush()
         if console:
             recover()
+            for again in retry[:]:
+                retry.remove(again)
+                say(*again)
         try:
             owed, bad = registered(registry)
         except Exception as e:  # noqa: BLE001 - never fatal
@@ -2292,10 +2321,15 @@ def supervise_registry(
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
                     state[part] = {s: v for s, v in state[part].items() if s in owed}
-            deliver()
+            try:
+                undoing(deliver)
+            except Exception as e:  # noqa: BLE001 - never fatal; delivered at a later poll
+                log("deliver", f"post not made: {reason(e)}")
+            else:
+                log("deliver", None)
             if notify:
                 needs_you()
-            save()
+            save(strict=False)
         if time.monotonic() - window >= timeout:
             print(
                 stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),

@@ -362,7 +362,9 @@ budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives
 before the send and marked done after; one to a lead waiting on a prompt is not sent, since
 `relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there marks it done,
-else it is escalated as act, never sent again.
+else it is escalated as act, never sent again. A state write that fails before a small-model call, an
+action or a post stops it: nothing is asked or sent, what the event had counted is undone, and it
+is settled again at the next poll.
 
 What needs the notified session waits in the state's `attention` queue and goes out as one post,
 at most one per 5 minutes (`rate.next_post_at`, written before the post), so a restart or a

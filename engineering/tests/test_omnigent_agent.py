@@ -3964,3 +3964,45 @@ def test_a_quiet_end_the_model_could_not_route_goes_to_the_chief_of_staff_not_a_
     assert [s for s, t in og.inbox] == ["cos"]  # no nudge to the lead
     assert events_of(registry)[-1]["action"] == "act"
     assert "[act] a t-a: turn ended, quiet 301s" in posted(og)[0]
+
+
+@pytest.mark.parametrize("needed_by", ["action", "model call", "post"])
+def test_a_failed_state_write_stops_the_side_effect_it_guards_and_the_next_poll_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_model: list[str], needed_by: str
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    last = {"action": "STILL WORKING: on it", "model call": "Reading code.", "post": "DONE: x"}
+    og = Lead(told("brief", 60), ending(last[needed_by], 0))
+    og.snap = {"status": "running"} if needed_by == "action" else {}
+    real, full = omnigent_agent.write_state, [False]
+
+    def write_state(path: Path, state: dict) -> None:
+        if full[0]:
+            raise OSError("disk full")
+        real(path, state)
+
+    monkeypatch.setattr(omnigent_agent, "write_state", write_state)
+    at = {"action": 1201.0, "model call": 301.0, "post": 0.0}[needed_by]
+    seen: list[tuple] = []
+
+    def later(poll: int) -> None:
+        seen.append((list(og.inbox), list(no_model)))
+        offset[0] = at
+        full[0] = poll == 1  # the disk is full for the poll that needs the write
+
+    if needed_by == "post":
+        full[0] = True
+    supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
+    if needed_by == "post":
+        assert seen[0] == ([], [])  # the post's pending write failed: nothing sent
+        assert posted(og)[0].startswith("Supervisor [act] b-") and len(posted(og)) == 1
+    else:
+        assert seen[1] == ([], [])  # the poll with the full disk sent nothing, asked nothing
+        if needed_by == "action":
+            assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_NUDGE]
+        else:
+            assert len(no_model) == 1  # asked once the write succeeds
+    assert [i["status"] for i in state_of(registry)["intents"]] == ["done"] * (
+        needed_by == "action"
+    )
