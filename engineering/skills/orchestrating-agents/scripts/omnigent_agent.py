@@ -660,7 +660,10 @@ def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
     if asks and len(asks) == len(pending):
         for e in pending:
             questions = e["params"]["ask_user_question"].get("questions") or []
-            og.resolve(sid, e["elicitation_id"], "accept", {q["question"]: text for q in questions})
+            answer = text.strip()  # a message file's trailing newline would reach the answer
+            og.resolve(
+                sid, e["elicitation_id"], "accept", {q["question"]: answer for q in questions}
+            )
         return f"session {sid}: answered its open question: {'; '.join(asks)}"
     outcome = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":

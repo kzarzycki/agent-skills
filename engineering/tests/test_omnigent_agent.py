@@ -2496,7 +2496,7 @@ def test_relay_answers_a_question_with_the_message_instead_of_posting_it(
     og = FakeOmnigent(hold=10**6)  # an interrupt would leave it held (omnigent#14)
     sid = og.create("claude", "lead")
     og.prompts = [QUESTION]
-    assert relay(og, sid, tmp_path, monkeypatch, "use main") == 0
+    assert relay(og, sid, tmp_path, monkeypatch, "use main\n") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "use main"})]
     assert og.posts == 0
     assert "answered its open question" in capsys.readouterr().out
