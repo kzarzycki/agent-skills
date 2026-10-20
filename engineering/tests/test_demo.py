@@ -10,9 +10,14 @@ SCRIPT = Path(__file__).parents[1] / "skills" / "demo" / "scripts" / "post_demo.
 HEAD = "a" * 40
 
 # A fake gh: answers the lookups, lists two earlier demos of the caller, and logs every call.
+# Like gh 2.87.0, `pr comment` has no --attach flag.
 FAKE_GH = """#!/usr/bin/env bash
 args="$*"; echo "${args//$'\\n'/ }" >> "$LOG"
 case "$*" in
+  "pr comment "*--attach*) echo "unknown flag: --attach" >&2; exit 1 ;;
+  "release view demos") exit "$NO_RELEASE" ;;
+  "release upload demos "*) [ -s "$4" ] || exit 1 ;;
+  "repo view --json url --jq .url") echo https://github.com/o/r ;;
   "pr view --json number --jq .number") echo 7 ;;
   "pr view "*" --json headRefOid --jq .headRefOid") echo "$PR_HEAD" ;;
   "api user --jq .login") echo me ;;
@@ -28,7 +33,11 @@ esac
 
 
 def run(
-    tmp_path: Path, *args: str, pr_head: str = HEAD, dirty: bool = False
+    tmp_path: Path,
+    *args: str,
+    pr_head: str = HEAD,
+    dirty: bool = False,
+    no_release: bool = False,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -43,6 +52,7 @@ def run(
         "LOG": str(log),
         "PR_HEAD": pr_head,
         "DIRTY": str(int(dirty)),
+        "NO_RELEASE": str(int(no_release)),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), *args],
@@ -62,13 +72,18 @@ def video(tmp_path: Path) -> str:
     return str(path)
 
 
-def test_posts_one_demo_and_minimizes_the_earlier_ones(tmp_path: Path, video: str) -> None:
+def test_links_release_assets_since_gh_pr_comment_cannot_attach(tmp_path: Path, video: str) -> None:
     result, calls = run(tmp_path, "the dry run", video)
 
     assert result.returncode == 0, result.stderr
     comment = next(call for call in calls if call.startswith("pr comment 7"))
     assert "## Demo" in comment and "the dry run, on aaaaaaa." in comment
-    assert comment.endswith(f"--attach {video}")
+    upload = next(call for call in calls if call.startswith("release upload demos"))
+    assert upload.endswith("/pr7-aaaaaaa-1.mp4 --clobber")
+    link = "https://github.com/o/r/releases/download/demos/pr7-aaaaaaa-1.mp4"
+    assert f"[pr7-aaaaaaa-1.mp4]({link})" in comment
+    assert calls.index(upload) < calls.index(comment)
+    assert not any(call.startswith("release create") for call in calls)
     listing = next(call for call in calls if call.startswith("api repos/"))
     assert '.user.login == "me"' in listing
     minimized = [call for call in calls if call.startswith("api graphql")]
@@ -84,7 +99,18 @@ def test_explicit_pr_and_several_videos(tmp_path: Path, video: str) -> None:
 
     assert result.returncode == 0, result.stderr
     comment = next(call for call in calls if call.startswith("pr comment 12"))
-    assert comment.count("--attach") == 2
+    assert "pr12-aaaaaaa-1.mp4" in comment and "pr12-aaaaaaa-2.mp4" in comment
+
+
+def test_creates_the_demos_prerelease_when_missing(tmp_path: Path, video: str) -> None:
+    result, calls = run(tmp_path, "the dry run", video, no_release=True)
+
+    assert result.returncode == 0, result.stderr
+    create = next(call for call in calls if call.startswith("release create demos"))
+    assert "--prerelease" in create
+    assert calls.index(create) < calls.index(
+        next(call for call in calls if call.startswith("release upload"))
+    )
 
 
 def test_refuses_a_checkout_that_is_not_the_pr_head(tmp_path: Path, video: str) -> None:
@@ -92,7 +118,7 @@ def test_refuses_a_checkout_that_is_not_the_pr_head(tmp_path: Path, video: str) 
 
     assert result.returncode == 3
     assert "record from a clean checkout of the head" in result.stderr
-    assert not any(call.startswith("pr comment") for call in calls)
+    assert not any(call.startswith(("pr comment", "release")) for call in calls)
 
 
 def test_refuses_uncommitted_changes(tmp_path: Path, video: str) -> None:
@@ -100,7 +126,7 @@ def test_refuses_uncommitted_changes(tmp_path: Path, video: str) -> None:
 
     assert result.returncode == 3
     assert "uncommitted changes" in result.stderr
-    assert not any(call.startswith("pr comment") for call in calls)
+    assert not any(call.startswith(("pr comment", "release")) for call in calls)
 
 
 def test_refuses_a_pr_that_is_not_a_number(tmp_path: Path, video: str) -> None:

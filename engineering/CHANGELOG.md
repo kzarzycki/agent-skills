@@ -6,6 +6,9 @@
   in a checkout whose remotes name several GitHub repos while `gh repo set-default` names
   none (#236). gh then reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, so a
   verdict posted from a fork's checkout landed on the upstream PR of the same number.
+- `post_demo.sh` uploads each video as an asset of the repo's `demos` prerelease and links it
+  in the `## Demo` comment (#234), since `gh pr comment` has no `--attach` and every post with
+  a video failed. The video is a download link, not an inline player.
 - `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
   through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
   session blocked only on a question answers it with the message through the same route,
