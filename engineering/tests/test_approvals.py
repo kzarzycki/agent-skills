@@ -2289,15 +2289,39 @@ def test_land_wait_marks_a_draft_ready_and_merges_it_once_its_ci_is_green(
     landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
 ) -> None:
     landing["pull"] = proven("SKIPPED", isDraft=True)
-    later += [proven(None), proven(None), proven("SUCCESS")]
+    later += [proven(None), proven(None), proven("SUCCESS"), proven(state="MERGED")]
     assert waited(capsys, landing) == (
         0,
         [
             "PR #7 is ready now: CI starts on ready, run land again",
             "PR #7: no `check` on the head commit yet",  # printed once for its two reads
             f"PR #7 merges at {HEAD}",
+            "PR #7 is merged",
         ],
         [READY, MERGE],
+    )
+
+
+def test_land_wait_follows_a_merge_github_queues_until_it_merges(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On a base that requires a merge queue, `gh pr merge` with green checks queues the PR: still OPEN."""
+    later += [proven(isInMergeQueue=True), proven(isInMergeQueue=True), proven(state="MERGED")]
+    assert waited(capsys, landing) == (
+        0,
+        [f"PR #7 merges at {HEAD}", f"PR #7: in the merge queue at {HEAD}", "PR #7 is merged"],
+        [MERGE],
+    )
+
+
+def test_land_wait_ends_with_exit_1_when_the_pr_leaves_the_merge_queue_unmerged(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    later += [proven(isInMergeQueue=True), proven()]
+    assert waited(capsys, landing) == (
+        1,
+        [f"PR #7 merges at {HEAD}", f"PR #7: in the merge queue at {HEAD}", OFF],
+        [MERGE],
     )
 
 
@@ -2343,10 +2367,14 @@ def test_land_wait_turns_on_auto_merge_and_ends_once_github_merges(
         [
             f"PR #7: auto-merge on at {HEAD}, once check pass",
             f"PR #7: auto-merge is on at {HEAD}",
+            f"PR #7: in the merge queue at {HEAD}",
             "PR #7 is merged",
         ],
         [(*MERGE, "--auto")],
     )
+
+
+OFF = "PR #7: auto-merge was turned off, or the PR left the merge queue, without a merge"
 
 
 def test_land_wait_says_auto_merge_was_turned_off_without_a_merge(
@@ -2358,7 +2386,7 @@ def test_land_wait_says_auto_merge_was_turned_off_without_a_merge(
         1,
         [
             f"PR #7: auto-merge on at {HEAD}, once check pass",
-            "PR #7: auto-merge was turned off without a merge",
+            OFF,
         ],
         [(*MERGE, "--auto")],
     )

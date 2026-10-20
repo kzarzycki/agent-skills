@@ -60,9 +60,10 @@ exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a r
 merged PR: exit 0; a closed one: exit 1.
 `land --wait` runs it again every 30 seconds, printing each new state, while what waits is GitHub's merge state or CI
 on the head: a draft it marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
-once. With auto-merge on, whoever turned it on, it waits for the merge (exit 0) unless the owner's label or a local-ci
-record holds it, which GitHub never supplies; auto-merge turned off without a merge
-is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
+once. With auto-merge on or the PR in a merge queue, whoever put it there, and after its own merge, which a base
+requiring a merge queue queues, it waits for GitHub's merge (exit 0 only once the PR is merged) unless the owner's
+label or a local-ci record holds it, which GitHub never supplies; auto-merge turned off, or the PR out of the queue,
+without a merge is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
@@ -229,7 +230,7 @@ RUN = re.compile(r"/actions/runs/(\d+)")
 # land --wait: seconds between reads of the PR, and how long it waits in all before it exits 3
 POLL, CEILING = 30, 2 * 60 * 60
 # what land --wait polls for: CI on the head, GitHub's auto-merge, or its merge state
-ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge)"
+ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge or the merge queue)"
 ON_STATE = "GitHub to compute its merge state"
 # GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
 STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
@@ -1591,9 +1592,9 @@ def landing(
     pinned to the head: at once when nothing waits, else auto-merge while only the base's required checks are pending
     and the repo allows it; exit 3 while anything else waits. When a red `loop:approvals` status is all that
     waits, its Actions run is rerun: exit 3. A head behind its base, or in conflict, is refused first.
-    With `reran` (land --wait), also what a wait would poll for (ON_CI, ON_MERGE), else None: it ends here. Then
-    auto-merge already on is watched rather than turned on again, `merging` says this wait turned it on, and each
-    approvals run is rerun once."""
+    With `reran` (land --wait), also what a wait would poll for (ON_CI, ON_MERGE, ON_STATE), else None: it ends
+    here. Then auto-merge already on, or the merge queue, is watched rather than merged again, `merging` says this wait
+    merged or turned auto-merge on, and each approvals run is rerun once."""
     tracker, loop = project()
     cap(loop)  # an unreadable `cap:` line is refused before any proof or `gh pr ready`
     pull = pull_request(pr)
@@ -1606,7 +1607,9 @@ def landing(
         raise Refused(f"{where} is closed: nothing to land")
     auto = pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]
     if merging and not auto:
-        raise Refused(f"{where}: auto-merge was turned off without a merge")
+        raise Refused(
+            f"{where}: auto-merge was turned off, or the PR left the merge queue, without a merge"
+        )
     if why := outside(pull, loop):
         # land is the loop's merge: auto-merge on a PR no verifier saw would merge it on CI alone
         raise Refused(why)
@@ -1634,7 +1637,9 @@ def landing(
     # record are no check of GitHub's, so either hold ends the wait below instead.
     if watching and auto and not owner and not (no_ci(loop) and checking):
         if not RED.intersection(state for _, state in red):
-            print(f"{where}: auto-merge is on at {head}")
+            print(
+                f"{where}: {'in the merge queue' if pull['isInMergeQueue'] else 'auto-merge is on'} at {head}"
+            )
             return WAITING, ON_MERGE
         for line in checking + owner:
             print(line)
@@ -1652,7 +1657,8 @@ def landing(
     if not checking + owner:
         gh(*merge)
         print(f"{where} merges at {head}")
-        return 0, None
+        # on a base that requires a merge queue, GitHub queues it instead: a wait follows it to MERGED
+        return 0, ON_MERGE
     # a required check not on the head yet may be a draft's skipped run, which GitHub's auto-merge counts as passing
     pending = (
         not owner
