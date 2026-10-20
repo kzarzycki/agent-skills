@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+- `omnigent_agent.py reap` with `--registry` or `$OMNIGENT_SUPERVISE_REGISTRY` drops each
+  session it finishes from the supervisor registry before archiving it (#249), so a chief of
+  staff that reaps its finished lead is not woken by `archived` for its own reap, and no longer
+  edits the registry by hand.
 - A chief of staff's handover file and memory bank come from the project's instructions, with
   `tmp/loop/chief-of-staff.md` and the repo's bank as defaults, so it can run from a home of
   its own across projects (#230). A handover file in a repo with a remote is pushed after

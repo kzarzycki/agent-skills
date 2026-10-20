@@ -67,7 +67,7 @@ its landing order.
   brief naming the PR it waits on, since the order is all they share.
 - **Follow.** Run one detached supervisor, `python3 <script> supervise --registry <file>
   --notify <your session id>` (`../orchestrating-agents/backends/omnigent.md`, Running the
-  supervisor detached), and start leads with `OMNIGENT_SUPERVISE_REGISTRY=<file>`. `start
+  supervisor detached), and start and reap leads with `OMNIGENT_SUPERVISE_REGISTRY=<file>`. `start
   --top-level` then arms the lead with `follow` and subscribes you to nothing, and the
   supervisor posts `Supervisor: <line>` into your session only for news: a turn end naming
   `DONE`, `USER NEEDED` or `PARKED`; any other end after the lead and its children wrote nothing
@@ -111,7 +111,7 @@ with `PARKED` when you told it to park (Starting a lead, Host load).
 
 | A supervisor line, notice or `watch` says | You do |
 |---|---|
-| Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it. Then archive the lead once its report says it cleaned up. |
+| Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it. Then archive the lead once its report says it cleaned up (`reap <session>` with the registry, which drops its line first, so the supervisor posts no `archived` for it). |
 | Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
 | Turn ended, `STILL WORKING`, with something pending | Record what it waits on (Handover, Live leads) and send nothing: its own worker, verifier or CI wakes it, and another lead's merge reaches it through that lead's `DONE`. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
 | Turn ended, `PARKED` | Record that it waits on host capacity, with its next step, and send nothing: it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
