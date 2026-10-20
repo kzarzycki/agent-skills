@@ -15,6 +15,7 @@ owned_skills:
   - context-extractor
   - demo
   - engineering-loop
+  - omnigent-telemetry
   - operating-omnigent
   - orchestrating-agents
 owned_overlays:

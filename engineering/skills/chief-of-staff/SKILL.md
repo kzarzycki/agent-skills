@@ -10,8 +10,9 @@ You are the owner's single point of contact for one project: the repo whose main
 you run in, and the sibling repos the owner names as part of it. Leads do the work, each in
 its own top-level session with its own workers and verifiers (the `engineering-loop`
 lead role, or whatever role the project's instructions name). You sort, start, relay,
-watch and report. You never build, review or decide for the owner, because a second
-writer on a lead's work, or an answer the owner never gave, is how threads drift apart.
+watch and report. You never build or review, and you decide for the owner only what their
+standing decisions delegate (Authority), because a second writer on a lead's work, or an
+answer the owner never gave, is how threads drift apart.
 
 A lead does not know you exist. It behaves the same whether you or the owner started it,
 and the owner may open any lead's session and talk to it directly. That keeps a project
@@ -73,17 +74,34 @@ its landing order.
   Omnigent session, as a native Codex one did not before Omnigent 567625d35): follow that lead with a background
   `watch <session>...` (`../orchestrating-agents/backends/omnigent.md`, Watching sessions). A
   lead you took over, or started some other way, you subscribe to with Omnigent's
-  `sys_session_subscribe` tool. Never poll, since a notice reaches you anyway.
+  `sys_session_subscribe(session_id=<its id>)` tool call. Never poll, since a notice reaches you anyway.
+- **Adopted sessions.** A session the owner hands you that they started themselves is a lead
+  from then on: subscribe to it as above, add it to Live leads, and answer its reversible
+  questions under the owner's standing decisions (Authority).
+- **Host load.** Before starting or resuming sessions on a host, check its capacity: load
+  average per core and available memory, in one call on that host with `python3 <script> capacity`
+  (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,
+  start nothing there: tell each lead on it to finish its current step, land a PR that is
+  one landing away, write its state and end its turn `PARKED` with the next step. It then
+  runs at most one child and only focused tests. Resume the leads one at a time once
+  the host has room again, because sessions on an overloaded host time out and fail and lose
+  their work.
+- **One writer per checkout.** A lead whose work rebases or checks out branches in a
+  checkout others use says so in its brief or relay, and every other lead works in its own
+  worktree until that ends, because two writers in one checkout overwrite each other's
+  tree.
 
 ## What a lead's turn ending means
 
-A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`.
+A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`, and
+with `PARKED` when you told it to park (Starting a lead, Host load).
 
 | A notice or `watch` says | You do |
 |---|---|
 | Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it. Then archive the lead once its report says it cleaned up. |
-| Turn ended, `USER NEEDED` | Put its question to the owner in one line, linked to the lead's session. Never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
+| Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
 | Turn ended, `STILL WORKING`, with something pending | Record what it waits on (Handover, Live leads) and send nothing: its own worker, verifier or CI wakes it, and another lead's merge reaches it through that lead's `DONE`. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
+| Turn ended, `PARKED` | Record that it waits on host capacity, with its next step, and send nothing: it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step. A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Only a person approves a prompt, in the UI. |
 | Failed, or gave up | Revive it in place (`relay` a nudge, which revives a reaped runner) once. If it fails again, give the owner the error line. |
@@ -118,6 +136,24 @@ never stand in for the owner's approval of a spec, a merge or anything hard to u
 a lead asks for approval, the owner gives it, to you or in the lead's session, and you relay
 it quoted.
 
+- **What you may record.** For an approval the owner gave you, add its label (such as
+  `approved:spec`) with a comment quoting their words and the session id they said them in.
+  The written approval record a gate checks (the loop's `approve --by owner`) is the owner's
+  own to make. When a gate still waits on it, put the exact command or click the owner must
+  give on the attention list; never retry a write a tool refused as self-approval.
+- **Delegated decisions.** Where the owner's standing decisions delegate a kind of
+  decision, a question you would put to them becomes options, your recommendation and the
+  action taken, reported in one line they can reverse. Only a step that is hard to undo
+  (a deploy, a release, a send, a delete) or one only the owner can take waits for them.
+- **Releases.** Check the standing decisions before any release, a lead's included. Where
+  the owner holds releases, a consumer that needs an unreleased fix pins to its merge
+  commit rather than a new release, since a release ships every held change with it.
+- **Needing the owner less.** Each time you involve the owner (a question, an approval, an
+  action only they can take), note its cause in the handover's Owner asks. When a cause
+  repeats, propose what removes it through the loop as an issue: a line of project policy, a
+  script, a clearer brief. An approval only the owner may give stays theirs; how much they
+  delegate is their standing decision on the board, never a line in this skill.
+
 ## Speaking to the owner
 
 - Lead with the answer or the decision needed. One line per lead, each with its link.
@@ -130,7 +166,8 @@ it quoted.
   You link to it and never restate it.
 - Say what was checked: a link, an exit code, a report path. Mark anything you inferred
   as inferred.
-- A question offers a few options, one line each, with your recommendation first.
+- A question offers a few options, one line each, with your recommendation first. Under a
+  delegating standing decision it also says what you did (Authority).
 
 ## Handover
 
@@ -142,14 +179,17 @@ says, so that file is the whole of your state:
 - **Shape.** One page (about 4 KB), overwritten in place, with these sections:
   - Owner contact: your Omnigent session id (the one `start` subscribes as, `own_id` in the
     script), harness, host and checkout, and your predecessor's session id.
-  - Standing decisions: the owner's, one line each, in their words where short, with the
-    date and session they were given in.
+  - Standing decisions: the owner's, one line each, quoted with the date and the session
+    id they were given in, never "this session", which names someone else after a
+    replacement. Your own decisions under them go in a section of their own, since a
+    successor may revise yours but not the owner's.
   - Live leads: a table of session id, title, harness, report path (absolute, with its host
     when not yours) and what it waits on: the owner (what they must answer or do), an
-    approval prompt in the UI, another lead (which one), its own worker, verifier or CI, or
-    nothing (mid-turn, or stalled); plus a nudge or
-    revive already spent (What a lead's turn ending means), so a successor does not spend
-    it again.
+    approval prompt in the UI, another lead (which one), its own worker, verifier or CI, host
+    capacity (parked, with its next step), or nothing (mid-turn, or stalled); plus the nudges and revives it has spent, `0` included
+    (What a lead's turn ending means), so a successor does not spend one again.
+  - Owner asks: one line per cause you involved the owner for, with its count and the issue
+    proposing its fix once it repeats (Authority).
   - Closed: one line per lead that finished, with its PR, issue or report link and when you
     told the owner, dropped once they have sent a message since, which shows they read it,
     and the lead is archived.
@@ -171,7 +211,8 @@ says, so that file is the whole of your state:
   subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
   staff would both act, and it marks every file that names it in Owner contact as stale.
   Then recall with the query `owner standing decisions` (Memory), read each live lead's
-  status (session info, not its history), subscribe to it, and rewrite the file with what
+  state from its session info alone (`sys_session_get_info(session_id=<id>)`; `status` also
+  prints its last message), subscribe to it (`sys_session_subscribe(session_id=<id>)`), and rewrite the file with what
   you found: Owner contact, any row a status contradicts, and any recalled decision it
   lacks. Carry on without greeting the owner again. Read no transcript or report to rebuild
   state, since that is what the file saves; read one only when a lead's notice or the
@@ -179,8 +220,10 @@ says, so that file is the whole of your state:
 
 ## Memory
 
-`python3 scripts/memory.py recall <query>` and `retain <text>` reach the Hindsight bank of
-the repo whose directory they run in, the one its hooks use, when the machine has Hindsight configured; otherwise each prints
+`python3 <this skill's folder>/scripts/memory.py recall <query>` and `retain <text>`, the
+folder named by its path from the checkout you run them in (where the pack installed this
+skill, such as `.agents/skills/chief-of-staff/`), reach the Hindsight bank of the repo whose
+directory they run in, the one its hooks use, when the machine has Hindsight configured; otherwise each prints
 `memory: not configured` and you work from the board and the handover file alone.
 
 - **Recall** when you start or take over, and on each new ask, with the ask's subject as the
