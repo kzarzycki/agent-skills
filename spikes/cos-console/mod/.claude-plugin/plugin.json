@@ -1,0 +1,20 @@
+{
+  "name": "cos-console",
+  "version": "0.1.0",
+  "description": "Spike: a chief of staff's live lead status, and supervisor notices handled without a model turn",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "statusFile": {
+      "type": "string",
+      "title": "Status file",
+      "description": "The cos-status/1 JSON the supervisor writes",
+      "default": "tmp/loop/cos-status.json"
+    },
+    "triageModel": {
+      "type": "string",
+      "title": "Triage model",
+      "description": "Small model that routes notices no rule settles",
+      "default": "haiku"
+    }
+  }
+}
