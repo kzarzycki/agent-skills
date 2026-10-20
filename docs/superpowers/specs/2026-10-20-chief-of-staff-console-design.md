@@ -161,7 +161,7 @@ A post to the CoS is the one action that is resent rather than escalated, becaus
 2. Send it, with the id in its first line (`Supervisor [act] b-<id>: …`).
 3. On success, mark it delivered and take its events off the queue.
 
-On restart, a pending post is looked up in the CoS session's history by its id: found → delivered; not found → sent again. A duplicate is possible only if the history can't be read; then the post is sent again anyway, and the CoS skill says a post whose batch id it has already handled gets no reply.
+On restart, a pending post is looked up in the CoS session's history by its id, reading back to the post's pending time (not just the latest page of items): found → delivered; not found → sent again, within the same posting window. A duplicate is possible whenever delivery can't be established, such as an unreadable history; the CoS skill says a post whose batch id it has already handled gets no reply.
 
 ### Cost bounds
 
