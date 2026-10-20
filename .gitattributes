@@ -1,0 +1,2 @@
+# Every PR adds its entry at the top of Unreleased; union keeps both sides' entries (#244).
+engineering/CHANGELOG.md merge=union
