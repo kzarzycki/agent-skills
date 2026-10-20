@@ -423,7 +423,15 @@ class Omnigent:
         """``path`` through ``sid``'s file API, whichever host the session runs on: an absolute
         path is read from the host (``base=host``), a relative one from the session's workspace.
         A file's text, or a directory's entries one per line (``/`` after a subdirectory); a
-        missing file is ``Gone``. Each segment is encoded alone, with no leading ``%2F``."""
+        missing file is ``Gone``. Each segment is encoded alone, with no leading ``%2F``. An
+        absolute path inside the session's workspace is read relative to it, since a host on an
+        older Omnigent answers 404 to an absolute file read (``base=host``) it serves relative."""
+        if path.startswith("/"):
+            try:  # no workspace known: the absolute read reports its own error
+                root = str(self.info(sid).get("workspace") or "").rstrip("/") + "/"
+            except Fail:
+                root = "/"
+            path = path[len(root) :] if root != "/" and path.startswith(root) else path
         segments = "/".join(quote(s, safe="") for s in path.split("/") if s)
         url = f"/v1/sessions/{sid}/resources/environments/default/filesystem/{segments}"
         try:

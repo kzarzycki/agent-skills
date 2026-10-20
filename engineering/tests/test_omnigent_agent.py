@@ -2952,7 +2952,7 @@ def test_report_reads_an_absolute_path_from_the_host_with_each_segment_encoded(
     path = f"{FS}/Users/k/my%20dir/r%23.md?base=host"
     seen = serve_files(monkeypatch, {path: {"content": "# done\n"}})
     assert omnigent_agent.main(["report", "s9", "/Users/k/my dir/r#.md"]) == 0
-    assert seen == [path]  # no leading %2F, '/' kept between segments
+    assert seen[-1:] == [path]  # no leading %2F, '/' kept between segments
     assert capsys.readouterr().out == "# done\n\n"
 
 
@@ -2962,6 +2962,20 @@ def test_report_reads_a_relative_path_in_the_workspace_without_base(
     seen = serve_files(monkeypatch, {f"{FS}/tmp/r.md": {"content": "hi"}})
     assert omnigent_agent.main(["report", "s9", "tmp/r.md"]) == 0
     assert seen == [f"{FS}/tmp/r.md"]
+
+
+def test_report_reads_an_absolute_path_inside_the_workspace_relative_to_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # a host on an older Omnigent answers 404 to an absolute file read it serves relative
+    files = {"/v1/sessions/s9": {"workspace": "/Users/k/ws"}, f"{FS}/tmp/r.md": {"content": "ok"}}
+    seen = serve_files(monkeypatch, files)
+    assert omnigent_agent.main(["report", "s9", "/Users/k/ws/tmp/r.md"]) == 0
+    assert seen == ["/v1/sessions/s9", f"{FS}/tmp/r.md"]
+    assert (
+        omnigent_agent.main(["report", "s9", "/Users/k/wsx/r.md"]) == 4
+    )  # a sibling stays absolute
+    assert seen[-1] == f"{FS}/Users/k/wsx/r.md?base=host"
 
 
 def test_report_lists_a_directory_one_entry_per_line(
@@ -2994,7 +3008,7 @@ def test_report_without_a_path_reads_the_registry_line_else_exits_2(
     path = f"{FS}/Users/k/r.md?base=host"
     seen = serve_files(monkeypatch, {path: {"content": "x"}})
     assert omnigent_agent.main(["report", "s9", "--registry", str(registry)]) == 0
-    assert seen == [path]
+    assert seen[-1:] == [path]
     assert omnigent_agent.main(["report", "s8", "--registry", str(registry)]) == 2
     assert omnigent_agent.main(["report", "s9"]) == 2
     assert "OMNIGENT_SUPERVISE_REGISTRY" in capsys.readouterr().err
