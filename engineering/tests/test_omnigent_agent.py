@@ -4091,3 +4091,19 @@ def test_a_crash_right_after_a_terminal_line_is_dropped_keeps_its_owner_event(
     [post] = posted(og)
     assert post.startswith("Supervisor [owner] b-")
     assert "[owner] a t-a: blocked on a prompt: Bash(rm example)" in post
+
+
+def test_an_older_identical_message_does_not_close_an_open_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told(omnigent_agent.LEAD_NUDGE, 600), ending("STILL WORKING: waiting on CI", 5))
+    state = omnigent_agent.fresh_state()
+    intent = {"id": "nudge:a:e2", "session": "a", "action": "nudge", "event": "e2"}
+    intent.update(text=omnigent_agent.LEAD_NUDGE, at=time.time(), status="open")
+    state["intents"] = [intent]  # a crash before its send; the nudge in the history is 10 min old
+    registry.with_suffix(".state.json").write_text(json.dumps(state))
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert state_of(registry)["intents"][0]["status"] == "escalated"
+    assert "the supervisor's nudge may not have reached it" in "\n".join(posted(og))
+    assert [s for s, t in og.inbox if s == "a"] == []  # never sent again

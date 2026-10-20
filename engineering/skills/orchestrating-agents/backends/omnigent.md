@@ -361,7 +361,8 @@ revives a reaped runner and sends no second copy. Each is an intent in the state
 budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
 `relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
-a restart an intent still open is looked up in the lead's history: its text there marks it done,
+a restart an intent still open is looked up in the lead's history: its text there, no older than
+the intent less a minute's margin for clock skew, marks it done,
 else it is escalated as act, never sent again. A state write that fails before a small-model call, an
 action or a post stops it: nothing is asked or sent, what the event had counted is undone, and it
 is settled again at the next poll.

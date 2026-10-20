@@ -1189,19 +1189,19 @@ def from_user(item: dict) -> bool:
 
 
 def in_history(og: Omnigent, sid: str, found: Callable[[dict], bool], since: float) -> bool:
-    """Whether an item of ``sid``'s history is ``found``, read back a page at a time from the
-    newest until a page reaches items older than ``since`` (epoch seconds) or the history ends,
-    so a match older than the newest 100 items is found too."""
+    """Whether an item of ``sid``'s history no older than ``since`` (epoch seconds) is ``found``,
+    read back a page at a time from the newest until a page reaches older items or the history
+    ends, so a match behind the newest 100 items is found and an older copy of it is not."""
     # ponytail: the server's item clock against the local one, as check does; a minute's margin
     # covers a small skew. Upgrade: a client id on the message, once Omnigent has one.
-    after = ""
+    after, since = "", since - 60
     while True:
         page = og.older(sid, after)
         data = page.get("data") or []
-        if any(found(i) for i in data):
+        if any(float(i.get("created_at") or 0) >= since and found(i) for i in data):
             return True
         oldest = min((float(i.get("created_at") or 0) for i in data), default=0.0)
-        if not data or not page.get("has_more") or oldest < since - 60:
+        if not data or not page.get("has_more") or oldest < since:
             return False
         after = str(page.get("last_id") or data[-1].get("id"))
 
