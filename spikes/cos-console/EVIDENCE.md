@@ -24,7 +24,7 @@ Run from a scratch directory holding `tmp/loop/cos-status.json` (written by `sta
 - `/leads` opened the pane: the stale warning, the 5 leads, and `handled: parked→absorb`.
 - The clear was then made conditional (`$.prompt.read()`, clear only while the box still holds the dropped notice) and replayed twice in the same session:
   - Drop alone: the drop line, then the box empty (the next paste landed in an empty box).
-  - Drop, then `send-keys -l "hello from the owner"` 100 ms after Enter: the box ended as the restored notice with `hello from the owner` appended to it, and the clear left it alone. So a conditional clear never erases the owner's text, but the text then sits behind a notice: Omnigent's retry, or the owner's Enter, would submit both, and the mod would drop both as `parked`.
+  - Drop, then `send-keys -l "hello from the owner"` 100 ms after Enter: the box ended as the restored notice with `hello from the owner` appended to it, and the clear left it alone. So the conditional clear preserved the owner's text in this replay (text arriving between its read and its fill would still be erased), but the text then sits behind a notice: Omnigent's retry, or the owner's Enter, would submit both, and the mod would drop both as `parked`.
   - Result: dropping in the mod is unsafe whenever anything can reach the box during the restore. The design defaults to filtering in the supervisor (`--fyi skip`) for this reason.
 
 ## Small model from the supervisor's side

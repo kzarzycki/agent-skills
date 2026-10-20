@@ -94,7 +94,8 @@ The supervisor is the only writer. It already polls every lead, so on each poll 
   - Per lead: id, title, host, report path, the leads it waits on, state (`running`, `idle`, `blocked`, `failed`, `archived`), what it waits on, last ending (`DONE`, `USER NEEDED`, `PARKED`), the first line of its last message, `progress_at` (see Routing), nudges and revives spent.
   - The ids of events already settled, so a restart doesn't settle one twice.
   - Each automatic action as an intent written before it runs and marked done after (see Actions).
-  - The attention queue: events waiting for the CoS or for you (see Cost bounds).
+  - The attention queue: events waiting for the CoS or for you, and each post to the CoS as pending or delivered (see Cost bounds).
+  - The rate windows: the time of the next allowed CoS post and the small-model calls spent this hour, so a restart or a successor doesn't start a fresh allowance.
 - **Two labels on each lead**: `status.line`, the row in one short line such as `waits on verifier · PR #252`, which the web UI shows; and `status.at`, the time the supervisor last observed that lead, as Unix seconds. The browser computes the age from `status.at` with its own clock, so a dead supervisor shows as stale (see The web UI).
 - **`events.jsonl`**: one line per event and how it was settled (rule, small model or CoS), so a wrong call can be found and the rules tuned.
 
@@ -111,7 +112,7 @@ Each event goes through three steps, cheapest first.
 | `STILL WORKING` naming its wait (worker, verifier, CI) | Rule | Record the wait; no post |
 | Exact repeat of the last notice for that lead | Rule | Nothing, unless the lead's progress deadline has passed |
 | Quiet, first time without progress | Small model | "Mid-work" → recorded, no post. "Stalled" → the supervisor relays the CoS skill's nudge itself and records it |
-| Progress deadline passed (no new message for 20 min, running or not) | Rule | Nudge once if none is spent, else act: to the CoS. Fires even when the ending is unchanged or the lead still reads running |
+| Progress deadline passed (see below) | Rule | By wait state: unknown or mid-work → nudge once, then act if the next deadline passes too; a named wait (verifier, CI, worker) → act, for the CoS to inspect, no nudge; parked → no deadline |
 | Quiet again after a nudge | Rule | Act: to the CoS |
 | Failed, first time | Rule | Revive in place, record it |
 | Failed again | Rule | Act: to the CoS with the error line |
@@ -125,7 +126,7 @@ Rules for the small model:
 
 - It only routes. It never sends, approves or decides for you, because its input includes a lead's own words, and a lead's words must not steer what gets done.
 - It sees one event and the standing decisions, never a transcript.
-- Unsure, unparseable or timed out means "act". A wrong "act" costs one Opus turn. A wrong "mid-work" costs at most the progress deadline: a lead that sends no new message for 20 minutes is escalated whatever the model said.
+- Unsure, unparseable or timed out means "act". A wrong "act" costs one Opus turn. A wrong "mid-work" costs at most the deadline chain below: about 35 minutes before the CoS hears of it.
 - Limits per call: 20 s timeout, the event cut to 4,000 characters, 200 output tokens. Past the limit, the event is routed "act".
 - Model by tier: small (Haiku for Claude, Luna for Codex). Never Fable or Astra.
 
@@ -134,7 +135,15 @@ How it is called:
 - **From the supervisor**, as `claude -p --model haiku --tools "" --setting-sources "" --strict-mcp-config --system-prompt …`. Measured: 870 tokens, $0.00007, 3.8 s wall time.
 - **From the mod**, `$.model.complete` does the same in 0.8 s with the session's login. Recommended: the supervisor, so the decision is made once, logged once, and works for a Codex CoS too.
 
-A lead's progress is `progress_at`: the time its last message last changed. It lives in `state.json`, so absorbing an event, or restarting the supervisor, doesn't reset it. Today's `follow` gives no event for a lead that reads running for good, or for a second quiet spell with the same ending (shown by a probe in the review); the deadline is what covers both.
+A lead's progress is `progress_at`: the latest of its last message changing and its children's activity (as today's quiet check counts `og.active`, so a lead whose verifier is working is progressing). It lives in `state.json`, so absorbing an event, or restarting the supervisor, doesn't reset it. Today's `follow` gives no event for a lead that reads running for good, or for a second quiet spell with the same ending (shown by a probe in the review); the deadline is what covers both.
+
+The deadline, by the lead's wait state:
+
+- **Parked**: none. A parked lead waits on host capacity, and the CoS skill already says it is not stalled and is resumed only after the CoS checks capacity, one lead at a time. The supervisor never resumes it.
+- **Named wait** (verifier, CI, a worker, another lead): 20 minutes with no progress, counting the child's activity. Then act: the CoS inspects the wait. No nudge, since "carry on" doesn't help a lead that is waiting.
+- **Unknown or mid-work**: 20 minutes with no progress, then the nudge (if not spent), then 10 more minutes, then act.
+
+Each deadline is one event, identified by the lead and its `progress_at` value (and `nudged` for the second), raised once and settled once, so a poll after it has passed doesn't raise it again. New progress starts a new chain. Worst case from the last progress to the CoS hearing of it: 20 + 10 minutes, plus up to 5 minutes for the posting window, about 35 minutes.
 
 ### Actions
 
@@ -146,10 +155,18 @@ The supervisor's own actions are a nudge, a revive, an archive (after #249 lands
 
 On restart, an intent not marked done is checked against the lead's history: if the text is there, it is marked done; if not, it is escalated to the CoS rather than sent again. So a crash can lose one action, which the CoS then sees, but never spends a budget twice.
 
+A post to the CoS is the one action that is resent rather than escalated, because it may carry an owner event, which must not be lost:
+
+1. Write the post to `state.json` as pending, with a batch id, and its events still in the queue.
+2. Send it, with the id in its first line (`Supervisor [act] b-<id>: …`).
+3. On success, mark it delivered and take its events off the queue.
+
+On restart, a pending post is looked up in the CoS session's history by its id: found → delivered; not found → sent again. A duplicate is possible only if the history can't be read; then the post is sent again anyway, and the CoS skill says a post whose batch id it has already handled gets no reply.
+
 ### Cost bounds
 
-- Small model: at most 30 calls an hour. Past that, events are routed "act" without a model.
-- Opus wakes: at most one post to the CoS every 5 minutes. Events that arrive in between wait in the attention queue in `state.json` and go out as one combined post when the window opens. That bounds the CoS to 12 supervisor wakes an hour, whatever happens to the leads.
+- Small model: at most 30 calls an hour. Past that, events are routed "act" without a model. The count is written to `state.json` before each call.
+- Opus wakes: at most one post to the CoS every 5 minutes. Events that arrive in between wait in the attention queue in `state.json` and go out as one combined post when the window opens. The next allowed post time is written to `state.json` before each post, so a restart or a takeover keeps the window. That bounds the CoS to 12 supervisor wakes an hour, whatever happens to the leads. It bounds wakes, not what the CoS does inside a turn.
 - Owner events (approval prompts, `USER NEEDED` not covered by a decision) also wait in that queue, so a limit never drops them. The CoS's own `status.line` label shows how many are waiting (`needs you: 2`), so you see them in the sidebar even before the post goes out.
 
 ### What reaches the Opus CoS
@@ -206,10 +223,11 @@ Not recommended now:
 
 | Failure | How it shows | What catches it |
 |---|---|---|
-| Supervisor dies | Labels and `state.json` stop changing | The browser ages each line from `status.at` with its own clock and marks it stale past 10 minutes; the mod's status line reads `STALE` from `written_at`. Systemd `Restart=always`. A restart loads `state.json`: settled event ids, spent budgets, open intents and the attention queue survive |
-| A turn end is lost (kzarzycki/omnigent#4) | A lead reads `running` for good | The progress deadline fires on no new message for 20 minutes, running or not. Today's quiet rule doesn't cover this |
-| The small model absorbs something that needed action | A lead waits | Only explicit cases are absorbed by rules; the model's absorb is limited to "mid-work"; the progress deadline escalates it within 20 minutes; every absorb is in `events.jsonl` |
-| Crash between sending an action and recording it | A nudge or revive might be lost or sent twice | Intent before, done after; an open intent is checked against the lead's history and escalated rather than re-sent |
+| Supervisor dies | Labels and `state.json` stop changing | The browser ages each line from `status.at` with its own clock and marks it stale past 10 minutes; the mod's status line reads `STALE` from `written_at`. Systemd `Restart=always`. A restart loads `state.json`: settled event ids, spent budgets, open intents, pending posts, the attention queue and the rate windows survive |
+| A turn end is lost (kzarzycki/omnigent#4) | A lead reads `running` for good | The progress deadline fires on no progress, running or not. Today's quiet rule doesn't cover this |
+| The small model absorbs something that needed action | A lead waits | Only explicit cases are absorbed by rules; the model's absorb is limited to "mid-work"; the deadline chain escalates it within about 35 minutes; every absorb is in `events.jsonl` |
+| Crash between sending an action and recording it | A nudge or revive might be lost or sent twice; a post to the CoS might be lost or duplicated | Intent before, done after; an open lead action is checked against the lead's history and escalated rather than re-sent; a pending post is checked against the CoS history by batch id and re-sent if not found |
+| The deadline resumes a lead that should wait | A parked lead restarts on an overloaded host | Parked leads have no deadline; named waits escalate to the CoS without a nudge |
 | Cost runaway | Many triage calls or many Opus wakes | At most 30 small-model calls an hour; at most one CoS post per 5 minutes, the rest combined; owner events queued, never dropped |
 | The mod breaks after a Claude Code update | A hook throws | It only adds a digest, and every hook fails open, so your message reaches Opus as it would without it |
 | Labels have a size limit | A write fails | None found in source. The line is kept under 200 characters, and a failed write logs once and goes on |
@@ -248,6 +266,6 @@ Phases 1 and 2 give the saving, and work for a Claude or a Codex CoS. Phase 3 is
 
 - Does a marketplace plugin enabled in a project's `.claude/settings.json` load in a Claude session that Omnigent launches in that project? Settle it with one launched session in phase 4.
 - The design takes routine events out of the chat (`--fyi skip`). If you want them in the chat, they cost an Opus turn each, as today, because dropping them in the mod is unsafe (see Two limits).
-- Are the defaults right: a 20-minute progress deadline, 30 small-model calls an hour, one CoS post per 5 minutes? They are guesses from one session's volume, and phase 5 is where they get checked.
+- Are the defaults right: a 20-minute progress deadline and 10 more after a nudge, 30 small-model calls an hour, one CoS post per 5 minutes? They are guesses from one session's volume, and phase 5 is where they get checked.
 - Canvas on this server needs `OMNIGENT_FEATURES=canvas` and a restart. Is a board view worth that, or is the sidebar enough?
 - Should the supervisor send the stall nudge itself (it's a fixed text in the CoS skill today), or only propose it to the CoS? The design says it sends it, because it's reversible and fixed.
