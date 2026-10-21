@@ -3419,7 +3419,7 @@ def test_broadcast_relays_concurrently_one_line_each_and_exits_1_on_a_failure(
     assert all(lines[s].endswith(": delivered") for s in slow)
 
 
-def test_broadcast_reports_a_held_message_queued_and_skips_a_question_unanswered(
+def test_broadcast_reports_a_held_message_queued_and_skips_a_pending_prompt_unanswered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = BroadcastFake(hold=10**6)
@@ -3428,14 +3428,13 @@ def test_broadcast_reports_a_held_message_queued_and_skips_a_question_unanswered
     assert capsys.readouterr().out.endswith(
         ": queued until the session's current step ends; it lands then\n"
     )
-    asked = BroadcastFake()
-    sid = asked.add("asking")
-    asked.prompts = [QUESTION]
-    assert broadcast(asked, tmp_path, monkeypatch, "--include", sid) == 0
-    assert capsys.readouterr().out.endswith(
-        ": skipped: an open question holds it (relay answers it)\n"
-    )
-    assert asked.resolved == [] and asked.posts == 0
+    for prompts in ([QUESTION], [APPROVAL], [QUESTION, APPROVAL]):
+        asked = BroadcastFake()
+        sid = asked.add("asking")
+        asked.prompts = prompts
+        assert broadcast(asked, tmp_path, monkeypatch, "--include", sid) == 0
+        assert capsys.readouterr().out.endswith(": skipped: waiting on a question\n")
+        assert asked.resolved == [] and asked.posts == 0
 
 
 def test_status_prints_each_session_s_state_queued_inputs_and_last_message(

@@ -35,8 +35,8 @@ since its pending inputs wait on the answer; an approval prompt it never answers
 relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session updated within N hours, all at once: never this session, an archived one or
-one in an automations project, nor one blocked on a question, which would take it as the
-answer; ``--project``, ``--host`` and ``--exclude`` narrow the set. One line per target
+one in an automations project, nor one with a question or approval prompt pending, which a
+question would take as its answer (``skipped: waiting on a question``); ``--project``, ``--host`` and ``--exclude`` narrow the set. One line per target
 (``delivered``, ``queued …``, ``skipped: <why>``, ``failed: <why>``); exit 1 when one failed;
 ``--dry-run`` only lists them. ``approve``
 accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
@@ -810,14 +810,14 @@ def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float, answer: boo
     the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
     gets ``text`` as each one's answer instead: its pending inputs wait on the answer, and an
     interrupt would drop them and hold input until the question's hook marker goes stale
-    (kzarzycki/omnigent#14); with ``answer`` off it is skipped instead. An approval prompt it
-    never answers."""
+    (kzarzycki/omnigent#14). An approval prompt it never answers. With ``answer`` off, a session
+    with any prompt pending (a question or an approval) is skipped instead, sent nothing."""
     info = og.info(sid)
     pending = info.get("pending_elicitations") or []
+    if pending and not answer:
+        return f"session {sid}: skipped: waiting on a question"
     asks = questions_of(info)
     if asks and len(asks) == len(pending):
-        if not answer:
-            return f"session {sid}: skipped: an open question holds it (relay answers it)"
         for e in pending:
             questions = e["params"]["ask_user_question"].get("questions") or []
             answer = text.strip()  # a message file's trailing newline would reach the answer
@@ -903,8 +903,8 @@ def broadcast(
     og: Omnigent, targets: list[tuple[str, str]], text: str, confirm_seconds: float
 ) -> bool:
     """``relay`` ``text`` to every target at once, printing one line per target as it settles;
-    whether one failed. A session blocked on a question is skipped: ``relay`` would give it the
-    broadcast as its answer."""
+    whether one failed. A session with a question or approval prompt pending is skipped: ``relay``
+    would give a question the broadcast as its answer, and an approval holds it unread."""
 
     def one(sid: str) -> str:
         try:

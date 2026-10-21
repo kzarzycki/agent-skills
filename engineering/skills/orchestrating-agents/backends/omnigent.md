@@ -179,8 +179,9 @@ message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approv
 `$OMNIGENT_SUPERVISE_REGISTRY`), each `--include` session and, with `--active-hours`, every
 top-level session updated within N hours, all at once rather than one `relay` after another,
 each waiting on its own delivery. It never sends to its own session, an archived one or one in a
-project whose name contains "automations", nor to one blocked on a question, which `relay`
-would give the message as its answer; `--project`, `--host` and `--exclude` narrow the set. One
+project whose name contains "automations", nor to one with a question or approval prompt
+pending (`skipped: waiting on a question`), since `relay` would give a question the message as
+its answer; answer that one with its own `relay`. `--project`, `--host` and `--exclude` narrow the set. One
 line per target: `delivered`, `queued …`, `skipped: <why>` or `failed: <why>`; exit 1 when one
 failed. `--dry-run` lists the targets and sends nothing.
 
