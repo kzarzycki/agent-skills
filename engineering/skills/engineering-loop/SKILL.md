@@ -87,7 +87,9 @@ with the project's. Issue states, categories, sizes and board columns are the me
 in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
 does them on GitHub. A
 `scripts/` path is relative to this skill's folder; run it from the worktree with
-`python3` (standard library only).
+`python3` (standard library only), except `scripts/browse.py`, which needs Playwright and so
+runs with `uv run`: it renders a web UI headless, signed in to an Omnigent server when
+asked, and screenshots it (worker.md, Report; its docstring has the flags).
 
 ### Practice
 
