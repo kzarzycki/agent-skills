@@ -49,7 +49,8 @@ yourself, keeping standards and spec as separate axes.
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
-  run the spec's acceptance examples on it: the UI in a browser, the API with its client,
+  run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
+  says how), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
   looked right. Real data you see may go in your report, never in anything bound for the
