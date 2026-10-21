@@ -601,7 +601,7 @@ def test_stalled_error_body_reaches_cleanup(
 
 
 def test_create_files_the_session_under_the_project(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     calls: list[tuple[str, str, dict | None]] = []
 
@@ -623,6 +623,7 @@ def test_create_files_the_session_under_the_project(
     assert omnigent_agent.Omnigent().create("claude", "t") == "s1"
     assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
     assert "parent_session_id" not in calls[-1][2]  # run outside a session: top level
+    assert capsys.readouterr().err == ""
 
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "coord")
     omnigent_agent.Omnigent().create("claude", "t")
@@ -631,6 +632,12 @@ def test_create_files_the_session_under_the_project(
     monkeypatch.setenv("OMNIGENT_PROJECT", "no-such-group")  # projects are only sidebar groups
     assert omnigent_agent.Omnigent().create("claude", "t") == "s1"
     assert calls[-1][2] and "project_id" not in calls[-1][2]
+    assert capsys.readouterr().err == ""  # a child hides under its lead: no warning
+
+    omnigent_agent.Omnigent().create("claude", "t", top_level=True)
+    assert calls[-1][2] and "project_id" not in calls[-1][2]
+    err = capsys.readouterr().err
+    assert "'no-such-group'" in err and "OMNIGENT_PROJECT" in err
 
     # as the repo voice_note files under "Voice note"
     monkeypatch.setenv("OMNIGENT_PROJECT", "S_hop")

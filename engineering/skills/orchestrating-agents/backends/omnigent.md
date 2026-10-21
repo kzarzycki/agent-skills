@@ -34,7 +34,8 @@ a child keeps progress in another file, since the first report the waiter takes 
 answer. Sessions are filed under the Omnigent project named like the repo, when one exists;
 case, spaces and punctuation don't count, so `voice_note` files under "Voice note". An
 exact name wins, and two loose matches with no exact one fail until `OMNIGENT_PROJECT`,
-which overrides the name, names one.
+which overrides the name, names one. A top-level session that matches no project is left unfiled, with a stderr
+line saying so.
 
 **Questions.** A child never asks the owner. It writes `<report>.question` and stops;
 exit 3 prints that path. Answer from the spec and the owner's stated intent, or ask the

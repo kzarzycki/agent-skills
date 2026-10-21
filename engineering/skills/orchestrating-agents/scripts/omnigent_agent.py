@@ -427,13 +427,20 @@ class Omnigent:
             "workspace": workspace or os.getcwd(),
         }
         # Filed under the repo's project, when one exists, so spawned sessions don't crowd the top level.
-        if project := self.project(project_name()):
+        if project := self.project(name := project_name()):
             body["project_id"] = str(project["id"])
         # A sub-agent of the runner's primary session (the lead, also when a child runs
         # this): hidden from the owner's sidebar and unread badge, and gone with it. Top level
         # with ``top_level`` or when not run from an Omnigent session.
         if (parent := parent_id()) and not top_level:
             body["parent_session_id"] = parent
+        elif not project:
+            # top level lands in the owner's sidebar, so an unfiled one is worth a word
+            print(
+                f"no Omnigent project matches {name!r}: {title!r} lands unfiled;"
+                " set OMNIGENT_PROJECT to file it",
+                file=sys.stderr,
+            )
         if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
             body["model_override"] = model
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
