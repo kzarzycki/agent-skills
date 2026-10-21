@@ -3323,6 +3323,185 @@ def test_relay_to_an_archived_session_is_not_deliverable(
     assert og.posts == 0
 
 
+class BroadcastFake(FakeOmnigent):
+    """Sessions with a project, a host and an update time, listed as ``GET /v1/sessions`` lists
+    them: top-level, archived ones left out."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)
+        self.meta: dict[str, dict] = {}
+
+    def add(self, title: str, project: str = "p1", age_hours: float = 0, **meta: object) -> str:
+        sid = self.create("claude", title)
+        self.meta[sid] = {
+            "id": sid,
+            "title": title,
+            "project_id": project,
+            "host_id": "h",
+            "updated_at": time.time() - age_hours * 3600,
+            **meta,
+        }
+        return sid
+
+    project = omnigent_agent.Omnigent.project
+
+    def info(self, sid: str) -> dict:
+        if sid not in self.sessions:
+            raise omnigent_agent.Fail(f"GET /v1/sessions/{sid}: TimeoutError: timed out")
+        return {**self.meta.get(sid, {}), **super().info(sid)}
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        if path.startswith("/v1/projects"):
+            names = {"p1": "Agent skills", "p2": "Omnigent", "p3": "Omnigent · automations"}
+            return {"data": [{"id": k, "name": v} for k, v in names.items()]}
+        assert path.startswith("/v1/sessions?") and "sort_by=updated_at" in path
+        assert "visibility=mine" in path  # never a session another user shared
+        live = [self.info(s) for s in self.meta if s not in self.archived]
+        return {"data": [s for s in live if not s.get("parent_session_id")]}
+
+    def hosts(self) -> dict[str, str]:
+        return {"h": "cc-experiments", "h2": "macbook"}
+
+
+def broadcast(
+    og: FakeOmnigent,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *args: str,
+    text: str = "rule",
+) -> int:
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    (tmp_path / "m.md").write_text(text)
+    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *args])
+
+
+def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_archived_or_automations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead, worker, old_lead = og.add("lead"), og.add("worker"), og.add("old lead", age_hours=30)
+    recent, stale = og.add("recent", "p2", 1), og.add("stale", "p2", 10)
+    me, auto, gone = og.add("me"), og.add("cron", "p3"), og.add("gone lead")
+    remote, extra = og.add("remote", host_id="h2"), og.add("extra", age_hours=30)
+    og.archive(gone)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", me)
+    registry = tmp_path / "leads.registry"
+    registry.write_text(
+        f"{lead}=r.md\tfollow\n{worker}=w.md\n{old_lead}=o.md\tfollow\n{gone}=g.md\tfollow\n"
+    )
+    assert (
+        broadcast(
+            og,
+            tmp_path,
+            monkeypatch,
+            "--registry",
+            str(registry),
+            "--dry-run",
+            "--active-hours",
+            "6",
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert og.posts == 0
+    listed = {line.split()[0]: line for line in out.splitlines()}
+    assert set(listed) == {lead, old_lead, recent, me, auto, gone, remote, worker}
+    assert listed[lead] == f"{lead} lead (Agent skills, cc-experiments)"
+    assert listed[remote] == f"{remote} remote (Agent skills, macbook)"
+    assert listed[me].endswith(": skipped: this session")
+    assert listed[gone].endswith(": skipped: archived")
+    assert listed[auto].endswith(": skipped: automations project 'Omnigent · automations'")
+    assert stale not in out
+
+    args = [
+        "--registry",
+        str(registry),
+        "--active-hours",
+        "6",
+        "--project",
+        "agent_skills",
+        "--host",
+        "cc-experiments",
+        "--exclude",
+        old_lead,
+        "--include",
+        extra,
+        "--include",
+        stale,
+    ]
+    assert broadcast(og, tmp_path, monkeypatch, *args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert sorted(lines) == sorted(
+        [
+            f"{lead} lead (Agent skills, cc-experiments): delivered",
+            f"{worker} worker (Agent skills, cc-experiments): delivered",
+            f"{extra} extra (Agent skills, cc-experiments): delivered",
+            f"{me} me (Agent skills, cc-experiments): skipped: this session",
+            f"{gone} gone lead (Agent skills, cc-experiments): skipped: archived",
+        ]
+    )
+    assert omnigent_agent.text_of(og.sessions[lead][-1]) == "rule"
+    assert og.posts == 3
+
+    assert broadcast(og, tmp_path, monkeypatch, "--include", lead, "--project", "nope") == 1
+    assert "--project nope names no project" in capsys.readouterr().err
+    assert og.posts == 3
+
+
+def test_broadcast_counts_a_target_it_could_not_read_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    for args in ([], ["--dry-run"], ["--project", "Agent skills"]):
+        assert (
+            broadcast(og, tmp_path, monkeypatch, "--include", lead, "--include", "s9", *args) == 1
+        )
+        out = capsys.readouterr().out
+        assert "s9  (no project, ): failed: GET /v1/sessions/s9: TimeoutError: timed out\n" in out
+
+
+def test_broadcast_relays_concurrently_one_line_each_and_exits_1_on_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake(deaf={0})
+    lost, *slow = [og.add(f"s{n}") for n in range(5)]
+    send = og.send
+
+    def slow_send(sid: str, text: str) -> None:
+        time.sleep(0.5)
+        send(sid, text)
+
+    og.send = slow_send  # type: ignore[method-assign]
+    started = time.monotonic()
+    ids = [a for s in [lost, *slow] for a in ("--include", s)]
+    assert broadcast(og, tmp_path, monkeypatch, *ids, "--confirm-seconds", "0") == 1
+    assert time.monotonic() - started < 1.5  # five sends of 0.5 s, at once
+    lines = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()}
+    assert lines[lost].endswith("neither pending nor in history for 0s; start a fresh run instead")
+    assert ": failed: session " in lines[lost]
+    assert all(lines[s].endswith(": delivered") for s in slow)
+
+
+def test_broadcast_reports_a_held_message_queued_and_skips_a_pending_prompt_unanswered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake(hold=10**6)
+    sid = og.add("busy")
+    assert broadcast(og, tmp_path, monkeypatch, "--include", sid) == 0
+    assert capsys.readouterr().out.endswith(
+        ": queued until the session's current step ends; it lands then\n"
+    )
+    for prompts in ([QUESTION], [APPROVAL], [QUESTION, APPROVAL]):
+        asked = BroadcastFake()
+        sid = asked.add("asking")
+        asked.prompts = prompts
+        assert broadcast(asked, tmp_path, monkeypatch, "--include", sid) == 0
+        assert capsys.readouterr().out.endswith(": skipped: waiting on a question\n")
+        assert asked.resolved == [] and asked.posts == 0
+
+
 def test_status_prints_each_session_s_state_queued_inputs_and_last_message(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
