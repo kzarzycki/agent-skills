@@ -5,6 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py relay <session> <message-file>
+    python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
@@ -30,7 +31,14 @@ exit 0 once it is in the history (or a copy the session has not answered yet alr
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
 on questions (``ask_user_question``) gets the message as each question's answer instead, exit 0,
-since its pending inputs wait on the answer; an approval prompt it never answers. ``approve``
+since its pending inputs wait on the answer; an approval prompt it never answers. ``broadcast``
+relays one message to every followed lead in the registry (``--registry``, else
+``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
+top-level session updated within N hours, all at once: never this session, an archived one or
+one in an automations project, nor one blocked on a question, which would take it as the
+answer; ``--project``, ``--host`` and ``--exclude`` narrow the set. One line per target
+(``delivered``, ``queued …``, ``skipped: <why>``, ``failed: <why>``); exit 1 when one failed;
+``--dry-run`` only lists them. ``approve``
 accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
 tool call it answered; exit 1 when none was pending or a resolve failed. Whether an agent may
 approve is the project's policy, not this script's. ``status`` prints one line per session:
@@ -114,6 +122,7 @@ import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, NoReturn
@@ -218,6 +227,7 @@ ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send fo
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
+BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
 # A host over either limit has no room for another session: they time out and fail there. Knobs,
 # since what a host carries depends on its hardware and what else runs on it.
 MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)
@@ -821,6 +831,95 @@ def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
             why = "until the session's current step ends"
         raise Queued(f"session {sid}: queued {why}; it lands then")
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+
+
+def broadcast_targets(
+    og: Omnigent,
+    registry: Path | None,
+    active_hours: float | None,
+    include: list[str],
+    projects: list[str],
+    hosts: list[str],
+    exclude: list[str],
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """``broadcast``'s targets, each ``(id, label)``, and a ``skipped: <why>`` line per named one
+    it never sends to: the registry's followed leads, ``--include``'s sessions and, with
+    ``active_hours``, every top-level session updated that recently; never the caller's own
+    session, an archived one or one in an automations project. ``projects``, ``hosts`` and
+    ``exclude`` narrow the set."""
+    found: dict[str, dict] = {}
+    if active_hours is not None:
+        since = time.time() - active_hours * 3600
+        # ponytail: one page of the 1000 newest; page with `after` once a host keeps more live
+        page = og.call("GET", "/v1/sessions?kind=default&sort_by=updated_at&order=desc&limit=1000")
+        found = {
+            str(s["id"]): s
+            for s in page.get("data", [])
+            if float(s.get("updated_at") or 0) >= since
+        }
+    named = [s for s, owes in registered(registry)[0].items() if owes[3]] if registry else []
+    for sid in named + include:
+        if sid not in found:
+            try:
+                found[sid] = og.info(sid)
+            except Fail as e:
+                found[sid] = {"id": sid, "error": reason(e)}
+    listed = og.call("GET", "/v1/projects")
+    listed = listed.get("data", listed) if isinstance(listed, dict) else listed
+    project_of = {str(p["id"]): str(p.get("name") or "") for p in listed}
+    host_of = og.hosts()
+    wanted_projects = {loose(p) for p in projects}
+    targets, skipped = [], []
+    for sid, s in found.items():
+        project = project_of.get(str(s.get("project_id") or ""), "")
+        host = str(s.get("host_id") or "")
+        label = (
+            f"{sid} {s.get('title') or ''} ({project or 'no project'}, {host_of.get(host, host)})"
+        )
+        if (
+            sid in exclude
+            or (projects and loose(project) not in wanted_projects)
+            or (hosts and not {host, host_of.get(host)} & set(hosts))
+        ):
+            continue
+        why = (
+            s.get("error")
+            or (sid == own_id() and "this session")
+            or (s.get("archived") and "archived")
+            or ("automations" in project.casefold() and f"automations project {project!r}")
+            or (s.get("parent_session_id") and "a sub-agent")
+        )
+        if why:
+            skipped.append(f"{label}: skipped: {why}")
+        else:
+            targets.append((sid, label))
+    return targets, skipped
+
+
+def broadcast(
+    og: Omnigent, targets: list[tuple[str, str]], text: str, confirm_seconds: float
+) -> bool:
+    """``relay`` ``text`` to every target at once, printing one line per target as it settles;
+    whether one failed. A session blocked on a question is skipped: ``relay`` would give it the
+    broadcast as its answer."""
+
+    def one(sid: str) -> str:
+        try:
+            if questions_of(og.info(sid)):
+                return "skipped: an open question holds it (relay answers it)"
+            return relay(og, sid, text, confirm_seconds).removeprefix(f"session {sid}: ")
+        except Queued as e:
+            return str(e).removeprefix(f"session {sid}: ")
+        except Exception as e:  # one target's failure is its line, never the others'
+            return f"failed: {reason(e)}"
+
+    failed = False
+    with ThreadPoolExecutor(BROADCAST_WORKERS) as pool:
+        lines = {pool.submit(one, sid): label for sid, label in targets}
+        for done in as_completed(lines):
+            failed |= done.result().startswith("failed:")
+            print(f"{lines[done]}: {done.result()}", flush=True)
+    return failed
 
 
 def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], bool]:
@@ -2530,6 +2629,28 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("session")
     p.add_argument("message", type=Path, help="file with the message; it owes no report")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
+    p.add_argument("message", type=Path, help="file with the message; it owes no report")
+    p.add_argument(
+        "--registry",
+        type=Path,
+        default=os.environ.get("OMNIGENT_SUPERVISE_REGISTRY") or None,
+        help="send to each followed lead here (default: $OMNIGENT_SUPERVISE_REGISTRY)",
+    )
+    p.add_argument(
+        "--active-hours",
+        type=float,
+        metavar="N",
+        help="also send to every top-level session updated within N hours",
+    )
+    p.add_argument("--include", action="append", default=[], metavar="ID", help="add a session")
+    p.add_argument("--exclude", action="append", default=[], metavar="ID", help="drop a session")
+    p.add_argument(
+        "--project", action="append", default=[], metavar="NAME", help="only this project"
+    )
+    p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
+    p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
+    p.add_argument("--confirm-seconds", type=float, default=60.0)
     sub.add_parser("capacity", description="exit 0 when this host has room for another session")
     p = sub.add_parser("approve")
     p.add_argument("session")
@@ -2592,7 +2713,7 @@ def main(argv: list[str] | None = None) -> int:
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
-        if p.prog.split()[-1] not in ("start", "reap", "relay", "approve", "status"):
+        if p.prog.split()[-1] not in ("start", "reap", "relay", "broadcast", "approve", "status"):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap"):
             p.add_argument(
@@ -2634,6 +2755,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "relay":
             print(relay(og, args.session, args.message.read_text(), args.confirm_seconds))
             return 0
+        if args.cmd == "broadcast":
+            text = args.message.read_text()
+            targets, skipped = broadcast_targets(
+                og, registry, args.active_hours, args.include, args.project, args.host, args.exclude
+            )
+            for line in skipped + ([label for _, label in targets] if args.dry_run else []):
+                print(line)
+            if not targets:
+                print("no session to send to", file=sys.stderr)
+            return (
+                1 if not args.dry_run and broadcast(og, targets, text, args.confirm_seconds) else 0
+            )
         if args.cmd == "approve":
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))
