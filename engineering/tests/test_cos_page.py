@@ -76,3 +76,17 @@ def test_page_renders_without_the_supervisor_files(tmp_path: Path) -> None:
     page = cos_page.render(tmp_path / "leads.registry", tmp_path / "board.md", URL, now=0)
     assert "leads.state.json" in page and "No leads in the state file." in page
     assert "No events yet." in page
+
+
+def test_page_renders_odd_and_half_written_files(tmp_path: Path) -> None:
+    good = {"title": "Good lead", "progress_at": "unknown", "state": 3}
+    state = {"leads": {SID: good, "b" * 32: None}, "attention": [None, "x"], "rate": []}
+    (tmp_path / "leads.state.json").write_text(json.dumps(state))
+    (tmp_path / "leads.events.jsonl").write_text('null\n["x"]\n{"session": 5, "kind": "ended"}\n')
+    (tmp_path / "board.md").write_bytes(b"## Needs the owner\n- caf\xe2\x80")
+    page = cos_page.render(tmp_path / "leads.registry", tmp_path / "board.md", URL, now=0)
+    assert "Good lead" in page and "ended" in page
+    page = cos_page.render(tmp_path / "leads.registry", tmp_path, URL, now=0)  # board is a dir
+    assert "Good lead" in page
+    (tmp_path / "leads.state.json").write_text('{"leads": ["x"], "attention": {}}')
+    assert "No leads in the state file." in cos_page.render(tmp_path / "leads.registry", None, URL)

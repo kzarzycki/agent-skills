@@ -3,11 +3,13 @@
 
 It reads what ``omnigent_agent.py supervise --console`` writes next to its registry
 (``leads.registry`` → ``leads.state.json``, ``leads.events.jsonl``) and the handover board's
-``## Needs the owner``, on every request, and never writes. It binds 127.0.0.1 only; expose it
-tailnet-only with ``tailscale serve --bg --https=<port> http://127.0.0.1:<port>``, never Funnel.
+``## Needs the owner``, on every request, and never writes. It binds 127.0.0.1 unless ``--host``
+names the machine's tailnet address (``tailscale ip -4``), which only tailnet peers reach; where
+the user is the tailscale operator, ``tailscale serve --bg --https=<port> http://127.0.0.1:<port>``
+adds HTTPS instead. Never a public address, never Funnel.
 
     cos_page.py --registry reports/leads.registry --board board.md \
-        --omnigent https://<host>.<tailnet>.ts.net:6767 [--port 6768]
+        --omnigent https://<host>.<tailnet>.ts.net:6767 [--host <tailnet ip>] [--port 6768]
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ def events(path: Path) -> tuple[list[dict], str | None]:
     """The last ``EVENTS`` lines that parse, newest first."""
     try:
         lines = path.read_text().splitlines()[-EVENTS:]
-    except OSError as e:
+    except (OSError, ValueError) as e:
         return [], f"{path.name}: {e}"
     out = []
     for line in lines:
@@ -56,16 +58,16 @@ def events(path: Path) -> tuple[list[dict], str | None]:
             out.append(json.loads(line))
         except ValueError:
             pass  # a line the supervisor is still appending
-    return out[::-1], None
+    return [x for x in out[::-1] if isinstance(x, dict)], None
 
 
 def needs_owner(board: Path | None) -> list[str]:
     """The top-level bullets of the board's ``## Needs the owner``."""
-    if board is None or not board.exists():
-        return []
-    m = re.search(
-        r"^## Needs the owner\n(.*?)(?=^## |\Z)", board.read_text(), re.MULTILINE | re.DOTALL
-    )
+    try:
+        text = board.read_text() if board else ""
+    except (OSError, ValueError):
+        return []  # missing, or caught mid-write
+    m = re.search(r"^## Needs the owner\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     return [b[2:].strip() for b in m.group(1).splitlines() if b.startswith("- ")] if m else []
 
 
@@ -84,6 +86,13 @@ def age(at: object, now: float) -> str:
     )
 
 
+def num(x: object) -> float:
+    try:
+        return float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def utc(at: object) -> str:
     try:
         return time.strftime("%m-%d %H:%MZ", time.gmtime(float(at)))  # type: ignore[arg-type]
@@ -93,22 +102,31 @@ def utc(at: object) -> str:
 
 def render(registry: Path, board: Path | None, omnigent: str, now: float | None = None) -> str:
     now = time.time() if now is None else now
-    e = html.escape
+
+    def e(x: object) -> str:
+        return html.escape(str(x))
+
     state_file = registry.with_suffix(".state.json")
     state, err = read(state_file)
     state = state if isinstance(state, dict) else {}
-    leads = state.get("leads") or {}
+    leads = state.get("leads")
+    leads = (
+        {k: v for k, v in leads.items() if isinstance(v, dict)} if isinstance(leads, dict) else {}
+    )
+    attention = state.get("attention")
+    attention = [a for a in attention if isinstance(a, dict)] if isinstance(attention, list) else []
     recent, err2 = events(registry.with_suffix(".events.jsonl"))
     errors = [x for x in (err, err2) if x]
 
-    def link(sid: str, text: str | None = None) -> str:
+    def link(sid: object, text: object = None) -> str:
+        sid = str(sid)
         return f'<a href="{e(omnigent.rstrip("/"))}/c/{e(sid)}">{e(text or sid[:8])}</a>'
 
-    def title(sid: str) -> str:
-        return (leads.get(sid) or {}).get("title") or sid[:8]
+    def title(sid: object) -> str:
+        return (leads.get(sid) or {}).get("title") or str(sid)[:8]
 
     rows = []
-    for sid, lead in sorted(leads.items(), key=lambda kv: -float(kv[1].get("progress_at") or 0)):
+    for sid, lead in sorted(leads.items(), key=lambda kv: -num(kv[1].get("progress_at"))):
         status = (lead.get("label") or {}).get("line") or ""
         st = lead.get("state") or "?"
         cls = (
@@ -133,7 +151,7 @@ def render(registry: Path, board: Path | None, omnigent: str, now: float | None 
         else "<p class=mute>No leads in the state file.</p>"
     )
 
-    owner = [a for a in state.get("attention") or [] if a.get("route") == "owner"]
+    owner = [a for a in attention if a.get("route") == "owner"]
     owner_html = "".join(
         f"<li>{link(a.get('session', ''), title(a.get('session', '')))} <span class=mute>{age(a.get('at'), now)} ago</span>"
         f" — {e(a.get('why') or '')}<small>{e((a.get('line') or '').splitlines()[0] if a.get('line') else '')}</small></li>"
@@ -154,8 +172,8 @@ def render(registry: Path, board: Path | None, omnigent: str, now: float | None 
         if ev_rows
         else "<p class=mute>No events yet.</p>"
     )
-    rate = state.get("rate") or {}
-    queued = len(state.get("attention") or []) - len(owner)
+    rate = state.get("rate") if isinstance(state.get("rate"), dict) else {}
+    queued = len(attention) - len(owner)
     return f"""<!doctype html><html lang=en><head><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1"><meta http-equiv=refresh content=30>
 <title>Chief of staff</title><style>{CSS}</style></head><body>
@@ -178,6 +196,7 @@ def main() -> None:
     p.add_argument(
         "--omnigent", required=True, help="Omnigent base URL; sessions link to <url>/c/<id>"
     )
+    p.add_argument("--host", default="127.0.0.1", help="127.0.0.1 or the tailnet address")
     p.add_argument("--port", type=int, default=6768)
     a = p.parse_args()
 
@@ -186,7 +205,11 @@ def main() -> None:
             if self.path.split("?")[0] != "/":
                 self.send_error(404)
                 return
-            body = render(a.registry, a.board, a.omnigent).encode()
+            try:
+                page = render(a.registry, a.board, a.omnigent)
+            except Exception as x:  # noqa: BLE001 - a shape the supervisor never wrote: say so, keep serving
+                page = f"<!doctype html><title>Chief of staff</title><p>Cannot render: {html.escape(repr(x))}"
+            body = page.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -196,7 +219,7 @@ def main() -> None:
         def log_message(self, *_: object) -> None:
             pass
 
-    ThreadingHTTPServer(("127.0.0.1", a.port), Page).serve_forever()
+    ThreadingHTTPServer((a.host, a.port), Page).serve_forever()
 
 
 if __name__ == "__main__":
