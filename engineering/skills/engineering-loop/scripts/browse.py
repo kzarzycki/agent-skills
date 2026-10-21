@@ -8,7 +8,7 @@
 
 --do runs a Python file with Playwright's `page` in scope after the page loads and before
 the screenshot: click, hover, type, wait for a selector, assert. An exception there exits
-non-zero, so the file doubles as a scripted check.
+non-zero, so the file doubles as a scripted check; the screenshot is still saved.
 
 --omnigent signs the browser in to an Omnigent server with the CLI's login: the token in
 ~/.omnigent/auth_tokens.json, keyed by the URL's origin, is the same JWT the web UI keeps in
@@ -112,9 +112,11 @@ def main() -> None:
             ),
         )
         page.goto(args.url, wait_until=args.wait_until)
-        if args.do:
-            runpy.run_path(str(args.do), init_globals={"page": page})
-        page.screenshot(path=args.out, full_page=args.full_page)
+        try:
+            if args.do:
+                runpy.run_path(str(args.do), init_globals={"page": page})
+        finally:  # a failed --do still leaves the page it failed on
+            page.screenshot(path=args.out, full_page=args.full_page)
         browser.close()
     print(args.out)
 
