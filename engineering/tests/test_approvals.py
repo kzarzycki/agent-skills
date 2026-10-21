@@ -1382,6 +1382,12 @@ The README.
 
 Ends M1's body.
 
+### Cron at 02:00 UTC skips the run
+
+### P6: the 1:1 mapping holds
+
+### Repro: `curl localhost:8080/health`
+
 Head: {HEAD}
 VERDICT: 0 blocker, 0 major, 1 minor
 SATISFIED: yes
@@ -1391,8 +1397,8 @@ SATISFIED: yes
 def test_a_sub_heading_that_is_no_finding_is_left_out_of_the_review(
     reviewing: list[tuple[Any, ...]], tmp_path: Path
 ) -> None:
-    """Verifiers split Correctness into `###` sub-headings; one naming neither a severity nor a line is no finding,
-    so it posts nothing and ends the finding above it."""
+    """Verifiers split Correctness into `###` sub-headings; one naming neither a severity nor a line after its id
+    is no finding, so it posts nothing and ends the finding above it. A time, a ratio or a port later on is no line."""
     report = tmp_path / "report.md"
     report.write_text(SUBHEADED)
     assert approvals.main(["verdict", "7", str(report)]) == 0

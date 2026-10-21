@@ -84,7 +84,7 @@ keep these lines exact:
   review's inline comment, moved to the nearest line of the diff when outside it), then
   the failing input or contradicted requirement and the evidence (the command and its
   output) up to the next heading outside a code fence. `verdict` refuses a `### `
-  heading naming a severity or a `<path>:<line>` that it can't read, rather than leave
+  heading naming a severity, or a `<path>:<line>` right after its id, that it can't read, rather than leave
   that finding off the review; any other `### ` heading is a sub-heading and posts nothing.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`.
