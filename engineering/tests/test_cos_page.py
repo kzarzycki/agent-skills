@@ -102,6 +102,7 @@ class FakeOmnigent:
 
     def __init__(self) -> None:
         self.reads = 0
+        self.at: dict[str, float] = {}  # when each session's last message was written
         self.top = [
             {"id": A, "title": "Blocked", "status": "idle", "pending_elicitations_count": 1},
             {"id": B, "title": "Asks", "status": "idle", "project_id": "p1", "host_id": "h1"},
@@ -142,7 +143,7 @@ class FakeOmnigent:
     def items(self, sid: str) -> list[dict]:
         self.reads += 1
         msg = {"type": "message", "role": "assistant", "content": [{"text": self.said[sid]}]}
-        return [{**msg, "id": f"item-{sid[0]}"}]
+        return [{**msg, "id": f"item-{sid[0]}", "created_at": self.at.get(sid)}]
 
 
 def test_collect_classifies_every_session_and_asks_the_model_once_per_last_item() -> None:
@@ -212,6 +213,16 @@ def test_page_falls_back_to_the_supervisor_when_omnigent_is_unread(tmp_path: Pat
     snap = {"error": "Omnigent sessions not read: HTTP 502", "at": None}
     page = cos_page.render(tmp_path / "leads.registry", None, URL, snap, now=0)
     assert "HTTP 502" in page and f'href="{URL}/c/{SID}"' in page and "Followed leads" in page
+
+
+def test_a_wait_is_judged_from_when_its_message_was_written() -> None:
+    og = FakeOmnigent()
+    og.said[E] = (
+        "STILL WORKING: a timer wakes me at 2026-10-27 06:32 UTC. The last run ended 2026-10-21 10:00 UTC."
+    )
+    og.at[E] = 1792584000.0  # 2026-10-21 12:00Z: the second time had passed when it was written
+    rows = {r["id"]: r for r in cos_page.collect(og, {}, {}, lambda *a: ("none", ""), now=0)}
+    assert rows[E]["level"] == "green" and rows[E]["what"] == "waits until 2026-10-27T06:32Z"
 
 
 def test_an_ask_after_a_done_line_is_red_and_an_unsure_answer_waits_before_a_retry() -> None:
