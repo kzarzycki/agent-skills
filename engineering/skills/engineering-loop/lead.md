@@ -255,6 +255,9 @@ A child that ends its turn saying it waits (for a build, a gate, CI) rather than
 has left no report and will not wake itself: arm one background wait on its process or log
 that ends on every terminal state (success, failure, the process gone), e.g.
 `while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
+A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
+`STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
+before then.
 
 A core finding still open at the cap goes to the owner and stops the landing: offer a fix
 with one pass past the cap, scoped to the open items, or leaving the code untouched

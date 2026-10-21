@@ -114,6 +114,7 @@ import socket
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, NoReturn
 from urllib.error import HTTPError, URLError
@@ -169,10 +170,21 @@ FOLLOW_QUIET_SECONDS = 300.0
 # event, whatever its status reads; this much more once it was nudged.
 DEADLINE_SECONDS = 1200.0
 NUDGED_SECONDS = 600.0
-# What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline.
+# What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
+# wait word opens it or follows "on"/"for", at most one word between, so "per lead event" is none.
 # ponytail: one regex over the lead's own words; a wait named any other way reads as unknown, which
 # only adds the nudge step. Upgrade: a structured wait line in the lead's report.
-WAIT = re.compile(r"STILL WORKING\b.*?\b((?i:verifier|worker|lead|merge)|CI)s?\b", re.DOTALL)
+WAIT = re.compile(
+    r"STILL WORKING\b\W*(?:.*?\b(?:on|for)\s+)?(?:[\w'-]+\s+)?((?i:verifier|worker|lead|merge)|CI)s?\b",
+    re.DOTALL,
+)
+# A ``STILL WORKING`` naming a UTC time ("until 2026-10-21T23:17Z", "(2026-10-21 23:17 UTC)"): a
+# timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``; a time already
+# past holds nothing off.
+TIMED = re.compile(
+    r"STILL WORKING\b.*?\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b",
+    re.DOTALL,
+)
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
 STATE_SCHEMA = "cos-state/1"
 # The small model that routes what the rules can't settle, with its limits; any failure routes act.
@@ -1637,13 +1649,25 @@ def lead_status(info: dict, items: list[dict]) -> dict:
 
 
 def wait_of(text: str) -> str:
-    """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names,
-    else ``unknown``."""
+    """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
+    (``until <UTC time>`` for a timed one), else ``unknown``."""
     if (m := ENDING.search(text)) and m.group(1) == "PARKED":
         return "parked"
+    if m := TIMED.search(text):
+        at = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
+        try:
+            datetime.fromisoformat(at)
+            return f"until {at}"
+        except ValueError:
+            pass  # a mistyped date names no time: the wait word, if any, decides
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
     return "unknown"
+
+
+def waits(wait: str) -> str:
+    """A named wait as words: ``waits until <time>`` or ``waits on <wait>``."""
+    return f"waits {wait}" if wait.startswith("until ") else f"waits on {wait}"
 
 
 def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, str]:
@@ -1679,7 +1703,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
         if wait != "unknown":
-            return "rule", "act", f"no progress while it waits on {wait}: inspect the wait"
+            return "rule", "act", f"no progress while it {waits(wait)}: inspect the wait"
         if event.get("nudged"):
             return "rule", "act", "no progress after its nudge"
         return "rule", "nudge", "no progress, wait unknown: nudge once"
@@ -1778,7 +1802,7 @@ def status_line(lead: dict) -> str:
     else:
         line = "running" if lead["state"] == "running" else "turn ended"
         if lead["wait"] not in ("unknown", "parked"):
-            line += f" · waits on {lead['wait']}"
+            line += f" · {waits(lead['wait'])}"
         if lead["state"] != "running" and lead["last_line"]:
             line += f": {lead['last_line']}"
     return line if len(line) < 200 else line[:198] + "…"
@@ -2317,6 +2341,10 @@ def supervise_registry(
         event per ``progress_at``, so new progress starts a new chain."""
         if lead["wait"] == "parked":
             return  # it waits on capacity, also while its lost turn end reads running
+        if lead["wait"].startswith("until "):
+            due = datetime.fromisoformat(lead["wait"].removeprefix("until ")).timestamp()
+            if time.time() < due + DEADLINE_SECONDS:
+                return  # a timed wait: nothing is due before its time
         if lead["state"] in ("blocked", "failed", "archived") or (
             lead["state"] == "idle" and lead["ending"]
         ):
