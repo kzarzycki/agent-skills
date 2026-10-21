@@ -41,14 +41,16 @@ yourself, keeping standards and spec as separate axes.
   formatting and code-review's smell baseline are notes, not findings.
 - **Work the given priorities first.**
 - **Every pass after the first:** the lead gives you the previous report. Review
-  the diff since its head, rerun each of its repros and mark it FIXED, NOT FIXED or
-  ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
+  the diff since its head yourself, both axes in your own session with no axis
+  subagents (code-review, step 4), rerun each of its repros and mark it FIXED, NOT FIXED
+  or ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
-  run the spec's acceptance examples on it: the UI in a browser, the API with its client,
+  run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
+  says how), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
   looked right. Real data you see may go in your report, never in anything bound for the

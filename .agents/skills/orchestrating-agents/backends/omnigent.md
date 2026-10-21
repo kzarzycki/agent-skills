@@ -34,7 +34,8 @@ a child keeps progress in another file, since the first report the waiter takes 
 answer. Sessions are filed under the Omnigent project named like the repo, when one exists;
 case, spaces and punctuation don't count, so `voice_note` files under "Voice note". An
 exact name wins, and two loose matches with no exact one fail until `OMNIGENT_PROJECT`,
-which overrides the name, names one.
+which overrides the name, names one. A top-level session that matches no project is left unfiled, with a stderr
+line saying so.
 
 **Questions.** A child never asks the owner. It writes `<report>.question` and stops;
 exit 3 prints that path. Answer from the spec and the owner's stated intent, or ask the
@@ -58,11 +59,21 @@ time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default (Codex: `~/.codex/config.toml`), a
-verifier included. Pass `--model` only when the owner asked for that model: a lead never
-picks one on its own, so the user's configuration decides model and cost in one place. A
+verifier included. Pass `--model` only when the owner asked for that model or the project's instructions
+name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
+tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
+its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
+lead's own instructions name its family's newest models, and `sys_list_models` lists none for Claude. A
 launch that fails on capacity (`server_overloaded`, a rate limit) is retried later with
 backoff on the same model, never on another, which would leave the work on a model nobody
 chose.
+
+**Permission mode.** A Claude child starts in `--permission-mode <mode>`, else
+`OMNIGENT_PERMISSION_MODE`, else the harness default; the mode is the project's or owner's
+choice, set in the environment once. Omnigent applies it as the session's
+`terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
+none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
+`start` refuses the flag for Codex and ignores the variable.
 
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
@@ -71,6 +82,15 @@ reviewer must be of the other family is the caller's policy.
 
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
+
+**Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's load per
+core and available memory, and exits 0 when it has room for another session, 1 when not.
+`start` and `run` wait while it has none, printing a line, and fail after 10 minutes, since
+sessions on an overloaded host time out and fail. The limits are knobs set for the hardware:
+`OMNIGENT_MAX_LOAD_PER_CORE` (default 4) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
+message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
+server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
+own posts, which read no history, still count a timeout as a failure and try again.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
@@ -131,17 +151,61 @@ it parks a question is its role's (`--role`; under the engineering loop, `lead.m
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
 
+`--host <name|id>` starts the lead on another Omnigent host (`GET /v1/hosts` lists them).
+It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a host other
+than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
+in the first message, because its file would be on this host, so a Claude lead may read it as
+pasted text and ask for a go-ahead; and the report is written there, so follow the lead with
+`watch`, never `wait`.
+
+**Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
+posts a message that owes no report, such as the owner's words for a top-level lead, and
+returns at once. It reads no file but the message, so the lead may run on another host.
+Exit 0: the message is in the lead's history, or a copy it has not replied to already is, so a
+rerun sends no second one. Exit 5: queued, held until the lead's current step ends (a long
+foreground command) or until a person answers the approval prompt it prints; it lands then
+with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
+neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
+revived in place first, as `send` does. A lead blocked only on questions (Claude's
+AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
+prompts) holds every message until the question is answered, so `relay` answers each with the
+message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
+the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
+message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+
+**Approving a prompt.** `python3 scripts/omnigent_agent.py approve <session> [--decline]`
+accepts, or declines, every approval prompt the session has pending, never a question, and
+prints each tool call it answered; exit 1 when none was pending or a resolve failed. It posts
+`{"action": "accept"|"decline"}` to `POST /v1/sessions/<id>/elicitations/<elicitation_id>/resolve`,
+the call the UI makes. Whether an agent may approve, and on whose word, is the project's
+policy.
+
+**Reading a session.** `python3 scripts/omnigent_agent.py status <session>...` prints, per
+session, its state (`turn ended`, its running status, `blocked on a prompt: <what it asks>`,
+`failed: <error>`, `archived`), how many inputs wait queued, and its last assistant message (`(none)` before its first, never
+the brief or an injected reminder): one call
+for what a subscription notice names, in place of session info plus history. It is a
+snapshot: a native Claude session reads idle while quiet mid-turn, so an idle look reads as
+`turn ended`, which a notice has already confirmed.
+
+**Reading a report.** `python3 scripts/omnigent_agent.py report <session> [<path>]` prints a
+file of a session's workspace through Omnigent's file API, from any host, so a lead's report on
+another host costs no session. An absolute path is read on the session's host, a relative one in
+its workspace; no path is the report in the session's registry line (`--registry`, else
+`$OMNIGENT_SUPERVISE_REGISTRY`; neither: exit 2). A directory prints its entries one per line.
+Exit 4 is a missing file (a report not yet written), 1 an offline host or any other HTTP status.
+
 **Watching sessions.** `python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]`,
 run as a background command, exits 0 as soon as one of them ends a turn (an end that has
 held for 30s, since a native Claude session reads idle while quiet mid-turn), blocks on an
 approval prompt or fails, printing for each the id, title, `turn ended`,
-`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last message. A top-level
+`blocked on a prompt: <the tool call>` or `failed: <error>`, and its last assistant message. A top-level
 session tells no parent when its turn ends or it blocks, and the UI's "Completed" reaches
 no agent, so a session that follows one without a subscription (below) learns it this way. Handle what it printed, then start `watch` again. States a session is already in when `watch` starts are not news,
 except a prompt, which is reported at once; exit 1 after `--timeout` (default 3h). It polls
 every few seconds; the session stream pushes the same changes faster but per session and
-without replay, which a wake does not need. Nothing answers a prompt through Omnigent's
-API: a person approves it in the UI, so a watched prompt still waits for one.
+without replay, which a wake does not need. A watched prompt waits for its answer: a
+person's in the UI, or `approve` (Approving a prompt).
 
 **Subscribing to sessions.** A session subscribes to another (Omnigent's
 `sys_session_subscribe` tool, or `POST /v1/sessions/<subscriber>/subscriptions` with
@@ -156,7 +220,10 @@ only a sub-agent's parent is told; `start --top-level` subscribes the session it
 (`OMNIGENT_SESSION_ID`, `OMNIGENT_TERMINAL_LAUNCH_SESSION_ID` or
 `OMNIGENT_RUNNER_PRIMARY_SESSION_ID`; a native Codex one names none before Omnigent 567625d35)
 subscribes nobody;
-follow that lead with `watch`). It says nothing of a session silent
+follow that lead with `watch`). With a registry (`--registry` or `$OMNIGENT_SUPERVISE_REGISTRY`)
+it subscribes nobody and arms the lead's line with `follow` instead (Supervising sessions): a
+subscription wakes its session with a full-context turn on every turn end, and most of those
+change nothing. It says nothing of a session silent
 mid-turn, which `supervise` still catches. Archiving or deleting either side drops it.
 
 **Supervising sessions.** A turn end can be lost: a lead that is a sub-agent of a
@@ -211,13 +278,146 @@ each follow-up in order. Not before, because until the
 message lands the turn before's report or question reads as newer than the last instruction,
 a false event. `run`, `send` and `wait` remove the line once they return the report or a
 question, since their caller has it; a race can still deliver both, and the second line is no
-news. A failed wait keeps it, so the supervisor watches on. A failed arm is a warning, since
+news. `reap` with the registry drops the line of each session it finishes, before finishing it,
+so the supervisor posts `archived` only for a session someone else archived. A failed wait keeps it, so the supervisor watches on. A failed arm is a warning, since
 the command's own wait still covers the session. Every edit locks the file (`fcntl.flock`), so
 an arm and a drop of two sessions at once lose neither line. A drop of the same session keeps
 the line when the session was instructed after the event's own instruction (the resume and
 revive lines are no instruction): a `send` that
 armed it again for the next brief while the event was being posted, which it does only once
 that brief is in the history.
+
+A line ending in the field `follow` (`<session>=<report>`, the brief file, `follow`: what `start
+--top-level` writes with a registry) is a lead the supervisor follows, which owes no report and is
+never given up on, nor revived or sent the resume line as a session owing a report is (with
+`--console` its routing may nudge or revive it). Its lines go to `--notify` as the others do, but only
+when they are news, so the notified session is not woken for a turn that changed nothing:
+a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED`, once it holds
+as `watch` counts an end; any other turn end only once the lead and its live children wrote
+nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
+another's merge and a question with no ending), since a lead briefed or active again within that
+time was not stuck; a prompt or a failure, each once per occurrence; and `archived`, which is the
+only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
+A restart posts an end it finds again.
+
+**`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
+state file, an events log, status labels, a progress deadline, settled events kept across
+restarts, and routing (below). Without it `supervise --registry` writes none of them, and the paragraphs above are
+all it does. With it, each event is routed once, also across a restart, and posted only when its
+route sends it to the notified session (Routing, below): a terminal event found again after one
+only drops the line it already settled, and a followed lead's failure or prompt is
+one event per occurrence (`occurrences` in the state counts each entry into one), so the same
+error again after a recovery is news and the one a restart finds again is not.
+
+A followed lead also has a progress deadline, since a lead that reads running for good, or goes
+quiet a second time with the same last message, makes none of those events. Its progress,
+`progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
+none) and its live children's activity, read on first sight, then once a minute and again when
+the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
+lead with neither counts from first sight. With
+no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
+lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
+on this chain (`nudged_at`, the `progress_at` its nudge was sent at) gets a second, `no progress
+<n>m after a nudge`, 10 minutes later. The
+wait comes from the lead's last message: `parked` for a `PARKED` ending, the thing a `STILL
+WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, opening it or after `on`/`for`), else
+`unknown`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
+named-wait rule. A last message that
+is only a report's path takes its ending and wait from the report's first line, read once per
+last message (a failed read is logged once and leaves them as the message gave them). None for a
+parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
+none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
+then waits on its follower, who was told. Each deadline is one event per
+lead and `progress_at`, so new progress starts a new chain.
+
+**Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
+`route`'s table (the design's § Routing an event), and settles what needs no decision itself.
+
+| Event | Settled by | What happens |
+|---|---|---|
+| `archived` | rule | its line and state entry dropped; no post |
+| `PARKED`, a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
+| a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
+| a quiet end again with no progress since the nudge | rule | act |
+| `deadline` | rule | a named wait: act; unknown: the nudge, then act at the deadline after it; parked: none |
+| failed | rule | the first time a revive, after it act |
+| `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
+| a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
+| `USER NEEDED` | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
+| an approval prompt | rule | the owner; nothing in the supervisor approves |
+| a question | rule | act, for one `relay` |
+| a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
+
+The small model only routes, since its input holds a lead's own words: one `claude -p --model
+<model> --tools "" --setting-sources "" --strict-mcp-config --no-session-persistence
+--system-prompt <routing prompt>` call, the model `$OMNIGENT_SMALL_MODEL`, else
+`claude-haiku-5-5`, the event (cut to 4,000 characters) on stdin, 200 output tokens
+(`CLAUDE_CODE_MAX_OUTPUT_TOKENS`), 20 s. Its answer is one JSON line, `{"route":
+"none"|"act"|"owner", "why": …}`; anything else, a missing `claude`, a non-zero exit or the
+timeout routes act, never the nudge, which only the model's own `act` on a quiet end sends. The standing decisions it weighs are `--decisions <file>`'s section under a
+`## Standing decisions` heading, else the whole file, read at each call. At most 30 calls in a
+rolling hour (`rate.model_calls`, written before each call); past them, an event routes act with
+no model, a quiet end too.
+
+The supervisor's own actions, the nudge (`Supervisor: your turn ended with no ending and no named
+wait. Carry on to your next step, and end your turn with DONE, STILL WORKING naming what you wait
+on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through `relay`, which
+revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
+budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
+before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
+`relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
+a restart an intent still open is looked up in the lead's history: its text there, no older than
+the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
+it done,
+else it is escalated as act, never sent again. A state write that fails before a small-model call, an
+action or a post stops it: nothing is asked or sent, what the event had settled is undone, and it
+is settled again at the next poll. A budget already spent stays spent: a model call made before
+a later write failed keeps its place in the hour, and the retry acts on its answer.
+
+What needs the notified session waits in the state's `attention` queue and goes out as one post,
+at most one per 5 minutes (`rate.next_post_at`, written before the post), so a restart or a
+successor keeps the window: `Supervisor [act] b-<id>: <n> events`, or `[owner]` when one is the
+owner's, one line per event with why, then each lead's status row and the first 5 lines of its
+report (read through the file API, from any host; a failed read is noted). The post is pending in
+the state with its batch id before the send and delivered after, and its events leave the queue
+only then, so nothing waiting for the owner is dropped; a session owing a report has its event
+written to the queue before its registry line is dropped. A pending post (a crash or a failed send
+left it) is looked up in the notified session's history by its id, a page of 100 at a time back
+to its pending time, and in its `pending_inputs`: found, it was delivered; not found, it is sent again with its id, and that
+retry reserves the next 5 minutes as a new post would. The
+notified session's own `status.line` reads `needs you: <n>` while owner events wait. Without
+`--notify` the post is printed (`would post:`), so a run on a copy of the registry shows the
+routing. `--fyi post` posts every line as without `--console` too; the default, `skip`, posts
+only what is routed.
+
+A lead that waits on another is started with `start --top-level --after <session>`, which adds
+`after=<session>` to its registry line; the state mirrors it as `waits_on`.
+
+`--console` keeps its state next to the registry, named from it (`leads.registry`:
+`leads.state.json`, `leads.events.jsonl`), so two supervisors in one directory never share one.
+
+- `<name>.state.json`, schema `cos-state/1`, rewritten every poll through a temp file and a
+  rename, so a reader never sees half of one, with `written_at`: under `leads` an entry per
+  registry session (title, host, report, brief files, whether it is followed, `waits_on`,
+  state, wait, error, ending, first line of its last message, `progress_at`, `nudges`,
+  `revives`, `nudged_at`, `occurrences`, the last event, the labels last written); under
+  `settled` the ids of the events routed, the newest 20 per session; `intents` (each open, done,
+  failed or escalated; the newest 50 closed ones), `attention`, `pending_posts`, `rate`
+  (`next_post_at`, `model_calls`: the times of this hour's calls) and `notify_label`. It is
+  loaded on start, so a restart re-raises no settled event and keeps `progress_at`, budgets,
+  open intents, the queue, a pending post, the rate windows and labels. A session gone from the registry leaves it; an unreadable file or another
+  schema is a warning and a fresh start.
+- `<name>.events.jsonl`: one JSON line per routed event (`at`, `id`, `session`, `kind`,
+  `line`, `settled`: `rule` or `model`, `action`, `why`), so a wrong call can be found and the
+  rules tuned.
+- Two labels on each session, for the web UI: `status.line`, its state in under 200
+  characters (`running · waits on verifier`, `turn ended: DONE …`, `blocked on a prompt`,
+  `failed: …`), since Omnigent cuts a label value to its first 256 without an error, and
+  `status.at`, the Unix seconds it was observed. They are written (`PATCH /v1/sessions/{id}`
+  `labels`) only when the line changed or the last write is a minute old, so `status.at` stays
+  fresh while the supervisor runs and the browser can mark a line from a dead one stale past 10
+  minutes. Display only: never read back. A failed write is logged once and the poll goes on.
 
 A lead supervises this way a child no `run`, `send` or `wait` waits on any more: one detached supervisor per supervising session (`--notify`
 names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its `run` and
@@ -250,7 +450,7 @@ return, which ends its agent process and keeps its transcript; a session that as
 question stays, since the answer goes to it. Finishing archives the session, a sub-agent
 too: Omnigent leaves the runner it shares with its parent up, on a build with
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
-`python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>]` finishes each
+`python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
 each, and prints which it kept. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
