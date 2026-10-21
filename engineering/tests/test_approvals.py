@@ -1388,6 +1388,8 @@ Ends M1's body.
 
 ### Repro: `curl localhost:8080/health`
 
+### P7 02:00 run skipped
+
 Head: {HEAD}
 VERDICT: 0 blocker, 0 major, 1 minor
 SATISFIED: yes
@@ -1397,8 +1399,8 @@ SATISFIED: yes
 def test_a_sub_heading_that_is_no_finding_is_left_out_of_the_review(
     reviewing: list[tuple[Any, ...]], tmp_path: Path
 ) -> None:
-    """Verifiers split Correctness into `###` sub-headings; one naming neither a severity nor a line after its id
-    is no finding, so it posts nothing and ends the finding above it. A time, a ratio or a port later on is no line."""
+    """Verifiers split Correctness into `###` sub-headings; one naming neither a severity nor a `<path>:<line>`
+    is no finding, so it posts nothing and ends the finding above it. A time, a ratio or a URL's port is no line."""
     report = tmp_path / "report.md"
     report.write_text(SUBHEADED)
     assert approvals.main(["verdict", "7", str(report)]) == 0
@@ -1418,7 +1420,14 @@ def test_a_sub_heading_that_is_no_finding_is_left_out_of_the_review(
 
 @pytest.mark.parametrize(
     "broken",
-    ["### C2 app.py:40: a line outside the diff", "### C2 (Minor): a line outside the diff"],
+    [
+        "### C2 app.py:40: a line outside the diff",
+        "### C2 (Minor): a line outside the diff",
+        "### C2 minor app.py:40: a line outside the diff",
+        "### C2 [minor] `app.py:40`: a line outside the diff",
+        "### C2 (nit) Makefile:40: a line outside the diff",
+        "### app.py:40: a line outside the diff",
+    ],
 )
 def test_a_sub_heading_naming_a_severity_or_a_line_is_a_finding_verdict_cant_read(
     reviewing: list[tuple[Any, ...]],
