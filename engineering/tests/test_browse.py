@@ -53,14 +53,14 @@ def test_expiring_token_refreshes_through_the_cli_interpreter(browse, tmp_path, 
 
 @pytest.mark.parametrize("which", [None, "refused"])
 def test_unrefreshable_token_exits_with_advice(browse, tmp_path, monkeypatch, which):
-    write(browse.__globals__["TOKENS"], "old", 0)
+    write(browse.__globals__["TOKENS"], "expired-7f3c9a", 0)
     cli = tmp_path / "omnigent"
     cli.write_text("#!/opt/omnigent/bin/python\n")
     monkeypatch.setattr("shutil.which", lambda name: which and str(cli))
     monkeypatch.setattr("subprocess.run", lambda *a, **k: SimpleNamespace(returncode=1))
     with pytest.raises(SystemExit, match="omnigent login") as exc:
         browse(ORIGIN)
-    assert "old" not in str(exc.value)
+    assert "expired-7f3c9a" not in str(exc.value)
 
 
 def test_missing_login_exits(browse):
