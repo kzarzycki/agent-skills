@@ -2567,9 +2567,15 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
         " measurement timer `cos-measure-day1`, which fires at 2026-10-21 23:17 UTC."
     )
     assert omnigent_agent.wait_of(rule) == "until 2026-10-21T23:17Z"
-    # no sentence says "wait": the earliest, also once it has passed, so its deadline comes due
+    # no sentence says "wait": the earliest still to come when written, else the earliest
     two = "STILL WORKING: a timer wakes me at 2026-10-21 23:17 UTC. The trial ends 2026-10-27 06:32 UTC."
+    written = 1792540800.0  # 2026-10-21 00:00Z
+    assert omnigent_agent.wait_of(two, written) == "until 2026-10-21T23:17Z"
     assert omnigent_agent.wait_of(two) == "until 2026-10-21T23:17Z"
+    past = "STILL WORKING: a timer wakes me at 2026-10-27 06:32 UTC. The last run ended 2026-10-21 10:00 UTC."
+    assert omnigent_agent.wait_of(past, written + 12 * 3600) == "until 2026-10-27T06:32Z"
+    status = omnigent_agent.lead_status({"status": "idle"}, [ending(past, 0)])
+    assert status["wait"] == "until 2026-10-27T06:32Z"  # judged at its created_at, not later
     listed = "STILL WORKING:\n- the rule holds until 2026-10-27 06:32 UTC\n- waiting on the timer at 2026-10-21 23:17 UTC"
     assert omnigent_agent.wait_of(listed) == "until 2026-10-21T23:17Z"  # a line is a sentence
     assert omnigent_agent.wait_of("At 2026-10-21 23:17 UTC. STILL WORKING on CI") == "CI"
