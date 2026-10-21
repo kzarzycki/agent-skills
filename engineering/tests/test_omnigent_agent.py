@@ -3300,7 +3300,11 @@ class BroadcastFake(FakeOmnigent):
         }
         return sid
 
+    project = omnigent_agent.Omnigent.project
+
     def info(self, sid: str) -> dict:
+        if sid not in self.sessions:
+            raise omnigent_agent.Fail(f"GET /v1/sessions/{sid}: TimeoutError: timed out")
         return {**self.meta.get(sid, {}), **super().info(sid)}
 
     def call(self, method: str, path: str, body: object = None) -> dict:
@@ -3308,6 +3312,7 @@ class BroadcastFake(FakeOmnigent):
             names = {"p1": "Agent skills", "p2": "Omnigent", "p3": "Omnigent · automations"}
             return {"data": [{"id": k, "name": v} for k, v in names.items()]}
         assert path.startswith("/v1/sessions?") and "sort_by=updated_at" in path
+        assert "visibility=mine" in path  # never a session another user shared
         live = [self.info(s) for s in self.meta if s not in self.archived]
         return {"data": [s for s in live if not s.get("parent_session_id")]}
 
@@ -3395,6 +3400,23 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
     )
     assert omnigent_agent.text_of(og.sessions[lead][-1]) == "rule"
     assert og.posts == 3
+
+    assert broadcast(og, tmp_path, monkeypatch, "--include", lead, "--project", "nope") == 1
+    assert "--project nope names no project" in capsys.readouterr().err
+    assert og.posts == 3
+
+
+def test_broadcast_counts_a_target_it_could_not_read_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    for args in ([], ["--dry-run"], ["--project", "Agent skills"]):
+        assert (
+            broadcast(og, tmp_path, monkeypatch, "--include", lead, "--include", "s9", *args) == 1
+        )
+        out = capsys.readouterr().out
+        assert "s9  (no project, ): failed: GET /v1/sessions/s9: TimeoutError: timed out\n" in out
 
 
 def test_broadcast_relays_concurrently_one_line_each_and_exits_1_on_a_failure(

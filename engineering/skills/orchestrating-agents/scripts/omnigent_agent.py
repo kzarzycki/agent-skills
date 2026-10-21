@@ -34,10 +34,11 @@ on questions (``ask_user_question``) gets the message as each question's answer 
 since its pending inputs wait on the answer; an approval prompt it never answers. ``broadcast``
 relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
-top-level session updated within N hours, all at once: never this session, an archived one or
+top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
 one in an automations project, nor one with a question or approval prompt pending, which a
 question would take as its answer (``skipped: waiting on a question``); ``--project``, ``--host`` and ``--exclude`` narrow the set. One line per target
-(``delivered``, ``queued …``, ``skipped: <why>``, ``failed: <why>``); exit 1 when one failed;
+(``delivered``, ``queued …``, ``skipped: <why>``, ``failed: <why>``, also for a session it could
+not read); exit 1 when one failed;
 ``--dry-run`` only lists them. ``approve``
 accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
 tool call it answered; exit 1 when none was pending or a resolve failed. Whether an agent may
@@ -845,16 +846,20 @@ def broadcast_targets(
     hosts: list[str],
     exclude: list[str],
 ) -> tuple[list[tuple[str, str]], list[str]]:
-    """``broadcast``'s targets, each ``(id, label)``, and a ``skipped: <why>`` line per named one
-    it never sends to: the registry's followed leads, ``--include``'s sessions and, with
-    ``active_hours``, every top-level session updated that recently; never the caller's own
-    session, an archived one or one in an automations project. ``projects``, ``hosts`` and
-    ``exclude`` narrow the set."""
+    """``broadcast``'s targets, each ``(id, label)``, and a line per named one it never sends to,
+    ``skipped: <why>``, or ``failed: <why>`` when it could not be read: the registry's followed
+    leads, ``--include``'s sessions and, with ``active_hours``, every top-level session of the
+    caller's updated that recently; never the caller's own session, an archived one or one in an
+    automations project. ``projects`` (each matched as ``Omnigent.project`` matches a name),
+    ``hosts`` and ``exclude`` narrow the set."""
     found: dict[str, dict] = {}
     if active_hours is not None:
         since = time.time() - active_hours * 3600
         # ponytail: one page of the 1000 newest; page with `after` once a host keeps more live
-        page = og.call("GET", "/v1/sessions?kind=default&sort_by=updated_at&order=desc&limit=1000")
+        page = og.call(
+            "GET",
+            "/v1/sessions?kind=default&visibility=mine&sort_by=updated_at&order=desc&limit=1000",
+        )
         found = {
             str(s["id"]): s
             for s in page.get("data", [])
@@ -871,8 +876,12 @@ def broadcast_targets(
     listed = listed.get("data", listed) if isinstance(listed, dict) else listed
     project_of = {str(p["id"]): str(p.get("name") or "") for p in listed}
     host_of = og.hosts()
-    wanted_projects = {loose(p) for p in projects}
-    targets, skipped = [], []
+    wanted = set()
+    for name in projects:
+        if not (match := og.project(name)):
+            raise Fail(f"--project {name} names no project")
+        wanted.add(str(match.get("name") or ""))
+    targets, unsent = [], []
     for sid, s in found.items():
         project = project_of.get(str(s.get("project_id") or ""), "")
         host = str(s.get("host_id") or "")
@@ -881,22 +890,24 @@ def broadcast_targets(
         )
         if (
             sid in exclude
-            or (projects and loose(project) not in wanted_projects)
-            or (hosts and not {host, host_of.get(host)} & set(hosts))
+            or (projects and "error" not in s and project not in wanted)
+            or (hosts and "error" not in s and not {host, host_of.get(host)} & set(hosts))
         ):
             continue
+        if "error" in s:  # never reached: a lead missed is a failure, not a skip
+            unsent.append(f"{label}: failed: {s['error']}")
+            continue
         why = (
-            s.get("error")
-            or (sid == own_id() and "this session")
+            (sid == own_id() and "this session")
             or (s.get("archived") and "archived")
             or ("automations" in project.casefold() and f"automations project {project!r}")
             or (s.get("parent_session_id") and "a sub-agent")
         )
         if why:
-            skipped.append(f"{label}: skipped: {why}")
+            unsent.append(f"{label}: skipped: {why}")
         else:
             targets.append((sid, label))
-    return targets, skipped
+    return targets, unsent
 
 
 def broadcast(
@@ -2758,16 +2769,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "broadcast":
             text = args.message.read_text()
-            targets, skipped = broadcast_targets(
+            targets, unsent = broadcast_targets(
                 og, registry, args.active_hours, args.include, args.project, args.host, args.exclude
             )
-            for line in skipped + ([label for _, label in targets] if args.dry_run else []):
-                print(line)
+            for line in unsent + ([label for _, label in targets] if args.dry_run else []):
+                print(line, flush=True)
             if not targets:
                 print("no session to send to", file=sys.stderr)
-            return (
-                1 if not args.dry_run and broadcast(og, targets, text, args.confirm_seconds) else 0
-            )
+            failed = any(": failed: " in line for line in unsent)
+            if not args.dry_run:
+                failed |= broadcast(og, targets, text, args.confirm_seconds)
+            return 1 if failed else 0
         if args.cmd == "approve":
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))
