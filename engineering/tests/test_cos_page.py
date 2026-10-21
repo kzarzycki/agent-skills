@@ -85,7 +85,7 @@ def test_page_renders_odd_and_half_written_files(tmp_path: Path) -> None:
     (tmp_path / "leads.events.jsonl").write_text('null\n["x"]\n{"session": 5, "kind": "ended"}\n')
     (tmp_path / "board.md").write_bytes(b"## Needs the owner\n- caf\xe2\x80")
     page = cos_page.render(tmp_path / "leads.registry", tmp_path / "board.md", URL, now=0)
-    assert "Good lead" in page and "ended" in page
+    assert "Good lead" in page and "ended" in page and "board.md: " in page
     page = cos_page.render(tmp_path / "leads.registry", tmp_path, URL, now=0)  # board is a dir
     assert "Good lead" in page
     (tmp_path / "leads.state.json").write_text('{"leads": ["x"], "attention": {}}')

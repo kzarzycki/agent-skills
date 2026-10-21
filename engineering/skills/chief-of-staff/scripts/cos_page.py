@@ -61,14 +61,14 @@ def events(path: Path) -> tuple[list[dict], str | None]:
     return [x for x in out[::-1] if isinstance(x, dict)], None
 
 
-def needs_owner(board: Path | None) -> list[str]:
-    """The top-level bullets of the board's ``## Needs the owner``."""
+def needs_owner(board: Path | None) -> tuple[list[str], str | None]:
+    """The top-level bullets of the board's ``## Needs the owner``, or why it could not be read."""
     try:
         text = board.read_text() if board else ""
-    except (OSError, ValueError):
-        return []  # missing, or caught mid-write
+    except (OSError, ValueError) as e:  # missing, or caught mid-write
+        return [], f"{board.name}: {e}"
     m = re.search(r"^## Needs the owner\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
-    return [b[2:].strip() for b in m.group(1).splitlines() if b.startswith("- ")] if m else []
+    return [b[2:].strip() for b in m.group(1).splitlines() if b.startswith("- ")] if m else [], None
 
 
 def age(at: object, now: float) -> str:
@@ -116,7 +116,8 @@ def render(registry: Path, board: Path | None, omnigent: str, now: float | None 
     attention = state.get("attention")
     attention = [a for a in attention if isinstance(a, dict)] if isinstance(attention, list) else []
     recent, err2 = events(registry.with_suffix(".events.jsonl"))
-    errors = [x for x in (err, err2) if x]
+    asks, err3 = needs_owner(board)
+    errors = [x for x in (err, err2, err3) if x]
 
     def link(sid: object, text: object = None) -> str:
         sid = str(sid)
@@ -157,7 +158,7 @@ def render(registry: Path, board: Path | None, omnigent: str, now: float | None 
         f" — {e(a.get('why') or '')}<small>{e((a.get('line') or '').splitlines()[0] if a.get('line') else '')}</small></li>"
         for a in owner
     )
-    board_html = "".join(f"<li>{e(b)}</li>" for b in needs_owner(board))
+    board_html = "".join(f"<li>{e(b)}</li>" for b in asks)
 
     ev_rows = "".join(
         f"<tr><td class=n>{utc(ev.get('at'))}</td><td>{link(ev.get('session', ''), title(ev.get('session', '')))}</td>"
