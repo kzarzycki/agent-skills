@@ -19,6 +19,10 @@ never printed.
 Console errors and HTTP responses of 400 and up go to stderr, since a failing request is a
 finding even when the page looks right. Playwright is pinned to 1.63.0, whose Chromium build
 (1243) is the one in ~/.cache/ms-playwright, so nothing is downloaded.
+
+In a sandbox that mounts the home directory read-only (a Codex session), uv can't lock its
+cache: set UV_CACHE_DIR to a writable directory such as /tmp/uv-cache. A token refresh also
+writes ~/.omnigent, so with an expired token run it outside such a sandbox.
 """
 
 import argparse
@@ -30,8 +34,6 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
-
-from playwright.sync_api import sync_playwright
 
 TOKENS = Path.home() / ".omnigent/auth_tokens.json"
 REFRESH = "import sys; from omnigent.cli_auth import refresh_stored_token as r; sys.exit(r(sys.argv[1]) is None)"
@@ -47,7 +49,8 @@ def omnigent_token(origin: str) -> str:
         python = Path(cli).read_text().splitlines()[0].removeprefix("#!") if cli else None
         if not python or subprocess.run([python, "-c", REFRESH, origin], check=False).returncode:
             sys.exit(
-                f"Omnigent login for {origin} expired and did not refresh: run `omnigent login {origin}`"
+                f"Omnigent login for {origin} expired and did not refresh: the refresh writes "
+                f"{TOKENS.parent}, so run outside a sandbox that can't, else `omnigent login {origin}`"
             )
         entry = json.loads(TOKENS.read_text())[origin]
     return entry["token"]
@@ -71,6 +74,8 @@ def main() -> None:
     )
     args = ap.parse_args()
     width, height = map(int, args.size.split("x"))
+    from playwright.sync_api import sync_playwright  # here, so the token logic imports without it
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(viewport={"width": width, "height": height})

@@ -37,8 +37,9 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
    scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
-   `--omnigent` to sign in to an Omnigent server). Every host with Playwright's Chromium in
-   `~/.cache/ms-playwright` can render headless; hand over the PNG paths.
+   `--omnigent` to sign in to an Omnigent server; its docstring says what a sandbox needs).
+   Every host with Playwright's Chromium in `~/.cache/ms-playwright` can render headless;
+   hand over the PNG paths.
    Clean up what you started (servers, temporary files), then write your
    report to a file and send the lead its path: the branch and head SHA, the gate
    exit codes, the model you ran on, anything left out and why, and what you tried and
