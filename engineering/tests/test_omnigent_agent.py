@@ -2603,6 +2603,26 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
         == "until 2026-10-21T23:17:59Z"
     )
     assert omnigent_agent.wait_of("STILL WORKING: until 2026-02-30T23:17Z") == "unknown"
+    # lead 99a79f4d's message: a rule's "Until <time>" comes before the time its wait names
+    rule = (
+        "STILL WORKING: I've recorded the temporary review rule in the run notes. Until 2026-10-27"
+        " 06:32 UTC, new verifiers run as Claude Opus with `--same-family`. I'm waiting on the"
+        " measurement timer `cos-measure-day1`, which fires at 2026-10-21 23:17 UTC."
+    )
+    assert omnigent_agent.wait_of(rule) == "until 2026-10-21T23:17Z"
+    # no sentence says "wait": the earliest still to come when written, else the earliest
+    two = "STILL WORKING: a timer wakes me at 2026-10-21 23:17 UTC. The trial ends 2026-10-27 06:32 UTC."
+    written = 1792540800.0  # 2026-10-21 00:00Z
+    assert omnigent_agent.wait_of(two, written) == "until 2026-10-21T23:17Z"
+    assert omnigent_agent.wait_of(two) == "until 2026-10-21T23:17Z"
+    past = "STILL WORKING: a timer wakes me at 2026-10-27 06:32 UTC. The last run ended 2026-10-21 10:00 UTC."
+    assert omnigent_agent.wait_of(past, written + 12 * 3600) == "until 2026-10-27T06:32Z"
+    item = {**ending(past, 0), "created_at": written + 12 * 3600}  # fixed: no wall clock
+    status = omnigent_agent.lead_status({"status": "idle"}, [item])
+    assert status["wait"] == "until 2026-10-27T06:32Z"  # judged at its created_at, not later
+    listed = "STILL WORKING:\n- the rule holds until 2026-10-27 06:32 UTC\n- waiting on the timer at 2026-10-21 23:17 UTC"
+    assert omnigent_agent.wait_of(listed) == "until 2026-10-21T23:17Z"  # a line is a sentence
+    assert omnigent_agent.wait_of("At 2026-10-21 23:17 UTC. STILL WORKING on CI") == "CI"
     due = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(time.time() + due_in))
     registry = following(tmp_path)
     og = Lead(told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", 3600))
@@ -2770,6 +2790,18 @@ def test_a_path_only_lead_whose_report_names_its_wait_shows_it_in_state_and_stat
     assert lead["wait"] == "verifier"
     assert "waits on verifier" in lead["label"]["line"]
     assert len(reads) == 1
+
+
+def test_a_reports_wait_is_judged_from_when_its_path_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    later = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(time.time() + 6 * 86400))
+    past = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(time.time() - 2 * 3600))
+    report = f"STILL WORKING: a timer wakes me at {later}. The last run ended {past}.\n"
+    registry, og, _ = path_only_lead(tmp_path, report)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    due = later.replace(" ", "T", 1).replace(" UTC", "Z")
+    assert state_of(registry)["leads"]["a"]["wait"] == f"until {due}"
 
 
 def test_a_new_last_message_is_read_again_and_an_unread_report_stays_unknown_and_is_logged_once(

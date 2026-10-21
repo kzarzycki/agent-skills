@@ -191,11 +191,11 @@ WAIT = re.compile(
 )
 # A ``STILL WORKING`` naming a UTC time ("until 2026-10-21T23:17Z", "(2026-10-21 23:17 UTC)"): a
 # timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``; a time already
-# past holds nothing off.
-TIMED = re.compile(
-    r"STILL WORKING\b.*?\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b",
-    re.DOTALL,
-)
+# past holds nothing off. Of several times, the one in a sentence or line that says "wait" is the
+# wait's, else the earliest still to come when the message was written (its ``created_at``, so a
+# passed timer keeps its wait), else the earliest: a rule "until <time>" quoted first is not it.
+TIMED = re.compile(r"\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b")
+WAIT_WORD = re.compile(r"\bwait(?:s|ing|ed)?\b", re.IGNORECASE)
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
 STATE_SCHEMA = "cos-state/1"
 # The small model that routes what the rules can't settle, with its limits; any failure routes act.
@@ -1768,7 +1768,7 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "state": state,
         "error": error if state == "failed" else None,
         "ending": ending_of(text),
-        "wait": wait_of(text),
+        "wait": wait_of(text, said[-1].get("created_at") if said else None),
         "last_line": text.splitlines()[0][:200] if text else "",
     }
 
@@ -1780,18 +1780,32 @@ def ending_of(text: str) -> str | None:
     return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
 
 
-def wait_of(text: str) -> str:
+def wait_of(text: str, at: float | None = None) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
-    (``until <UTC time>`` for a timed one), else ``unknown``."""
+    (``until <UTC time>`` for a timed one, ``TIMED`` says which, ``at`` being when the message was
+    written), else ``unknown``."""
     if ending_of(text) == "PARKED":
         return "parked"
-    if m := TIMED.search(text):
-        at = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
+    if (start := text.find("STILL WORKING")) >= 0:
+        times = []  # (said with a wait, the time, as written)
+        for sentence in re.split(r"(?<=[.!?])\s+|\n", text[start:]):
+            for m in TIMED.finditer(sentence):
+                due = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
+                try:
+                    times.append(
+                        (bool(WAIT_WORD.search(sentence)), datetime.fromisoformat(due), due)
+                    )
+                except ValueError:
+                    pass  # a mistyped date names no time: the wait word, if any, decides
+        waited = [x for x in times if x[0]]
+        times.sort(key=lambda x: x[1])
         try:
-            datetime.fromisoformat(at)
-            return f"until {at}"
-        except ValueError:
-            pass  # a mistyped date names no time: the wait word, if any, decides
+            written = float(at) if at is not None else None
+        except (TypeError, ValueError):
+            written = None  # an odd created_at: the earliest decides
+        ahead = [x for x in times if written is not None and x[1].timestamp() > written]
+        if pick := (waited or ahead or times)[:1]:
+            return f"until {pick[0][2]}"
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
     return "unknown"
@@ -2441,7 +2455,8 @@ def supervise_registry(
                 error = None
             read = lead["report_read"] = {"id": mid, "head": head, "error": error}
         if read["head"] is not None:
-            lead.update(ending=ending_of(read["head"]), wait=wait_of(read["head"]))
+            at = said[-1].get("created_at")  # the report was written by then
+            lead.update(ending=ending_of(read["head"]), wait=wait_of(read["head"], at))
 
     def active(sid: str) -> float:
         """``og.active``, else 0 with the error logged: a missed read only delays a deadline."""

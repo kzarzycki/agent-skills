@@ -275,13 +275,15 @@ def collect(
                         said = og.read_file(sid, said).strip()[: OA.MODEL_CHARS] or said
                     except Exception:  # noqa: BLE001, S110 - unread: the path goes to the rules
                         pass
+                mine = [i for i in items if i.get("role") == "assistant"]
                 cached = seen[sid] = (
                     s.get("updated_at"),
                     "" if said == "(none)" else said,
                     str(items[-1].get("id")) if items else "",
+                    mine[-1].get("created_at") if mine else None,  # a wait is judged from then
                 )
             text, last_id = cached[1], cached[2]
-            ending, wait = OA.ending_of(text), OA.wait_of(text)
+            ending, wait = OA.ending_of(text), OA.wait_of(text, cached[3])
             line = line or first(text)
             if ending == "USER NEEDED":
                 m = re.search(r"^\W*USER NEEDED\b", text, re.MULTILINE)
