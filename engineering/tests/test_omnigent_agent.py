@@ -2532,6 +2532,27 @@ def test_progress_starts_from_the_leads_real_activity_not_from_first_sight(
         assert time.time() - 60 < progress <= time.time()
 
 
+LIVE_TIMED = (
+    "STILL WORKING: waiting on the day of real traffic that measures CoS wakes per lead event. A timer"
+    " (`cos-measure-day1`) runs the count at 2026-10-21 23:17 UTC and wakes this session"
+)
+
+
+@pytest.mark.parametrize(("due_in", "deadline"), [(3600.0, False), (-1300.0, True)])
+def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, due_in: float, deadline: bool
+) -> None:
+    assert omnigent_agent.wait_of(LIVE_TIMED) == "until 2026-10-21T23:17Z"
+    assert omnigent_agent.wait_of(LIVE_TIMED.split(". A timer")[0]) == "unknown"
+    due = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(time.time() + due_in))
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", 3600))
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert [p.split("\n")[0] for p in fyis(og)] == (
+        [f"Supervisor: a t-a: no progress 60m (until {due})"] if deadline else []
+    )
+
+
 def test_a_childs_activity_reaches_the_state_once_a_minute_before_any_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
