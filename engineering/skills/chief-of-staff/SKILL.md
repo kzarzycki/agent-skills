@@ -93,6 +93,12 @@ its landing order.
   `watch <session>...` (`../orchestrating-agents/backends/omnigent.md`, Watching sessions). A
   lead you took over, or started some other way, you subscribe to with Omnigent's
   `sys_session_subscribe(session_id=<its id>)` tool call. Never poll, since a notice reaches you anyway.
+- **Page.** `scripts/cos_page.py --registry <file> --board <board> --omnigent <url>` serves
+  one page of what the supervisor writes (each lead with its session link, state, wait, last
+  line and age; events waiting on the owner and the board's `## Needs the owner`; recent events
+  with how each was settled), on 127.0.0.1 only. Run it as a systemd user unit beside the
+  supervisor and expose it tailnet-only with `tailscale serve --bg --https=<port>
+  http://127.0.0.1:<port>`, never Funnel. It reads the files and writes nothing.
 - **Adopted sessions.** A session the owner hands you that they started themselves is a lead
   from then on: subscribe to it as above or add its line to the registry (`<session>=<report>`, a tab, `follow`), and answer its reversible
   questions under the owner's standing decisions (Authority).
