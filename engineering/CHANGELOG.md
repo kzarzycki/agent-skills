@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.22.0 - 2026-10-21
+
+A chief of staff that runs from its own home and wakes only on a lead's news, through a
+supervisor console that settles routine events; `land --wait` lands a PR end to end; worker
+models named as tiers.
+
 - `omnigent_agent.py reap` with `--registry` or `$OMNIGENT_SUPERVISE_REGISTRY` drops each
   session it finishes from the supervisor registry before archiving it (#249), so a chief of
   staff that reaps its finished lead is not woken by `archived` for its own reap, and no longer
@@ -112,6 +118,43 @@ them here.
   before the owner hears it: owner contact, standing decisions, live leads, closed, follow
   (#196). A successor in either harness takes over from that file alone, never from
   transcripts.
+- `retro` again has the agent read the `writing-for-agents` skill before drafting, or say it
+  is unavailable; names teeing dev-server output to a log the agent can read; and prefers
+  building a deterministic check over proposing one (#216).
+- `supervise --registry --console`, the chief of staff's console, keeps its state where a
+  successor or the web UI can read it (#255); without `--console` the supervisor behaves as
+  before. Each poll writes `<registry>.state.json` (schema `cos-state/1`, atomically) with an
+  entry per registry session (title, host, state, wait, ending, first line, `progress_at`,
+  budgets) and the ids of events already posted, loaded on start, so a restart re-posts no
+  follow end and keeps each lead's progress; appends each event to `<registry>.events.jsonl`;
+  and labels each session with `status.line` and `status.at`, written only when the line
+  changes or once a minute. A followed lead with no progress for 20 minutes, its own history
+  and its live children counted, raises a `deadline` event, whatever its status reads, unless
+  it is parked or ended with `DONE` or `USER NEEDED`; a nudged one with an unknown wait a
+  second, 10 minutes later.
+- `omnigent_agent.py report <session> [<path>]` prints a lead's report, or any file of its workspace or host, through Omnigent's file API from any host: exit 4 for a missing file, 1 for an offline host (#256).
+- `supervise --registry --console` settles routine events itself and wakes the chief of staff
+  within hard bounds (#257); without `--console` it posts every line as before. Each event is
+  routed by one table (`route`): archived, parked, a named wait and exact repeats need no post;
+  a quiet end goes to one small-model call (`claude -p`, `claude-haiku-5-5` unless
+  `$OMNIGENT_SMALL_MODEL`; 20 s, 4,000 characters in, 200 tokens out; anything unclear routes
+  act), and so does a `USER NEEDED` a `--decisions` file's standing decisions may cover. The
+  supervisor sends the stall nudge (once per progress chain) and the revive (once per lead) and
+  tells each lead started with `start --top-level --after <session>` of that lead's `DONE`, each
+  through `relay` as an intent in `state.json` that a restart looks up in the lead's history and
+  never sends twice. What needs the chief of staff or the owner is posted as `Supervisor [act]
+  b-<id>: …` or `Supervisor [owner] b-<id>: …`, with each lead's status row and report head, at
+  most one post per 5 minutes and 30 model calls an hour, both windows kept across a restart; a
+  pending post is looked up by its id in the notified session's history after a crash and sent
+  again only when missing. `status.line` on the notified session shows `needs you: <n>` while
+  owner events wait. `--fyi post` also posts every line; `events.jsonl` names how each event was
+  settled.
+- `chief-of-staff` acts on `Supervisor [act]`/`[owner]` posts from what they carry, never nudges a lead whose history shows the supervisor's `LEAD_NUDGE`, follows with `supervise --console --decisions <board>` and `start --after`, and takes over from the predecessor's registry and state file (`leads.registry` → `leads.state.json`) read with `report`; the board drops its Live leads table (#258).
+- `omnigent_agent.py supervise --console` reads a followed lead's report when its last message is only the report's path, once per message, and takes the lead's `ending` and `wait` from the report's first line, so a lead that ended `DONE` or names its wait is no longer nudged at the progress deadline (#264).
+- `omnigent_agent.py supervise --console` reads a `STILL WORKING` that names a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17 UTC`) as a timed wait and raises no progress deadline before that time plus 20 minutes; a wait word now counts only opening the `STILL WORKING` text or after `on`/`for`, so "per lead event" no longer reads as a wait on a lead (#266).
+- `engineering-loop/scripts/browse.py` renders a web UI in headless Chromium and saves a screenshot, after an optional scripted interaction (`--do`); `--omnigent` signs it in to an Omnigent server with the CLI's login. worker.md asks for a rendered check on every web UI change and verifier.md drives the UI the same way (#268).
+- `chief-of-staff/scripts/cos_page.py` serves one tailnet-only page of the supervisor's state: each lead with its Omnigent session link, state, wait, last line and age; events waiting on the owner; recent events with how each was settled (#270).
+- `omnigent_agent.py start` and `run` print a stderr line when a top-level session matches no Omnigent project, naming the name looked up and `OMNIGENT_PROJECT`, instead of leaving it unfiled in silence (#272).
 
 ## 0.21.1 - 2026-10-18
 
