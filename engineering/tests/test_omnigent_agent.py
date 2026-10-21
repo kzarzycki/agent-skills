@@ -4528,3 +4528,19 @@ def test_a_write_failing_after_the_model_answered_keeps_the_spent_call_and_its_a
     assert len(calls) == 1  # the retry acts on the answer it has
     assert [t for s, t in og.inbox] == [omnigent_agent.LEAD_NUDGE]
     assert len(state_of(registry)["rate"]["model_calls"]) == 30
+
+
+def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_owner() -> None:
+    text = "DONE: #271 merged.\nUSER NEEDED: pick option A or B"
+    assert omnigent_agent.ending_of(text) == "USER NEEDED"
+    assert omnigent_agent.ending_of("DONE: merged\nPARKED: later") == "DONE"
+    assert omnigent_agent.ending_of("no ending") is None
+    assert (
+        omnigent_agent.lead_status({"status": "idle"}, [ending(text, 0)])["ending"] == "USER NEEDED"
+    )
+    event = {"kind": "ended", "last": text}
+    assert omnigent_agent.route(event, lambda: ("none", "x")) == (
+        "rule",
+        "owner",
+        "no standing decision to cover it",
+    )

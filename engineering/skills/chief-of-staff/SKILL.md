@@ -94,13 +94,18 @@ its landing order.
   lead you took over, or started some other way, you subscribe to with Omnigent's
   `sys_session_subscribe(session_id=<its id>)` tool call. Never poll, since a notice reaches you anyway.
 - **Page.** `scripts/cos_page.py --registry <file> --board <board> --omnigent <url>` serves
-  one page of what the supervisor writes (each lead with its session link, state, wait, last
-  line and age; events waiting on the owner and the board's `## Needs the owner`; recent events
-  with how each was settled). Run it as a systemd user unit beside the supervisor, tailnet-only:
+  one page of what needs the owner: every non-archived top-level Omnigent session on every
+  host, grouped by project and marked 🔴 needs you, 🟡 when convenient, 🟢 running or ⚪ done/FYI,
+  the red ones first as one line each (what to do, the session link, why), with what changed
+  since the owner last looked. Rules classify a session (a pending prompt, its ending or named
+  wait, its status, the supervisor's events routed `owner`, the board's `## Needs the owner`);
+  only an idle one they can't place goes to the supervisor's small model, once per last message.
+  The supervisor's recent events sit folded at the bottom. Run it as a systemd user unit beside
+  the supervisor, with the same `PATH` (it runs `claude` for the small model), tailnet-only:
   `--host` the machine's tailnet address (`tailscale ip -4`), or, where your user is the
   tailscale operator, the default 127.0.0.1 behind `tailscale serve --bg --https=<port>
   http://127.0.0.1:<port>`. Never a public address, never Funnel. It reads the files and
-  writes nothing.
+  the sessions, and writes nothing.
 - **Adopted sessions.** A session the owner hands you that they started themselves is a lead
   from then on: subscribe to it as above or add its line to the registry (`<session>=<report>`, a tab, `follow`), and answer its reversible
   questions under the owner's standing decisions (Authority).
