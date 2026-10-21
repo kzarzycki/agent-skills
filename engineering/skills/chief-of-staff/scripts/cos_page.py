@@ -396,11 +396,15 @@ def render(
                 str(a["session"]), "red", first(a.get("line")), f"supervisor: {a.get('why') or ''}"
             )
     for b in asks:
-        level = "amber" if LATER.search(b) else "red"
+        # the chief of staff's own marker (🔴🟡🟢⚪) opening the bullet says its level
+        if m := re.match(r"\s*(" + "|".join(i for i, _ in LEVELS.values()) + r")\ufe0f?\s*", b):
+            level, b = next(k for k, (i, _) in LEVELS.items() if i == m.group(1)), b[m.end() :]
+        else:
+            level = "amber" if LATER.search(b) else "red"
         named = [sid for sid in rows if sid[:8] in b]
         for sid in named:
             raise_(sid, level, first(b), "board: Needs the owner")
-        if not named:
+        if not named and level in ("red", "amber"):  # only these have a list to show it in
             loose.append((level, b))
 
     def link(sid: object, text: object = None) -> str:
