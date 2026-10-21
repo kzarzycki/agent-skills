@@ -2548,6 +2548,11 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
     real = "/r/a.md\n\nSTILL WORKING: waiting on the timer (2026-10-21 23:17 UTC), which wakes this lead"
     assert omnigent_agent.wait_of(real) == "until 2026-10-21T23:17Z"
     assert omnigent_agent.wait_of(real.replace(" (2026-10-21 23:17 UTC)", "")) == "unknown"
+    assert (
+        omnigent_agent.wait_of("STILL WORKING: until 2026-10-21T23:17:59Z")
+        == "until 2026-10-21T23:17:59Z"
+    )
+    assert omnigent_agent.wait_of("STILL WORKING: until 2026-02-30T23:17Z") == "unknown"
     due = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(time.time() + due_in))
     registry = following(tmp_path)
     og = Lead(told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", 3600))

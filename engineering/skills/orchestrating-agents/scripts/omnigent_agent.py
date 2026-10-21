@@ -114,7 +114,7 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, NoReturn
 from urllib.error import HTTPError, URLError
@@ -182,7 +182,7 @@ WAIT = re.compile(
 # timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``; a time already
 # past holds nothing off.
 TIMED = re.compile(
-    r"STILL WORKING\b.*?\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(?::\d\d)?\s*(?:Z|UTC)\b",
+    r"STILL WORKING\b.*?\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b",
     re.DOTALL,
 )
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
@@ -1654,7 +1654,12 @@ def wait_of(text: str) -> str:
     if (m := ENDING.search(text)) and m.group(1) == "PARKED":
         return "parked"
     if m := TIMED.search(text):
-        return f"until {m.group(1)}T{m.group(2)}Z"
+        at = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
+        try:
+            datetime.fromisoformat(at)
+            return f"until {at}"
+        except ValueError:
+            pass  # a mistyped date names no time: the wait word, if any, decides
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
     return "unknown"
@@ -2337,10 +2342,8 @@ def supervise_registry(
         if lead["wait"] == "parked":
             return  # it waits on capacity, also while its lost turn end reads running
         if lead["wait"].startswith("until "):
-            due = datetime.strptime(lead["wait"], "until %Y-%m-%dT%H:%MZ").replace(
-                tzinfo=timezone.utc
-            )
-            if time.time() < due.timestamp() + DEADLINE_SECONDS:
+            due = datetime.fromisoformat(lead["wait"].removeprefix("until ")).timestamp()
+            if time.time() < due + DEADLINE_SECONDS:
                 return  # a timed wait: nothing is due before its time
         if lead["state"] in ("blocked", "failed", "archived") or (
             lead["state"] == "idle" and lead["ending"]
