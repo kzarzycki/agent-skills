@@ -325,7 +325,7 @@ def test_a_board_bullet_opening_with_a_level_marker_takes_that_level(tmp_path: P
     board = tmp_path / "board.md"
     board.write_text(
         "## Needs the owner\n- 🟡 pack PR: add approved:merge when green.\n"
-        "- ⚪ FYI: the release went out.\n- 🔴 Review later wording, but marked red.\n"
+        "- ⚪\ufe0f FYI: the release went out.\n- 🔴 Review later wording, but marked red.\n"
     )
     page = cos_page.render(tmp_path / "leads.registry", board, URL, {"rows": [], "at": 0})
     now = page.split("Needs you now")[1].split("By project")[0]
@@ -333,3 +333,4 @@ def test_a_board_bullet_opening_with_a_level_marker_takes_that_level(tmp_path: P
     groups = page.split("By project")[1]
     assert "pack PR: add approved:merge" in groups and "🟡 🟡" not in groups
     assert "release went out" not in page  # neither red nor amber: no list shows it
+    assert "⚪ 0 done" in page  # nor does a chip count it
