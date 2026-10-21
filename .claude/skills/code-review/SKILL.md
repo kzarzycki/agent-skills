@@ -5,7 +5,7 @@ description: "Review the changes since a fixed point (commit, branch, tag, or me
 
 # Code Review
 
-Review the diff from a fixed point to the current work on two axes, each in its own fresh-context sub-agent so neither colours the other, run in parallel:
+Review the diff from a fixed point to the current work on two axes, each in its own fresh-context sub-agent so neither colours the other, run in parallel (a later pass's delta is the exception, step 4):
 
 - **Standards**: does the code follow this repo's documented coding standards?
 - **Spec**: does it do what the originating issue or spec asked?
@@ -39,6 +39,8 @@ Each gets the diff command, any untracked files, the commit list and the path of
 
 - **Standards**: the standards files. Brief: report per file or hunk (a) each breach of a documented standard, citing the file and rule, and (b) each baseline smell, named, with the hunk quoted. Mark documented-standard breaches as hard violations or judgement calls; smells are always judgement calls. Skip what tooling enforces. Under 400 words.
 - **Spec**: the spec's path or fetched contents. Brief: report (a) requirements missing or partial, (b) behaviour nobody asked for, (c) requirements that look implemented but wrong, quoting the spec line for each. Under 400 words.
+
+A delta that an earlier fresh-context review of the same change already covered (a later pass) is the exception: review both axes yourself, one after the other, finishing each section before reading for the next, since two sub-agents rereading the repo for a few hunks cost more than their separation buys.
 
 ## 5. Report
 
