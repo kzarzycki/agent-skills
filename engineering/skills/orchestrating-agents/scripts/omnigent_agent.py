@@ -180,8 +180,9 @@ WAIT = re.compile(
 )
 # A ``STILL WORKING`` naming a UTC time ("until 2026-10-21T23:17Z", "(2026-10-21 23:17 UTC)"): a
 # timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``; a time already
-# past holds nothing off. Of several times, the one in a sentence that says "wait" is the wait's,
-# else the earliest still to come: a rule "until <time>" quoted before it is not the wait.
+# past holds nothing off. Of several times, the one in a sentence or line that says "wait" is the
+# wait's, else the earliest: a rule "until <time>" quoted before it is not the wait. Never the
+# earliest still to come, which would hand the hold to a later time once the wait's has passed.
 TIMED = re.compile(r"\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b")
 WAIT_WORD = re.compile(r"\bwait(?:s|ing|ed)?\b", re.IGNORECASE)
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
@@ -1654,24 +1655,21 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     }
 
 
-def wait_of(text: str, now: float | None = None) -> str:
+def wait_of(text: str) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
     (``until <UTC time>`` for a timed one, ``TIMED`` says which), else ``unknown``."""
     if (m := ENDING.search(text)) and m.group(1) == "PARKED":
         return "parked"
     if (start := text.find("STILL WORKING")) >= 0:
-        now = time.time() if now is None else now
         times = []  # (said with a wait, the time, as written)
-        for sentence in re.split(r"(?<=[.!?])\s+", text[start:]):
+        for sentence in re.split(r"(?<=[.!?])\s+|\n", text[start:]):
             for m in TIMED.finditer(sentence):
                 at = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
                 try:
                     times.append((bool(WAIT_WORD.search(sentence)), datetime.fromisoformat(at), at))
                 except ValueError:
                     pass  # a mistyped date names no time: the wait word, if any, decides
-        waited = [x for x in times if x[0]]
-        future = sorted((x for x in times if x[1].timestamp() > now), key=lambda x: x[1])
-        if pick := (waited or future or sorted(times, key=lambda x: x[1]))[:1]:
+        if pick := ([x for x in times if x[0]] or sorted(times, key=lambda x: x[1]))[:1]:
             return f"until {pick[0][2]}"
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
