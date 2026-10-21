@@ -68,7 +68,9 @@ a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
-`Verifier: <family>, pass <n>` line: one inline comment per finding, moved to the nearest line of the diff when its
+`Verifier: <family>, pass <n>` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
+headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
+inline comment per finding, moved to the nearest line of the diff when its
 line is outside it and saying so, and in the review's body when its file is outside the diff.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
@@ -1803,12 +1805,18 @@ FINDING = re.compile(
     r"###[ \t]+(\S+)[ \t]+\((blocker|major|minor)\)[ \t]+`?([^\s`]+?):(\d+(?:-\d+)?)`?:?[ \t]+(.+?)[ \t]*",
     re.IGNORECASE,
 )
+# a `### ` heading with a severity in parentheses is meant as a finding; any other is a sub-heading, and a finding written
+# without one is caught by verdict()'s count check
+SEVERITY = re.compile(r"\((blocker|major|minor)\)", re.IGNORECASE)
+# the verdict's counts, which every finding heading must add up to
+COUNTED = re.compile(r"VERDICT:[ \t]*(\d+) blockers?,[ \t]*(\d+) majors?,[ \t]*(\d+) minors?\b.*")
 
 
 def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str]]:
     """Each finding of a report as (id, severity, path, line, title, body): its body up to the next heading of
-    levels 1 to 3 or the closing `Head:`/`VERDICT:`/`SATISFIED:` lines, outside a code fence. A `### ` heading that
-    is no finding is refused, since the review would leave it out without a word."""
+    levels 1 to 3 or the closing `Head:`/`VERDICT:`/`SATISFIED:` lines, outside a code fence. A `### ` heading with
+    a `(<severity>)` that doesn't read as a finding is refused, since the review would leave it out without a word;
+    any other is a sub-heading, which posts nothing."""
     found: list[tuple[str, str, str, str, str, list[str]]] = []
     body: list[str] | None = None  # the open finding's lines
     fenced = False
@@ -1817,7 +1825,7 @@ def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str
             fenced = not fenced
         elif not fenced and re.match(r"#{1,3} |(Head|VERDICT|SATISFIED):", line):
             body = None
-            if line.startswith("### "):
+            if line.startswith("### ") and SEVERITY.search(line):
                 heading = FINDING.fullmatch(line.rstrip())
                 if not heading:
                     raise Refused(
@@ -1888,11 +1896,23 @@ def verdict(pr: int, report: Path) -> int:
     ]
     if not passes:
         raise Refused(f"{report} has no `Verifier: <family>, pass <n>` line")
+    counted = COUNTED.fullmatch(verdicts[-1])
+    if not counted:
+        raise Refused(f"{report}: write the verdict `VERDICT: <n> blocker, <n> major, <n> minor`")
+    # a finding whose heading doesn't read as one would be left off the review without a word
+    found = findings(text, report)
+    tally = tuple(sum(f[1] == kind for f in found) for kind in ("blocker", "major", "minor"))
+    if tally != tuple(map(int, counted.groups())):
+        raise Refused(
+            f"{report}: `{verdicts[-1]}` counts {sum(map(int, counted.groups()))} findings, but {len(found)} "
+            f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
+            "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
+        )
     head, (family, number) = heads[-1].lower(), passes[-1].groups()
     heading = f"Verifier ({family}), pass {number}"
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
-    for name, severity, path, line, title, body in findings(text, report):
+    for name, severity, path, line, title, body in found:
         said = f"**{heading} · {name}** ({severity}): {title}"
         if not diff.get(path):
             outside.append(f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}")
