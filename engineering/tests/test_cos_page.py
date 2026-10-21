@@ -110,7 +110,7 @@ class FakeOmnigent:
             {"id": H, "title": "Reported", "status": "idle"},
         ]
         self.said = {
-            B: "Built it.\nUSER NEEDED: pick a name",
+            B: "Built it.\nUSER NEEDED: pick a **name**",
             C: "DONE: merged",
             E: "Here is the summary.",
             F: "STILL WORKING on the verifier",

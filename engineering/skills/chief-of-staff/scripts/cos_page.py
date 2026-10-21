@@ -183,6 +183,7 @@ def utc(at: object) -> str:
 
 def first(text: object, n: int = WHAT_CHARS) -> str:
     line = next((x.strip() for x in str(text or "").splitlines() if x.strip()), "")
+    line = re.sub(r"\*\*|`", "", line)  # Markdown marks read as noise in one line
     return line if len(line) <= n else line[: n - 1] + "…"
 
 
