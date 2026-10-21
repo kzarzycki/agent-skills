@@ -121,6 +121,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
@@ -419,8 +420,9 @@ class Omnigent:
         workspace: str | None = None,
         permission_mode: str | None = None,
         host_id: str | None = None,
+        role: str | None = None,
     ) -> str:
-        body = {
+        body: dict[str, object] = {
             "agent_id": self.agent_id(AGENTS[agent]),
             "title": title,
             "host_id": host_id or self.host_id,
@@ -449,6 +451,9 @@ class Omnigent:
             mode := permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
         ):
             body["terminal_launch_args"] = ["--permission-mode", mode]
+        # The loop role, which Omnigent's usage metrics split spend by: a role file's name.
+        if role and (name := Path(role).stem) in ROLES:
+            body["labels"] = {"omni.role": name}
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
     def host(self, name: str) -> str:
@@ -936,7 +941,9 @@ def start(
             n += 1
             try:
                 sid, error = (
-                    og.create(agent, name, model, top_level, workspace, permission_mode, host_id),
+                    og.create(
+                        agent, name, model, top_level, workspace, permission_mode, host_id, role
+                    ),
                     None,
                 )
             except Fail as e:
@@ -1852,6 +1859,11 @@ def supervise_registry(
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
+    if console and (me := parent_id()):  # only the chief of staff runs the console
+        try:
+            og.label(me, {"omni.role": "cos"})
+        except Fail as e:
+            print(f"{me}: role label not written: {e}", file=sys.stderr)
     if not isinstance(state["rate"].get("model_calls"), list):
         state["rate"]["model_calls"] = []  # the shape before the routing counted calls
     # what a crash left open, by id: each is looked up in its lead's history, never sent again

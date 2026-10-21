@@ -59,6 +59,7 @@ class FakeOmnigent:
         workspace: str | None = None,
         permission_mode: str | None = None,
         host_id: str | None = None,
+        role: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -645,6 +646,31 @@ def test_create_files_the_session_under_the_project(
     assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
 
 
+def test_create_labels_the_session_with_its_loop_role_from_the_role_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {"/v1/agents": agents, "/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}}[
+            path
+        ]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    og = omnigent_agent.Omnigent()
+    for role in ("lead", "worker", "verifier"):
+        og.create("codex", "t", role=f"/x/engineering-loop/{role}.md")
+        assert bodies[-1]["labels"] == {"omni.role": role}
+    for role in (None, "/x/reviewer.md"):
+        og.create("codex", "t", role=role)
+        assert "labels" not in bodies[-1]
+
+
 def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1100,7 +1126,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     titles: list[str] = []
     create = og.create
     og.create = (
-        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None: (
+        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None, role=None: (
             titles.append(title) or create(agent, title)
         )
     )  # type: ignore[method-assign]
@@ -1483,7 +1509,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None: (
+    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None: (
         models.append(m),
         create(a, t, m),
     )[1]  # type: ignore[method-assign]
@@ -2434,6 +2460,21 @@ def test_one_poll_writes_the_state_and_labels_and_an_unchanged_poll_within_a_min
     assert [(e["id"], e["session"], e["kind"], e["settled"], e["action"]) for e in events] == [
         (first["settled"]["a"][0], "a", "ended", "rule", "done")
     ]
+
+
+def test_the_console_labels_its_own_session_as_the_chief_of_staff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "cos1")
+    og = Lead(told("brief", 60))
+    og.snap = {"host_id": "h"}
+    supervised(og, following(tmp_path), monkeypatch, 1, console=True)
+    assert og.labels[0] == ("cos1", {"omni.role": "cos"})
+
+    og = Lead(told("brief", 60))
+    og.snap, og.unlabelled = {"host_id": "h"}, 1
+    supervised(og, following(tmp_path), monkeypatch, 2, console=True)  # a failed write: it runs on
+    assert "cos1: role label not written" in capsys.readouterr().err
 
 
 def test_a_status_line_stays_under_200_characters() -> None:
