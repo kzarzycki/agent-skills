@@ -2560,6 +2560,20 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
         == "until 2026-10-21T23:17:59Z"
     )
     assert omnigent_agent.wait_of("STILL WORKING: until 2026-02-30T23:17Z") == "unknown"
+    # lead 99a79f4d's message: a rule's "Until <time>" comes before the time its wait names
+    rule = (
+        "STILL WORKING: I've recorded the temporary review rule in the run notes. Until 2026-10-27"
+        " 06:32 UTC, new verifiers run as Claude Opus with `--same-family`. I'm waiting on the"
+        " measurement timer `cos-measure-day1`, which fires at 2026-10-21 23:17 UTC."
+    )
+    assert omnigent_agent.wait_of(rule) == "until 2026-10-21T23:17Z"
+    # no sentence says "wait": the earliest time still to come, else the earliest
+    two = "STILL WORKING: the timer fires 2026-10-21 23:17 UTC; the rule ends 2026-10-27 06:32 UTC."
+    before, between = 1792540800.0, 1792800000.0  # 2026-10-21 00:00Z, 2026-10-24 00:00Z
+    assert omnigent_agent.wait_of(two, now=before) == "until 2026-10-21T23:17Z"
+    assert omnigent_agent.wait_of(two, now=between) == "until 2026-10-27T06:32Z"
+    assert omnigent_agent.wait_of(two, now=1.9e9) == "until 2026-10-21T23:17Z"
+    assert omnigent_agent.wait_of("At 2026-10-21 23:17 UTC. STILL WORKING on CI") == "CI"
     due = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(time.time() + due_in))
     registry = following(tmp_path)
     og = Lead(told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", 3600))
