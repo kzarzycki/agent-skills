@@ -1390,6 +1390,10 @@ Ends M1's body.
 
 ### P7 02:00 run skipped
 
+### Instance on localhost:8000
+
+### Repro on node:20 at 2026-10-21T02:00:00Z
+
 Head: {HEAD}
 VERDICT: 0 blocker, 0 major, 1 minor
 SATISFIED: yes
@@ -1399,8 +1403,8 @@ SATISFIED: yes
 def test_a_sub_heading_that_is_no_finding_is_left_out_of_the_review(
     reviewing: list[tuple[Any, ...]], tmp_path: Path
 ) -> None:
-    """Verifiers split Correctness into `###` sub-headings; one naming neither a severity nor a `<path>:<line>`
-    is no finding, so it posts nothing and ends the finding above it. A time, a ratio or a URL's port is no line."""
+    """Verifiers split Correctness into `###` sub-headings; one that doesn't read as a finding, with no
+    `(<severity>)` in it, posts nothing and ends the finding above it, whatever times or ports it names."""
     report = tmp_path / "report.md"
     report.write_text(SUBHEADED)
     assert approvals.main(["verdict", "7", str(report)]) == 0
@@ -1422,24 +1426,43 @@ def test_a_sub_heading_that_is_no_finding_is_left_out_of_the_review(
     "broken",
     [
         "### C2 app.py:40: a line outside the diff",
-        "### C2 (Minor): a line outside the diff",
         "### C2 minor app.py:40: a line outside the diff",
         "### C2 [minor] `app.py:40`: a line outside the diff",
+        "### C2 [minor] **app.py:40**: a line outside the diff",
         "### C2 (nit) Makefile:40: a line outside the diff",
         "### app.py:40: a line outside the diff",
+        "**C2 (minor) app.py:40: a line outside the diff**",
     ],
 )
-def test_a_sub_heading_naming_a_severity_or_a_line_is_a_finding_verdict_cant_read(
+def test_a_finding_verdict_cant_read_leaves_the_counts_short_and_posts_nothing(
     reviewing: list[tuple[Any, ...]],
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     broken: str,
 ) -> None:
-    """A heading that looks like a finding is refused, never posted as a sub-heading and dropped."""
+    """Whatever shape a finding's heading takes, `VERDICT:` still counts it: a report whose finding headings fall
+    short of its counts is refused, never posted with that finding dropped."""
     report = tmp_path / "report.md"
     report.write_text(REPORT.replace("### C2 (minor) app.py:40: a line outside the diff", broken))
     assert approvals.main(["verdict", "7", str(report)]) == 1
-    assert f"can't read the finding heading `{broken}`" in capsys.readouterr().out
+    assert capsys.readouterr().out == (
+        f"{report}: `VERDICT: 1 blocker, 0 major, 2 minor` counts 3 findings, but 2 headings read as one "
+        "(1 blocker, 0 major, 1 minor): write each `### <id> (<blocker|major|minor>) <path>:<line>: <title>`\n"
+    )
+    assert [call for call in reviewing if call[0] == "review"] == []
+
+
+def test_a_verdict_line_without_all_three_counts_posts_nothing(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(
+        REPORT.replace("VERDICT: 1 blocker, 0 major, 2 minor", "VERDICT: 1 blocker, 2 minor")
+    )
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert capsys.readouterr().out == (
+        f"{report}: write the verdict `VERDICT: <n> blocker, <n> major, <n> minor`\n"
+    )
     assert [call for call in reviewing if call[0] == "review"] == []
 
 
