@@ -1747,9 +1747,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     return "model", {"none": "record", "owner": "owner", "act": "nudge"}.get(answer, "act"), why
 
 
-def triage(event: str, decisions: str) -> tuple[str, str]:
+def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[str, str]:
     """The small model's route for ``event`` (``none``, ``act`` or ``owner``) and why, under the
-    standing ``decisions``. One headless call with no tools, settings or MCP servers, the event
+    standing ``decisions``; ``prompt`` is its system prompt, with a ``{decisions}`` slot. One headless call with no tools, settings or MCP servers, the event
     on stdin; an answer other than one JSON line naming a route, a missing ``claude``, a non-zero
     exit or ``MODEL_SECONDS`` passing is ``unsure``, which ``route`` acts on."""
     cmd = ["claude", "-p", "--model", os.environ.get("OMNIGENT_SMALL_MODEL") or SMALL_MODEL]
@@ -1761,7 +1761,7 @@ def triage(event: str, decisions: str) -> tuple[str, str]:
         "--strict-mcp-config",
         "--no-session-persistence",
     ]
-    cmd += ["--system-prompt", ROUTING_PROMPT.format(decisions=decisions.strip() or "(none)")]
+    cmd += ["--system-prompt", prompt.format(decisions=decisions.strip() or "(none)")]
     env = {**os.environ, "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(MODEL_TOKENS)}
     try:
         out = subprocess.run(
