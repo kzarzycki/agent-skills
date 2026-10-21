@@ -44,6 +44,7 @@ class FakeOmnigent:
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
+        self.roles: list[str | None] = []  # per create
         self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
@@ -66,6 +67,7 @@ class FakeOmnigent:
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
         self.top_level.append(top_level)
+        self.roles.append(role)
         self.workspaces.append(workspace)
         self.sessions[sid] = [{"type": "resource_event"}]
         self.titles[sid] = title
@@ -1317,7 +1319,7 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
     assert (tmp_path / "r.md.brief").read_text() == DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
     ) + "do X"
-    assert og.top_level == [False]
+    assert og.top_level == [False] and og.roles == ["roles/worker.md"]
 
 
 def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
