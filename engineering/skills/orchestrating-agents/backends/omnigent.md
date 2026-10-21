@@ -319,7 +319,9 @@ lead's first line, whatever its status reads; a lead whose wait is unknown and t
 on this chain (`nudged_at`, the `progress_at` its nudge was sent at) gets a second, `no progress
 <n>m after a nudge`, 10 minutes later. The
 wait comes from the lead's last message: `parked` for a `PARKED` ending, the thing a `STILL
-WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`), else `unknown`. None for a
+WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`), else `unknown`. A last message that
+is only a report's path takes its ending and wait from the report's first line, read once per
+last message (a failed read is logged once and leaves them as the message gave them). None for a
 parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
 none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
 then waits on its follower, who was told. Each deadline is one event per
