@@ -23,6 +23,7 @@ finding even when the page looks right. Playwright is pinned to 1.63.0, whose Ch
 
 import argparse
 import json
+import runpy
 import shutil
 import subprocess
 import sys
@@ -44,8 +45,10 @@ def omnigent_token(origin: str) -> str:
         cli = shutil.which("omnigent")
         # The CLI's interpreter (its shebang) has omnigent importable.
         python = Path(cli).read_text().splitlines()[0].removeprefix("#!") if cli else None
-        if not python or subprocess.run([python, "-c", REFRESH, origin]).returncode:
-            sys.exit(f"Omnigent login for {origin} expired and did not refresh: run `omnigent login {origin}`")
+        if not python or subprocess.run([python, "-c", REFRESH, origin], check=False).returncode:
+            sys.exit(
+                f"Omnigent login for {origin} expired and did not refresh: run `omnigent login {origin}`"
+            )
         entry = json.loads(TOKENS.read_text())[origin]
     return entry["token"]
 
@@ -55,11 +58,17 @@ def main() -> None:
     ap.add_argument("url")
     ap.add_argument("--out", required=True, help="screenshot path (.png)")
     ap.add_argument("--omnigent", action="store_true", help="sign in with the Omnigent CLI's login")
-    ap.add_argument("--do", type=Path, help="Python file run with `page` in scope before the screenshot")
+    ap.add_argument(
+        "--do", type=Path, help="Python file run with `page` in scope before the screenshot"
+    )
     ap.add_argument("--size", default="1440x900", help="viewport WIDTHxHEIGHT")
     ap.add_argument("--full-page", action="store_true")
-    ap.add_argument("--wait-until", default="networkidle", choices=["load", "domcontentloaded", "networkidle"],
-                    help="load for an app that long-polls and never goes idle; then wait in --do")
+    ap.add_argument(
+        "--wait-until",
+        default="networkidle",
+        choices=["load", "domcontentloaded", "networkidle"],
+        help="load for an app that long-polls and never goes idle; then wait in --do",
+    )
     args = ap.parse_args()
     width, height = map(int, args.size.split("x"))
     with sync_playwright() as p:
@@ -70,21 +79,36 @@ def main() -> None:
             origin = f"{url.scheme}://{url.netloc}"
             https = url.scheme == "https"
             # omnigent/server/accounts_config.py: session_cookie_name, __Host- prefixed on HTTPS.
-            context.add_cookies([{
-                "name": "__Host-ap_session" if https else "ap_session",
-                "value": omnigent_token(origin),
-                "url": origin + "/",
-                "secure": https,
-                "httpOnly": True,
-                "sameSite": "Lax",
-            }])
+            context.add_cookies(
+                [
+                    {
+                        "name": "__Host-ap_session" if https else "ap_session",
+                        "value": omnigent_token(origin),
+                        "url": origin + "/",
+                        "secure": https,
+                        "httpOnly": True,
+                        "sameSite": "Lax",
+                    }
+                ]
+            )
         page = context.new_page()
-        page.on("console", lambda m: m.type == "error" and print(f"console: {m.text}", file=sys.stderr))
-        page.on("requestfailed", lambda r: print(f"failed: {r.method} {r.url} {r.failure}", file=sys.stderr))
-        page.on("response", lambda r: r.status >= 400 and print(f"http {r.status}: {r.request.method} {r.url}", file=sys.stderr))
+        page.on(
+            "console", lambda m: m.type == "error" and print(f"console: {m.text}", file=sys.stderr)
+        )
+        page.on(
+            "requestfailed",
+            lambda r: print(f"failed: {r.method} {r.url} {r.failure}", file=sys.stderr),
+        )
+        page.on(
+            "response",
+            lambda r: (
+                r.status >= 400
+                and print(f"http {r.status}: {r.request.method} {r.url}", file=sys.stderr)
+            ),
+        )
         page.goto(args.url, wait_until=args.wait_until)
         if args.do:
-            exec(compile(args.do.read_text(), str(args.do), "exec"), {"page": page})
+            runpy.run_path(str(args.do), init_globals={"page": page})
         page.screenshot(path=args.out, full_page=args.full_page)
         browser.close()
     print(args.out)
