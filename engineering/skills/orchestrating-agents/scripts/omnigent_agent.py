@@ -178,10 +178,11 @@ WAIT = re.compile(
     r"STILL WORKING\b\W*(?:.*?\b(?:on|for)\s+)?(?:[\w'-]+\s+)?((?i:verifier|worker|lead|merge)|CI)s?\b",
     re.DOTALL,
 )
-# A ``STILL WORKING`` naming a UTC time ("until 2026-10-21T23:17Z", "at 2026-10-21 23:17 UTC"): a
-# timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``.
+# A ``STILL WORKING`` naming a UTC time ("until 2026-10-21T23:17Z", "(2026-10-21 23:17 UTC)"): a
+# timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``; a time already
+# past holds nothing off.
 TIMED = re.compile(
-    r"STILL WORKING\b.*?\b(?:until|at)\s+(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(?::\d\d)?\s*(?:Z|UTC)\b",
+    r"STILL WORKING\b.*?\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(?::\d\d)?\s*(?:Z|UTC)\b",
     re.DOTALL,
 )
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
