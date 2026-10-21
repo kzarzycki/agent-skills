@@ -52,9 +52,14 @@ LEVELS = {
     "grey": ("⚪", "Done / FYI"),
 }
 RANK = {k: i for i, k in enumerate(LEVELS)}
-# A board bullet that says it can wait is amber, any other red.
+SHORT = {"red": "you", "amber": "later", "green": "running", "grey": "done"}
+# A board bullet that opens saying it can wait, or that the owner parked, is amber; any other red.
 LATER = re.compile(
-    r"review later|low priority|think through|parked|when (?:satisfied|convenient)", re.IGNORECASE
+    r"^\W*(?:review later|low priority|think through)\b|\bparked by (?:the )?owner\b|\bwhen satisfied\b",
+    re.IGNORECASE,
+)
+UNSURE_SECONDS = (
+    600.0  # a model call that gave no answer is not retried for the same message sooner
 )
 PAGE_PROMPT = """\
 You sort one session for its owner, who runs many agent sessions at once. On stdin: the session's \
@@ -198,17 +203,27 @@ def collect(
     memo: dict,
     triage: Callable[..., tuple[str, str]] = OA.triage,
     now: float | None = None,
+    decisions: str = "",
 ) -> list[dict]:
     """One row per non-archived top-level session: its project, host, level, what to do and why.
     ``memo`` carries the last messages read (by ``updated_at``), the model's answers (by last item
     id) and its calls this hour across polls. ``leads`` is the supervisor's state, whose ending and
-    wait stand for a followed lead's (read from its report when its last message is a path)."""
+    wait stand for a followed lead's (read from its report when its last message is a path);
+    ``decisions`` are the owner's standing ones, for the model. What it could not read it says in
+    ``memo["warnings"]``."""
     now = time.time() if now is None else now
     hosts = og.hosts()
     projects = {p.get("id"): p.get("name") for p in listing(og.call("GET", "/v1/projects"))}
-    # ponytail: one page of 1000 each; past that, page with `after`
-    top = listing(og.call("GET", "/v1/sessions?kind=default&limit=1000"))
-    subs = listing(og.call("GET", "/v1/sessions?kind=sub_agent&limit=1000"))
+    # ponytail: one page of 1000 each, and a warning past it; upgrade: page with `after`
+    pages = {
+        k: og.call("GET", f"/v1/sessions?kind={k}&limit=1000") for k in ("default", "sub_agent")
+    }
+    memo["warnings"] = [
+        f"More than 1000 {k} sessions: the older ones are not read"
+        for k, page in pages.items()
+        if isinstance(page, dict) and page.get("has_more")
+    ]
+    top, subs = listing(pages["default"]), listing(pages["sub_agent"])
     tops = {s.get("id") for s in top}
     prompts: dict[str, list[tuple[str, str]]] = {}
     for s in [*top, *subs]:
@@ -224,15 +239,16 @@ def collect(
     calls = memo["calls"] = [t for t in memo.get("calls", []) if now - t < 3600]
 
     def ask(key: str, text: str) -> tuple[str, str]:
-        if key in verdicts:
-            return verdicts[key]
+        if key in verdicts and (
+            verdicts[key][0] != "unsure" or now - verdicts[key][2] < UNSURE_SECONDS
+        ):
+            return verdicts[key][:2]
         if len(calls) >= MODEL_HOURLY:
             return "unsure", f"over {MODEL_HOURLY} model calls this hour"
         calls.append(now)
-        answer = triage(text, "", PAGE_PROMPT)
-        if answer[0] != "unsure":
-            verdicts[key] = answer
-        return answer
+        route, why = triage(text, decisions, PAGE_PROMPT)
+        verdicts[key] = (route, why, now)
+        return route, why
 
     rows = []
     for s in top:
@@ -269,11 +285,13 @@ def collect(
                         str(items[-1].get("id")) if items else "",
                     )
                 text, last_id = cached[1], cached[2]
-                ending = m.group(1) if (m := OA.ENDING.search(text)) else None
+                # an ask anywhere wins over a DONE line before it
+                endings = [m.group(1) for m in OA.ENDING.finditer(text)]
+                ending = "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
                 wait = OA.wait_of(text)
             line = line or first(text)
             if ending == "USER NEEDED":
-                m = OA.ENDING.search(text)
+                m = re.search(r"^\W*USER NEEDED\b", text, re.MULTILINE)
                 said = first(text[m.start() :] if m else text)
                 signals.append(("red", f"Reply: {said}", "it ends USER NEEDED"))
             elif ending == "PARKED":
@@ -332,7 +350,7 @@ def render(
     attention = [a for a in attention if isinstance(a, dict)] if isinstance(attention, list) else []
     recent, err2 = events(registry.with_suffix(".events.jsonl"))
     asks, err3 = needs_owner(board)
-    errors = [x for x in (snap.get("error"), err, err2, err3) if x]
+    errors = [x for x in (snap.get("error"), err, err2, err3, *(snap.get("warnings") or [])) if x]
     if snap.get("at") is None and not snap.get("error"):
         errors.append("Reading the Omnigent sessions: the first poll has not finished yet.")
 
@@ -448,7 +466,7 @@ def render(
             )
         hot = mix["red"] or mix["amber"]
         chips = " ".join(
-            f"<span class='b {k}'>{LEVELS[k][0]} {n}</span>" for k, n in mix.items() if n
+            f"<span class='b {k}'>{LEVELS[k][0]} {n} {SHORT[k]}</span>" for k, n in mix.items() if n
         )
         gid = "p-" + re.sub(r"\W+", "-", p.lower())
         groups_html.append(
@@ -469,6 +487,10 @@ def render(
         else "<p class=mute>No events yet.</p>"
     )
     rate = state.get("rate") if isinstance(state.get("rate"), dict) else {}
+    # a post time already past says nothing: the supervisor posts as soon as it has news
+    next_post = (
+        f" · next post {utc(rate['next_post_at'])}" if num(rate.get("next_post_at")) > now else ""
+    )
     chips = "".join(
         f"<span class='b {k}'>{LEVELS[k][0]} {counts[k]} {LEVELS[k][1].lower()}</span>"
         for k in LEVELS
@@ -490,14 +512,14 @@ def render(
 <h2>By project</h2>{legend}
 {"".join(groups_html) or "<p class=mute>No sessions read yet.</p>"}
 <details id=events><summary><h2 style=display:inline>Supervisor events</h2></summary>
-<p class=mute>State written {age(state.get("written_at"), now)} ago · next post {utc(rate.get("next_post_at"))}</p>
+<p class=mute>State written {age(state.get("written_at"), now)} ago{next_post}</p>
 {ev_html}</details>
 <p class=mute>Sessions read {age(snap.get("at"), now)} ago · refreshes every 30s</p>
 <script>{JS}</script>
 </body></html>"""
 
 
-def poll(snap: dict, registry: Path) -> None:
+def poll(snap: dict, registry: Path, board: Path | None) -> None:
     """Read the sessions into ``snap`` every ``POLL_SECONDS``; a failure keeps the last rows and
     says why on the page."""
     og, memo = None, {}
@@ -511,7 +533,8 @@ def poll(snap: dict, registry: Path) -> None:
                 if isinstance(leads, dict)
                 else {}
             )
-            snap.update(rows=collect(og, leads, memo), at=time.time(), error=None)
+            rows = collect(og, leads, memo, decisions=OA.standing(board) if board else "")
+            snap.update(rows=rows, at=time.time(), error=None, warnings=memo["warnings"])
         except Exception as x:  # noqa: BLE001 - Omnigent down or odd: say so, keep the last rows
             snap["error"] = f"Omnigent sessions not read: {x}"
         time.sleep(POLL_SECONDS)
@@ -528,7 +551,7 @@ def main() -> None:
     p.add_argument("--port", type=int, default=6768)
     a = p.parse_args()
     snap: dict = {}
-    threading.Thread(target=poll, args=(snap, a.registry), daemon=True).start()
+    threading.Thread(target=poll, args=(snap, a.registry, a.board), daemon=True).start()
 
     class Page(BaseHTTPRequestHandler):
         def do_GET(self) -> None:

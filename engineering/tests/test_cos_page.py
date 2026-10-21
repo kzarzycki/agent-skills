@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 SCRIPT = (
     Path(__file__).resolve().parents[1] / "skills" / "chief-of-staff" / "scripts" / "cos_page.py"
 )
@@ -210,3 +212,74 @@ def test_page_falls_back_to_the_supervisor_when_omnigent_is_unread(tmp_path: Pat
     snap = {"error": "Omnigent sessions not read: HTTP 502", "at": None}
     page = cos_page.render(tmp_path / "leads.registry", None, URL, snap, now=0)
     assert "HTTP 502" in page and f'href="{URL}/c/{SID}"' in page and "Followed leads" in page
+
+
+def test_an_ask_after_a_done_line_is_red_and_an_unsure_answer_waits_before_a_retry() -> None:
+    og, asked = FakeOmnigent(), []
+    og.said[C] = "DONE: #271 merged.\nUSER NEEDED: pick option A or B"
+
+    def triage(text: str, decisions: str, prompt: str) -> tuple[str, str]:
+        asked.append(decisions)
+        return "unsure", "small model: TimeoutExpired"
+
+    memo: dict = {}
+    rows = {r["id"]: r for r in cos_page.collect(og, {}, memo, triage, now=0, decisions="- go")}
+    assert rows[C]["level"] == "red" and rows[C]["what"] == "Reply: USER NEEDED: pick option A or B"
+    assert rows[E]["level"] == "amber" and asked == ["- go"]  # the standing decisions reach it
+    og.top[4]["updated_at"] = 6  # read again, same last item: the failed call is not retried yet
+    cos_page.collect(og, {}, memo, triage, now=60)
+    assert len(asked) == 1
+    cos_page.collect(og, {}, memo, triage, now=60 + cos_page.UNSURE_SECONDS)
+    assert len(asked) == 2
+
+
+def test_the_board_and_supervisor_never_lower_a_prompt_and_only_opening_words_defer() -> None:
+    import tempfile
+
+    rows = cos_page.collect(FakeOmnigent(), {}, {}, lambda *a: ("none", "fyi"), now=100)
+    with tempfile.TemporaryDirectory() as d:
+        board = Path(d) / "board.md"
+        board.write_text(
+            f"## Needs the owner\n- Review later: `{A[:8]}` approvals.\n"
+            "- Approve the prod deploy, parked until you say go.\n"
+            "- XMac display, parked by owner: run the reset.\n"
+        )
+        page = cos_page.render(Path(d) / "leads.registry", board, URL, {"rows": rows, "at": 100})
+    now = page.split("Needs you now")[1].split("By project")[0]
+    assert f"/c/{A}" in now and "Approve or deny: Bash(rm x)" in now  # still red, still its prompt
+    assert "parked until you say go" in now and "XMac display" not in now
+
+
+def test_the_page_warns_past_one_page_of_sessions_and_hides_a_post_time_already_past(
+    tmp_path: Path,
+) -> None:
+    og = FakeOmnigent()
+    call = og.call
+    og.call = lambda m, p: {**call(m, p), "has_more": "sub_agent" in p}
+    memo: dict = {}
+    cos_page.collect(og, {}, memo, lambda *a: ("none", "x"), now=0)
+    assert memo["warnings"] == ["More than 1000 sub_agent sessions: the older ones are not read"]
+    state = {"rate": {"next_post_at": 1000}}
+    (tmp_path / "leads.state.json").write_text(json.dumps(state))
+    snap = {"rows": [], "at": 0, "warnings": memo["warnings"]}
+    page = cos_page.render(tmp_path / "leads.registry", None, URL, snap, now=999)
+    assert "next post" in page and "older ones are not read" in page
+    assert "next post" not in cos_page.render(
+        tmp_path / "leads.registry", None, URL, snap, now=1001
+    )
+
+
+def test_the_real_triage_takes_the_page_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    seen = []
+
+    def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, '{"route": "owner", "why": "Pick a name"}', "")
+
+    monkeypatch.setattr(cos_page.OA.subprocess, "run", run)
+    rows = {r["id"]: r for r in cos_page.collect(FakeOmnigent(), {}, {}, now=0, decisions="- d")}
+    assert rows[E]["level"] == "red" and rows[E]["what"] == "Pick a name"
+    prompt = seen[0][seen[0].index("--system-prompt") + 1]
+    assert prompt.startswith("You sort one session") and prompt.endswith("decisions: - d")
