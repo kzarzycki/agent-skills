@@ -2039,8 +2039,12 @@ def supervise_registry(
         if action == "read-report":
             read = lead.get("report_read") or {}
             try:
-                if read.get("id") == str(said[-1].get("id")) and read.get("head") is not None:
-                    head = [read["head"]]  # the head track already read
+                if read.get("id") == str(said[-1].get("id")):
+                    # track's read of this message stands, a failure too: a second read could
+                    # route on a report the state never saw
+                    if read["head"] is None:
+                        raise Fail(read["error"])
+                    head = [read["head"]]
                 else:
                     head = og.read_file(sid, last).strip().splitlines()
             except Exception as e:  # noqa: BLE001 - an unread report routes act
@@ -2270,10 +2274,11 @@ def supervise_registry(
                 head = (og.read_file(sid, text).strip().splitlines() or [""])[0]
             except Exception as e:  # noqa: BLE001 - an unread report leaves the wait unknown
                 log(("report", sid), f"{sid}: report {text} not read: {reason(e)}")
-                head = None
+                head, error = None, reason(e)
             else:
                 log(("report", sid), None)
-            read = lead["report_read"] = {"id": mid, "head": head}
+                error = None
+            read = lead["report_read"] = {"id": mid, "head": head, "error": error}
         if read["head"] is not None:
             ending = ENDING.search(read["head"])
             lead.update(ending=ending.group(1) if ending else None, wait=wait_of(read["head"]))

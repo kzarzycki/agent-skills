@@ -2708,6 +2708,23 @@ def test_a_new_last_message_is_read_again_and_an_unread_report_stays_unknown_and
     assert len(reads) == 2
 
 
+def test_a_failed_read_stands_for_routing_too_and_the_quiet_end_acts_without_reading_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og, reads = path_only_lead(tmp_path, None)
+    offset = skewed(monkeypatch)
+
+    def later(poll: int) -> None:
+        og.files[str(tmp_path / "a.md")] = "DONE: merged"  # readable after the first failure
+        offset[0] = 301.0
+
+    supervised(og, registry, monkeypatch, 3, later, console=True)
+    assert len(reads) == 2  # track's failed one, and the post's own report lines; routing's none
+    assert state_of(registry)["leads"]["a"]["wait"] == "unknown"
+    [ended] = [e for e in events_of(registry) if e["kind"] == "ended"]
+    assert ended["action"] == "act" and "not read" in ended["why"]
+
+
 def test_without_console_a_path_only_lead_is_not_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
