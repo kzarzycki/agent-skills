@@ -1649,16 +1649,23 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     return {
         "state": state,
         "error": error if state == "failed" else None,
-        "ending": m.group(1) if (m := ENDING.search(text)) else None,
+        "ending": ending_of(text),
         "wait": wait_of(text),
         "last_line": text.splitlines()[0][:200] if text else "",
     }
 
 
+def ending_of(text: str) -> str | None:
+    """The ending a message names: ``USER NEEDED`` when any line opens with it, since an ask
+    after a ``DONE`` line still needs its answer; else the first line's ``DONE`` or ``PARKED``."""
+    endings = [m.group(1) for m in ENDING.finditer(text)]
+    return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
+
+
 def wait_of(text: str) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
     (``until <UTC time>`` for a timed one), else ``unknown``."""
-    if (m := ENDING.search(text)) and m.group(1) == "PARKED":
+    if ending_of(text) == "PARKED":
         return "parked"
     if m := TIMED.search(text):
         at = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
@@ -1727,7 +1734,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         text, wait = event["head"], wait_of(event["head"])
         if not ENDING.search(text) and wait == "unknown":
             return "rule", "act", "its report names no ending"
-    ending = m.group(1) if (m := ENDING.search(text)) else None
+    ending = ending_of(text)
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
     if event.get("repeat"):
@@ -2311,8 +2318,7 @@ def supervise_registry(
                 error = None
             read = lead["report_read"] = {"id": mid, "head": head, "error": error}
         if read["head"] is not None:
-            ending = ENDING.search(read["head"])
-            lead.update(ending=ending.group(1) if ending else None, wait=wait_of(read["head"]))
+            lead.update(ending=ending_of(read["head"]), wait=wait_of(read["head"]))
 
     def active(sid: str) -> float:
         """``og.active``, else 0 with the error logged: a missed read only delays a deadline."""

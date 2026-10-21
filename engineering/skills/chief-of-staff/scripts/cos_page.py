@@ -207,9 +207,9 @@ def collect(
 ) -> list[dict]:
     """One row per non-archived top-level session: its project, host, level, what to do and why.
     ``memo`` carries the last messages read (by ``updated_at``), the model's answers (by last item
-    id) and its calls this hour across polls. ``leads`` is the supervisor's state, whose ending and
-    wait stand for a followed lead's (read from its report when its last message is a path);
-    ``decisions`` are the owner's standing ones, for the model. What it could not read it says in
+    id) and its calls this hour across polls. ``leads`` is the supervisor's state, which marks a
+    followed lead; every session is judged on its own last message, or the report it names, as the
+    supervisor reads it (``OA.ending_of``, ``OA.wait_of``). ``decisions`` are the owner's standing ones, for the model. What it could not read it says in
     ``memo["warnings"]``."""
     now = time.time() if now is None else now
     hosts = og.hosts()
@@ -266,29 +266,22 @@ def collect(
         elif status in OA.RUNNING:
             signals.append(("green", line or status, "running"))
         elif not signals:  # idle with no prompt: its last words decide
-            if lead.get("ending") or lead.get("wait") not in (None, "unknown"):
-                text, last_id = str(lead.get("last_line") or ""), None
-                ending, wait = lead.get("ending"), lead.get("wait")
-            else:
-                cached = seen.get(sid)
-                if not cached or cached[0] != s.get("updated_at"):
-                    items = og.items(sid)
-                    said = OA.last_said(items).strip()
-                    if OA.REPORT_PATH.fullmatch(said):  # only a report's path: its report speaks
-                        try:
-                            said = og.read_file(sid, said).strip()[: OA.MODEL_CHARS] or said
-                        except Exception:  # noqa: BLE001, S110 - unread: the path goes to the rules
-                            pass
-                    cached = seen[sid] = (
-                        s.get("updated_at"),
-                        "" if said == "(none)" else said,
-                        str(items[-1].get("id")) if items else "",
-                    )
-                text, last_id = cached[1], cached[2]
-                # an ask anywhere wins over a DONE line before it
-                endings = [m.group(1) for m in OA.ENDING.finditer(text)]
-                ending = "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
-                wait = OA.wait_of(text)
+            cached = seen.get(sid)
+            if not cached or cached[0] != s.get("updated_at"):
+                items = og.items(sid)
+                said = OA.last_said(items).strip()
+                if OA.REPORT_PATH.fullmatch(said):  # only a report's path: its report speaks
+                    try:
+                        said = og.read_file(sid, said).strip()[: OA.MODEL_CHARS] or said
+                    except Exception:  # noqa: BLE001, S110 - unread: the path goes to the rules
+                        pass
+                cached = seen[sid] = (
+                    s.get("updated_at"),
+                    "" if said == "(none)" else said,
+                    str(items[-1].get("id")) if items else "",
+                )
+            text, last_id = cached[1], cached[2]
+            ending, wait = OA.ending_of(text), OA.wait_of(text)
             line = line or first(text)
             if ending == "USER NEEDED":
                 m = re.search(r"^\W*USER NEEDED\b", text, re.MULTILINE)

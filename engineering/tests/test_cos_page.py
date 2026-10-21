@@ -223,7 +223,8 @@ def test_an_ask_after_a_done_line_is_red_and_an_unsure_answer_waits_before_a_ret
         return "unsure", "small model: TimeoutExpired"
 
     memo: dict = {}
-    rows = {r["id"]: r for r in cos_page.collect(og, {}, memo, triage, now=0, decisions="- go")}
+    leads = {C: {"ending": "DONE", "last_line": "DONE: #271 merged."}}  # a followed lead
+    rows = {r["id"]: r for r in cos_page.collect(og, leads, memo, triage, now=0, decisions="- go")}
     assert rows[C]["level"] == "red" and rows[C]["what"] == "Reply: USER NEEDED: pick option A or B"
     assert rows[E]["level"] == "amber" and asked == ["- go"]  # the standing decisions reach it
     og.top[4]["updated_at"] = 6  # read again, same last item: the failed call is not retried yet
@@ -283,3 +284,27 @@ def test_the_real_triage_takes_the_page_prompt(monkeypatch: pytest.MonkeyPatch) 
     assert rows[E]["level"] == "red" and rows[E]["what"] == "Pick a name"
     prompt = seen[0][seen[0].index("--system-prompt") + 1]
     assert prompt.startswith("You sort one session") and prompt.endswith("decisions: - d")
+
+
+def test_the_poll_hands_the_boards_standing_decisions_to_the_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board = tmp_path / "board.md"
+    board.write_text("## Standing decisions\n- merge on green\n\n## Needs the owner\n- x\n")
+    seen = []
+
+    def collect(og: object, leads: dict, memo: dict, **kw: object) -> list:
+        seen.append(kw.get("decisions"))
+        memo["warnings"] = []
+        return []
+
+    def stop(_: float) -> None:
+        raise SystemExit
+
+    monkeypatch.setattr(cos_page, "collect", collect)
+    monkeypatch.setattr(cos_page.OA, "Omnigent", object)
+    monkeypatch.setattr(cos_page.time, "sleep", stop)
+    snap: dict = {}
+    with pytest.raises(SystemExit):
+        cos_page.poll(snap, tmp_path / "leads.registry", board)
+    assert seen == ["- merge on green"] and snap["error"] is None
