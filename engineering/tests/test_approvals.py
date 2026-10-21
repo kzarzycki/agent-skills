@@ -1343,6 +1343,91 @@ def test_a_finding_heading_verdict_cant_read_posts_nothing(
     assert [call for call in reviewing if call[0] == "review"] == []
 
 
+# homelab PR #66's verifier pass 1, which `verdict` refused for its `### P1`..`### P4` sub-headings
+SUBHEADED = f"""# PR #66 verifier report
+
+Verifier: claude, same-family, pass 1
+
+## Standards
+
+None.
+
+## Spec
+
+Met.
+
+## Correctness
+
+### P1: root cause on live data and in window_check
+
+Holds.
+
+### P2: side effects of the 1d lookback
+
+None.
+
+### P3: window_check fails on main, passes on the head
+
+Ran both.
+
+### P4: the deploy step
+
+Fine.
+
+### M1 (minor) app.py:11: README says Agent loop spend uses the counters datasource "for every counter"
+
+The README.
+
+### P5: after a finding
+
+Ends M1's body.
+
+Head: {HEAD}
+VERDICT: 0 blocker, 0 major, 1 minor
+SATISFIED: yes
+"""
+
+
+def test_a_sub_heading_that_is_no_finding_is_left_out_of_the_review(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path
+) -> None:
+    """Verifiers split Correctness into `###` sub-headings; one naming neither a severity nor a line is no finding,
+    so it posts nothing and ends the finding above it."""
+    report = tmp_path / "report.md"
+    report.write_text(SUBHEADED)
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    heading = "Verifier (claude, same-family), pass 1"
+    assert reviewing[-1][2]["comments"] == [
+        {
+            "path": "app.py",
+            "line": 11,
+            "side": "RIGHT",
+            "body": (
+                f"**{heading} · M1** (minor): README says Agent loop spend uses the counters datasource "
+                '"for every counter"\n\nThe README.'
+            ),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["### C2 app.py:40: a line outside the diff", "### C2 (Minor): a line outside the diff"],
+)
+def test_a_sub_heading_naming_a_severity_or_a_line_is_a_finding_verdict_cant_read(
+    reviewing: list[tuple[Any, ...]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    broken: str,
+) -> None:
+    """A heading that looks like a finding is refused, never posted as a sub-heading and dropped."""
+    report = tmp_path / "report.md"
+    report.write_text(REPORT.replace("### C2 (minor) app.py:40: a line outside the diff", broken))
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert f"can't read the finding heading `{broken}`" in capsys.readouterr().out
+    assert [call for call in reviewing if call[0] == "review"] == []
+
+
 def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

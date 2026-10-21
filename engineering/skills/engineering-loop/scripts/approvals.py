@@ -68,7 +68,8 @@ a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
-`Verifier: <family>, pass <n>` line: one inline comment per finding, moved to the nearest line of the diff when its
+`Verifier: <family>, pass <n>` line, or a `### ` heading naming a severity or a `<path>:<line>` that it can't read as a
+finding (any other `### ` heading is a sub-heading and posts nothing): one inline comment per finding, moved to the nearest line of the diff when its
 line is outside it and saying so, and in the review's body when its file is outside the diff.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
@@ -1803,12 +1804,15 @@ FINDING = re.compile(
     r"###[ \t]+(\S+)[ \t]+\((blocker|major|minor)\)[ \t]+`?([^\s`]+?):(\d+(?:-\d+)?)`?:?[ \t]+(.+?)[ \t]*",
     re.IGNORECASE,
 )
+# what makes a `### ` heading a finding: a severity in parentheses or a `<path>:<line>`; any other is a sub-heading
+FINDING_LIKE = re.compile(r"\((blocker|major|minor)\)|\S:\d", re.IGNORECASE)
 
 
 def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str]]:
     """Each finding of a report as (id, severity, path, line, title, body): its body up to the next heading of
-    levels 1 to 3 or the closing `Head:`/`VERDICT:`/`SATISFIED:` lines, outside a code fence. A `### ` heading that
-    is no finding is refused, since the review would leave it out without a word."""
+    levels 1 to 3 or the closing `Head:`/`VERDICT:`/`SATISFIED:` lines, outside a code fence. A `### ` heading naming
+    a severity or a `<path>:<line>` that doesn't read as a finding is refused, since the review would leave it out
+    without a word; any other is a sub-heading, which posts nothing."""
     found: list[tuple[str, str, str, str, str, list[str]]] = []
     body: list[str] | None = None  # the open finding's lines
     fenced = False
@@ -1817,7 +1821,7 @@ def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str
             fenced = not fenced
         elif not fenced and re.match(r"#{1,3} |(Head|VERDICT|SATISFIED):", line):
             body = None
-            if line.startswith("### "):
+            if line.startswith("### ") and FINDING_LIKE.search(line):
                 heading = FINDING.fullmatch(line.rstrip())
                 if not heading:
                     raise Refused(
