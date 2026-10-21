@@ -1663,7 +1663,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
-    kind, wait = event["kind"], wait_of(event.get("last") or "")
+    # ``wait`` is the lead's, from its report when its last message is only the path
+    kind, wait = event["kind"], event.get("wait") or wait_of(event.get("last") or "")
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
     if kind == "blocked":
@@ -2014,6 +2015,7 @@ def supervise_registry(
             "kind": kind,
             "line": line,
             "last": last,
+            "wait": lead.get("wait"),
             "repeat": key == lead.get("last_event"),
             "question": bool(pending) and len(questions_of(info)) == len(pending),
             "nudged": lead.get("nudged_at") is not None
@@ -2035,8 +2037,16 @@ def supervise_registry(
 
         by, action, why = route(event, ask)
         if action == "read-report":
+            read = lead.get("report_read") or {}
             try:
-                head = og.read_file(sid, last).strip().splitlines()
+                if read.get("id") == str(said[-1].get("id")):
+                    # track's read of this message stands, a failure too: a second read could
+                    # route on a report the state never saw
+                    if read["head"] is None:
+                        raise Fail(read["error"])
+                    head = [read["head"]]
+                else:
+                    head = og.read_file(sid, last).strip().splitlines()
             except Exception as e:  # noqa: BLE001 - an unread report routes act
                 head, why = [], f"report {last} not read: {reason(e)}"
             event["head"] = head[0] if head else ""
@@ -2230,6 +2240,8 @@ def supervise_registry(
             waits_on=[after] if after else [],
             **lead_status(info, items),
         )
+        if console:
+            from_report(sid, lead, items)
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
             # a new failure or prompt, also with the same error: its own event, kept on restart
             lead["occurrences"] = lead.get("occurrences", 0) + 1
@@ -2245,6 +2257,31 @@ def supervise_registry(
         # with no activity at all, progress counts from now
         lead["progress_at"] = max([lead.get("progress_at") or 0.0, *own]) or time.time()
         return lead
+
+    def from_report(sid: str, lead: dict, items: list[dict]) -> None:
+        """A lead whose last message is only a report's path takes its ``ending`` and ``wait`` from
+        the report's first line, read once per last message (kept in ``report_read``, with a failed
+        read, logged once, so a poll never reads it again); an unread report leaves them as the
+        message gave them."""
+        said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+        text = text_of(said[-1]).strip() if said else ""
+        if not REPORT_PATH.fullmatch(text):
+            lead.pop("report_read", None)
+            return
+        read, mid = lead.get("report_read"), str(said[-1].get("id"))
+        if not read or read["id"] != mid:
+            try:
+                head = (og.read_file(sid, text).strip().splitlines() or [""])[0]
+            except Exception as e:  # noqa: BLE001 - an unread report leaves the wait unknown
+                log(("report", sid), f"{sid}: report {text} not read: {reason(e)}")
+                head, error = None, reason(e)
+            else:
+                log(("report", sid), None)
+                error = None
+            read = lead["report_read"] = {"id": mid, "head": head, "error": error}
+        if read["head"] is not None:
+            ending = ENDING.search(read["head"])
+            lead.update(ending=ending.group(1) if ending else None, wait=wait_of(read["head"]))
 
     def active(sid: str) -> float:
         """``og.active``, else 0 with the error logged: a missed read only delays a deadline."""

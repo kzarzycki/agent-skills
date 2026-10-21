@@ -2644,6 +2644,95 @@ def test_a_live_child_is_progress_and_the_deadline_counts_from_it(
     assert [p.split("\n")[0] for p in fyis(og)] == ["Supervisor: a t-a: no progress 20m (worker)"]
 
 
+def path_only_lead(tmp_path: Path, report: str | None) -> tuple[Path, Lead, list[str]]:
+    """A followed lead whose last message is only its report's path; ``report`` is the file's text,
+    or None for one that cannot be read. The list holds each read of the file."""
+    registry = following(tmp_path)
+    path = str(tmp_path / "a.md")
+    og = Lead(told("brief", 60), ending(path, 5))
+    reads: list[str] = []
+    if report is not None:
+        og.files[path] = report
+    real = og.read_file
+
+    def read_file(sid: str, p: str) -> str:
+        reads.append(p)
+        return real(sid, p)
+
+    og.read_file = read_file  # type: ignore[method-assign]
+    return registry, og, reads
+
+
+def test_a_path_only_lead_whose_report_says_done_raises_no_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og, _ = path_only_lead(tmp_path, "DONE: merged\nmore")
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        4,
+        lambda poll: offset.__setitem__(0, 1300.0 * poll),
+        notify="cos",
+        console=True,
+    )
+    assert "deadline" not in [e["kind"] for e in events_of(registry)]
+    assert state_of(registry)["leads"]["a"]["ending"] == "DONE"
+
+
+def test_a_path_only_lead_whose_report_names_its_wait_shows_it_in_state_and_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og, reads = path_only_lead(tmp_path, "STILL WORKING: waiting on the verifier\n")
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    lead = state_of(registry)["leads"]["a"]
+    assert lead["wait"] == "verifier"
+    assert "waits on verifier" in lead["label"]["line"]
+    assert len(reads) == 1
+
+
+def test_a_new_last_message_is_read_again_and_an_unread_report_stays_unknown_and_is_logged_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry, og, reads = path_only_lead(tmp_path, None)
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    assert state_of(registry)["leads"]["a"]["wait"] == "unknown"
+    assert capsys.readouterr().err.count("not found") == 1
+    assert len(reads) == 1
+    path = str(tmp_path / "a.md")
+    og.files[path] = "STILL WORKING: waiting on CI"
+    og.histories["a"].append(ending(path + " ", 1))  # a new last message, the same path
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    assert state_of(registry)["leads"]["a"]["wait"] == "CI"
+    assert len(reads) == 2
+
+
+def test_a_failed_read_stands_for_routing_too_and_the_quiet_end_acts_without_reading_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og, reads = path_only_lead(tmp_path, None)
+    offset = skewed(monkeypatch)
+
+    def later(poll: int) -> None:
+        og.files[str(tmp_path / "a.md")] = "DONE: merged"  # readable after the first failure
+        offset[0] = 301.0
+
+    supervised(og, registry, monkeypatch, 3, later, console=True)
+    assert len(reads) == 2  # track's failed one, and the post's own report lines; routing's none
+    assert state_of(registry)["leads"]["a"]["wait"] == "unknown"
+    [ended] = [e for e in events_of(registry) if e["kind"] == "ended"]
+    assert ended["action"] == "act" and "not read" in ended["why"]
+
+
+def test_without_console_a_path_only_lead_is_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og, reads = path_only_lead(tmp_path, "DONE: merged")
+    supervised(og, registry, monkeypatch, 2, notify="cos")
+    assert reads == []
+
+
 def test_a_reader_never_sees_a_half_written_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
