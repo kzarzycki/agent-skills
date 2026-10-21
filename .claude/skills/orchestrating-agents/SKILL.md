@@ -19,7 +19,8 @@ separate process outside the backend, since nothing then lists, watches or close
 
 Each file gives the backend's operations: **start** a child with its brief, **message**
 it, **wait** for its report, **watch** children nothing waits on, **list** them and
-**close** them. A `scripts/` path is relative to this skill's folder; run it with
+**close** them; Omnigent's also **approves** a child's pending approval prompt
+(`approve`), on whatever authority the project's instructions give. A `scripts/` path is relative to this skill's folder; run it with
 `python3` (standard library only).
 
 ## Rules

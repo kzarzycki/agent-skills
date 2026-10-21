@@ -31,7 +31,7 @@ A change that spans surfaces gets one short video per surface, posted together.
   shows, so a re-recording after a fix is one command and shows a path the tests check.
 - Keep secrets off screen (tokens, passwords, `env` output, customer data): anyone who
   can read the PR can download the video, and secret scanning does not read video.
-- Produce MP4 with H.264, the one format every browser plays inline.
+- Produce MP4 with H.264, the one format every browser and player opens.
 - Write the video to a temporary folder, never into the repo, since every recording
   would grow every clone.
 
@@ -41,10 +41,16 @@ A change that spans surfaces gets one short video per surface, posted together.
 scripts/post_demo.sh [--pr <number>] "<what it shows>" <video.mp4>...
 ```
 
-`scripts/` is relative to this skill's folder. The script posts one `## Demo` comment
-with the videos attached, naming the head commit, and minimizes your earlier `## Demo`
+`scripts/` is relative to this skill's folder. The script uploads each video as an asset
+of the repo's `demos` prerelease, creating it on first use, and posts one `## Demo`
+comment naming the head commit and linking the videos. It minimizes your earlier `## Demo`
 comments as outdated so only the current one is open. The PR defaults to the current
 branch's. Then name the demo in the PR body's Evidence.
+
+The video is a link to download, not a player inline in the comment: GitHub plays only
+videos dragged into its web editor, and neither `gh` nor the API can make that upload.
+An asset is named `pr<N>-<sha7>-<i>.mp4`, so a recording of a newer commit never
+replaces the video an older comment links.
 
 A project that records often wraps both steps in one task (record to a temporary
 folder, then `post_demo.sh`) and names that task in its agent docs.

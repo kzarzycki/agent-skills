@@ -33,7 +33,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records), and `Opt-out: allowed` for a project where a person may work outside the loop (Approvals and proof). | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), `Worker model: <tier> for <condition>` (Models), `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records), and `Opt-out: allowed` for a project where a person may work outside the loop (Approvals and proof). | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels, Extra categories, Renamed labels and Board (the board's own names for the loop's columns) | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -87,7 +87,9 @@ with the project's. Issue states, categories, sizes and board columns are the me
 in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
 does them on GitHub. A
 `scripts/` path is relative to this skill's folder; run it from the worktree with
-`python3` (standard library only).
+`python3` (standard library only), except `scripts/browse.py`, which needs Playwright and so
+runs with `uv run`: it renders a web UI headless, signed in to an Omnigent server when
+asked, and screenshots it (worker.md, Report; its docstring has the flags).
 
 ### Practice
 
@@ -189,9 +191,11 @@ needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
 is missing. An agent merges only with `python3 scripts/approvals.py land <pr>` (the
-project's `loop:land` task): it runs every merge proof, marks a draft ready and waits for
-the CI that starts, and on a ready PR merges it pinned to its head, or turns on auto-merge
-while only required checks are pending. Never run `gh pr ready` or `gh pr merge` by hand,
+project's `loop:land` task): it runs every merge proof, refuses a head behind or in
+conflict with its base, marks a draft ready and waits for the CI that starts, and on a ready
+PR merges it pinned to its head, or turns on auto-merge while only required checks are
+pending. With `--wait` it is one background command that ends when the PR merges or needs
+someone. Never run `gh pr ready` or `gh pr merge` by hand,
 because `land` is what refuses a PR whose proof is missing. A repo without
 `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A rule GitHub can enforce,
@@ -247,7 +251,10 @@ verifier, review angles run as native subagents, never as full harness sessions.
   in its review's heading, and the merge gate checks only that the newest pass on the head
   is satisfied, whichever family wrote it, since the heading is the verifier's own word
   and proves nothing the gate could hold it to. A brief never says who wrote the code or
-  why the verifier shares its family: that biases the review.
+  why the verifier shares its family: that biases the review. A verifier reviews a pushed
+  PR head only, never an untracked helper script, a scratch wrapper or a mid-edit
+  snapshot, since a review of what will not land proves nothing about what will: a helper
+  worth reviewing is committed on a PR, and the cap counts PR passes only.
 - **Reports are files**, sent as a path to whoever started the agent
   (orchestrating-agents, Reports are files).
 - **Evidence, not claims.** Report each step's real exit code: a chain's status is its
@@ -308,18 +315,30 @@ verifier, review angles run as native subagents, never as full harness sessions.
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
   silently.
 - **Models.** Never pick a model: every agent runs on its harness's configured default,
-  which the owner sets, unless the owner names one for a task. A launch that fails on
+  which the owner sets, unless the owner names one for a task or loop.md's `Worker model:
+  <tier> for <condition>` line names a tier for a worker whose issue matches the condition
+  (read as a `risk:` rule's labels are), so the choice and its reason sit in one file the
+  owner can change. The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
+  Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
+  and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
+  Astra) is no tier and never runs, because it costs several times `top`. Resolve the tier
+  at launch from the newest generation of the family's tier models only: its model of that
+  tier, else its closest higher tier (its highest when none is higher), never an older
+  generation's model, which the family has already superseded. A lead that can't read the
+  family's current lineup (the backend's Model section) leaves the default. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
-  family is out of quota, continue on the other; revive a stuck or interrupted agent
-  rather than restart it.
+  family is out of quota, continue on the other in a fresh session briefed from the run's
+  notes, the spec and the PR, never a fork of the old session, since every turn of a fork
+  re-reads the whole transcript it copied; revive a stuck or interrupted agent rather than
+  restart it.
 - **Turns.** A turn the owner reads (not a child's path-only reply) ends with `DONE`,
   `STILL WORKING` or `USER NEEDED`. A status reply opens with a tl;dr: the loop step with
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open and
-  the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr>`, which
-  marks it ready and merges it, or turns on auto-merge. The PR merges only when the newest
+  the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
+  which marks it ready and merges it, or turns on auto-merge and waits for the merge. The PR merges only when the newest
   verdict covers the head that lands, the required checks are green there, and, where the
   change is high risk (Approvals and proof), the owner's `approved:merge` label is on.
   The verdict's commit is the head itself: any commit after it, a merge of main included,

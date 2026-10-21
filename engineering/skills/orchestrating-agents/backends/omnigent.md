@@ -173,6 +173,20 @@ message instead (exit 0), through Omnigent's resolve route: the turn carries on 
 the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
 message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 
+**Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
+[--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
+[--dry-run]` relays one message to every followed lead in the registry (default
+`$OMNIGENT_SUPERVISE_REGISTRY`), each `--include` session and, with `--active-hours`, every
+top-level session of yours (not one shared with you) updated within N hours, all at once rather than one `relay` after another,
+each waiting on its own delivery. It never sends to its own session, an archived one or one in a
+project whose name contains "automations", nor to one with a question or approval prompt
+pending (`skipped: waiting on a question`), since `relay` would give a question the message as
+its answer; answer that one with its own `relay`. `--project` (matched as `start` matches a
+project: exact, else ignoring case and punctuation, two loose matches an error), `--host` and `--exclude` narrow the set. One
+line per target: `delivered`, `queued …`, `skipped: <why>` or `failed: <why>` (also a session it could
+not read); exit 1 when one failed, `--dry-run` included, which lists the targets and sends
+nothing.
+
 **Approving a prompt.** `python3 scripts/omnigent_agent.py approve <session> [--decline]`
 accepts, or declines, every approval prompt the session has pending, never a question, and
 prints each tool call it answered; exit 1 when none was pending or a resolve failed. It posts

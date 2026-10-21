@@ -44,6 +44,7 @@ class FakeOmnigent:
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
+        self.roles: list[str | None] = []  # per create
         self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
@@ -59,12 +60,14 @@ class FakeOmnigent:
         workspace: str | None = None,
         permission_mode: str | None = None,
         host_id: str | None = None,
+        role: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
         self.top_level.append(top_level)
+        self.roles.append(role)
         self.workspaces.append(workspace)
         self.sessions[sid] = [{"type": "resource_event"}]
         self.titles[sid] = title
@@ -645,6 +648,31 @@ def test_create_files_the_session_under_the_project(
     assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
 
 
+def test_create_labels_the_session_with_its_loop_role_from_the_role_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {"/v1/agents": agents, "/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}}[
+            path
+        ]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    og = omnigent_agent.Omnigent()
+    for role in ("lead", "worker", "verifier"):
+        og.create("codex", "t", role=f"/x/engineering-loop/{role}.md")
+        assert bodies[-1]["labels"] == {"omni.role": role}
+    for role in (None, "/x/reviewer.md"):
+        og.create("codex", "t", role=role)
+        assert "labels" not in bodies[-1]
+
+
 def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_environment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1100,7 +1128,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     titles: list[str] = []
     create = og.create
     og.create = (
-        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None: (
+        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None, role=None: (
             titles.append(title) or create(agent, title)
         )
     )  # type: ignore[method-assign]
@@ -1291,7 +1319,7 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
     assert (tmp_path / "r.md.brief").read_text() == DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
     ) + "do X"
-    assert og.top_level == [False]
+    assert og.top_level == [False] and og.roles == ["roles/worker.md"]
 
 
 def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
@@ -1483,7 +1511,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     models = []
     og = FakeOmnigent(reply="done")
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None: (
+    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None: (
         models.append(m),
         create(a, t, m),
     )[1]  # type: ignore[method-assign]
@@ -2436,6 +2464,21 @@ def test_one_poll_writes_the_state_and_labels_and_an_unchanged_poll_within_a_min
     ]
 
 
+def test_the_console_labels_its_own_session_as_the_chief_of_staff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "cos1")
+    og = Lead(told("brief", 60))
+    og.snap = {"host_id": "h"}
+    supervised(og, following(tmp_path), monkeypatch, 1, console=True)
+    assert og.labels[0] == ("cos1", {"omni.role": "cos"})
+
+    og = Lead(told("brief", 60))
+    og.snap, og.unlabelled = {"host_id": "h"}, 1
+    supervised(og, following(tmp_path), monkeypatch, 2, console=True)  # a failed write: it runs on
+    assert "cos1: role label not written" in capsys.readouterr().err
+
+
 def test_a_status_line_stays_under_200_characters() -> None:
     lead = {"state": "idle", "wait": "verifier", "last_line": "x" * 300}
     line = omnigent_agent.status_line(lead)
@@ -3297,6 +3340,185 @@ def test_relay_to_an_archived_session_is_not_deliverable(
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.GONE
     assert f"session {sid} is archived" in capsys.readouterr().err
     assert og.posts == 0
+
+
+class BroadcastFake(FakeOmnigent):
+    """Sessions with a project, a host and an update time, listed as ``GET /v1/sessions`` lists
+    them: top-level, archived ones left out."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)
+        self.meta: dict[str, dict] = {}
+
+    def add(self, title: str, project: str = "p1", age_hours: float = 0, **meta: object) -> str:
+        sid = self.create("claude", title)
+        self.meta[sid] = {
+            "id": sid,
+            "title": title,
+            "project_id": project,
+            "host_id": "h",
+            "updated_at": time.time() - age_hours * 3600,
+            **meta,
+        }
+        return sid
+
+    project = omnigent_agent.Omnigent.project
+
+    def info(self, sid: str) -> dict:
+        if sid not in self.sessions:
+            raise omnigent_agent.Fail(f"GET /v1/sessions/{sid}: TimeoutError: timed out")
+        return {**self.meta.get(sid, {}), **super().info(sid)}
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        if path.startswith("/v1/projects"):
+            names = {"p1": "Agent skills", "p2": "Omnigent", "p3": "Omnigent · automations"}
+            return {"data": [{"id": k, "name": v} for k, v in names.items()]}
+        assert path.startswith("/v1/sessions?") and "sort_by=updated_at" in path
+        assert "visibility=mine" in path  # never a session another user shared
+        live = [self.info(s) for s in self.meta if s not in self.archived]
+        return {"data": [s for s in live if not s.get("parent_session_id")]}
+
+    def hosts(self) -> dict[str, str]:
+        return {"h": "cc-experiments", "h2": "macbook"}
+
+
+def broadcast(
+    og: FakeOmnigent,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *args: str,
+    text: str = "rule",
+) -> int:
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    (tmp_path / "m.md").write_text(text)
+    return omnigent_agent.main(["broadcast", str(tmp_path / "m.md"), *args])
+
+
+def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_archived_or_automations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead, worker, old_lead = og.add("lead"), og.add("worker"), og.add("old lead", age_hours=30)
+    recent, stale = og.add("recent", "p2", 1), og.add("stale", "p2", 10)
+    me, auto, gone = og.add("me"), og.add("cron", "p3"), og.add("gone lead")
+    remote, extra = og.add("remote", host_id="h2"), og.add("extra", age_hours=30)
+    og.archive(gone)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", me)
+    registry = tmp_path / "leads.registry"
+    registry.write_text(
+        f"{lead}=r.md\tfollow\n{worker}=w.md\n{old_lead}=o.md\tfollow\n{gone}=g.md\tfollow\n"
+    )
+    assert (
+        broadcast(
+            og,
+            tmp_path,
+            monkeypatch,
+            "--registry",
+            str(registry),
+            "--dry-run",
+            "--active-hours",
+            "6",
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert og.posts == 0
+    listed = {line.split()[0]: line for line in out.splitlines()}
+    assert set(listed) == {lead, old_lead, recent, me, auto, gone, remote, worker}
+    assert listed[lead] == f"{lead} lead (Agent skills, cc-experiments)"
+    assert listed[remote] == f"{remote} remote (Agent skills, macbook)"
+    assert listed[me].endswith(": skipped: this session")
+    assert listed[gone].endswith(": skipped: archived")
+    assert listed[auto].endswith(": skipped: automations project 'Omnigent · automations'")
+    assert stale not in out
+
+    args = [
+        "--registry",
+        str(registry),
+        "--active-hours",
+        "6",
+        "--project",
+        "agent_skills",
+        "--host",
+        "cc-experiments",
+        "--exclude",
+        old_lead,
+        "--include",
+        extra,
+        "--include",
+        stale,
+    ]
+    assert broadcast(og, tmp_path, monkeypatch, *args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert sorted(lines) == sorted(
+        [
+            f"{lead} lead (Agent skills, cc-experiments): delivered",
+            f"{worker} worker (Agent skills, cc-experiments): delivered",
+            f"{extra} extra (Agent skills, cc-experiments): delivered",
+            f"{me} me (Agent skills, cc-experiments): skipped: this session",
+            f"{gone} gone lead (Agent skills, cc-experiments): skipped: archived",
+        ]
+    )
+    assert omnigent_agent.text_of(og.sessions[lead][-1]) == "rule"
+    assert og.posts == 3
+
+    assert broadcast(og, tmp_path, monkeypatch, "--include", lead, "--project", "nope") == 1
+    assert "--project nope names no project" in capsys.readouterr().err
+    assert og.posts == 3
+
+
+def test_broadcast_counts_a_target_it_could_not_read_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake()
+    lead = og.add("lead")
+    for args in ([], ["--dry-run"], ["--project", "Agent skills"]):
+        assert (
+            broadcast(og, tmp_path, monkeypatch, "--include", lead, "--include", "s9", *args) == 1
+        )
+        out = capsys.readouterr().out
+        assert "s9  (no project, ): failed: GET /v1/sessions/s9: TimeoutError: timed out\n" in out
+
+
+def test_broadcast_relays_concurrently_one_line_each_and_exits_1_on_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake(deaf={0})
+    lost, *slow = [og.add(f"s{n}") for n in range(5)]
+    send = og.send
+
+    def slow_send(sid: str, text: str) -> None:
+        time.sleep(0.5)
+        send(sid, text)
+
+    og.send = slow_send  # type: ignore[method-assign]
+    started = time.monotonic()
+    ids = [a for s in [lost, *slow] for a in ("--include", s)]
+    assert broadcast(og, tmp_path, monkeypatch, *ids, "--confirm-seconds", "0") == 1
+    assert time.monotonic() - started < 1.5  # five sends of 0.5 s, at once
+    lines = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()}
+    assert lines[lost].endswith("neither pending nor in history for 0s; start a fresh run instead")
+    assert ": failed: session " in lines[lost]
+    assert all(lines[s].endswith(": delivered") for s in slow)
+
+
+def test_broadcast_reports_a_held_message_queued_and_skips_a_pending_prompt_unanswered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = BroadcastFake(hold=10**6)
+    sid = og.add("busy")
+    assert broadcast(og, tmp_path, monkeypatch, "--include", sid) == 0
+    assert capsys.readouterr().out.endswith(
+        ": queued until the session's current step ends; it lands then\n"
+    )
+    for prompts in ([QUESTION], [APPROVAL], [QUESTION, APPROVAL]):
+        asked = BroadcastFake()
+        sid = asked.add("asking")
+        asked.prompts = prompts
+        assert broadcast(asked, tmp_path, monkeypatch, "--include", sid) == 0
+        assert capsys.readouterr().out.endswith(": skipped: waiting on a question\n")
+        assert asked.resolved == [] and asked.posts == 0
 
 
 def test_status_prints_each_session_s_state_queued_inputs_and_last_message(
@@ -4325,3 +4547,19 @@ def test_a_write_failing_after_the_model_answered_keeps_the_spent_call_and_its_a
     assert len(calls) == 1  # the retry acts on the answer it has
     assert [t for s, t in og.inbox] == [omnigent_agent.LEAD_NUDGE]
     assert len(state_of(registry)["rate"]["model_calls"]) == 30
+
+
+def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_owner() -> None:
+    text = "DONE: #271 merged.\nUSER NEEDED: pick option A or B"
+    assert omnigent_agent.ending_of(text) == "USER NEEDED"
+    assert omnigent_agent.ending_of("DONE: merged\nPARKED: later") == "DONE"
+    assert omnigent_agent.ending_of("no ending") is None
+    assert (
+        omnigent_agent.lead_status({"status": "idle"}, [ending(text, 0)])["ending"] == "USER NEEDED"
+    )
+    event = {"kind": "ended", "last": text}
+    assert omnigent_agent.route(event, lambda: ("none", "x")) == (
+        "rule",
+        "owner",
+        "no standing decision to cover it",
+    )
