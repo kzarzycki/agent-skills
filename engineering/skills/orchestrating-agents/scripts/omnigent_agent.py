@@ -805,16 +805,19 @@ def send(
     return "delivered"
 
 
-def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
+def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float, answer: bool = True) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
     the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
     gets ``text`` as each one's answer instead: its pending inputs wait on the answer, and an
     interrupt would drop them and hold input until the question's hook marker goes stale
-    (kzarzycki/omnigent#14). An approval prompt it never answers."""
+    (kzarzycki/omnigent#14); with ``answer`` off it is skipped instead. An approval prompt it
+    never answers."""
     info = og.info(sid)
     pending = info.get("pending_elicitations") or []
     asks = questions_of(info)
     if asks and len(asks) == len(pending):
+        if not answer:
+            return f"session {sid}: skipped: an open question holds it (relay answers it)"
         for e in pending:
             questions = e["params"]["ask_user_question"].get("questions") or []
             answer = text.strip()  # a message file's trailing newline would reach the answer
@@ -905,12 +908,10 @@ def broadcast(
 
     def one(sid: str) -> str:
         try:
-            if questions_of(og.info(sid)):
-                return "skipped: an open question holds it (relay answers it)"
-            return relay(og, sid, text, confirm_seconds).removeprefix(f"session {sid}: ")
+            return relay(og, sid, text, confirm_seconds, False).removeprefix(f"session {sid}: ")
         except Queued as e:
             return str(e).removeprefix(f"session {sid}: ")
-        except Exception as e:  # one target's failure is its line, never the others'
+        except Exception as e:  # noqa: BLE001 - one target's failure is its line, never the others'
             return f"failed: {reason(e)}"
 
     failed = False
