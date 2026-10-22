@@ -311,8 +311,8 @@ def revive_line(report: Path, briefs: list[Path]) -> str:
 
 
 def _logged_in_server() -> str:
-    """The one server Omnigent holds a login for, when config.yaml names none (newer installs
-    keep it only there); empty when there are none or several, since then it is a guess."""
+    """The one server Omnigent holds a login for; empty when there are none or several, since then
+    it is a guess."""
     try:
         servers = list(json.loads(AUTH_TOKENS.read_text()))
     except (OSError, ValueError, TypeError):

@@ -7,6 +7,10 @@ working meanwhile:
 python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> --role <role-file>
 ```
 
+Sessions go to `OMNIGENT_SERVER`, else the server of the session the script runs in
+(`RUNNER_SERVER_URL`), so a child sits beside its parent, else the one login; outside a session on a
+machine logged in to several servers, set `OMNIGENT_SERVER`, since config.yaml's `server:` is only a default.
+
 Run it from the worktree the child works in, because the script makes its current
 directory the session's workspace; `--workspace <dir>` names another, such as the parent of
 several repos for a lead whose change spans them. The report path goes in a gitignored directory of that
