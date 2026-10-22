@@ -3463,7 +3463,9 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = BroadcastFake()
-    lead, worker, old_lead = og.add("lead"), og.add("worker"), og.add("old lead", age_hours=30)
+    lead, old_lead = og.add("lead"), og.add("old lead", age_hours=30)
+    worker = og.add("worker", age_hours=30)  # owes a report: never followed, too old to be recent
+    child = og.add("child", parent_session_id=lead)
     recent, stale = og.add("recent", "p2", 1), og.add("stale", "p2", 10)
     me, auto, gone = og.add("me"), og.add("cron", "p3"), og.add("gone lead")
     remote, extra = og.add("remote", host_id="h2"), og.add("extra", age_hours=30)
@@ -3489,7 +3491,7 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
     out = capsys.readouterr().out
     assert og.posts == 0
     listed = {line.split()[0]: line for line in out.splitlines()}
-    assert set(listed) == {lead, old_lead, recent, me, auto, gone, remote, worker}
+    assert set(listed) == {lead, old_lead, recent, me, auto, gone, remote}
     assert listed[lead] == f"{lead} lead (Agent skills, cc-experiments)"
     assert listed[remote] == f"{remote} remote (Agent skills, macbook)"
     assert listed[me].endswith(": skipped: this session")
@@ -3512,24 +3514,26 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
         extra,
         "--include",
         stale,
+        "--include",
+        child,
     ]
     assert broadcast(og, tmp_path, monkeypatch, *args) == 0
     lines = capsys.readouterr().out.splitlines()
     assert sorted(lines) == sorted(
         [
             f"{lead} lead (Agent skills, cc-experiments): delivered",
-            f"{worker} worker (Agent skills, cc-experiments): delivered",
             f"{extra} extra (Agent skills, cc-experiments): delivered",
             f"{me} me (Agent skills, cc-experiments): skipped: this session",
             f"{gone} gone lead (Agent skills, cc-experiments): skipped: archived",
+            f"{child} child (Agent skills, cc-experiments): skipped: a sub-agent",
         ]
     )
     assert omnigent_agent.text_of(og.sessions[lead][-1]) == "rule"
-    assert og.posts == 3
+    assert og.posts == 2
 
     assert broadcast(og, tmp_path, monkeypatch, "--include", lead, "--project", "nope") == 1
     assert "--project nope names no project" in capsys.readouterr().err
-    assert og.posts == 3
+    assert og.posts == 2
 
 
 def test_broadcast_counts_a_target_it_could_not_read_as_failed(
