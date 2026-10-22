@@ -51,8 +51,9 @@ from kzarzycki/project-templates; the skill's § Adopting the loop lists them.
 
 Each developer picks how agents run (the `orchestrating-agents` skill) with one line in their personal
 instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
-means native subagents. The verifier comes from the other model family when its
-CLI is installed; otherwise the PR body says `verifier: same family`.
+means native subagents. The verifier comes from the other model family when the
+backend can start it (Omnigent can; native starts only its own harness's subagents);
+otherwise the PR body says `verifier: same family`.
 
 ## Start a chief of staff
 
