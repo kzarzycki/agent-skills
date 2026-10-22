@@ -448,8 +448,14 @@ supervisor its own label or unit name. On macOS, until logout:
 
 ```bash
 launchctl submit -l <label> -o <log>.out -e <log>.err -- /bin/sh -c \
-  "PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py supervise --registry <file> --notify <session>"
+  "PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py --server $RUNNER_SERVER_URL supervise --registry <file> --notify <session>"
 ```
+
+A job also starts without the session's `RUNNER_SERVER_URL`, so the command names the server
+(the shell expands it at submit time). `omnigent_agent.py` acts on the first of `--server`,
+`$RUNNER_SERVER_URL` (set by the runner in every session), `config.yaml`'s `server:`, and the
+one login in `auth_tokens.json`. A host with runners for several servers needs `--server`
+anywhere outside a session, or the supervisor reads `config.yaml`'s server.
 
 launchd restarts it if it exits; `launchctl print gui/$(id -u)/<label>` shows it and
 `launchctl remove <label>` stops it. For one that survives a reboot, write a LaunchAgent

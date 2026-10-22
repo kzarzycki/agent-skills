@@ -65,7 +65,7 @@ its landing order.
   which reports you can read, so the report stays under your `tmp/loop/`, inside both.
   Asks in different repos that only need a landing order get a lead each, the later
   brief naming the PR it waits on, since the order is all they share.
-- **Follow.** Run one detached supervisor, `python3 <script> supervise --registry <file>
+- **Follow.** Run one detached supervisor, `python3 <script> --server $RUNNER_SERVER_URL supervise --registry <file>
   --console --decisions <board> --notify <your session id>`
   (`../orchestrating-agents/backends/omnigent.md`, Running the supervisor detached; `<board>` is
   your handover file, whose `## Standing decisions` section the supervisor's routing reads), and
