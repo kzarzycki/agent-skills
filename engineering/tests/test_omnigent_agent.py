@@ -2440,6 +2440,28 @@ def test_a_prompt_still_pending_after_the_confirm_wait_is_posted_to_the_owner_on
     assert "[owner] a t-a: blocked on a prompt: Bash(ls) (an approval prompt" in post
 
 
+def test_a_new_prompt_id_restarts_the_confirm_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a lead blocked on e1, then on e2 after e1 was answered: e2 is timed from when it is first seen
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+    og.snap = blocked_on("e1")
+    wait = omnigent_agent.PROMPT_CONFIRM_SECONDS
+    at = {1: 90.0, 2: 90 + wait - 1, 3: 90 + wait, 4: 90 + wait + 600}
+    before: list[int] = []
+
+    def later(poll: int) -> None:
+        before.append(len(posted(og)))
+        offset[0] = at[poll]
+        og.snap = blocked_on("e2")
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    assert before == [0, 0, 0, 1]  # e2's wait, not e1's, which would have passed by poll 3
+    assert len(posted(og)) == 1
+
+
 def test_without_console_the_supervisor_writes_no_state_labels_or_deadline_and_reposts_on_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
