@@ -446,21 +446,23 @@ and with it every wake it owed. The one-shot form serves a single check in the f
 
 **Running the supervisor detached.** The service manager keeps the supervisor running past
 the session it wakes. A job starts with a bare `PATH` (launchd's is `/usr/bin:/bin:/usr/sbin:/sbin`),
-so it sets one that finds `omnigent`, whose interpreter refreshes the token. Give each
-supervisor its own label or unit name. On macOS, until logout:
+so it sets one that finds `omnigent`, whose interpreter refreshes the token. It has no
+calling session either, so it sets `OMNIGENT_SERVER` to the server of the session it wakes
+(`$RUNNER_SERVER_URL` there); without it, a machine logged in to several servers refuses.
+Give each supervisor its own label or unit name. On macOS, until logout:
 
 ```bash
 launchctl submit -l <label> -o <log>.out -e <log>.err -- /bin/sh -c \
-  "PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py supervise --registry <file> --notify <session>"
+  "OMNIGENT_SERVER=$RUNNER_SERVER_URL PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py supervise --registry <file> --notify <session>"
 ```
 
 launchd restarts it if it exits; `launchctl print gui/$(id -u)/<label>` shows it and
 `launchctl remove <label>` stops it. For one that survives a reboot, write a LaunchAgent
 `~/Library/LaunchAgents/<label>.plist` with that command as `ProgramArguments`, `KeepAlive`
-and `RunAtLoad` true, `StandardOutPath` and `StandardErrorPath`, and `PATH` under
+and `RunAtLoad` true, `StandardOutPath` and `StandardErrorPath`, and `PATH` and `OMNIGENT_SERVER` under
 `EnvironmentVariables`, and load it with `launchctl bootstrap gui/$(id -u) <plist>`
 (`launchctl bootout gui/$(id -u)/<label>` stops it). On Linux, a systemd user unit
-`~/.config/systemd/user/<name>.service` with `ExecStart=` the command, `Environment=PATH=…`,
+`~/.config/systemd/user/<name>.service` with `ExecStart=` the command, `Environment=PATH=…` and `Environment=OMNIGENT_SERVER=…`,
 `Restart=always` and `WantedBy=default.target`, started with
 `systemctl --user enable --now <name>`; `loginctl enable-linger $USER` keeps it running while
 the user is logged out, and `journalctl --user -u <name>` shows its log.

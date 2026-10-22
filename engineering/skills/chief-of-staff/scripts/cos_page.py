@@ -27,6 +27,7 @@ import argparse
 import html
 import importlib.util
 import json
+import os
 import re
 import sys
 import threading
@@ -544,11 +545,15 @@ def main() -> None:
     p.add_argument("--registry", type=Path, required=True)
     p.add_argument("--board", type=Path)
     p.add_argument(
-        "--omnigent", required=True, help="Omnigent base URL; sessions link to <url>/c/<id>"
+        "--omnigent",
+        required=True,
+        help="Omnigent base URL: the server it reads (unless OMNIGENT_SERVER is set), and sessions link to <url>/c/<id>",
     )
     p.add_argument("--host", default="127.0.0.1", help="127.0.0.1 or the tailnet address")
     p.add_argument("--port", type=int, default=6768)
     a = p.parse_args()
+    # A unit has no calling session to take the server from, and the page links to this one.
+    os.environ.setdefault("OMNIGENT_SERVER", a.omnigent)
     snap: dict = {}
     threading.Thread(target=poll, args=(snap, a.registry, a.board), daemon=True).start()
 
