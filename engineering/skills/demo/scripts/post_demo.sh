@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Post demo videos to a PR as one `## Demo` comment and minimize the earlier ones as outdated.
 # gh cannot attach a file to a comment and GitHub has no API for the inline upload, so each
-# video becomes an asset of the repo's `demos` prerelease and the comment links it.
+# video becomes an asset of a prerelease (the shared `demos` one, or one per post where releases
+# are immutable) and the comment links it.
 # Usage: post_demo.sh [--pr <number>] "<what it shows>" <video>...
 set -euo pipefail
 
@@ -52,19 +53,34 @@ old="$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate \
 
 # Each asset is named after the PR and commit, so a later recording never replaces the video
 # an earlier comment links; a re-recording of the same commit replaces that commit's video.
-gh release view demos >/dev/null 2>&1 ||
-  gh release create demos --prerelease --title Demos \
-    --notes "Demo videos linked from pull request comments." >/dev/null
-download="$(gh repo view --json url --jq .url)/releases/download/demos"
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
-links=""
+names=()
 i=0
 for video in "$@"; do
   i=$((i + 1))
-  name="pr$pr-${head:0:7}-$i.mp4"
-  cp "$video" "$staging/$name"
-  gh release upload demos "$staging/$name" --clobber
+  names+=("pr$pr-${head:0:7}-$i.mp4")
+  cp "$video" "$staging/${names[-1]}"
+done
+files=("${names[@]/#/$staging/}")
+
+# An immutable release refuses uploads once published, so such a repo gets one prerelease per
+# post, its videos attached by the same `release create`. A 404 or any failure reads as off.
+immutable="$(gh api "repos/{owner}/{repo}/immutable-releases" --jq .enabled 2>/dev/null || echo false)"
+if [ "$immutable" = true ]; then
+  tag="demo-pr$pr-${head:0:7}-$(date +%Y%m%d%H%M%S)"
+  gh release create "$tag" "${files[@]}" --prerelease --title "Demo: PR #$pr, ${head:0:7}" \
+    --notes "Demo videos linked from pull request #$pr." >/dev/null
+else
+  tag=demos
+  gh release view demos >/dev/null 2>&1 ||
+    gh release create demos --prerelease --title Demos \
+      --notes "Demo videos linked from pull request comments." >/dev/null
+  for file in "${files[@]}"; do gh release upload demos "$file" --clobber; done
+fi
+download="$(gh repo view --json url --jq .url)/releases/download/$tag"
+links=""
+for name in "${names[@]}"; do
   links+="
 - [$name]($download/$name)"
 done

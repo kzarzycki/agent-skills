@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -15,6 +16,8 @@ FAKE_GH = """#!/usr/bin/env bash
 args="$*"; echo "${args//$'\\n'/ }" >> "$LOG"
 case "$*" in
   "pr comment "*--attach*) echo "unknown flag: --attach" >&2; exit 1 ;;
+  "api repos/{owner}/{repo}/immutable-releases --jq .enabled") echo "$IMMUTABLE"; exit "$IMMUTABLE_RC" ;;
+  "release create demo-pr"*) ;;
   "release view demos") exit "$NO_RELEASE" ;;
   "release upload demos "*) [ -s "$4" ] || exit 1 ;;
   "repo view --json url --jq .url") echo https://github.com/o/r ;;
@@ -38,6 +41,8 @@ def run(
     pr_head: str = HEAD,
     dirty: bool = False,
     no_release: bool = False,
+    immutable: str = "false",
+    immutable_rc: int = 0,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -53,6 +58,8 @@ def run(
         "PR_HEAD": pr_head,
         "DIRTY": str(int(dirty)),
         "NO_RELEASE": str(int(no_release)),
+        "IMMUTABLE": immutable,
+        "IMMUTABLE_RC": str(immutable_rc),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), *args],
@@ -111,6 +118,39 @@ def test_creates_the_demos_prerelease_when_missing(tmp_path: Path, video: str) -
     assert calls.index(create) < calls.index(
         next(call for call in calls if call.startswith("release upload"))
     )
+
+
+def test_immutable_repo_gets_one_prerelease_per_post_with_its_videos(
+    tmp_path: Path, video: str
+) -> None:
+    second = tmp_path / "web.mp4"
+    second.write_bytes(b"\x00video")
+
+    result, calls = run(tmp_path, "cli and web", video, str(second), immutable="true")
+
+    assert result.returncode == 0, result.stderr
+    create = next(call for call in calls if call.startswith("release create demo-pr7-aaaaaaa-"))
+    tag = create.split()[2]
+    assert re.fullmatch(r"demo-pr7-aaaaaaa-\d{14}", tag)
+    assert "--prerelease" in create
+    assert "/pr7-aaaaaaa-1.mp4" in create and "/pr7-aaaaaaa-2.mp4" in create
+    assert not any(call.startswith(("release upload", "release view")) for call in calls)
+    comment = next(call for call in calls if call.startswith("pr comment 7"))
+    base = f"https://github.com/o/r/releases/download/{tag}"
+    assert f"({base}/pr7-aaaaaaa-1.mp4)" in comment and f"({base}/pr7-aaaaaaa-2.mp4)" in comment
+    assert calls.index(create) < calls.index(comment)
+
+
+@pytest.mark.parametrize(("immutable", "rc"), [("false", 0), ("", 1)])
+def test_repo_without_immutable_releases_keeps_the_shared_release(
+    tmp_path: Path, video: str, immutable: str, rc: int
+) -> None:
+    result, calls = run(tmp_path, "the dry run", video, immutable=immutable, immutable_rc=rc)
+
+    assert result.returncode == 0, result.stderr
+    assert any(call.startswith("release upload demos") for call in calls)
+    assert not any(call.startswith("release create demo-pr") for call in calls)
+    assert "/releases/download/demos/" in next(c for c in calls if c.startswith("pr comment"))
 
 
 def test_refuses_a_checkout_that_is_not_the_pr_head(tmp_path: Path, video: str) -> None:
