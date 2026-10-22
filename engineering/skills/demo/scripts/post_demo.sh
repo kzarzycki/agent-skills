@@ -71,7 +71,7 @@ files=("${names[@]/#/$staging/}")
 immutable="$(gh api "repos/{owner}/{repo}/immutable-releases" --jq .enabled 2>/dev/null || echo false)"
 if [ "$immutable" = true ]; then
   tag="demo-pr$pr-${head:0:7}-$(date +%Y%m%d%H%M%S)"
-  gh release create "$tag" "${files[@]}" --prerelease --title "Demo: PR #$pr, ${head:0:7}" \
+  gh release create "$tag" "${files[@]}" --target "$head" --prerelease --title "Demo: PR #$pr, ${head:0:7}" \
     --notes "Demo videos linked from pull request #$pr." >/dev/null
 else
   tag=demos

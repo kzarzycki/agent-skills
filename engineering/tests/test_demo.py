@@ -132,7 +132,7 @@ def test_immutable_repo_gets_one_prerelease_per_post_with_its_videos(
     create = next(call for call in calls if call.startswith("release create demo-pr7-aaaaaaa-"))
     tag = create.split()[2]
     assert re.fullmatch(r"demo-pr7-aaaaaaa-\d{14}", tag)
-    assert "--prerelease" in create
+    assert "--prerelease" in create and f"--target {HEAD}" in create
     assert "/pr7-aaaaaaa-1.mp4" in create and "/pr7-aaaaaaa-2.mp4" in create
     assert not any(call.startswith(("release upload", "release view")) for call in calls)
     comment = next(call for call in calls if call.startswith("pr comment 7"))
