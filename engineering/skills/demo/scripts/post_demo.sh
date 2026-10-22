@@ -67,8 +67,14 @@ done
 files=("${names[@]/#/$staging/}")
 
 # An immutable release refuses uploads once published, so such a repo gets one prerelease per
-# post, its videos attached by the same `release create`. A 404 or any failure reads as off.
-immutable="$(gh api "repos/{owner}/{repo}/immutable-releases" --jq .enabled 2>/dev/null || echo false)"
+# post, its videos attached by the same `release create`. Only `false` or a 404 reads as off;
+# any other failure stops here, before anything is posted.
+if ! immutable="$(gh api "repos/{owner}/{repo}/immutable-releases" --jq .enabled 2>&1)"; then
+  case "$immutable" in
+    *"HTTP 404"*) immutable=false ;;
+    *) echo "post_demo: could not read the repo's immutable-releases setting: $immutable" >&2; exit 1 ;;
+  esac
+fi
 if [ "$immutable" = true ]; then
   tag="demo-pr$pr-${head:0:7}-$(date +%Y%m%d%H%M%S)"
   gh release create "$tag" "${files[@]}" --target "$head" --prerelease --title "Demo: PR #$pr, ${head:0:7}" \

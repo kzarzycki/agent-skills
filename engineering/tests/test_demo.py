@@ -16,7 +16,7 @@ FAKE_GH = """#!/usr/bin/env bash
 args="$*"; echo "${args//$'\\n'/ }" >> "$LOG"
 case "$*" in
   "pr comment "*--attach*) echo "unknown flag: --attach" >&2; exit 1 ;;
-  "api repos/{owner}/{repo}/immutable-releases --jq .enabled") echo "$IMMUTABLE"; exit "$IMMUTABLE_RC" ;;
+  "api repos/{owner}/{repo}/immutable-releases --jq .enabled") echo "$IMMUTABLE"; echo "$IMMUTABLE_ERR" >&2; exit "$IMMUTABLE_RC" ;;
   "release create demo-pr"*) ;;
   "release view demos") exit "$NO_RELEASE" ;;
   "release upload demos "*) [ -s "$4" ] || exit 1 ;;
@@ -43,6 +43,7 @@ def run(
     no_release: bool = False,
     immutable: str = "false",
     immutable_rc: int = 0,
+    immutable_err: str = "",
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -60,6 +61,7 @@ def run(
         "NO_RELEASE": str(int(no_release)),
         "IMMUTABLE": immutable,
         "IMMUTABLE_RC": str(immutable_rc),
+        "IMMUTABLE_ERR": immutable_err,
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), *args],
@@ -141,16 +143,33 @@ def test_immutable_repo_gets_one_prerelease_per_post_with_its_videos(
     assert calls.index(create) < calls.index(comment)
 
 
-@pytest.mark.parametrize(("immutable", "rc"), [("false", 0), ("", 1)])
+@pytest.mark.parametrize(
+    ("immutable", "rc", "err"),
+    [("false", 0, ""), ("", 1, "gh: Not Found (HTTP 404)")],
+)
 def test_repo_without_immutable_releases_keeps_the_shared_release(
-    tmp_path: Path, video: str, immutable: str, rc: int
+    tmp_path: Path, video: str, immutable: str, rc: int, err: str
 ) -> None:
-    result, calls = run(tmp_path, "the dry run", video, immutable=immutable, immutable_rc=rc)
+    result, calls = run(
+        tmp_path, "the dry run", video, immutable=immutable, immutable_rc=rc, immutable_err=err
+    )
 
     assert result.returncode == 0, result.stderr
     assert any(call.startswith("release upload demos") for call in calls)
     assert not any(call.startswith("release create demo-pr") for call in calls)
     assert "/releases/download/demos/" in next(c for c in calls if c.startswith("pr comment"))
+
+
+def test_an_unreadable_immutable_setting_stops_before_anything_is_posted(
+    tmp_path: Path, video: str
+) -> None:
+    result, calls = run(
+        tmp_path, "the dry run", video, immutable_rc=1, immutable_err="gh: Bad Gateway (HTTP 502)"
+    )
+
+    assert result.returncode == 1
+    assert "HTTP 502" in result.stderr
+    assert not any(call.startswith(("pr comment", "release")) for call in calls)
 
 
 def test_refuses_a_checkout_that_is_not_the_pr_head(tmp_path: Path, video: str) -> None:
