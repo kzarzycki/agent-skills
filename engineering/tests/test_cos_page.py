@@ -274,6 +274,7 @@ def test_the_page_warns_past_one_page_of_sessions_and_hides_a_post_time_already_
     memo: dict = {}
     cos_page.collect(og, {}, memo, lambda *a: ("none", "x"), now=0)
     assert memo["warnings"] == ["More than 1000 sub_agent sessions: the older ones are not read"]
+    assert memo["projects"] == ["Voice note", "Omnigent"]  # the poll hands them to render
     state = {"rate": {"next_post_at": 1000}}
     (tmp_path / "leads.state.json").write_text(json.dumps(state))
     snap = {"rows": [], "at": 0, "warnings": memo["warnings"]}
@@ -309,7 +310,7 @@ def test_the_poll_hands_the_boards_standing_decisions_to_the_model(
 
     def collect(og: object, leads: dict, memo: dict, **kw: object) -> list:
         seen.append(kw.get("decisions"))
-        memo["warnings"] = []
+        memo.update(warnings=[], projects=["trinity"])
         return []
 
     def stop(_: float) -> None:
@@ -322,6 +323,7 @@ def test_the_poll_hands_the_boards_standing_decisions_to_the_model(
     with pytest.raises(SystemExit):
         cos_page.poll(snap, tmp_path / "leads.registry", board)
     assert seen == ["- merge on green"] and snap["error"] is None
+    assert snap["projects"] == ["trinity"]
 
 
 def test_a_board_bullet_opening_with_a_level_marker_takes_that_level(tmp_path: Path) -> None:
@@ -353,6 +355,7 @@ def test_a_board_bullet_joins_its_sessions_project_else_the_area_it_names(tmp_pa
     now = page.split("Needs you now")[1].split("By project")[0]
     heads = re.findall(r"<h3>([^<]*)</h3>", now)
     assert heads == ["No project", "Omnigent", "Ops", "Other", "Voice note"]  # by-project order
+    assert "<ul class=now><h3>" not in page  # headings sit beside the lists, not inside one
     voice = now.split("<h3>Voice note</h3>")[1].split("<h3>")[0]
     assert f"/c/{B}" in voice and voice.index(f"/c/{B}") < voice.index("fix the transcript.")
     assert "**" not in page and "voice_note" not in page  # the area leaves the text

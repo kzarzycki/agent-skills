@@ -536,7 +536,7 @@ def render(
 <p id=digest class=mute></p>
 {"".join(f"<p class=warn>⚠ {e(x)}</p>" for x in errors)}
 <h2>🔴 Needs you now</h2>
-{f"<ul class=now>{now_html}</ul>" if now_html else "<p class=mute>Nothing waits on you.</p>"}
+{f"<div>{now_html}</div>" if now_html else "<p class=mute>Nothing waits on you.</p>"}
 <h2>By project</h2>{legend}
 {"".join(groups_html) or "<p class=mute>No sessions read yet.</p>"}
 <details id=events><summary><h2 style=display:inline>Supervisor events</h2></summary>
