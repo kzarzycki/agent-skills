@@ -1144,6 +1144,7 @@ def test_the_server_comes_from_the_one_login_when_config_names_none(
     config.write_text("host:\n  host_id: host_1\nlocal_server_port: 6767\n")
     monkeypatch.setattr(omnigent_agent, "CONFIG", config)
     monkeypatch.setattr(omnigent_agent, "AUTH_TOKENS", tokens)
+    monkeypatch.delenv("RUNNER_SERVER_URL", raising=False)
     tokens.write_text('{"https://omnigent.example/": {}}')
     assert omnigent_agent.Omnigent().base == "https://omnigent.example"
     tokens.write_text('{"https://a.example": {}, "https://b.example": {}}')  # a guess: refuse
@@ -1151,6 +1152,17 @@ def test_the_server_comes_from_the_one_login_when_config_names_none(
         omnigent_agent.Omnigent()
     config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
     assert omnigent_agent.Omnigent().base == "https://named.example"
+
+
+def test_a_session_acts_on_its_own_server_over_the_config_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("server: https://personal.example\nhost:\n  host_id: host_1\n")
+    monkeypatch.setattr(omnigent_agent, "CONFIG", config)
+    monkeypatch.setenv("RUNNER_SERVER_URL", "https://work.example/")
+    assert omnigent_agent.Omnigent().base == "https://work.example"
+    assert omnigent_agent.Omnigent("https://personal.example").base == "https://personal.example"
 
 
 def test_a_get_that_times_out_once_is_retried_and_wait_returns_the_report(

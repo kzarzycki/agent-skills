@@ -329,16 +329,23 @@ def _omnigent_python() -> str:
 
 
 class Omnigent:
-    def __init__(self) -> None:
+    def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
         server, host = (
             re.search(r"^server:\s*(\S+)", text, re.MULTILINE),
             re.search(r"^\s+host_id:\s*(\S+)", text, re.MULTILINE),
         )
-        base = server.group(1) if server else _logged_in_server()
+        # A host can run a runner for several servers; a session's own server (the runner sets
+        # RUNNER_SERVER_URL) wins over config.yaml's one default, so its children land beside it.
+        base = (
+            named
+            or os.environ.get("RUNNER_SERVER_URL", "")
+            or (server.group(1) if server else _logged_in_server())
+        )
         if not base or not host:
             raise Fail(
-                f"{CONFIG} lacks host.host_id, or no server: neither `server:` there nor one login in {AUTH_TOKENS}"
+                f"{CONFIG} lacks host.host_id, or no server: no --server, no $RUNNER_SERVER_URL,"
+                f" neither `server:` there nor one login in {AUTH_TOKENS}"
             )
         self.base, self.host_id = base.rstrip("/"), host.group(1)
         self._token = ""
@@ -2624,6 +2631,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    ap.add_argument(
+        "--server",
+        default="",
+        help="Omnigent server URL to act on; default: this session's ($RUNNER_SERVER_URL), else config.yaml's",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("run", "start"):
         p = sub.add_parser(
@@ -2806,7 +2818,7 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2  # argparse's usage exit
                 raise usage
             args.path = str(line[0])
-        og = Omnigent()
+        og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "report":
             print(og.read_file(sid, args.path))
             return 0
