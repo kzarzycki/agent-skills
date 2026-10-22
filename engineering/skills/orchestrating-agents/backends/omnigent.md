@@ -453,9 +453,10 @@ launchctl submit -l <label> -o <log>.out -e <log>.err -- /bin/sh -c \
 
 A job also starts without the session's `RUNNER_SERVER_URL`, so the command names the server
 (the shell expands it at submit time). `omnigent_agent.py` acts on the first of `--server`,
-`$RUNNER_SERVER_URL` (set by the runner in every session), `config.yaml`'s `server:`, and the
-one login in `auth_tokens.json`. A host with runners for several servers needs `--server`
-anywhere outside a session, or the supervisor reads `config.yaml`'s server.
+`$RUNNER_SERVER_URL` (set by the runner in every session), and the one login in
+`auth_tokens.json`. `config.yaml`'s `server:` is not read, because one account runs workloads on
+several servers and a single default sends some of them to the wrong one. Outside a session with
+several logins and no `--server`, the script refuses rather than guess.
 
 launchd restarts it if it exits; `launchctl print gui/$(id -u)/<label>` shows it and
 `launchctl remove <label>` stops it. For one that survives a reboot, write a LaunchAgent

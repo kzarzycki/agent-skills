@@ -105,7 +105,8 @@ starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1
 child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
-brief with an empty backtick span (a name an unquoted heredoc ran). Server and host come from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
+brief with an empty backtick span (a name an unquoted heredoc ran). The server is ``--server``, else the session's ``$RUNNER_SERVER_URL``, else the one login; the host comes
+from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
 own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists it. Stdlib only.
 """
 
@@ -309,8 +310,8 @@ def revive_line(report: Path, briefs: list[Path]) -> str:
 
 
 def _logged_in_server() -> str:
-    """The one server Omnigent holds a login for, when config.yaml names none (newer installs
-    keep it only there); empty when there are none or several, since then it is a guess."""
+    """The one server Omnigent holds a login for; empty when there are none or several, since then
+    it is a guess."""
     try:
         servers = list(json.loads(AUTH_TOKENS.read_text()))
     except (OSError, ValueError, TypeError):
@@ -331,21 +332,17 @@ def _omnigent_python() -> str:
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
-        server, host = (
-            re.search(r"^server:\s*(\S+)", text, re.MULTILINE),
-            re.search(r"^\s+host_id:\s*(\S+)", text, re.MULTILINE),
-        )
-        # A host can run a runner for several servers; a session's own server (the runner sets
-        # RUNNER_SERVER_URL) wins over config.yaml's one default, so its children land beside it.
-        base = (
-            named
-            or os.environ.get("RUNNER_SERVER_URL", "")
-            or (server.group(1) if server else _logged_in_server())
-        )
-        if not base or not host:
+        host = re.search(r"^\s+host_id:\s*(\S+)", text, re.MULTILINE)
+        # One account runs workloads on several servers, so config.yaml's single `server:` is a
+        # guess and is not read: a session acts on its own server (the runner sets
+        # RUNNER_SERVER_URL), anything else names one, and only a lone login stands in for it.
+        base = named or os.environ.get("RUNNER_SERVER_URL", "") or _logged_in_server()
+        if not host:
+            raise Fail(f"{CONFIG} lacks host.host_id")
+        if not base:
             raise Fail(
-                f"{CONFIG} lacks host.host_id, or no server: no --server, no $RUNNER_SERVER_URL,"
-                f" neither `server:` there nor one login in {AUTH_TOKENS}"
+                f"which Omnigent server? Not inside a session, no --server, and {AUTH_TOKENS}"
+                " holds not exactly one login: pass --server <url>"
             )
         self.base, self.host_id = base.rstrip("/"), host.group(1)
         self._token = ""
@@ -2634,7 +2631,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--server",
         default="",
-        help="Omnigent server URL to act on; default: this session's ($RUNNER_SERVER_URL), else config.yaml's",
+        help="Omnigent server URL to act on; default: this session's ($RUNNER_SERVER_URL), else the one login",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("run", "start"):
