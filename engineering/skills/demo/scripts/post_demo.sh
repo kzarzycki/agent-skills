@@ -52,7 +52,8 @@ old="$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate \
   --jq ".[] | select(.user.login == \"$me\" and (.body | startswith(\"## Demo\"))) | .node_id")"
 
 # Each asset is named after the PR and commit, so a later recording never replaces the video
-# an earlier comment links; a re-recording of the same commit replaces that commit's video.
+# an earlier comment links; on the shared `demos` release a re-recording of the same commit
+# replaces that commit's video.
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
 names=()
