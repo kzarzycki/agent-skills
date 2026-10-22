@@ -241,8 +241,9 @@ verifier, review angles run as native subagents, never as full harness sessions.
   (`handoff` skill) when finished or stuck. Never idle: schedule a time-gated check and
   keep working.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
-  is of the other model family when that family is installed and within quota, since it
-  misses different things; otherwise, as for a user with one family installed, a fresh
+  is of the other model family when that family is installed, within quota and the
+  backend can start it (native starts only its own harness's subagents; Omnigent starts
+  either), since it misses different things; otherwise, as for a user with one family installed, a fresh
   session of the same family is the normal path. The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
