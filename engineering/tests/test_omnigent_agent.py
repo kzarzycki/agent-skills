@@ -2449,6 +2449,28 @@ def test_a_prompt_still_pending_after_the_confirm_wait_is_posted_to_the_owner_on
     assert "[owner] a t-a: blocked on a prompt: Bash(ls) (an approval prompt" in post
 
 
+def test_a_new_prompt_id_restarts_the_confirm_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a lead blocked on e1, then on e2 after e1 was answered: e2 is timed from when it is first seen
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+    og.snap = blocked_on("e1")
+    wait = omnigent_agent.PROMPT_CONFIRM_SECONDS
+    at = {1: 90.0, 2: 90 + wait - 1, 3: 90 + wait, 4: 90 + wait + 600}
+    before: list[int] = []
+
+    def later(poll: int) -> None:
+        before.append(len(posted(og)))
+        offset[0] = at[poll]
+        og.snap = blocked_on("e2")
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    assert before == [0, 0, 0, 1]  # e2's wait, not e1's, which would have passed by poll 3
+    assert len(posted(og)) == 1
+
+
 def test_without_console_the_supervisor_writes_no_state_labels_or_deadline_and_reposts_on_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3472,7 +3494,9 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = BroadcastFake()
-    lead, worker, old_lead = og.add("lead"), og.add("worker"), og.add("old lead", age_hours=30)
+    lead, old_lead = og.add("lead"), og.add("old lead", age_hours=30)
+    worker = og.add("worker", age_hours=30)  # owes a report: never followed, too old to be recent
+    child = og.add("child", parent_session_id=lead)
     recent, stale = og.add("recent", "p2", 1), og.add("stale", "p2", 10)
     me, auto, gone = og.add("me"), og.add("cron", "p3"), og.add("gone lead")
     remote, extra = og.add("remote", host_id="h2"), og.add("extra", age_hours=30)
@@ -3498,7 +3522,7 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
     out = capsys.readouterr().out
     assert og.posts == 0
     listed = {line.split()[0]: line for line in out.splitlines()}
-    assert set(listed) == {lead, old_lead, recent, me, auto, gone, remote, worker}
+    assert set(listed) == {lead, old_lead, recent, me, auto, gone, remote}
     assert listed[lead] == f"{lead} lead (Agent skills, cc-experiments)"
     assert listed[remote] == f"{remote} remote (Agent skills, macbook)"
     assert listed[me].endswith(": skipped: this session")
@@ -3521,24 +3545,26 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
         extra,
         "--include",
         stale,
+        "--include",
+        child,
     ]
     assert broadcast(og, tmp_path, monkeypatch, *args) == 0
     lines = capsys.readouterr().out.splitlines()
     assert sorted(lines) == sorted(
         [
             f"{lead} lead (Agent skills, cc-experiments): delivered",
-            f"{worker} worker (Agent skills, cc-experiments): delivered",
             f"{extra} extra (Agent skills, cc-experiments): delivered",
             f"{me} me (Agent skills, cc-experiments): skipped: this session",
             f"{gone} gone lead (Agent skills, cc-experiments): skipped: archived",
+            f"{child} child (Agent skills, cc-experiments): skipped: a sub-agent",
         ]
     )
     assert omnigent_agent.text_of(og.sessions[lead][-1]) == "rule"
-    assert og.posts == 3
+    assert og.posts == 2
 
     assert broadcast(og, tmp_path, monkeypatch, "--include", lead, "--project", "nope") == 1
     assert "--project nope names no project" in capsys.readouterr().err
-    assert og.posts == 3
+    assert og.posts == 2
 
 
 def test_broadcast_counts_a_target_it_could_not_read_as_failed(

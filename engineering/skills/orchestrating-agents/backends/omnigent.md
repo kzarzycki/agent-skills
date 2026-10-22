@@ -310,7 +310,8 @@ A line ending in the field `follow` (`<session>=<report>`, the brief file, `foll
 never given up on, nor revived or sent the resume line as a session owing a report is (with
 `--console` its routing may nudge or revive it). Its lines go to `--notify` as the others do, but only
 when they are news, so the notified session is not woken for a turn that changed nothing:
-a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED`, once it holds
+a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED` (a `USER NEEDED`
+line wins over an earlier `DONE` or `PARKED` one, since an ask after a `DONE` still needs its answer), once it holds
 as `watch` counts an end; any other turn end only once the lead and its live children wrote
 nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
@@ -364,7 +365,7 @@ lead and `progress_at`, so new progress starts a new chain.
 | failed | rule | the first time a revive, after it act |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
-| `USER NEEDED` | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
+| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
 | a question | rule | act, for one `relay` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |

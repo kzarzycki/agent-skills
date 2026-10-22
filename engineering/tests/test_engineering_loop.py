@@ -53,3 +53,31 @@ def test_every_cited_loop_section_is_listed() -> None:
         if not any(re.match(rf"{re.escape(name)}\b", cited) for name in sections)
     ]
     assert unlisted == []
+
+
+# A bare CLI child (`codex exec -C <dir> "..."` in a code block, or inline with its prompt) runs
+# outside any backend, so nothing lists, watches or closes it, and dotagents hosts deny it (#278).
+BARE_CHILD = re.compile(
+    r"^\s*(?:claude -p|codex exec|omp -p|gemini -p|agy -p)\s"
+    r"|`(?:claude -p|codex exec|omp -p|gemini -p|agy -p) [^`]*[\"<]"
+)
+
+
+def bare_children(root: Path) -> list[str]:
+    return [
+        f"{path.relative_to(root)}:{number}: {line.strip()}"
+        for path in sorted(root.rglob("*.md"))
+        for number, line in enumerate(path.read_text(errors="ignore").splitlines(), 1)
+        if BARE_CHILD.search(line)
+    ]
+
+
+def test_no_skill_starts_a_bare_cli_child() -> None:
+    assert bare_children(LOOP.parent) == []
+
+
+def test_the_bare_child_check_catches_a_start_but_not_a_mention(tmp_path: Path) -> None:
+    starts = ['codex exec -C <worktree> "Read b.md."', 'claude -p "Read b.md."', '`gemini -p "go"`']
+    mentions = ["never start it with `claude -p` or `codex exec`", "one `claude -p --model"]
+    (tmp_path / "f.md").write_text("\n".join(starts + mentions))
+    assert [hit.split(": ", 1)[1] for hit in bare_children(tmp_path)] == starts
