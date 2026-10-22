@@ -52,19 +52,31 @@ old="$(gh api "repos/{owner}/{repo}/issues/$pr/comments" --paginate \
 
 # Each asset is named after the PR and commit, so a later recording never replaces the video
 # an earlier comment links; a re-recording of the same commit replaces that commit's video.
-gh release view demos >/dev/null 2>&1 ||
-  gh release create demos --prerelease --title Demos \
-    --notes "Demo videos linked from pull request comments." >/dev/null
-download="$(gh repo view --json url --jq .url)/releases/download/demos"
 staging="$(mktemp -d)"
 trap 'rm -rf "$staging"' EXIT
-links=""
+names=()
 i=0
 for video in "$@"; do
   i=$((i + 1))
-  name="pr$pr-${head:0:7}-$i.mp4"
-  cp "$video" "$staging/$name"
-  gh release upload demos "$staging/$name" --clobber
+  names+=("pr$pr-${head:0:7}-$i.mp4")
+  cp "$video" "$staging/${names[$((i - 1))]}"
+done
+# A repo with immutable releases refuses uploads to a published release, so there each post
+# gets its own prerelease, created together with its videos.
+if [ "$(gh api 'repos/{owner}/{repo}/immutable-releases' --jq .enabled 2>/dev/null)" = true ]; then
+  release="demo-pr$pr-${head:0:7}-$(date +%s)"
+  gh release create "$release" --prerelease --target "$head" --title "Demo for PR #$pr at ${head:0:7}" \
+    --notes "Demo videos linked from pull request #$pr." "${names[@]/#/$staging/}" >/dev/null
+else
+  release=demos
+  gh release view demos >/dev/null 2>&1 ||
+    gh release create demos --prerelease --title Demos \
+      --notes "Demo videos linked from pull request comments." >/dev/null
+  gh release upload demos "${names[@]/#/$staging/}" --clobber
+fi
+download="$(gh repo view --json url --jq .url)/releases/download/$release"
+links=""
+for name in "${names[@]}"; do
   links+="
 - [$name]($download/$name)"
 done
