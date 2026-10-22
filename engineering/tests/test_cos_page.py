@@ -317,13 +317,17 @@ def test_the_poll_hands_the_boards_standing_decisions_to_the_model(
         raise SystemExit
 
     monkeypatch.setattr(cos_page, "collect", collect)
-    monkeypatch.setattr(cos_page.OA, "Omnigent", object)
+    servers: list[str] = []
+    monkeypatch.setattr(
+        cos_page.OA, "Omnigent", lambda server="": servers.append(server) or object()
+    )
     monkeypatch.setattr(cos_page.time, "sleep", stop)
     snap: dict = {}
     with pytest.raises(SystemExit):
-        cos_page.poll(snap, tmp_path / "leads.registry", board)
+        cos_page.poll(snap, tmp_path / "leads.registry", board, "https://work.example")
     assert seen == ["- merge on green"] and snap["error"] is None
     assert snap["projects"] == ["trinity"]
+    assert servers == ["https://work.example"]  # the page reads the server its links point to
 
 
 def test_a_board_bullet_opening_with_a_level_marker_takes_that_level(tmp_path: Path) -> None:

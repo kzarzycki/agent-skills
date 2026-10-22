@@ -547,13 +547,13 @@ def render(
 </body></html>"""
 
 
-def poll(snap: dict, registry: Path, board: Path | None) -> None:
-    """Read the sessions into ``snap`` every ``POLL_SECONDS``; a failure keeps the last rows and
-    says why on the page."""
+def poll(snap: dict, registry: Path, board: Path | None, server: str = "") -> None:
+    """Read the sessions of ``server`` (the page's ``--omnigent``) into ``snap`` every
+    ``POLL_SECONDS``; a failure keeps the last rows and says why on the page."""
     og, memo = None, {}
     while True:
         try:
-            og = og or OA.Omnigent()
+            og = og or OA.Omnigent(server)
             state, _ = read(registry.with_suffix(".state.json"))
             leads = state.get("leads") if isinstance(state, dict) else None
             leads = (
@@ -585,7 +585,7 @@ def main() -> None:
     p.add_argument("--port", type=int, default=6768)
     a = p.parse_args()
     snap: dict = {}
-    threading.Thread(target=poll, args=(snap, a.registry, a.board), daemon=True).start()
+    threading.Thread(target=poll, args=(snap, a.registry, a.board, a.omnigent), daemon=True).start()
 
     class Page(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
