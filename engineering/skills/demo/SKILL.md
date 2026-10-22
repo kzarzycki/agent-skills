@@ -42,7 +42,8 @@ scripts/post_demo.sh [--pr <number>] "<what it shows>" <video.mp4>...
 ```
 
 `scripts/` is relative to this skill's folder. The script uploads each video as an asset
-of the repo's `demos` prerelease, creating it on first use, and posts one `## Demo`
+of the repo's `demos` prerelease, creating it on first use (in a repo with immutable
+releases, which refuse later uploads, each post gets its own prerelease instead), and posts one `## Demo`
 comment naming the head commit and linking the videos. It minimizes your earlier `## Demo`
 comments as outdated so only the current one is open. The PR defaults to the current
 branch's. Then name the demo in the PR body's Evidence.

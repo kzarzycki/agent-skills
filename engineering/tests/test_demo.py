@@ -18,6 +18,7 @@ case "$*" in
   "release view demos") exit "$NO_RELEASE" ;;
   "release upload demos "*) [ -s "$4" ] || exit 1 ;;
   "repo view --json url --jq .url") echo https://github.com/o/r ;;
+  "api repos/{owner}/{repo}/immutable-releases --jq .enabled") echo "$IMMUTABLE" ;;
   "pr view --json number --jq .number") echo 7 ;;
   "pr view "*" --json headRefOid --jq .headRefOid") echo "$PR_HEAD" ;;
   "api user --jq .login") echo me ;;
@@ -38,6 +39,7 @@ def run(
     pr_head: str = HEAD,
     dirty: bool = False,
     no_release: bool = False,
+    immutable: bool = False,
 ) -> tuple[subprocess.CompletedProcess, list[str]]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -53,6 +55,7 @@ def run(
         "PR_HEAD": pr_head,
         "DIRTY": str(int(dirty)),
         "NO_RELEASE": str(int(no_release)),
+        "IMMUTABLE": "true" if immutable else "false",
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), *args],
@@ -111,6 +114,19 @@ def test_creates_the_demos_prerelease_when_missing(tmp_path: Path, video: str) -
     assert calls.index(create) < calls.index(
         next(call for call in calls if call.startswith("release upload"))
     )
+
+
+def test_immutable_releases_get_one_prerelease_per_post(tmp_path: Path, video: str) -> None:
+    result, calls = run(tmp_path, "the dry run", video, immutable=True)
+
+    assert result.returncode == 0, result.stderr
+    create = next(call for call in calls if call.startswith("release create demo-pr7-aaaaaaa-"))
+    assert "--prerelease" in create and f"--target {HEAD}" in create
+    assert create.endswith("/pr7-aaaaaaa-1.mp4")
+    assert not any(call.startswith(("release upload", "release view")) for call in calls)
+    release = create.split()[2]
+    comment = next(call for call in calls if call.startswith("pr comment 7"))
+    assert f"https://github.com/o/r/releases/download/{release}/pr7-aaaaaaa-1.mp4" in comment
 
 
 def test_refuses_a_checkout_that_is_not_the_pr_head(tmp_path: Path, video: str) -> None:
