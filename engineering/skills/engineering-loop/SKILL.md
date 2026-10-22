@@ -332,7 +332,8 @@ verifier, review angles run as native subagents, never as full harness sessions.
   re-reads the whole transcript it copied; revive a stuck or interrupted agent rather than
   restart it.
 - **Turns.** A turn the owner reads (not a child's path-only reply) ends with `DONE`,
-  `STILL WORKING` or `USER NEEDED`. A status reply opens with a tl;dr: the loop step with
+  `STILL WORKING` or `USER NEEDED`; a `USER NEEDED` line wins over an earlier `DONE`, since an ask
+  after it still needs its answer. A status reply opens with a tl;dr: the loop step with
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.

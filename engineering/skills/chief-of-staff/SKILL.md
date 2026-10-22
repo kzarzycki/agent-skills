@@ -125,7 +125,8 @@ its landing order.
 ## What a lead's turn ending means
 
 A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`, and
-with `PARKED` when you told it to park (Starting a lead, Host load).
+with `PARKED` when you told it to park (Starting a lead, Host load). A `USER NEEDED` line wins over
+an earlier `DONE` or `PARKED` line: an ask after a `DONE` is the ending, since it still needs its answer.
 
 Under `--console` the supervisor already did the routine part: it sends the stall nudge (once per
 progress chain) and the revive (once per lead) itself, as a `relay` whose text is `Supervisor:
