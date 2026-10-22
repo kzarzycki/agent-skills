@@ -1157,9 +1157,11 @@ def test_outside_a_session_the_server_is_named_or_the_one_login_never_config_yam
 def test_a_session_acts_on_its_own_server_over_the_config_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = tmp_path / "config.yaml"
+    config, tokens = tmp_path / "config.yaml", tmp_path / "auth_tokens.json"
     config.write_text("server: https://personal.example\nhost:\n  host_id: host_1\n")
+    tokens.write_text('{"https://login.example": {}}')  # a lone login loses to the session too
     monkeypatch.setattr(omnigent_agent, "CONFIG", config)
+    monkeypatch.setattr(omnigent_agent, "AUTH_TOKENS", tokens)
     monkeypatch.setenv("RUNNER_SERVER_URL", "https://work.example/")
     assert omnigent_agent.Omnigent().base == "https://work.example"
     assert omnigent_agent.Omnigent("https://personal.example").base == "https://personal.example"
