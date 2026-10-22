@@ -1137,20 +1137,29 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     assert titles == ["t", "t-r2"]
 
 
-def test_the_server_comes_from_the_one_login_when_config_names_none(
+def test_the_server_is_the_callers_and_never_a_config_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config, tokens = tmp_path / "config.yaml", tmp_path / "auth_tokens.json"
-    config.write_text("host:\n  host_id: host_1\nlocal_server_port: 6767\n")
+    config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
     monkeypatch.setattr(omnigent_agent, "CONFIG", config)
     monkeypatch.setattr(omnigent_agent, "AUTH_TOKENS", tokens)
+    monkeypatch.delenv("OMNIGENT_SERVER", raising=False)
+    monkeypatch.delenv("RUNNER_SERVER_URL", raising=False)
+    tokens.write_text('{"https://a.example": {}, "https://b.example": {}}')
+    # Two logins and no session: config.yaml's `server:` is a default that guesses, so refuse.
+    with pytest.raises(omnigent_agent.Fail, match="OMNIGENT_SERVER"):
+        omnigent_agent.Omnigent()
+    monkeypatch.setenv(
+        "RUNNER_SERVER_URL", "https://parent.example/"
+    )  # inside a session: beside it
+    assert omnigent_agent.Omnigent().base == "https://parent.example"
+    monkeypatch.setenv("OMNIGENT_SERVER", "https://chosen.example")
+    assert omnigent_agent.Omnigent().base == "https://chosen.example"
+    monkeypatch.delenv("OMNIGENT_SERVER")
+    monkeypatch.delenv("RUNNER_SERVER_URL")
     tokens.write_text('{"https://omnigent.example/": {}}')
     assert omnigent_agent.Omnigent().base == "https://omnigent.example"
-    tokens.write_text('{"https://a.example": {}, "https://b.example": {}}')  # a guess: refuse
-    with pytest.raises(omnigent_agent.Fail, match="no server"):
-        omnigent_agent.Omnigent()
-    config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
-    assert omnigent_agent.Omnigent().base == "https://named.example"
 
 
 def test_a_get_that_times_out_once_is_retried_and_wait_returns_the_report(
