@@ -100,6 +100,11 @@ its landing order.
   since the owner last looked. Rules classify a session (a pending prompt, its ending or named
   wait, its status, the supervisor's events routed `owner`, the board's `## Needs the owner`);
   only an idle one they can't place goes to the supervisor's small model, once per last message.
+  Write each `## Needs the owner` bullet as `- 🔴 **<area>:** <text>`: the marker (🔴🟡🟢⚪) is
+  its level, and the bullet joins the project of a session whose 8-character id it names, else
+  its area, matched to an Omnigent project name ignoring case and punctuation, or a unique
+  prefix of one (`voice` for `Voice note`), else a group of its own; with neither it goes under
+  "Other". Only 🔴 and 🟡 bullets show, and the red list is grouped the same way.
   The supervisor's recent events sit folded at the bottom. Run it as a systemd user unit beside
   the supervisor, with the same `PATH` (it runs `claude` for the small model), tailnet-only:
   `--host` the machine's tailnet address (`tailscale ip -4`), or, where your user is the
