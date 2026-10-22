@@ -2,8 +2,9 @@
 """Serve one page that shows the owner what needs them, across every Omnigent session.
 
 Every non-archived top-level session on every host, grouped by its Omnigent project and coloured
-by what the owner must do: 🔴 needs you now, 🟡 when convenient, 🟢 running, ⚪ done or FYI. The
-red ones also head the page as a short list: what to do, where, why.
+by what the owner must do: 🔴 needs you now, 🟡 when convenient, 🟢 running, ⚪ done or FYI. A board
+ask joins its session's project, else the area it names (``- 🔴 **voice_note:** text``), else
+"Other". The red ones also head the page, grouped the same way: what to do, where, why.
 
 A background poll reads the sessions every ``POLL_SECONDS`` through ``omnigent_agent.py``'s client
 and token, and classifies each by rules: a pending prompt (its own or a sub-agent's), its last
@@ -85,6 +86,7 @@ CSS = """
 body{background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;margin:0 auto;
 padding:16px;max-width:1100px;overflow-wrap:anywhere}
 h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:22px 0 8px}
+h3{font-size:13px;color:var(--mute);margin:12px 0 0}
 .mute,small{color:var(--mute)}small{display:block;font-size:13px}.warn{color:var(--amber)}a{color:inherit}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
 .b{display:inline-block;border-radius:999px;padding:1px 9px;font-size:13px;font-weight:600;white-space:nowrap}
@@ -214,6 +216,7 @@ def collect(
     now = time.time() if now is None else now
     hosts = og.hosts()
     projects = {p.get("id"): p.get("name") for p in listing(og.call("GET", "/v1/projects"))}
+    memo["projects"] = [str(n) for n in projects.values() if n]  # a board area may name one
     # ponytail: one page of 1000 each, and a warning past it; upgrade: page with `after`
     pages = {
         k: og.call("GET", f"/v1/sessions?kind={k}&limit=1000") for k in ("default", "sub_agent")
@@ -351,7 +354,7 @@ def render(
 
     # The poll's rows, plus what the supervisor and the board say, which raise a row's level.
     rows = {r["id"]: dict(r) for r in snap.get("rows") or []}
-    loose = []  # board asks that name no listed session
+    loose = []  # board asks that name no listed session: (level, group, text)
 
     def raise_(sid: str, level: str, what: str, why: str) -> None:
         row = rows.get(sid)
@@ -395,17 +398,36 @@ def render(
             raise_(
                 str(a["session"]), "red", first(a.get("line")), f"supervisor: {a.get('why') or ''}"
             )
+    names = list(
+        dict.fromkeys([*(snap.get("projects") or []), *(r["project"] for r in rows.values())])
+    )
+
+    def key(name: str) -> str:
+        return re.sub(r"[\W_]+", "", name.lower())
+
+    def group(area: str) -> str:
+        """The project an area names, ignoring case, spaces and punctuation: exact, else a unique
+        prefix; else a group of its own, which later areas match the same way."""
+        exact = [n for n in names if key(n) == key(area)]
+        prefix = [n for n in names if key(n).startswith(key(area))]
+        if exact or len(prefix) == 1:
+            return (exact or prefix)[0]
+        names.append(area)
+        return area
+
     for b in asks:
         # the chief of staff's own marker (🔴🟡🟢⚪) opening the bullet says its level
         if m := re.match(r"\s*(" + "|".join(i for i, _ in LEVELS.values()) + r")\ufe0f?\s*", b):
             level, b = next(k for k, (i, _) in LEVELS.items() if i == m.group(1)), b[m.end() :]
         else:
             level = "amber" if LATER.search(b) else "red"
+        area = re.match(r"\*\*(\w[^*]*?):\*\*\s*", b)  # its area, bold, after the marker
+        b = b[area.end() :] if area else b
         named = [sid for sid in rows if sid[:8] in b]
         for sid in named:
             raise_(sid, level, first(b), "board: Needs the owner")
         if not named and level in ("red", "amber"):  # only these have a list to show it in
-            loose.append((level, b))
+            loose.append((level, group(area.group(1)) if area else "Other", b))
 
     def link(sid: object, text: object = None) -> str:
         sid = str(sid)
@@ -420,34 +442,43 @@ def render(
 
     ordered = sorted(rows.values(), key=lambda r: (RANK[r["level"]], -num(r.get("at"))))
     counts = {
-        k: sum(r["level"] == k for r in ordered) + sum(lv == k for lv, _ in loose) for k in LEVELS
+        k: sum(r["level"] == k for r in ordered) + sum(lv == k for lv, _, _ in loose)
+        for k in LEVELS
     }
-    red = [r for r in ordered if r["level"] == "red"]
-    now_html = "".join(
-        f"<li class=red data-at='{e(num(r.get('at')))}'>🔴 <b>{e(r['what'])}</b><br>{link(r['id'], r['title'])}"
-        f" <span class=mute>· {e(r['project'])} · {e(r['host'])} · {age(r.get('at'), now)} ago</span>"
-        f"<small>why: {e(r['why'])}</small></li>"
-        for r in red
-    ) + "".join(
-        f"<li class=red>🔴 <b>{e(first(b))}</b><small>why: board: Needs the owner (no session named)</small></li>"
-        for lv, b in loose
-        if lv == "red"
-    )
-
     groups: dict[str, list[dict]] = {}
     for r in ordered:
         groups.setdefault(r["project"], []).append(r)
-    if any(lv == "amber" for lv, _ in loose):
-        groups.setdefault("Board: when convenient", [])
-    order = sorted(
-        groups, key=lambda p: (min((RANK[r["level"]] for r in groups[p]), default=1), p.lower())
+    board_asks: dict[str, list[tuple[str, str]]] = {}
+    for lv, g, b in loose:
+        board_asks.setdefault(g, []).append((lv, b))
+        groups.setdefault(g, [])
+    levels = {
+        p: [r["level"] for r in groups[p]] + [lv for lv, _ in board_asks.get(p, [])] for p in groups
+    }
+    order = sorted(groups, key=lambda p: (min(RANK[lv] for lv in levels[p]), p.lower()))
+    now_html = "".join(
+        f"<h3>{e(p)}</h3><ul class=now>{items}</ul>"
+        for p in order
+        if (
+            items := "".join(
+                f"<li class=red data-at='{e(num(r.get('at')))}'>🔴 <b>{e(r['what'])}</b><br>{link(r['id'], r['title'])}"
+                f" <span class=mute>· {e(r['host'])} · {age(r.get('at'), now)} ago</span>"
+                f"<small>why: {e(r['why'])}</small></li>"
+                for r in groups[p]
+                if r["level"] == "red"
+            )
+            + "".join(
+                f"<li class=red>🔴 <b>{e(first(b))}</b><small>why: board: Needs the owner (no session named)</small></li>"
+                for lv, b in board_asks.get(p, [])
+                if lv == "red"
+            )
+        )
     )
+
     groups_html = []
     for p in order:
         items = groups[p]
-        mix = {k: sum(r["level"] == k for r in items) for k in LEVELS}
-        if p == "Board: when convenient":
-            mix["amber"] = sum(lv == "amber" for lv, _ in loose)
+        mix = {k: levels[p].count(k) for k in LEVELS}
         body = "".join(
             f"<div class='row {r['level']}' data-level={r['level']} data-at='{e(num(r.get('at')))}'>"
             f"{badge(r['level'])} <span class=t>{link(r['id'], r['title'])}</span>"
@@ -457,12 +488,10 @@ def render(
             f"{' · followed lead' if r.get('lead') else ''}</div></div>"
             for r in items
         )
-        if p == "Board: when convenient":
-            body += "".join(
-                f"<div class='row amber'>{badge('amber')} {e(b)}</div>"
-                for lv, b in loose
-                if lv == "amber"
-            )
+        body += "".join(
+            f"<div class='row {lv}'>{badge(lv)} {e(b)}<div class=meta>board: Needs the owner</div></div>"
+            for lv, b in board_asks.get(p, [])
+        )
         hot = mix["red"] or mix["amber"]
         chips = " ".join(
             f"<span class='b {k}'>{LEVELS[k][0]} {n} {SHORT[k]}</span>" for k, n in mix.items() if n
@@ -507,7 +536,7 @@ def render(
 <p id=digest class=mute></p>
 {"".join(f"<p class=warn>⚠ {e(x)}</p>" for x in errors)}
 <h2>🔴 Needs you now</h2>
-{f"<ul class=now>{now_html}</ul>" if now_html else "<p class=mute>Nothing waits on you.</p>"}
+{f"<div>{now_html}</div>" if now_html else "<p class=mute>Nothing waits on you.</p>"}
 <h2>By project</h2>{legend}
 {"".join(groups_html) or "<p class=mute>No sessions read yet.</p>"}
 <details id=events><summary><h2 style=display:inline>Supervisor events</h2></summary>
@@ -533,7 +562,13 @@ def poll(snap: dict, registry: Path, board: Path | None) -> None:
                 else {}
             )
             rows = collect(og, leads, memo, decisions=OA.standing(board) if board else "")
-            snap.update(rows=rows, at=time.time(), error=None, warnings=memo["warnings"])
+            snap.update(
+                rows=rows,
+                at=time.time(),
+                error=None,
+                warnings=memo["warnings"],
+                projects=memo.get("projects", []),
+            )
         except Exception as x:  # noqa: BLE001 - Omnigent down or odd: say so, keep the last rows
             snap["error"] = f"Omnigent sessions not read: {x}"
         time.sleep(POLL_SECONDS)
