@@ -59,8 +59,9 @@ names=()
 i=0
 for video in "$@"; do
   i=$((i + 1))
-  names+=("pr$pr-${head:0:7}-$i.mp4")
-  cp "$video" "$staging/${names[-1]}"
+  name="pr$pr-${head:0:7}-$i.mp4"
+  names+=("$name")
+  cp "$video" "$staging/$name"
 done
 files=("${names[@]/#/$staging/}")
 
