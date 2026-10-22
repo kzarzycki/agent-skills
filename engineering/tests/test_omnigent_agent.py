@@ -1137,20 +1137,45 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     assert titles == ["t", "t-r2"]
 
 
-def test_the_server_comes_from_the_one_login_when_config_names_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def servers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A config.yaml naming server B, no session or override in the environment; returns the
+    logins file."""
     config, tokens = tmp_path / "config.yaml", tmp_path / "auth_tokens.json"
-    config.write_text("host:\n  host_id: host_1\nlocal_server_port: 6767\n")
+    config.write_text("server: https://b.example\nhost:\n  host_id: host_1\n")
     monkeypatch.setattr(omnigent_agent, "CONFIG", config)
     monkeypatch.setattr(omnigent_agent, "AUTH_TOKENS", tokens)
-    tokens.write_text('{"https://omnigent.example/": {}}')
-    assert omnigent_agent.Omnigent().base == "https://omnigent.example"
-    tokens.write_text('{"https://a.example": {}, "https://b.example": {}}')  # a guess: refuse
-    with pytest.raises(omnigent_agent.Fail, match="no server"):
+    monkeypatch.delenv("OMNIGENT_SERVER", raising=False)
+    monkeypatch.delenv("RUNNER_SERVER_URL", raising=False)
+    tokens.write_text('{"https://a.example": {}, "https://b.example": {}}')
+    return tokens
+
+
+def test_a_session_starts_children_on_its_own_server_not_configs(
+    servers: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RUNNER_SERVER_URL", "https://a.example/")
+    assert omnigent_agent.Omnigent().base == "https://a.example"
+
+
+def test_omnigent_server_overrides_the_calling_sessions_server(
+    servers: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RUNNER_SERVER_URL", "https://a.example")
+    monkeypatch.setenv("OMNIGENT_SERVER", "https://c.example")
+    assert omnigent_agent.Omnigent().base == "https://c.example"
+
+
+def test_outside_a_session_with_two_logins_it_refuses_and_names_omnigent_server(
+    servers: Path,
+) -> None:
+    with pytest.raises(omnigent_agent.Fail, match="OMNIGENT_SERVER"):
         omnigent_agent.Omnigent()
-    config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
-    assert omnigent_agent.Omnigent().base == "https://named.example"
+
+
+def test_outside_a_session_the_one_login_is_the_server(servers: Path) -> None:
+    servers.write_text('{"https://omnigent.example/": {}}')
+    assert omnigent_agent.Omnigent().base == "https://omnigent.example"
 
 
 def test_a_get_that_times_out_once_is_retried_and_wait_returns_the_report(
