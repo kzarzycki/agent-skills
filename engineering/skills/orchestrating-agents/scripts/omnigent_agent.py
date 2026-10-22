@@ -148,6 +148,11 @@ SETTLE_SECONDS = 600.0
 # Out of its turn this long, the report unchanged as long: the turn has ended. One idle look is no
 # proof, since a session can read idle mid-turn (IDLE_GRACE_SECONDS above).
 TURN_END_SECONDS = 30.0
+# A followed lead's prompt pending this long across looks is news. Omnigent mirrors each
+# descendant's prompt onto its parent's ``pending_elicitations`` (``params.target_session_id``),
+# so a lead in bypassPermissions shows its child's prompt, which the lead's own supervisor
+# reports and the lead answers within a minute; one that clears sooner was never the owner's.
+PROMPT_CONFIRM_SECONDS = 120.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0)
@@ -1532,6 +1537,14 @@ def follow(
     if key[0] == "archived":
         return line, key
     if key[0] != "ended":
+        if key[0] == "blocked" and told.get(("occurrence", sid)) != key:
+            # a mirrored child's prompt its lead answers in seconds: news once it holds
+            # (PROMPT_CONFIRM_SECONDS), each look re-reading the session
+            held = holding.get(sid)
+            if not held or held[0] != key:
+                held = holding[sid] = (key, time.monotonic())
+            if time.monotonic() - held[1] < PROMPT_CONFIRM_SECONDS:
+                return "", key
         holding.pop(sid, None)
         if key[0] == "running":
             told.pop(("occurrence", sid), None)

@@ -310,7 +310,9 @@ a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKE
 as `watch` counts an end; any other turn end only once the lead and its live children wrote
 nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
-time was not stuck; a prompt or a failure, each once per occurrence; and `archived`, which is the
+time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
+child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
+at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
 

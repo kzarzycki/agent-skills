@@ -2362,16 +2362,19 @@ def test_a_named_ending_already_told_stays_told_while_the_runner_flaps_to_runnin
     ]
 
 
-def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its_line(
+def test_a_followed_leads_prompt_posts_once_it_holds_a_failure_at_once_and_archived_drops_its_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry = following(tmp_path)
+    offset = skewed(monkeypatch)
     og = Lead(told("brief", 60), ending("STILL WORKING", 5))
-    og.snap = {
+    blocked = {
         "status": "running",
         "pending_elicitations": [{"elicitation_id": "e1", "message": "ok?"}],
     }
+    og.snap = blocked
     steps = [
+        blocked,
         {"status": "running"},
         {"status": "failed", "last_task_error": {"message": "boom"}},
         {"status": "running"},
@@ -2380,13 +2383,61 @@ def test_a_followed_leads_prompt_and_failure_post_at_once_and_archived_drops_its
 
     def next_state(poll: int) -> None:
         og.snap = steps[poll - 1]
+        if poll == 1:
+            offset[0] = omnigent_agent.PROMPT_CONFIRM_SECONDS
 
-    supervised(og, registry, monkeypatch, 5, next_state, notify="cos")
+    supervised(og, registry, monkeypatch, 6, next_state, notify="cos")
     lines = posted(og)
     assert len(lines) == 3
     assert "blocked on a prompt" in lines[0] and ": failed: boom" in lines[1]
     assert ": archived" in lines[2]
     assert registry.read_text() == ""  # archived dropped it; the other events kept it
+
+
+def blocked_on(eid: str) -> dict:
+    prompt = {"elicitation_id": eid, "params": {"content_preview": "Bash(ls)"}}
+    return {"status": "running", "pending_elicitations": [prompt]}
+
+
+def test_a_prompt_that_clears_within_the_confirm_wait_is_never_posted_nor_routed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a child's prompt Omnigent mirrors onto its lead, which the lead answers itself
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+    og.snap = blocked_on("e1")
+    at = {1: 30.0, 2: 200.0}
+
+    def later(poll: int) -> None:
+        offset[0] = at[poll]
+        og.snap = {"status": "running"}
+
+    supervised(og, registry, monkeypatch, 3, later, notify="cos", console=True)
+    assert posted(og) == []
+    events = registry.with_suffix(".events.jsonl")
+    assert not events.exists() or "blocked" not in events.read_text()
+
+
+def test_a_prompt_still_pending_after_the_confirm_wait_is_posted_to_the_owner_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("STILL WORKING: its worker runs", 5))
+    og.snap = blocked_on("e1")
+    wait = omnigent_agent.PROMPT_CONFIRM_SECONDS
+    at = {1: 30.0, 2: wait - 1, 3: wait, 4: wait + 600}
+    before: list[int] = []
+
+    def later(poll: int) -> None:
+        before.append(len(posted(og)))
+        offset[0] = at[poll]
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    assert before == [0, 0, 0, 1]
+    [post] = posted(og)
+    assert "[owner] a t-a: blocked on a prompt: Bash(ls) (an approval prompt" in post
 
 
 def test_without_console_the_supervisor_writes_no_state_labels_or_deadline_and_reposts_on_restart(
@@ -4185,6 +4236,7 @@ def test_twenty_events_in_a_minute_make_one_post_then_one_combined_post_with_eve
     sids = [f"l{i}" for i in range(20)]
     registry = follows(tmp_path, *sids)
     offset = skewed(monkeypatch)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)  # batching, not the wait
     og = Leads(**{s: [told("brief", 60), ending("STILL WORKING: on it", 50)] for s in sids})
 
     def blocked(i: int) -> dict:  # an approval prompt for an even lead, a question for an odd one
