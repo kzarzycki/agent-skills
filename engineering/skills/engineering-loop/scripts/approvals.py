@@ -58,6 +58,17 @@ green and the label where the change is high risk: `gh pr merge --squash --match
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
 exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
 merged PR: exit 0; a closed one: exit 1.
+With loop.md's line `Land: local signed squash to <branch>, allowed signers <path>`, for a repo that trusts only
+commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the same proofs and waits
+hold, but where `land` would merge it squashes the PR in this checkout instead: one commit with the head's tree on the
+base's tip, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key (`gpg.format ssh`, `user.signingkey`) and
+checked with `git verify-commit` against the allowed signers file. It pushes that commit to the PR's branch, pinned to
+the head the gates checked, then fast-forwards the base to it, so GitHub shows the PR merged; exit 0. It never turns
+auto-merge on, since GitHub would sign that squash, and waits (exit 3) while checks are pending. It refuses (exit 1),
+before touching the PR, a PR from another repository (its branch isn't ours to push), a base other than the line's,
+auto-merge or the merge queue on, an `origin` that isn't the PR's repo, a checkout that signs nothing, or a missing
+signers file; and at the merge a head that moved, a head that doesn't contain the base's tip (merge it in) and a
+signature the file doesn't allow. A `Land:` line it can't read is refused. Without the line nothing changes.
 `land --wait` runs it again every 30 seconds, printing each new state, while what waits is GitHub's merge state or CI
 on the head: a draft it marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
 once. With auto-merge on or the PR in a merge queue, whoever put it there, and after its own merge, which a base
@@ -181,7 +192,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -216,6 +227,14 @@ CONDITION = re.compile(
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 # loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
 OPT_OUT = r"^[ \t]*(?:[-*][ \t]+)?`?Opt-out:[ \t]*allowed`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
+# loop.md's local signed landing: `Land: local signed squash to <branch>, allowed signers <path>`, written as
+# `CI: none` is. LANDING finds any `Land:` line, so one SIGNED can't read is refused rather than landed on GitHub.
+SIGNED = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?`?Land:[ \t]*local signed squash to[ \t]+`?([^\s`,]+)`?,[ \t]*allowed signers[ \t]+"
+    r"`?([^`\n]+?)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+LANDING = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?Land:", re.MULTILINE | re.IGNORECASE)
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
@@ -970,6 +989,90 @@ def opted_out(loop: str | None) -> bool:
     return re.search(OPT_OUT, loop or "", re.MULTILINE | re.IGNORECASE) is not None
 
 
+def signed(loop: str | None) -> tuple[str, Path] | None:
+    """loop.md's `Land: local signed squash to <branch>, allowed signers <path>` as (branch, signers), None without a
+    `Land:` line. One it can't read is refused, since landing on GitHub instead would sign with GitHub's key."""
+    found = SIGNED.search(loop or "")
+    if found:
+        return found[1], Path(found[2]).expanduser()
+    if LANDING.search(loop or ""):
+        raise Refused(
+            "loop.md has a `Land:` line this can't read: write it"
+            " `Land: local signed squash to <branch>, allowed signers <path>`"
+        )
+    return None
+
+
+def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
+    """Why this checkout can't land the PR as a signed squash, checked before the PR is touched."""
+    where = f"PR #{pull['number']}"
+    if pull["isCrossRepository"]:
+        return f"{where} comes from another repository: its branch isn't ours to push, push it to {pull['baseRepository']['nameWithOwner']} first"
+    if pull["baseRefName"] != branch:
+        return f"{where} targets {pull['baseRefName']}, but loop.md lands signed squashes only to {branch}"
+    if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
+        return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
+    # the URL as configured, before any `insteadOf` rewrite
+    origin = subprocess.run(
+        ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
+    )
+    if github_repo(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
+        return f"this checkout's `origin` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
+    config = subprocess.run(
+        ["git", "config", "--get", "user.signingkey"], capture_output=True, text=True, check=False
+    )
+    gpg = subprocess.run(
+        ["git", "config", "--get", "gpg.format"], capture_output=True, text=True, check=False
+    )
+    if not config.stdout.strip() or gpg.stdout.strip() != "ssh":
+        return "this checkout signs no commits with an SSH key: set `gpg.format ssh` and `user.signingkey`"
+    if not signers.is_file():
+        return f"no allowed signers file at {signers}"
+    return None
+
+
+def signed_squash(pull: dict[str, Any], signers: Path) -> str:
+    """Squash the PR's head onto its base here, signed with this checkout's key and checked against `signers`, then
+    push it to the PR's branch and fast-forward the base to it: GitHub marks a PR merged once its head is in the
+    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing."""
+    pr, base, branch, head = (
+        pull["number"],
+        pull["baseRefName"],
+        pull["headRefName"],
+        pull["headRefOid"],
+    )
+    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    git(
+        "fetch", "-q", "origin", f"refs/pull/{pr}/head"
+    )  # alone: FETCH_HEAD names the first ref fetched
+    if git("rev-parse", "FETCH_HEAD").strip() != head:
+        raise Refused(f"PR #{pr}'s head moved past {head}: run land again")
+    tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    if subprocess.run(["git", "merge-base", "--is-ancestor", tip, head], check=False).returncode:
+        raise Refused(
+            f"PR #{pr} does not contain {base}'s head {tip}: merge origin/{base} in, rerun the gates, get a"
+            " verdict on the merge (lead.md step 8), then land again"
+        )
+    tree = git("rev-parse", f"{head}^{{tree}}").strip()
+    try:
+        commit = git("commit-tree", "-S", "-p", tip, "-m", f"{pull['title']} (#{pr})", tree).strip()
+        git("-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", commit)
+    except subprocess.CalledProcessError as exc:
+        raise Refused(
+            f"PR #{pr}: the squash is not signed by a key in {signers}: {' '.join(exc.stderr.split())}"
+        ) from exc
+    # the PR's own branch first, pinned to the head the gates checked
+    git(
+        "push",
+        "-q",
+        f"--force-with-lease=refs/heads/{branch}:{head}",
+        "origin",
+        f"{commit}:refs/heads/{branch}",
+    )
+    git("push", "-q", "origin", f"{commit}:refs/heads/{base}")
+    return commit
+
+
 def outside(pull: dict[str, Any], loop: str | None) -> str | None:
     """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `Opt-out: allowed`. A trail
     is a verifier review (passes), an `Approved: spec` record or `approved:spec` on an issue it links, a `Reverts #<n>`
@@ -1637,6 +1740,7 @@ def landing(
     merged or turned auto-merge on, and each approvals run is rerun once."""
     tracker, loop = project()
     cap(loop)  # an unreadable `cap:` line is refused before any proof or `gh pr ready`
+    local = signed(loop)  # and so is an unreadable `Land:` line
     pull = pull_request(pr)
     where, head = f"PR #{pr}", pull["headRefOid"]
     watching = reran is not None
@@ -1664,6 +1768,8 @@ def landing(
         for line in holds(pull, issues, loop) + found:
             print(line)
         return 1, None
+    if local and (why := unsignable(pull, *local)):
+        raise Refused(why)
     for line in flag(pull, issues, loop):
         print(line)
     required = required_checks(pull["baseRefName"])
@@ -1694,6 +1800,10 @@ def landing(
         gh("pr", "ready", str(pr))
         print(f"{where} is ready now: CI starts on ready, run land again")
         return WAITING, ON_CI
+    if not checking + owner and local:
+        commit = signed_squash(pull, local[1])
+        print(f"{where} landed in {pull['baseRefName']} as {commit}, signed by a key in {local[1]}")
+        return 0, None
     if not checking + owner:
         gh(*merge)
         print(f"{where} merges at {head}")
@@ -1706,7 +1816,8 @@ def landing(
         and required <= {name for name, _ in checks}
         and not RED.intersection(state for _, state in checks)
     )
-    if pending and required and auto_merge_allowed():
+    # GitHub's auto-merge would sign the squash with GitHub's key: a signed landing waits for the checks instead
+    if pending and required and not local and auto_merge_allowed():
         gh(*merge, "--auto")
         print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
         return 0, ON_MERGE

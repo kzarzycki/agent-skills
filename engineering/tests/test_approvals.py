@@ -148,6 +148,8 @@ def pull(
         labels,
         comments,
         number=7,
+        title="Feature",
+        isCrossRepository=False,
         author={"login": "worker"},
         state="OPEN",
         isDraft=False,
@@ -2653,6 +2655,169 @@ def test_land_refuses_a_head_behind_or_in_conflict_with_its_base_before_marking_
         )
     ]
     assert landing["calls"] == []
+
+
+# --- land: a local signed squash, where loop.md says so ---
+
+REPO = "https://github.com/kzarzycki/scratch-gate-revert"
+SIGNED_LAND = "\nLand: local signed squash to main, allowed signers signers\n"
+
+
+def sh(*args: str, cwd: Path) -> str:
+    return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def signing(landing: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
+    """`landing` in a real checkout whose `origin` names the PR's repo and reaches a local bare repo: `main` and the
+    PR's branch `feature` (also `refs/pull/7/head`) one commit ahead, an SSH signing key, and an allowed signers file
+    `signers` holding it. The PR's head and verdict are the real commit; loop.md has the `Land:` line."""
+    remote = tmp_path.parent / f"{tmp_path.name}-remote.git"
+    sh("git", "init", "-q", "--bare", "-b", "main", str(remote), cwd=tmp_path)
+    git = lambda *args: sh("git", "-c", "commit.gpgsign=false", *args, cwd=tmp_path)
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Lander")
+    git("config", "user.email", "lander@example.com")
+    git("remote", "add", "origin", REPO)
+    git("config", f"url.{remote.as_uri()}.insteadOf", REPO)
+    git("add", "docs")
+    git("commit", "-qm", "base")
+    git("push", "-q", "origin", "main")
+    git("switch", "-qc", "feature")
+    (tmp_path / "app.py").write_text("print('feature')\n")
+    git("add", "app.py")
+    git("commit", "-qm", "feature")
+    git("push", "-q", "origin", "feature", "HEAD:refs/pull/7/head")
+    git("switch", "-q", "main")
+    key = tmp_path.parent / f"{tmp_path.name}-key"
+    sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "lander", "-f", str(key), cwd=tmp_path)
+    git("config", "gpg.format", "ssh")
+    git("config", "user.signingkey", str(key))
+    (tmp_path / "signers").write_text(f"lander@example.com {key.with_suffix('.pub').read_text()}")
+    loop = tmp_path / "docs" / "agents" / "loop.md"
+    loop.write_text(loop.read_text() + SIGNED_LAND)
+    head = git("rev-parse", "feature")
+    landing["pull"].update(
+        headRefOid=head, reviews={"nodes": [verdict_on(head, "0 blocker, 0 major, 0 minor")]}
+    )
+    return {"git": git, "remote": remote, "base": git("rev-parse", "main"), "head": head}
+
+
+def remote_ref(signing: dict[str, Any], ref: str) -> str:
+    return sh("git", "rev-parse", ref, cwd=signing["remote"])
+
+
+def test_land_with_the_line_squashes_signs_and_pushes_the_pr_branch_then_main(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, calls = landed(capsys, landing)
+    commit = remote_ref(signing, "main")
+    assert (code, out, calls) == (
+        0,
+        [f"PR #7 landed in main as {commit}, signed by a key in signers"],
+        [],  # never `gh pr merge`: GitHub's squash would carry GitHub's signature
+    )
+    git = signing["git"]
+    assert (
+        remote_ref(signing, "feature") == commit
+    )  # GitHub marks the PR merged: its head is in main
+    assert git("rev-parse", f"{commit}^") == signing["base"]  # one commit on main's old tip
+    assert git("rev-parse", f"{commit}^{{tree}}") == git("rev-parse", f"{signing['head']}^{{tree}}")
+    assert git("log", "-1", "--format=%s", commit) == "Feature (#7)"
+    git("-c", "gpg.ssh.allowedSignersFile=signers", "verify-commit", commit)
+
+
+def refused_untouched(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> list[str]:
+    code, out, calls = landed(capsys, landing)
+    assert (code, calls) == (1, [])
+    assert remote_ref(signing, "feature") == signing["head"]
+    return out
+
+
+def test_land_with_the_line_refuses_a_checkout_that_signs_nothing(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    signing["git"]("config", "--unset", "user.signingkey")
+    assert refused_untouched(landing, signing, capsys) == [
+        "this checkout signs no commits with an SSH key: set `gpg.format ssh` and `user.signingkey`"
+    ]
+    assert remote_ref(signing, "main") == signing["base"]
+
+
+def test_land_with_the_line_refuses_a_signature_the_allowed_signers_lack(
+    landing: dict[str, Any],
+    signing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    other = tmp_path.parent / f"{tmp_path.name}-other"
+    sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other), cwd=tmp_path)
+    (tmp_path / "signers").write_text(f"lander@example.com {other.with_suffix('.pub').read_text()}")
+    [line] = refused_untouched(landing, signing, capsys)
+    assert line.startswith("PR #7: the squash is not signed by a key in signers: ")
+    assert remote_ref(signing, "main") == signing["base"]
+
+
+def test_land_with_the_line_refuses_a_pr_from_another_repository(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"]["isCrossRepository"] = True
+    assert refused_untouched(landing, signing, capsys) == [
+        (
+            "PR #7 comes from another repository: its branch isn't ours to push, push it to"
+            " kzarzycki/scratch-gate-revert first"
+        )
+    ]
+
+
+def test_land_with_the_line_refuses_a_pr_missing_the_base_head(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    git = signing["git"]
+    git("commit", "-q", "--allow-empty", "-m", "landed meanwhile")
+    git("push", "-q", "origin", "main")
+    tip = git("rev-parse", "main")
+    assert refused_untouched(landing, signing, capsys) == [
+        (
+            f"PR #7 does not contain main's head {tip}: merge origin/main in, rerun the gates, get a verdict on the"
+            " merge (lead.md step 8), then land again"
+        )
+    ]
+    assert remote_ref(signing, "main") == tip
+
+
+def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
+    landing: dict[str, Any],
+    signing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    landing["pull"]["baseRefName"] = "release"
+    assert refused_untouched(landing, signing, capsys) == [
+        "PR #7 targets release, but loop.md lands signed squashes only to main"
+    ]
+    loop = tmp_path / "docs" / "agents" / "loop.md"
+    loop.write_text(loop.read_text().replace(SIGNED_LAND, "\nLand: signed\n"))
+    assert refused_untouched(landing, signing, capsys) == [
+        (
+            "loop.md has a `Land:` line this can't read: write it"
+            " `Land: local signed squash to <branch>, allowed signers <path>`"
+        )
+    ]
+
+
+def test_land_with_the_line_waits_for_pending_checks_without_auto_merge(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub's auto-merge would squash with GitHub's key, so the signed landing waits for the checks itself."""
+    landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][
+        0
+    ].update(status="IN_PROGRESS", conclusion=None)
+    code, _, calls = landed(capsys, landing)
+    assert (code, calls) == (3, [])
+    assert remote_ref(signing, "main") == signing["base"]
 
 
 # --- opt-out: a person keeps their PR out of the loop ---
