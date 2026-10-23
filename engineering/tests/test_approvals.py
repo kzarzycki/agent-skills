@@ -1647,7 +1647,7 @@ def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() ->
 
 
 def test_only_a_review_by_the_prs_author_or_the_viewer_counts(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, writers: list[str]
 ) -> None:
     """Anyone can review a public repo; a stranger's satisfied review is no verifier review."""
     stranger = verdict_on(HEAD, author="stranger")
@@ -1662,11 +1662,32 @@ def test_only_a_review_by_the_prs_author_or_the_viewer_counts(
     ]
 
 
-def test_without_a_user_token_only_the_prs_authors_review_counts(
-    monkeypatch: pytest.MonkeyPatch,
+def test_a_writers_review_counts_with_an_installation_token(
+    monkeypatch: pytest.MonkeyPatch, writers: list[str]
+) -> None:
+    """A colleague who can write to the repo verifies someone else's PR and posts the verdict as themself: CI, with no
+    viewer, counts it; a stranger's still doesn't."""
+    monkeypatch.setattr(approvals, "viewer", lambda: None)
+
+    def proofs(review: dict[str, Any]) -> list[str]:
+        pr = {
+            **pull(reviews=(review,), files=("app.py",)),
+            "author": {"__typename": "User", "login": "author"},
+        }
+        return approvals.proofs("merge", pr, [approved(1, "area:web")], LOOP)
+
+    assert proofs(verdict_on(HEAD, author="worker")) == []
+    assert proofs(verdict_on(HEAD, author="stranger")) == [
+        "PR #7: no verifier review posted (approvals.py verdict)"
+    ]
+    assert writers == ["worker", "stranger"]
+
+
+def test_without_a_user_token_the_prs_author_and_writers_reviews_count(
+    monkeypatch: pytest.MonkeyPatch, writers: list[str]
 ) -> None:
     """An installation token (the approvals workflow's `github.token`) can't read `GET /user`: the gate trusts the
-    PR's author, the shared account, instead of failing every PR with a verifier review."""
+    PR's author and the repo's writers instead of failing every PR with a verifier review."""
 
     def gh(*args: str, data: str | None = None) -> str:
         assert args[:2] == ("api", "user"), args
