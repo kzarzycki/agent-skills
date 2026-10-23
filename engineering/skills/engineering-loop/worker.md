@@ -41,8 +41,9 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    Every host with Playwright's Chromium in `~/.cache/ms-playwright` can render headless;
    hand over the PNG paths.
    Run browser tests and drives headless: a window that opens on the owner's machine takes
-   focus from what they are doing. Never attach to a browser already open there (over CDP
-   or a remote-debugging port), since that one is headed. Where a test can't run headless,
+   focus from what they are doing. Start a headless browser of your own rather than attaching to one already open there
+   (over CDP or a remote-debugging port), since that one is headed; attach only when the
+   check needs that browser's logins, and say so in the report. Where a test can't run headless,
    open the browser in the background without taking focus and say in the report which
    test needed it and why. A project whose e2e opens a headed browser by default names the
    headless switch in its `docs/agents/` files.
