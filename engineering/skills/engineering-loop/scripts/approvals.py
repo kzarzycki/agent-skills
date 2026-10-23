@@ -28,7 +28,8 @@ approval record. Without docs/agents/issue-tracker.md no label's shape is checke
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
 each issue, where loop.md has `signoff:` rules (below); the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
-PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
+PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
+public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
@@ -879,13 +880,16 @@ def proofs(
 
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:` lines: a body
-    starting `Verifier (<family>), pass <n>`, by the PR's author or the account running this, since anyone can review
-    a public repo. A string names why none can be read."""
+    starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
+    anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
+    A string names why none can be read."""
     reviews = pull["reviews"]
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
+    others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
+    trusted |= {login for login in others if writer(login)}
     return [
         (
             ((review.get("commit") or {}).get("oid") or "").lower(),
