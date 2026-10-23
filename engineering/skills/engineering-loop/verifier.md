@@ -50,7 +50,7 @@ yourself, keeping standards and spec as separate axes.
   report's head.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
-  says how), the API with its client,
+  says how, and when a headed one is allowed), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
   looked right. Real data you see may go in your report, never in anything bound for the
