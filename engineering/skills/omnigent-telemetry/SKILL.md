@@ -6,12 +6,14 @@ description: Report Omnigent spend, tokens by model, session trees, scheduled-ta
 # Omnigent telemetry
 
 ```sh
-python3 scripts/omnigent_telemetry.py [--days N] [--json] [--html PATH] [--db-container NAME]
+python3 scripts/omnigent_telemetry.py [--days N] [--server URL] [--json] [--html PATH] [--db-container NAME]
 ```
 
 `scripts/omnigent_telemetry.py` is relative to this skill's folder. The window is the last
 `N` UTC days, today included (default 7), counted as `GET /v1/usage` counts its 7 and 30.
-It exits 0 whenever it prints a report. `--json` prints the report as data; `--html PATH`
+Outside an Omnigent session on a machine with several logins,
+`--server URL` names the server the API sections are read from; without it they are left out
+with the reason. It exits 0 whenever it prints a report. `--json` prints the report as data; `--html PATH`
 also writes one page from the same data, with no script and nothing fetched, so it opens
 offline. The page holds the numbers; a retro's narrative stays the `retro` skill's.
 

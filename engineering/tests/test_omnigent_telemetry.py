@@ -173,3 +173,23 @@ def test_usage_decodes_in_each_frame_omnigent_writes() -> None:
     assert telemetry.decode_usage((b"\x00\x00" + doc).hex()) == {"total_cost_usd": 0.12}
     assert telemetry.decode_usage(doc.hex()) == {"total_cost_usd": 0.12}
     assert telemetry.decode_usage(None) == {}
+
+
+def test_server_names_the_omnigent_the_usage_is_read_from(monkeypatch, capsys) -> None:
+    servers: list[str] = []
+
+    class Named:
+        def __init__(self, named: str = "") -> None:
+            servers.append(named)
+
+        def call(self, method: str, path: str) -> dict:
+            return {"sessions": []}
+
+    def no_db(*_: object) -> None:
+        raise telemetry.Fail("no database")
+
+    monkeypatch.setattr(telemetry, "Omnigent", Named)
+    monkeypatch.setattr(telemetry, "fetch_db", no_db)
+    monkeypatch.setattr(telemetry, "codex_rate_limits", lambda: None)
+    assert telemetry.main(["--server", "https://work.example", "--json"]) == 0
+    assert servers == ["https://work.example"]

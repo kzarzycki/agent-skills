@@ -1137,7 +1137,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     assert titles == ["t", "t-r2"]
 
 
-def test_the_server_comes_from_the_one_login_when_config_names_none(
+def test_outside_a_session_the_server_is_named_or_the_one_login_never_config_yaml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config, tokens = tmp_path / "config.yaml", tmp_path / "auth_tokens.json"
@@ -1148,18 +1148,20 @@ def test_the_server_comes_from_the_one_login_when_config_names_none(
     tokens.write_text('{"https://omnigent.example/": {}}')
     assert omnigent_agent.Omnigent().base == "https://omnigent.example"
     tokens.write_text('{"https://a.example": {}, "https://b.example": {}}')  # a guess: refuse
-    with pytest.raises(omnigent_agent.Fail, match="no server"):
-        omnigent_agent.Omnigent()
     config.write_text("server: https://named.example\nhost:\n  host_id: host_1\n")
-    assert omnigent_agent.Omnigent().base == "https://named.example"
+    with pytest.raises(omnigent_agent.Fail, match="which Omnigent server"):
+        omnigent_agent.Omnigent()  # config.yaml's server: is a default, not an answer
+    assert omnigent_agent.Omnigent("https://a.example").base == "https://a.example"
 
 
 def test_a_session_acts_on_its_own_server_over_the_config_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config = tmp_path / "config.yaml"
+    config, tokens = tmp_path / "config.yaml", tmp_path / "auth_tokens.json"
     config.write_text("server: https://personal.example\nhost:\n  host_id: host_1\n")
+    tokens.write_text('{"https://login.example": {}}')  # a lone login loses to the session too
     monkeypatch.setattr(omnigent_agent, "CONFIG", config)
+    monkeypatch.setattr(omnigent_agent, "AUTH_TOKENS", tokens)
     monkeypatch.setenv("RUNNER_SERVER_URL", "https://work.example/")
     assert omnigent_agent.Omnigent().base == "https://work.example"
     assert omnigent_agent.Omnigent("https://personal.example").base == "https://personal.example"
