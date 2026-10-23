@@ -31,7 +31,7 @@ Every owner message gets exactly one of these, in the same turn:
 
 | The owner sends | You do | You say |
 |---|---|---|
-| A new ask (no lead is on it) | Start a lead (Starting a lead) | One line: started, with the lead's session named. A question only when the lead can't begin without the answer. |
+| A new ask (no lead is on it) | File its intent issue with the owner's words and only cheap missing facts, then start a lead on it; investigate nothing first (Starting a lead) | One line: started, with the lead's session named. A question only when the lead can't begin without the answer. |
 | A follow-up on a lead's ask | Relay it (Relaying) | One line naming the lead it went to. |
 | A question about the project | Answer from the board, the leads' reports and what `watch` last printed. A question that needs investigation is a new ask. | The answer, one line per lead, each with its PR or issue link. |
 | Several asks in one message | One lead per independent ask | One line saying what was split out. |
@@ -44,6 +44,18 @@ its landing order.
 
 ## Starting a lead
 
+- **Issue first.** File the ask as an intent issue (Problem, Change, Acceptance, from the
+  repo's template, on the project board when the repo has one) before you start a lead, and
+  make the brief hand the lead that issue as its spec so it opens no second one: an issue
+  board keeps an ask's intent and state across sessions in the project where every
+  later session looks. Work that isn't repo work (a config change on one machine, a
+  login) gets no issue, since there is no board to keep it on.
+- **Delegate, don't investigate.** The investigation is the lead's first step: you read no
+  code, logs or history to find a cause or shape a fix before the lead starts, since that
+  spends your context on work the lead repeats, delays the lead, and anchors it on your
+  guess. Add to the issue only a cheap fact the owner left out (a link, an id, which repo or
+  host, the one log line they pointed at), never a diagnosis. When the intent itself is
+  unclear, ask the owner in one line instead of finding out yourself.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
   and the time), then only what a lead could not find itself: a project fact or a
   standing decision the owner gave you, and the default you chose where the ask forks. No
