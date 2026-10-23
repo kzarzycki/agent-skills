@@ -47,9 +47,9 @@ its landing order.
 - **Issue first.** File the ask as an intent issue (Problem, Change, Acceptance, from the
   repo's template, on the project board when the repo has one) before you start a lead, and
   make the brief hand the lead that issue as its spec so it opens no second one: an issue
-  board keeps an ask's intent and state across sessions, while a brief file and your own
-  board die with their sessions. Work that isn't repo work (a config change on one machine,
-  a login) gets no issue, since there is no board to keep it on.
+  board keeps an ask's intent and state across sessions in the project where every
+  later session looks. Work that isn't repo work (a config change on one machine, a
+  login) gets no issue, since there is no board to keep it on.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
   and the time), then only what a lead could not find itself: a project fact or a
   standing decision the owner gave you, and the default you chose where the ask forks. No
