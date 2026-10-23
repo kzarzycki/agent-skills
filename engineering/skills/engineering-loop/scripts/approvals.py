@@ -63,7 +63,8 @@ commits signed by its maintainers' keys (GitHub signs its own squash with GitHub
 hold, but where `land` would merge it squashes the PR in this checkout instead: one commit with the head's tree on the
 base's tip, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key (`gpg.format ssh`, `user.signingkey`) and
 checked with `git verify-commit` against the allowed signers file. It pushes that commit to the PR's branch, pinned to
-the head the gates checked, then fast-forwards the base to it, so GitHub shows the PR merged; exit 0. It never turns
+the head the gates checked, then fast-forwards the base to it, so GitHub shows the PR merged; exit 0. A base push
+refused (the base moved meanwhile) puts the PR's branch back on its head, exit 1. It never turns
 auto-merge on, since GitHub would sign that squash, and waits (exit 3) while checks are pending. It refuses (exit 1),
 before touching the PR, a PR from another repository (its branch isn't ours to push), a base other than the line's,
 auto-merge or the merge queue on, an `origin` that isn't the PR's repo, a checkout that signs nothing, or a missing
@@ -1061,7 +1062,8 @@ def signed_squash(pull: dict[str, Any], signers: Path) -> str:
         raise Refused(
             f"PR #{pr}: the squash is not signed by a key in {signers}: {' '.join(exc.stderr.split())}"
         ) from exc
-    # the PR's own branch first, pinned to the head the gates checked
+    # the PR's branch first, pinned to the head the gates checked: GitHub marks the PR merged only when its head is
+    # already the PR's branch as the base reaches it (one atomic push of both leaves the PR closed instead)
     git(
         "push",
         "-q",
@@ -1069,7 +1071,27 @@ def signed_squash(pull: dict[str, Any], signers: Path) -> str:
         "origin",
         f"{commit}:refs/heads/{branch}",
     )
-    git("push", "-q", "origin", f"{commit}:refs/heads/{base}")
+    try:
+        git(
+            "push",
+            "-q",
+            f"--force-with-lease=refs/heads/{base}:{tip}",
+            "origin",
+            f"{commit}:refs/heads/{base}",
+        )
+    except subprocess.CalledProcessError as exc:
+        # a base that moved meanwhile, or refused the push: put the PR's branch back on the checked head, leased to
+        # the squash so a push to the branch since then stays
+        git(
+            "push",
+            "-q",
+            f"--force-with-lease=refs/heads/{branch}:{commit}",
+            "origin",
+            f"{head}:refs/heads/{branch}",
+        )
+        raise Refused(
+            f"PR #{pr}: {base} refused the squash, so {branch} is back at {head}: {' '.join(exc.stderr.split())}"
+        ) from exc
     return commit
 
 

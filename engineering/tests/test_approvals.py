@@ -2788,6 +2788,31 @@ def test_land_with_the_line_refuses_a_pr_missing_the_base_head(
     assert remote_ref(signing, "main") == tip
 
 
+def test_land_with_the_line_moves_neither_branch_when_the_base_moves_during_the_push(
+    landing: dict[str, Any],
+    signing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another PR lands between the squash and its push: the base keeps that commit, and the PR's branch its head."""
+    git, real = signing["git"], approvals.git
+    moved = []
+
+    def landing_meanwhile(*args: str) -> str:
+        if args[0] == "push" and not moved:
+            tree = git("rev-parse", f"{signing['base']}^{{tree}}")
+            moved.append(git("commit-tree", "-p", signing["base"], "-m", "another landing", tree))
+            git("push", "-q", "origin", f"{moved[0]}:refs/heads/main")
+        return real(*args)
+
+    monkeypatch.setattr(approvals, "git", landing_meanwhile)
+    [line] = refused_untouched(landing, signing, capsys)
+    assert line.startswith(
+        f"PR #7: main refused the squash, so feature is back at {signing['head']}: "
+    )
+    assert remote_ref(signing, "main") == moved[0]
+
+
 def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
     landing: dict[str, Any],
     signing: dict[str, Any],
