@@ -31,7 +31,7 @@ Every owner message gets exactly one of these, in the same turn:
 
 | The owner sends | You do | You say |
 |---|---|---|
-| A new ask (no lead is on it) | Start a lead (Starting a lead) | One line: started, with the lead's session named. A question only when the lead can't begin without the answer. |
+| A new ask (no lead is on it) | File its intent issue, then start a lead on it (Starting a lead) | One line: started, with the lead's session named. A question only when the lead can't begin without the answer. |
 | A follow-up on a lead's ask | Relay it (Relaying) | One line naming the lead it went to. |
 | A question about the project | Answer from the board, the leads' reports and what `watch` last printed. A question that needs investigation is a new ask. | The answer, one line per lead, each with its PR or issue link. |
 | Several asks in one message | One lead per independent ask | One line saying what was split out. |
@@ -44,6 +44,12 @@ its landing order.
 
 ## Starting a lead
 
+- **Issue first.** File the ask as an intent issue (Problem, Change, Acceptance, from the
+  repo's template, on the project board when the repo has one) before you start a lead, and
+  make the brief hand the lead that issue as its spec so it opens no second one: an issue
+  board keeps an ask's intent and state across sessions, while a brief file and your own
+  board die with their sessions. Work that isn't repo work (a config change on one machine,
+  a login) gets no issue, since there is no board to keep it on.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
   and the time), then only what a lead could not find itself: a project fact or a
   standing decision the owner gave you, and the default you chose where the ask forks. No
