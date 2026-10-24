@@ -33,7 +33,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), `Worker model: <tier> for <condition>` (Models), `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records), and `Opt-out: allowed` for a project where a person may work outside the loop (Approvals and proof). | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), `Worker model: <tier> for <condition>` (Models), `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records), `Opt-out: allowed` for a project where a person may work outside the loop (Approvals and proof), and `Land: local signed squash to <branch>, allowed signers <path>` for a repo that trusts only commits its maintainers sign: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how). | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels, Extra categories, Renamed labels and Board (the board's own names for the loop's columns) | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -241,8 +241,9 @@ verifier, review angles run as native subagents, never as full harness sessions.
   (`handoff` skill) when finished or stuck. Never idle: schedule a time-gated check and
   keep working.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
-  is of the other model family when that family is installed and within quota, since it
-  misses different things; otherwise, as for a user with one family installed, a fresh
+  is of the other model family when that family is installed, within quota and the
+  backend can start it (native starts only its own harness's subagents; Omnigent starts
+  either), since it misses different things; otherwise, as for a user with one family installed, a fresh
   session of the same family is the normal path. The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
@@ -332,7 +333,8 @@ verifier, review angles run as native subagents, never as full harness sessions.
   re-reads the whole transcript it copied; revive a stuck or interrupted agent rather than
   restart it.
 - **Turns.** A turn the owner reads (not a child's path-only reply) ends with `DONE`,
-  `STILL WORKING` or `USER NEEDED`. A status reply opens with a tl;dr: the loop step with
+  `STILL WORKING` or `USER NEEDED`; a `USER NEEDED` line wins over an earlier `DONE`, since an ask
+  after it still needs its answer. A status reply opens with a tl;dr: the loop step with
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.

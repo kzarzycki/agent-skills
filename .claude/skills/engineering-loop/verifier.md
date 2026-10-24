@@ -50,7 +50,7 @@ yourself, keeping standards and spec as separate axes.
   report's head.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
-  says how), the API with its client,
+  says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
   looked right. Real data you see may go in your report, never in anything bound for the
@@ -83,8 +83,10 @@ keep these lines exact:
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
   review's inline comment, moved to the nearest line of the diff when outside it), then
   the failing input or contradicted requirement and the evidence (the command and its
-  output) up to the next heading outside a code fence. `verdict` refuses a `### `
-  heading it can't read, rather than leave that finding off the review.
+  output) up to the next heading outside a code fence. Any other `### ` heading is a
+  sub-heading and posts nothing. `verdict` refuses a `### ` heading with a `(<severity>)`
+  it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
+  than leave a finding off the review.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`.
   The merge reads the review as covering that commit only, so a push after your review

@@ -4,7 +4,7 @@ Start each worker or verifier with its own background command, whose exit wakes 
 working meanwhile:
 
 ```bash
-python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> --role <role-file>
+python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> --role <role-file>
 ```
 
 Run it from the worktree the child works in, because the script makes its current
@@ -75,6 +75,12 @@ choice, set in the environment once. Omnigent applies it as the session's
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
 `start` refuses the flag for Codex and ignores the variable.
 
+**Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
+agent's name starts that agent, found among the server's agents, then the caller's own
+(`scope=user`). Its tools may run on another machine, so its brief goes inline in the first
+message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to the aliases only
+(`--model` works for any). An unknown name fails before a session is created.
+
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
 is given, so a reviewer of the author's family is always a deliberate choice. Whether a
@@ -140,7 +146,7 @@ notice. One that still owes its report is covered by your supervisor's registry,
 and `send` armed (Supervising sessions, below); for one that owes none, keep
 `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the background.
 
-**Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex>
+**Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex|AGENT>
 <title> <brief-file> <report-path>` starts a lead with no parent session, still filed under
 the repo's project: the owner opens it from the sidebar and talks to it, its own children
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
@@ -172,6 +178,20 @@ prompts) holds every message until the question is answered, so `relay` answers 
 message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
 the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
 message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+
+**Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
+[--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
+[--dry-run]` relays one message to every followed lead in the registry (default
+`$OMNIGENT_SUPERVISE_REGISTRY`), each `--include` session and, with `--active-hours`, every
+top-level session of yours (not one shared with you) updated within N hours, all at once rather than one `relay` after another,
+each waiting on its own delivery. It never sends to its own session, an archived one or one in a
+project whose name contains "automations", nor to one with a question or approval prompt
+pending (`skipped: waiting on a question`), since `relay` would give a question the message as
+its answer; answer that one with its own `relay`. `--project` (matched as `start` matches a
+project: exact, else ignoring case and punctuation, two loose matches an error), `--host` and `--exclude` narrow the set. One
+line per target: `delivered`, `queued …`, `skipped: <why>` or `failed: <why>` (also a session it could
+not read); exit 1 when one failed, `--dry-run` included, which lists the targets and sends
+nothing.
 
 **Approving a prompt.** `python3 scripts/omnigent_agent.py approve <session> [--decline]`
 accepts, or declines, every approval prompt the session has pending, never a question, and
@@ -292,11 +312,14 @@ A line ending in the field `follow` (`<session>=<report>`, the brief file, `foll
 never given up on, nor revived or sent the resume line as a session owing a report is (with
 `--console` its routing may nudge or revive it). Its lines go to `--notify` as the others do, but only
 when they are news, so the notified session is not woken for a turn that changed nothing:
-a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED`, once it holds
+a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED` (a `USER NEEDED`
+line wins over an earlier `DONE` or `PARKED` one, since an ask after a `DONE` still needs its answer), once it holds
 as `watch` counts an end; any other turn end only once the lead and its live children wrote
 nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
-time was not stuck; a prompt or a failure, each once per occurrence; and `archived`, which is the
+time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
+child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
+at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
 
@@ -344,7 +367,7 @@ lead and `progress_at`, so new progress starts a new chain.
 | failed | rule | the first time a revive, after it act |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
-| `USER NEEDED` | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
+| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
 | a question | rule | act, for one `relay` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
@@ -431,8 +454,15 @@ supervisor its own label or unit name. On macOS, until logout:
 
 ```bash
 launchctl submit -l <label> -o <log>.out -e <log>.err -- /bin/sh -c \
-  "PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py supervise --registry <file> --notify <session>"
+  "PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py --server $RUNNER_SERVER_URL supervise --registry <file> --notify <session>"
 ```
+
+A job also starts without the session's `RUNNER_SERVER_URL`, so the command names the server
+(the shell expands it at submit time). `omnigent_agent.py` acts on the first of `--server`,
+`$RUNNER_SERVER_URL` (set by the runner in every session), and the one login in
+`auth_tokens.json`. `config.yaml`'s `server:` is not read, because one account runs workloads on
+several servers and a single default sends some of them to the wrong one. Outside a session with
+several logins and no `--server`, the script refuses rather than guess.
 
 launchd restarts it if it exits; `launchctl print gui/$(id -u)/<label>` shows it and
 `launchctl remove <label>` stops it. For one that survives a reboot, write a LaunchAgent
