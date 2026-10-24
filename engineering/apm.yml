@@ -1,5 +1,5 @@
 name: engineering
-version: 0.23.0
+version: 0.23.1
 description: Project-scoped engineering workflows for coding agents
 author: Krzysztof Zarzycki
 targets:

@@ -80,7 +80,11 @@ A PR stays a draft until no core finding is open (Review trail on the PR), so CI
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
-draft, `mise run check` before each push is its check.
+draft, `mise run check` before each push is its check. With `CI: none` in loop.md, the
+check on a head you push for review is `python3 scripts/approvals.py local-ci --record`
+instead, committed and clean: it runs the merge check, `mise run check:all`, and records
+the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
+for the same head and command rather than running the check again.
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
