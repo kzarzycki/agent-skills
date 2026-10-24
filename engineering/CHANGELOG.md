@@ -5,6 +5,33 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.23.0 - 2026-10-24
+
+Signed local landing, a verdict any writer can post, a chief of staff that files an intent
+issue and delegates without investigating, a broadcast to every lead, any registered agent by
+name, and headless browser checks.
+
+- Chief of staff page shows every Omnigent session on every host, grouped by project and coloured by what the owner must do (needs you, when convenient, running, done), red items first with what to do, where and why, and what changed since the owner last looked (#274).
+- `omnigent_agent.py start` and `run` label a session `omni.role` with its engineering-loop role, from the `--role` file's name (`lead`, `worker`, `verifier`), and `supervise --console` labels the chief of staff's own session `omni.role=cos`, so Omnigent's usage metrics can split spend by role (#276).
+- `omnigent_agent.py broadcast <message-file>` relays one message to every followed lead in the registry, `--include`'s sessions and, with `--active-hours N`, every recently updated top-level session, all at once, printing one line per target and exiting 1 when one failed or could not be read; never its own session, an archived one, an automations project's or one with a question or approval prompt pending (`skipped: waiting on a question`), which `relay` would answer with the broadcast; `--project`, `--host`, `--exclude` narrow it and `--dry-run` lists it (#277).
+- The native orchestration backend starts only native subagents of its own harness: the bare-CLI path (`codex exec`, `claude -p`) is gone, and a child of another model family points to the Omnigent backend. The engineering loop's Independent verification names the backend as a condition of the other-family verifier (#278).
+- The supervisor reads a timed wait from the time its wait names: of several UTC times after `STILL WORKING`, the one in a sentence or line that says "wait", else the earliest still to come when the message was written, else the earliest (#283).
+- The supervisor reads `USER NEEDED` anywhere in a lead's message as its ending, so an ask after a `DONE` line reaches the owner instead of reading as done (#285).
+- The routing table, the supervisor's follow rules, the chief of staff's ending rules and the loop's Turns rule state that a `USER NEEDED` line wins over an earlier `DONE` or `PARKED` line, as `ending_of` already reads it (#290).
+- The chief of staff page takes a board bullet's own 🔴🟡🟢⚪ marker as its level (#291).
+- `approvals.py verdict` reads a verifier report's `###` headings without a `(<severity>)` as sub-headings, posting nothing for them, instead of refusing the whole report; it refuses a report whose finding headings don't add up to its `VERDICT: <n> blocker, <n> major, <n> minor` counts, so a finding in any other shape is never dropped without a word (#293).
+- `post_demo.sh` posts in a repo with immutable releases: when `immutable-releases` reports `enabled: true` it creates one prerelease per post, `demo-pr<N>-<sha7>-<time>`, with the videos attached by the same `gh release create`, instead of uploading to the shared `demos` release, which GitHub refuses with HTTP 422. Other repos keep `demos` (#295).
+- `supervise --registry` reports a followed lead's prompt only after it has been pending for 120 s (`PROMPT_CONFIRM_SECONDS`), re-reading the session at each look. Omnigent shows a child's prompt on its parent too, and the lead answers it within seconds, so the `--console` supervisor no longer posts the owner an approval that clears by itself (#297).
+- `omnigent_agent.py` and `omnigent_telemetry.py` no longer read `config.yaml`'s `server:`: outside a session they act on `--server` or the one login, and refuse otherwise, since one account runs workloads on several servers (#302).
+- The chief of staff page groups the board's asks, and its "Needs you now" list, by project or by the area a bullet names (`- 🔴 **voice_note:** …`); the "Board: when convenient" group is gone (#304).
+- `omnigent_agent.py` acts on the session's own Omnigent server (`$RUNNER_SERVER_URL`) ahead of `config.yaml`'s, with `--server` to name one; the chief-of-staff page and the detached supervisor name it too, for hosts with runners for several servers (#312).
+- The chief of staff files an intent issue before starting a lead and hands the lead that issue as its spec, so an ask's intent and state survive on the issue board across sessions; non-repo work gets none (#314).
+- The chief of staff delegates a new ask without investigating it: it files the intent issue with the owner's words and only cheap missing facts, asks when the intent is unclear, and starts the lead, whose first step is the investigation (#316).
+- `engineering-loop`: workers and verifiers run browser tests and UI drives in a headless browser of their own, attach to the owner's open automation browser only when the check needs its logins, and where headless is impossible open one in the background without focus, saying which test needed it (#318).
+- `land` can land a PR as a locally signed squash: with loop.md's `Land: local signed squash to <branch>, allowed signers <path>`, it squashes the proven PR here, signs it with the checkout's SSH key, checks it against the allowed signers, and pushes it to the PR's branch and then the base, so a repo that trusts only its maintainers' signatures can use the loop's landing; without the line landing is unchanged (#320).
+- The merge gate counts a verifier review posted by any account that can write to the repo, not only the PR's author or the account running it, so a colleague (or their agent) who verifies or fixes someone else's PR can post the verdict that lands it, in CI too (#323).
+- `omnigent_agent.py start` and `run` take any registered agent's name, a user's own included (`claude` and `codex` stay aliases): the lookup reads the server's agents, then the caller's (`scope=user`), following pages, and an unknown name fails before any session is created. An agent outside the two aliases gets its brief inline in the first message, since its tools may run on another machine (#327).
+
 ## 0.22.0 - 2026-10-21
 
 A chief of staff that runs from its own home and wakes only on a lead's news, through a
