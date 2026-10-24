@@ -4668,3 +4668,64 @@ def test_an_ask_after_a_done_line_is_the_ending_and_goes_to_the_owner() -> None:
         "owner",
         "no standing decision to cover it",
     )
+
+
+def _agent_server(monkeypatch: pytest.MonkeyPatch, pages: dict[str, object]) -> list[tuple]:
+    """``Omnigent.call`` answering from ``pages`` by path; the calls it saw are returned."""
+    calls: list[tuple] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        calls.append((method, path, body))
+        return pages[path]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", raising=False)
+    return calls
+
+
+def test_a_users_own_agent_is_found_after_the_server_s_pages_and_gets_its_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _agent_server(
+        monkeypatch,
+        {
+            "/v1/agents": {"data": [{"name": "s1", "id": "x"}], "has_more": True, "last_id": "x"},
+            "/v1/agents?after=x": {"data": [{"name": "s2", "id": "y"}], "has_more": False},
+            "/v1/agents?scope=user": {
+                "data": [{"name": "mine0", "id": "m0"}],
+                "has_more": True,
+                "last_id": "m0",
+            },
+            "/v1/agents?scope=user&after=m0": {"data": [{"name": "claude-cloud", "id": "cc"}]},
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        },
+    )
+    omnigent_agent.Omnigent().create("claude-cloud", "t", permission_mode="plan")
+    assert calls[-1][2]["agent_id"] == "cc"
+    assert "terminal_launch_args" not in calls[-1][2]  # a claude flag, not this agent's
+
+
+def test_an_unknown_agent_fails_naming_it_before_any_session_is_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _agent_server(
+        monkeypatch, {"/v1/agents": {"data": []}, "/v1/agents?scope=user": {"data": []}}
+    )
+    with pytest.raises(omnigent_agent.Fail, match="agent nope not registered"):
+        omnigent_agent.Omnigent().create("nope", "t")
+    assert all(path != "/v1/sessions" for _, path, _ in calls)
+
+
+def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    sent = next(i for i in og.items(sid) if i["type"] == "message")["content"][0]["text"]
+    assert sent.startswith("Work on t. Your brief:") and sent.endswith("do X")
+    assert not omnigent_agent.brief_of(report).exists()
+    with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
+        omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
