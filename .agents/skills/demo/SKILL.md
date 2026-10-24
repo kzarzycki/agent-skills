@@ -45,7 +45,9 @@ scripts/post_demo.sh [--pr <number>] "<what it shows>" <video.mp4>...
 of the repo's `demos` prerelease, creating it on first use, and posts one `## Demo`
 comment naming the head commit and linking the videos. It minimizes your earlier `## Demo`
 comments as outdated so only the current one is open. The PR defaults to the current
-branch's. Then name the demo in the PR body's Evidence.
+branch's. A repo with immutable releases refuses uploads to a published release, so there
+the script creates one prerelease per post (`demo-pr<N>-<sha7>-<time>`) with the videos
+attached by the same `gh release create`, and links those. Then name the demo in the PR body's Evidence.
 
 The video is a link to download, not a player inline in the comment: GitHub plays only
 videos dragged into its web editor, and neither `gh` nor the API can make that upload.

@@ -571,6 +571,11 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--days", type=int, default=7, help="last N UTC days, today included (7)")
+    p.add_argument(
+        "--server",
+        default="",
+        help="Omnigent server URL; default: this session's, else the one login",
+    )
     p.add_argument("--json", action="store_true", help="print the report as JSON")
     p.add_argument("--html", metavar="PATH", help="also write a self-contained HTML page")
     p.add_argument(
@@ -588,7 +593,7 @@ def main(argv: list[str] | None = None) -> int:
         reason = f"Postgres via `docker exec {args.db_container}` unreachable: {str(e)[:200]}"
         left_out.update(dict.fromkeys(DB_SECTIONS, reason))
     try:
-        usage = Omnigent().call("GET", "/v1/usage")
+        usage = Omnigent(args.server).call("GET", "/v1/usage")
     except (Fail, OSError, ValueError) as e:
         left_out["spend and session-tree cost (API)"] = str(e)
     r = build(usage, db, codex_rate_limits(), args.days, now, left_out)

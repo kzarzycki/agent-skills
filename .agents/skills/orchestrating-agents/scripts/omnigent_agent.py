@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
-    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py relay <session> <message-file>
+    python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
@@ -30,7 +31,15 @@ exit 0 once it is in the history (or a copy the session has not answered yet alr
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
 on questions (``ask_user_question``) gets the message as each question's answer instead, exit 0,
-since its pending inputs wait on the answer; an approval prompt it never answers. ``approve``
+since its pending inputs wait on the answer; an approval prompt it never answers. ``broadcast``
+relays one message to every followed lead in the registry (``--registry``, else
+``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
+top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
+one in an automations project, nor one with a question or approval prompt pending, which a
+question would take as its answer (``skipped: waiting on a question``); ``--project``, ``--host`` and ``--exclude`` narrow the set. One line per target
+(``delivered``, ``queued …``, ``skipped: <why>``, ``failed: <why>``, also for a session it could
+not read); exit 1 when one failed;
+``--dry-run`` only lists them. ``approve``
 accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
 tool call it answered; exit 1 when none was pending or a resolve failed. Whether an agent may
 approve is the project's policy, not this script's. ``status`` prints one line per session:
@@ -96,7 +105,8 @@ starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1
 child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
-brief with an empty backtick span (a name an unquoted heredoc ran). Server and host come from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
+brief with an empty backtick span (a name an unquoted heredoc ran). The server is ``--server``, else the session's ``$RUNNER_SERVER_URL``, else the one login; the host comes
+from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
 own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists it. Stdlib only.
 """
 
@@ -114,6 +124,7 @@ import socket
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, NoReturn
@@ -121,6 +132,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
@@ -137,6 +149,11 @@ SETTLE_SECONDS = 600.0
 # Out of its turn this long, the report unchanged as long: the turn has ended. One idle look is no
 # proof, since a session can read idle mid-turn (IDLE_GRACE_SECONDS above).
 TURN_END_SECONDS = 30.0
+# A followed lead's prompt pending this long across looks is news. Omnigent mirrors each
+# descendant's prompt onto its parent's ``pending_elicitations`` (``params.target_session_id``),
+# so a lead in bypassPermissions shows its child's prompt, which the lead's own supervisor
+# reports and the lead answers within a minute; one that clears sooner was never the owner's.
+PROMPT_CONFIRM_SECONDS = 120.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0)
@@ -180,11 +197,11 @@ WAIT = re.compile(
 )
 # A ``STILL WORKING`` naming a UTC time ("until 2026-10-21T23:17Z", "(2026-10-21 23:17 UTC)"): a
 # timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``; a time already
-# past holds nothing off.
-TIMED = re.compile(
-    r"STILL WORKING\b.*?\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b",
-    re.DOTALL,
-)
+# past holds nothing off. Of several times, the one in a sentence or line that says "wait" is the
+# wait's, else the earliest still to come when the message was written (its ``created_at``, so a
+# passed timer keeps its wait), else the earliest: a rule "until <time>" quoted first is not it.
+TIMED = re.compile(r"\b(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)(:\d\d)?\s*(?:Z|UTC)\b")
+WAIT_WORD = re.compile(r"\bwait(?:s|ing|ed)?\b", re.IGNORECASE)
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
 STATE_SCHEMA = "cos-state/1"
 # The small model that routes what the rules can't settle, with its limits; any failure routes act.
@@ -218,6 +235,7 @@ ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send fo
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
+BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
 # A host over either limit has no room for another session: they time out and fail there. Knobs,
 # since what a host carries depends on its hardware and what else runs on it.
 MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)
@@ -292,8 +310,8 @@ def revive_line(report: Path, briefs: list[Path]) -> str:
 
 
 def _logged_in_server() -> str:
-    """The one server Omnigent holds a login for, when config.yaml names none (newer installs
-    keep it only there); empty when there are none or several, since then it is a guess."""
+    """The one server Omnigent holds a login for; empty when there are none or several, since then
+    it is a guess."""
     try:
         servers = list(json.loads(AUTH_TOKENS.read_text()))
     except (OSError, ValueError, TypeError):
@@ -312,16 +330,19 @@ def _omnigent_python() -> str:
 
 
 class Omnigent:
-    def __init__(self) -> None:
+    def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
-        server, host = (
-            re.search(r"^server:\s*(\S+)", text, re.MULTILINE),
-            re.search(r"^\s+host_id:\s*(\S+)", text, re.MULTILINE),
-        )
-        base = server.group(1) if server else _logged_in_server()
-        if not base or not host:
+        host = re.search(r"^\s+host_id:\s*(\S+)", text, re.MULTILINE)
+        # One account runs workloads on several servers, so config.yaml's single `server:` is a
+        # guess and is not read: a session acts on its own server (the runner sets
+        # RUNNER_SERVER_URL), anything else names one, and only a lone login stands in for it.
+        base = named or os.environ.get("RUNNER_SERVER_URL", "") or _logged_in_server()
+        if not host:
+            raise Fail(f"{CONFIG} lacks host.host_id")
+        if not base:
             raise Fail(
-                f"{CONFIG} lacks host.host_id, or no server: neither `server:` there nor one login in {AUTH_TOKENS}"
+                f"which Omnigent server? Not inside a session, no --server, and {AUTH_TOKENS}"
+                " holds not exactly one login: pass --server <url>"
             )
         self.base, self.host_id = base.rstrip("/"), host.group(1)
         self._token = ""
@@ -387,10 +408,23 @@ class Omnigent:
                 raise Fail(f"{method} {path}: {type(e).__name__}: {e}") from e
 
     def agent_id(self, name: str) -> str:
-        agents = self.call("GET", "/v1/agents")
-        for a in agents.get("data", agents) if isinstance(agents, dict) else agents:
-            if a.get("name") == name:
-                return str(a["id"])
+        """The id of the registered agent called ``name`` (``claude`` and ``codex`` are aliases for
+        the native agents): the server's agents first, then the caller's own (``scope=user``, which
+        ``GET /v1/agents`` leaves out), following each list's pages until the name turns up."""
+        name = AGENTS.get(name, name)
+        for path in ("/v1/agents", "/v1/agents?scope=user"):
+            after = ""
+            while True:
+                sep = "&" if "?" in path else "?"
+                page = self.call("GET", path + (f"{sep}after={after}" if after else ""))
+                agents = page.get("data", page) if isinstance(page, dict) else page
+                for a in agents:
+                    if a.get("name") == name:
+                        return str(a["id"])
+                last = page.get("last_id") if isinstance(page, dict) else None
+                if not (isinstance(page, dict) and page.get("has_more") and last):
+                    break
+                after = str(last)
         raise Fail(f"agent {name} not registered")
 
     def project(self, name: str) -> dict | None:
@@ -419,9 +453,10 @@ class Omnigent:
         workspace: str | None = None,
         permission_mode: str | None = None,
         host_id: str | None = None,
+        role: str | None = None,
     ) -> str:
-        body = {
-            "agent_id": self.agent_id(AGENTS[agent]),
+        body: dict[str, object] = {
+            "agent_id": self.agent_id(agent),
             "title": title,
             "host_id": host_id or self.host_id,
             "workspace": workspace or os.getcwd(),
@@ -441,7 +476,10 @@ class Omnigent:
                 " set OMNIGENT_PROJECT to file it",
                 file=sys.stderr,
             )
-        if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
+        # The variable names only exist for the two aliases; any other agent takes --model.
+        if model := model or (
+            agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
+        ):
             body["model_override"] = model
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
         # starts its terminal (the session fails "Codex native bridge state is missing").
@@ -449,6 +487,9 @@ class Omnigent:
             mode := permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
         ):
             body["terminal_launch_args"] = ["--permission-mode", mode]
+        # The loop role, which Omnigent's usage metrics split spend by: a role file's name.
+        if role and (name := Path(role).stem) in ROLES:
+            body["labels"] = {"omni.role": name}
         return str(self.call("POST", "/v1/sessions", body)["id"])
 
     def host(self, name: str) -> str:
@@ -795,14 +836,17 @@ def send(
     return "delivered"
 
 
-def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
+def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float, answer: bool = True) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
     the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
     gets ``text`` as each one's answer instead: its pending inputs wait on the answer, and an
     interrupt would drop them and hold input until the question's hook marker goes stale
-    (kzarzycki/omnigent#14). An approval prompt it never answers."""
+    (kzarzycki/omnigent#14). An approval prompt it never answers. With ``answer`` off, a session
+    with any prompt pending (a question or an approval) is skipped instead, sent nothing."""
     info = og.info(sid)
     pending = info.get("pending_elicitations") or []
+    if pending and not answer:
+        return f"session {sid}: skipped: waiting on a question"
     asks = questions_of(info)
     if asks and len(asks) == len(pending):
         for e in pending:
@@ -821,6 +865,103 @@ def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float) -> str:
             why = "until the session's current step ends"
         raise Queued(f"session {sid}: queued {why}; it lands then")
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+
+
+def broadcast_targets(
+    og: Omnigent,
+    registry: Path | None,
+    active_hours: float | None,
+    include: list[str],
+    projects: list[str],
+    hosts: list[str],
+    exclude: list[str],
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """``broadcast``'s targets, each ``(id, label)``, and a line per named one it never sends to,
+    ``skipped: <why>``, or ``failed: <why>`` when it could not be read: the registry's followed
+    leads, ``--include``'s sessions and, with ``active_hours``, every top-level session of the
+    caller's updated that recently; never the caller's own session, an archived one or one in an
+    automations project. ``projects`` (each matched as ``Omnigent.project`` matches a name),
+    ``hosts`` and ``exclude`` narrow the set."""
+    found: dict[str, dict] = {}
+    if active_hours is not None:
+        since = time.time() - active_hours * 3600
+        # ponytail: one page of the 1000 newest; page with `after` once a host keeps more live
+        page = og.call(
+            "GET",
+            "/v1/sessions?kind=default&visibility=mine&sort_by=updated_at&order=desc&limit=1000",
+        )
+        found = {
+            str(s["id"]): s
+            for s in page.get("data", [])
+            if float(s.get("updated_at") or 0) >= since
+        }
+    named = [s for s, owes in registered(registry)[0].items() if owes[3]] if registry else []
+    for sid in named + include:
+        if sid not in found:
+            try:
+                found[sid] = og.info(sid)
+            except Fail as e:
+                found[sid] = {"id": sid, "error": reason(e)}
+    listed = og.call("GET", "/v1/projects")
+    listed = listed.get("data", listed) if isinstance(listed, dict) else listed
+    project_of = {str(p["id"]): str(p.get("name") or "") for p in listed}
+    host_of = og.hosts()
+    wanted = set()
+    for name in projects:
+        if not (match := og.project(name)):
+            raise Fail(f"--project {name} names no project")
+        wanted.add(str(match.get("name") or ""))
+    targets, unsent = [], []
+    for sid, s in found.items():
+        project = project_of.get(str(s.get("project_id") or ""), "")
+        host = str(s.get("host_id") or "")
+        label = (
+            f"{sid} {s.get('title') or ''} ({project or 'no project'}, {host_of.get(host, host)})"
+        )
+        if (
+            sid in exclude
+            or (projects and "error" not in s and project not in wanted)
+            or (hosts and "error" not in s and not {host, host_of.get(host)} & set(hosts))
+        ):
+            continue
+        if "error" in s:  # never reached: a lead missed is a failure, not a skip
+            unsent.append(f"{label}: failed: {s['error']}")
+            continue
+        why = (
+            (sid == own_id() and "this session")
+            or (s.get("archived") and "archived")
+            or ("automations" in project.casefold() and f"automations project {project!r}")
+            or (s.get("parent_session_id") and "a sub-agent")
+        )
+        if why:
+            unsent.append(f"{label}: skipped: {why}")
+        else:
+            targets.append((sid, label))
+    return targets, unsent
+
+
+def broadcast(
+    og: Omnigent, targets: list[tuple[str, str]], text: str, confirm_seconds: float
+) -> bool:
+    """``relay`` ``text`` to every target at once, printing one line per target as it settles;
+    whether one failed. A session with a question or approval prompt pending is skipped: ``relay``
+    would give a question the broadcast as its answer, and an approval holds it unread."""
+
+    def one(sid: str) -> str:
+        try:
+            return relay(og, sid, text, confirm_seconds, False).removeprefix(f"session {sid}: ")
+        except Queued as e:
+            return str(e).removeprefix(f"session {sid}: ")
+        except Exception as e:  # noqa: BLE001 - one target's failure is its line, never the others'
+            return f"failed: {reason(e)}"
+
+    failed = False
+    with ThreadPoolExecutor(BROADCAST_WORKERS) as pool:
+        lines = {pool.submit(one, sid): label for sid, label in targets}
+        for done in as_completed(lines):
+            failed |= done.result().startswith("failed:")
+            print(f"{lines[done]}: {done.result()}", flush=True)
+    return failed
 
 
 def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], bool]:
@@ -899,9 +1040,10 @@ def start(
     ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
-    if host_id and host_id != og.host_id:
-        # A file here is not on that host; inline, a Claude lead may read it as pasted text and
-        # ask its starter for a go-ahead.
+    if (host_id and host_id != og.host_id) or agent not in AGENTS:
+        # A file here is not on that host, nor where an agent outside the two aliases runs its
+        # tools (a cloud VM); inline, a Claude lead may read it as pasted text and ask its starter
+        # for a go-ahead.
         text = f"Work on {title}. Your brief:\n\n{full}"
     else:
         # The brief goes in a file beside the report and the message only names it: a child can
@@ -936,7 +1078,9 @@ def start(
             n += 1
             try:
                 sid, error = (
-                    og.create(agent, name, model, top_level, workspace, permission_mode, host_id),
+                    og.create(
+                        agent, name, model, top_level, workspace, permission_mode, host_id, role
+                    ),
                     None,
                 )
             except Fail as e:
@@ -1414,6 +1558,14 @@ def follow(
     if key[0] == "archived":
         return line, key
     if key[0] != "ended":
+        if key[0] == "blocked" and told.get(("occurrence", sid)) != key:
+            # a mirrored child's prompt its lead answers in seconds: news once it holds
+            # (PROMPT_CONFIRM_SECONDS), each look re-reading the session
+            held = holding.get(sid)
+            if not held or held[0] != key:
+                held = holding[sid] = (key, time.monotonic())
+            if time.monotonic() - held[1] < PROMPT_CONFIRM_SECONDS:
+                return "", key
         holding.pop(sid, None)
         if key[0] == "running":
             told.pop(("occurrence", sid), None)
@@ -1649,24 +1801,45 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     return {
         "state": state,
         "error": error if state == "failed" else None,
-        "ending": m.group(1) if (m := ENDING.search(text)) else None,
-        "wait": wait_of(text),
+        "ending": ending_of(text),
+        "wait": wait_of(text, said[-1].get("created_at") if said else None),
         "last_line": text.splitlines()[0][:200] if text else "",
     }
 
 
-def wait_of(text: str) -> str:
+def ending_of(text: str) -> str | None:
+    """The ending a message names: ``USER NEEDED`` when any line opens with it, since an ask
+    after a ``DONE`` line still needs its answer; else the first line's ``DONE`` or ``PARKED``."""
+    endings = [m.group(1) for m in ENDING.finditer(text)]
+    return "USER NEEDED" if "USER NEEDED" in endings else next(iter(endings), None)
+
+
+def wait_of(text: str, at: float | None = None) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
-    (``until <UTC time>`` for a timed one), else ``unknown``."""
-    if (m := ENDING.search(text)) and m.group(1) == "PARKED":
+    (``until <UTC time>`` for a timed one, ``TIMED`` says which, ``at`` being when the message was
+    written), else ``unknown``."""
+    if ending_of(text) == "PARKED":
         return "parked"
-    if m := TIMED.search(text):
-        at = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
+    if (start := text.find("STILL WORKING")) >= 0:
+        times = []  # (said with a wait, the time, as written)
+        for sentence in re.split(r"(?<=[.!?])\s+|\n", text[start:]):
+            for m in TIMED.finditer(sentence):
+                due = f"{m.group(1)}T{m.group(2)}{m.group(3) or ''}Z"
+                try:
+                    times.append(
+                        (bool(WAIT_WORD.search(sentence)), datetime.fromisoformat(due), due)
+                    )
+                except ValueError:
+                    pass  # a mistyped date names no time: the wait word, if any, decides
+        waited = [x for x in times if x[0]]
+        times.sort(key=lambda x: x[1])
         try:
-            datetime.fromisoformat(at)
-            return f"until {at}"
-        except ValueError:
-            pass  # a mistyped date names no time: the wait word, if any, decides
+            written = float(at) if at is not None else None
+        except (TypeError, ValueError):
+            written = None  # an odd created_at: the earliest decides
+        ahead = [x for x in times if written is not None and x[1].timestamp() > written]
+        if pick := (waited or ahead or times)[:1]:
+            return f"until {pick[0][2]}"
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
     return "unknown"
@@ -1727,7 +1900,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         text, wait = event["head"], wait_of(event["head"])
         if not ENDING.search(text) and wait == "unknown":
             return "rule", "act", "its report names no ending"
-    ending = m.group(1) if (m := ENDING.search(text)) else None
+    ending = ending_of(text)
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
     if event.get("repeat"):
@@ -1747,9 +1920,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     return "model", {"none": "record", "owner": "owner", "act": "nudge"}.get(answer, "act"), why
 
 
-def triage(event: str, decisions: str) -> tuple[str, str]:
+def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[str, str]:
     """The small model's route for ``event`` (``none``, ``act`` or ``owner``) and why, under the
-    standing ``decisions``. One headless call with no tools, settings or MCP servers, the event
+    standing ``decisions``; ``prompt`` is its system prompt, with a ``{decisions}`` slot. One headless call with no tools, settings or MCP servers, the event
     on stdin; an answer other than one JSON line naming a route, a missing ``claude``, a non-zero
     exit or ``MODEL_SECONDS`` passing is ``unsure``, which ``route`` acts on."""
     cmd = ["claude", "-p", "--model", os.environ.get("OMNIGENT_SMALL_MODEL") or SMALL_MODEL]
@@ -1761,7 +1934,7 @@ def triage(event: str, decisions: str) -> tuple[str, str]:
         "--strict-mcp-config",
         "--no-session-persistence",
     ]
-    cmd += ["--system-prompt", ROUTING_PROMPT.format(decisions=decisions.strip() or "(none)")]
+    cmd += ["--system-prompt", prompt.format(decisions=decisions.strip() or "(none)")]
     env = {**os.environ, "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(MODEL_TOKENS)}
     try:
         out = subprocess.run(
@@ -1852,6 +2025,11 @@ def supervise_registry(
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
+    if console and (me := parent_id()):  # only the chief of staff runs the console
+        try:
+            og.label(me, {"omni.role": "cos"})
+        except Fail as e:
+            print(f"{me}: role label not written: {e}", file=sys.stderr)
     if not isinstance(state["rate"].get("model_calls"), list):
         state["rate"]["model_calls"] = []  # the shape before the routing counted calls
     # what a crash left open, by id: each is looked up in its lead's history, never sent again
@@ -2311,8 +2489,8 @@ def supervise_registry(
                 error = None
             read = lead["report_read"] = {"id": mid, "head": head, "error": error}
         if read["head"] is not None:
-            ending = ENDING.search(read["head"])
-            lead.update(ending=ending.group(1) if ending else None, wait=wait_of(read["head"]))
+            at = said[-1].get("created_at")  # the report was written by then
+            lead.update(ending=ending_of(read["head"]), wait=wait_of(read["head"], at))
 
     def active(sid: str) -> float:
         """``og.active``, else 0 with the error logged: a missed read only delays a deadline."""
@@ -2467,6 +2645,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    ap.add_argument(
+        "--server",
+        default="",
+        help="Omnigent server URL to act on; default: this session's ($RUNNER_SERVER_URL), else the one login",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("run", "start"):
         p = sub.add_parser(
@@ -2476,7 +2659,9 @@ def main(argv: list[str] | None = None) -> int:
             if name == "run"
             else "start a child, or a lead with --top-level, and return once its brief landed",
         )
-        p.add_argument("agent", choices=AGENTS)
+        p.add_argument(
+            "agent", help="claude, codex, or the name of any registered agent (your own included)"
+        )
         p.add_argument("title")
         p.add_argument("brief", type=Path, help="file with the task specifics")
         p.add_argument("report", type=Path)
@@ -2529,6 +2714,28 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("relay")
     p.add_argument("session")
     p.add_argument("message", type=Path, help="file with the message; it owes no report")
+    p.add_argument("--confirm-seconds", type=float, default=60.0)
+    p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
+    p.add_argument("message", type=Path, help="file with the message; it owes no report")
+    p.add_argument(
+        "--registry",
+        type=Path,
+        default=os.environ.get("OMNIGENT_SUPERVISE_REGISTRY") or None,
+        help="send to each followed lead here (default: $OMNIGENT_SUPERVISE_REGISTRY)",
+    )
+    p.add_argument(
+        "--active-hours",
+        type=float,
+        metavar="N",
+        help="also send to every top-level session updated within N hours",
+    )
+    p.add_argument("--include", action="append", default=[], metavar="ID", help="add a session")
+    p.add_argument("--exclude", action="append", default=[], metavar="ID", help="drop a session")
+    p.add_argument(
+        "--project", action="append", default=[], metavar="NAME", help="only this project"
+    )
+    p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
+    p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     sub.add_parser("capacity", description="exit 0 when this host has room for another session")
     p = sub.add_parser("approve")
@@ -2592,7 +2799,7 @@ def main(argv: list[str] | None = None) -> int:
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
-        if p.prog.split()[-1] not in ("start", "reap", "relay", "approve", "status"):
+        if p.prog.split()[-1] not in ("start", "reap", "relay", "broadcast", "approve", "status"):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap"):
             p.add_argument(
@@ -2627,13 +2834,26 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2  # argparse's usage exit
                 raise usage
             args.path = str(line[0])
-        og = Omnigent()
+        og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "report":
             print(og.read_file(sid, args.path))
             return 0
         if args.cmd == "relay":
             print(relay(og, args.session, args.message.read_text(), args.confirm_seconds))
             return 0
+        if args.cmd == "broadcast":
+            text = args.message.read_text()
+            targets, unsent = broadcast_targets(
+                og, registry, args.active_hours, args.include, args.project, args.host, args.exclude
+            )
+            for line in unsent + ([label for _, label in targets] if args.dry_run else []):
+                print(line, flush=True)
+            if not targets:
+                print("no session to send to", file=sys.stderr)
+            failed = any(": failed: " in line for line in unsent)
+            if not args.dry_run:
+                failed |= broadcast(og, targets, text, args.confirm_seconds)
+            return 1 if failed else 0
         if args.cmd == "approve":
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))
@@ -2763,7 +2983,7 @@ def main(argv: list[str] | None = None) -> int:
                 registry,
                 sid,
                 report,
-                [brief_of(report)] if not remote else None,
+                [brief_of(report)] if not remote and args.agent in AGENTS else None,
                 verdict=verifier,
                 followed=args.top_level,
                 after=args.after or "",

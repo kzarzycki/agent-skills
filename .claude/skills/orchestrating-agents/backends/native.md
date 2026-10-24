@@ -15,20 +15,12 @@ The default backend: every harness has one, and it needs no setup.
 - **List:** the harness's list of running agents and background tasks.
 - **Close:** stop the agent once its final reply has arrived.
 
-## A child in another harness
+## A child of another model family
 
-When the caller wants a child of another model family (which role does is the caller's
-policy: under the engineering loop, its SKILL.md, Independent verification) and that
-family's CLI is installed, run it non-interactively, as one background command from the
-worktree. Its prompt is one line naming a brief file in a gitignored directory of that workspace
-(under the engineering loop, `tmp/loop/`), because a child
-given pasted text tends to ask for a go-ahead:
-
-```bash
-codex exec -C <worktree> "Read <brief-file> and follow it."   # a Codex child
-claude -p "Read <brief-file> and follow it."                  # a Claude child
-```
-
-The permission settings for unattended runs are the developer's. The command's exit is
-the wake (wait and watch both); then read the report it names. Without that CLI, a fresh
-native subagent of your own harness is the only child this backend can start.
+This backend starts only native subagents of your own harness. A child of another model
+family (which role does is the caller's policy: under the engineering loop, its
+SKILL.md, Independent verification) is the Omnigent backend's
+([omnigent.md](omnigent.md)); never start it with a bare CLI (`claude -p`, `codex exec`,
+`omp`, `gemini -p`, `agy -p`) from a tool call, since nothing then lists, watches or
+closes it. Without Omnigent, a fresh native subagent of your own harness is the only
+child to start.

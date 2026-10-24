@@ -31,7 +31,7 @@ Every owner message gets exactly one of these, in the same turn:
 
 | The owner sends | You do | You say |
 |---|---|---|
-| A new ask (no lead is on it) | Start a lead (Starting a lead) | One line: started, with the lead's session named. A question only when the lead can't begin without the answer. |
+| A new ask (no lead is on it) | File its intent issue with the owner's words and only cheap missing facts, then start a lead on it; investigate nothing first (Starting a lead) | One line: started, with the lead's session named. A question only when the lead can't begin without the answer. |
 | A follow-up on a lead's ask | Relay it (Relaying) | One line naming the lead it went to. |
 | A question about the project | Answer from the board, the leads' reports and what `watch` last printed. A question that needs investigation is a new ask. | The answer, one line per lead, each with its PR or issue link. |
 | Several asks in one message | One lead per independent ask | One line saying what was split out. |
@@ -44,6 +44,18 @@ its landing order.
 
 ## Starting a lead
 
+- **Issue first.** File the ask as an intent issue (Problem, Change, Acceptance, from the
+  repo's template, on the project board when the repo has one) before you start a lead, and
+  make the brief hand the lead that issue as its spec so it opens no second one: an issue
+  board keeps an ask's intent and state across sessions in the project where every
+  later session looks. Work that isn't repo work (a config change on one machine, a
+  login) gets no issue, since there is no board to keep it on.
+- **Delegate, don't investigate.** The investigation is the lead's first step: you read no
+  code, logs or history to find a cause or shape a fix before the lead starts, since that
+  spends your context on work the lead repeats, delays the lead, and anchors it on your
+  guess. Add to the issue only a cheap fact the owner left out (a link, an id, which repo or
+  host, the one log line they pointed at), never a diagnosis. When the intent itself is
+  unclear, ask the owner in one line instead of finding out yourself.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
   and the time), then only what a lead could not find itself: a project fact or a
   standing decision the owner gave you, and the default you chose where the ask forks. No
@@ -65,7 +77,7 @@ its landing order.
   which reports you can read, so the report stays under your `tmp/loop/`, inside both.
   Asks in different repos that only need a landing order get a lead each, the later
   brief naming the PR it waits on, since the order is all they share.
-- **Follow.** Run one detached supervisor, `python3 <script> supervise --registry <file>
+- **Follow.** Run one detached supervisor, `python3 <script> --server $RUNNER_SERVER_URL supervise --registry <file>
   --console --decisions <board> --notify <your session id>`
   (`../orchestrating-agents/backends/omnigent.md`, Running the supervisor detached; `<board>` is
   your handover file, whose `## Standing decisions` section the supervisor's routing reads), and
@@ -94,13 +106,23 @@ its landing order.
   lead you took over, or started some other way, you subscribe to with Omnigent's
   `sys_session_subscribe(session_id=<its id>)` tool call. Never poll, since a notice reaches you anyway.
 - **Page.** `scripts/cos_page.py --registry <file> --board <board> --omnigent <url>` serves
-  one page of what the supervisor writes (each lead with its session link, state, wait, last
-  line and age; events waiting on the owner and the board's `## Needs the owner`; recent events
-  with how each was settled). Run it as a systemd user unit beside the supervisor, tailnet-only:
+  one page of what needs the owner: every non-archived top-level Omnigent session on every
+  host, grouped by project and marked 🔴 needs you, 🟡 when convenient, 🟢 running or ⚪ done/FYI,
+  the red ones first as one line each (what to do, the session link, why), with what changed
+  since the owner last looked. Rules classify a session (a pending prompt, its ending or named
+  wait, its status, the supervisor's events routed `owner`, the board's `## Needs the owner`);
+  only an idle one they can't place goes to the supervisor's small model, once per last message.
+  Write each `## Needs the owner` bullet as `- 🔴 **<area>:** <text>`: the marker (🔴🟡🟢⚪) is
+  its level, and the bullet joins the project of a session whose 8-character id it names, else
+  its area, matched to an Omnigent project name ignoring case and punctuation, or a unique
+  prefix of one (`voice` for `Voice note`), else a group of its own; with neither it goes under
+  "Other". Only 🔴 and 🟡 bullets show, and the red list is grouped the same way.
+  The supervisor's recent events sit folded at the bottom. Run it as a systemd user unit beside
+  the supervisor, with the same `PATH` (it runs `claude` for the small model), tailnet-only:
   `--host` the machine's tailnet address (`tailscale ip -4`), or, where your user is the
   tailscale operator, the default 127.0.0.1 behind `tailscale serve --bg --https=<port>
   http://127.0.0.1:<port>`. Never a public address, never Funnel. It reads the files and
-  writes nothing.
+  the sessions, and writes nothing.
 - **Adopted sessions.** A session the owner hands you that they started themselves is a lead
   from then on: subscribe to it as above or add its line to the registry (`<session>=<report>`, a tab, `follow`), and answer its reversible
   questions under the owner's standing decisions (Authority).
@@ -120,7 +142,8 @@ its landing order.
 ## What a lead's turn ending means
 
 A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`, and
-with `PARKED` when you told it to park (Starting a lead, Host load).
+with `PARKED` when you told it to park (Starting a lead, Host load). A `USER NEEDED` line wins over
+an earlier `DONE` or `PARKED` line: an ask after a `DONE` is the ending, since it still needs its answer.
 
 Under `--console` the supervisor already did the routine part: it sends the stall nudge (once per
 progress chain) and the revive (once per lead) itself, as a `relay` whose text is `Supervisor:
@@ -158,7 +181,9 @@ checking the host's capacity (Host load), as before.
 `python3 <script> relay <session> <message-file>`: the owner's message verbatim, quoted
 with where it was said, and at most one line of yours, marked as yours. Never paraphrase
 the owner. A lead acts on the owner's quoted words; your line is a colleague's note. Nudges,
-and the line to a lead that waits on another's result, go the same way.
+and the line to a lead that waits on another's result, go the same way. A message for every
+lead at once (a temporary rule) goes through `broadcast <message-file>` instead (`--dry-run`
+first lists who gets it), which relays to them all concurrently.
 
 It returns at once, on this host or another, and its exit says what happened, so run it in
 the foreground and never poll the lead afterwards:

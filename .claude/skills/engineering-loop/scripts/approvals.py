@@ -28,7 +28,8 @@ approval record. Without docs/agents/issue-tracker.md no label's shape is checke
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
 each issue, where loop.md has `signoff:` rules (below); the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
-PR's author or the account running this posted it, since anyone can review a public repo: every one on the newest
+PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
+public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
@@ -58,6 +59,18 @@ green and the label where the change is high risk: `gh pr merge --squash --match
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
 exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
 merged PR: exit 0; a closed one: exit 1.
+With loop.md's line `Land: local signed squash to <branch>, allowed signers <path>`, for a repo that trusts only
+commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the same proofs and waits
+hold, but where `land` would merge it squashes the PR in this checkout instead: one commit with the head's tree on the
+base's tip, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key (`gpg.format ssh`, `user.signingkey`) and
+checked with `git verify-commit` against the allowed signers file. It pushes that commit to the PR's branch, pinned to
+the head the gates checked, then fast-forwards the base to it, so GitHub shows the PR merged; exit 0. A base push
+refused (the base moved meanwhile) puts the PR's branch back on its head, exit 1. It never turns
+auto-merge on, since GitHub would sign that squash, and waits (exit 3) while checks are pending. It refuses (exit 1),
+before touching the PR, a PR from another repository (its branch isn't ours to push), a base other than the line's,
+auto-merge or the merge queue on, an `origin` that isn't the PR's repo, a checkout that signs nothing, or a missing
+signers file; and at the merge a head that moved, a head that doesn't contain the base's tip (merge it in) and a
+signature the file doesn't allow. A `Land:` line it can't read is refused. Without the line nothing changes.
 `land --wait` runs it again every 30 seconds, printing each new state, while what waits is GitHub's merge state or CI
 on the head: a draft it marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
 once. With auto-merge on or the PR in a merge queue, whoever put it there, and after its own merge, which a base
@@ -68,7 +81,9 @@ a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
-`Verifier: <family>, pass <n>` line: one inline comment per finding, moved to the nearest line of the diff when its
+`Verifier: <family>, pass <n>` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
+headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
+inline comment per finding, moved to the nearest line of the diff when its
 line is outside it and saying so, and in the review's body when its file is outside the diff.
 
 An exact revert skips the spec and the verdict: a PR whose body has a line `Reverts #<n>` (GitHub's Revert button writes
@@ -179,7 +194,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""number author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -214,6 +229,14 @@ CONDITION = re.compile(
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 # loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
 OPT_OUT = r"^[ \t]*(?:[-*][ \t]+)?`?Opt-out:[ \t]*allowed`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
+# loop.md's local signed landing: `Land: local signed squash to <branch>, allowed signers <path>`, written as
+# `CI: none` is. LANDING finds any `Land:` line, so one SIGNED can't read is refused rather than landed on GitHub.
+SIGNED = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?`?Land:[ \t]*local signed squash to[ \t]+`?([^\s`,]+)`?,[ \t]*allowed signers[ \t]+"
+    r"`?([^`\n]+?)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+LANDING = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?Land:", re.MULTILINE | re.IGNORECASE)
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
@@ -857,13 +880,16 @@ def proofs(
 
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:` lines: a body
-    starting `Verifier (<family>), pass <n>`, by the PR's author or the account running this, since anyone can review
-    a public repo. A string names why none can be read."""
+    starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
+    anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
+    A string names why none can be read."""
     reviews = pull["reviews"]
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
+    others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
+    trusted |= {login for login in others if writer(login)}
     return [
         (
             ((review.get("commit") or {}).get("oid") or "").lower(),
@@ -966,6 +992,111 @@ def no_ci(loop: str | None) -> bool:
 
 def opted_out(loop: str | None) -> bool:
     return re.search(OPT_OUT, loop or "", re.MULTILINE | re.IGNORECASE) is not None
+
+
+def signed(loop: str | None) -> tuple[str, Path] | None:
+    """loop.md's `Land: local signed squash to <branch>, allowed signers <path>` as (branch, signers), None without a
+    `Land:` line. One it can't read is refused, since landing on GitHub instead would sign with GitHub's key."""
+    found = SIGNED.search(loop or "")
+    if found:
+        return found[1], Path(found[2]).expanduser()
+    if LANDING.search(loop or ""):
+        raise Refused(
+            "loop.md has a `Land:` line this can't read: write it"
+            " `Land: local signed squash to <branch>, allowed signers <path>`"
+        )
+    return None
+
+
+def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
+    """Why this checkout can't land the PR as a signed squash, checked before the PR is touched."""
+    where = f"PR #{pull['number']}"
+    if pull["isCrossRepository"]:
+        return f"{where} comes from another repository: its branch isn't ours to push, push it to {pull['baseRepository']['nameWithOwner']} first"
+    if pull["baseRefName"] != branch:
+        return f"{where} targets {pull['baseRefName']}, but loop.md lands signed squashes only to {branch}"
+    if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
+        return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
+    # the URL as configured, before any `insteadOf` rewrite
+    origin = subprocess.run(
+        ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
+    )
+    if github_repo(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
+        return f"this checkout's `origin` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
+    config = subprocess.run(
+        ["git", "config", "--get", "user.signingkey"], capture_output=True, text=True, check=False
+    )
+    gpg = subprocess.run(
+        ["git", "config", "--get", "gpg.format"], capture_output=True, text=True, check=False
+    )
+    if not config.stdout.strip() or gpg.stdout.strip() != "ssh":
+        return "this checkout signs no commits with an SSH key: set `gpg.format ssh` and `user.signingkey`"
+    if not signers.is_file():
+        return f"no allowed signers file at {signers}"
+    return None
+
+
+def signed_squash(pull: dict[str, Any], signers: Path) -> str:
+    """Squash the PR's head onto its base here, signed with this checkout's key and checked against `signers`, then
+    push it to the PR's branch and fast-forward the base to it: GitHub marks a PR merged once its head is in the
+    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing."""
+    pr, base, branch, head = (
+        pull["number"],
+        pull["baseRefName"],
+        pull["headRefName"],
+        pull["headRefOid"],
+    )
+    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    git(
+        "fetch", "-q", "origin", f"refs/pull/{pr}/head"
+    )  # alone: FETCH_HEAD names the first ref fetched
+    if git("rev-parse", "FETCH_HEAD").strip() != head:
+        raise Refused(f"PR #{pr}'s head moved past {head}: run land again")
+    tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    if subprocess.run(["git", "merge-base", "--is-ancestor", tip, head], check=False).returncode:
+        raise Refused(
+            f"PR #{pr} does not contain {base}'s head {tip}: merge origin/{base} in, rerun the gates, get a"
+            " verdict on the merge (lead.md step 8), then land again"
+        )
+    tree = git("rev-parse", f"{head}^{{tree}}").strip()
+    try:
+        commit = git("commit-tree", "-S", "-p", tip, "-m", f"{pull['title']} (#{pr})", tree).strip()
+        git("-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", commit)
+    except subprocess.CalledProcessError as exc:
+        raise Refused(
+            f"PR #{pr}: the squash is not signed by a key in {signers}: {' '.join(exc.stderr.split())}"
+        ) from exc
+    # the PR's branch first, pinned to the head the gates checked: GitHub marks the PR merged only when its head is
+    # already the PR's branch as the base reaches it (one atomic push of both leaves the PR closed instead)
+    git(
+        "push",
+        "-q",
+        f"--force-with-lease=refs/heads/{branch}:{head}",
+        "origin",
+        f"{commit}:refs/heads/{branch}",
+    )
+    try:
+        git(
+            "push",
+            "-q",
+            f"--force-with-lease=refs/heads/{base}:{tip}",
+            "origin",
+            f"{commit}:refs/heads/{base}",
+        )
+    except subprocess.CalledProcessError as exc:
+        # a base that moved meanwhile, or refused the push: put the PR's branch back on the checked head, leased to
+        # the squash so a push to the branch since then stays
+        git(
+            "push",
+            "-q",
+            f"--force-with-lease=refs/heads/{branch}:{commit}",
+            "origin",
+            f"{head}:refs/heads/{branch}",
+        )
+        raise Refused(
+            f"PR #{pr}: {base} refused the squash, so {branch} is back at {head}: {' '.join(exc.stderr.split())}"
+        ) from exc
+    return commit
 
 
 def outside(pull: dict[str, Any], loop: str | None) -> str | None:
@@ -1468,7 +1599,7 @@ def minimize(comment_id: str) -> None:
 
 def viewer() -> str | None:
     """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
-    token (`github.token`), where the PR's author, the shared account, is the one trusted."""
+    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes)."""
     try:
         return gh("api", "user", "--jq", ".login").strip()
     except subprocess.CalledProcessError:
@@ -1635,6 +1766,7 @@ def landing(
     merged or turned auto-merge on, and each approvals run is rerun once."""
     tracker, loop = project()
     cap(loop)  # an unreadable `cap:` line is refused before any proof or `gh pr ready`
+    local = signed(loop)  # and so is an unreadable `Land:` line
     pull = pull_request(pr)
     where, head = f"PR #{pr}", pull["headRefOid"]
     watching = reran is not None
@@ -1662,6 +1794,8 @@ def landing(
         for line in holds(pull, issues, loop) + found:
             print(line)
         return 1, None
+    if local and (why := unsignable(pull, *local)):
+        raise Refused(why)
     for line in flag(pull, issues, loop):
         print(line)
     required = required_checks(pull["baseRefName"])
@@ -1692,6 +1826,10 @@ def landing(
         gh("pr", "ready", str(pr))
         print(f"{where} is ready now: CI starts on ready, run land again")
         return WAITING, ON_CI
+    if not checking + owner and local:
+        commit = signed_squash(pull, local[1])
+        print(f"{where} landed in {pull['baseRefName']} as {commit}, signed by a key in {local[1]}")
+        return 0, None
     if not checking + owner:
         gh(*merge)
         print(f"{where} merges at {head}")
@@ -1704,7 +1842,8 @@ def landing(
         and required <= {name for name, _ in checks}
         and not RED.intersection(state for _, state in checks)
     )
-    if pending and required and auto_merge_allowed():
+    # GitHub's auto-merge would sign the squash with GitHub's key: a signed landing waits for the checks instead
+    if pending and required and not local and auto_merge_allowed():
         gh(*merge, "--auto")
         print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
         return 0, ON_MERGE
@@ -1803,12 +1942,18 @@ FINDING = re.compile(
     r"###[ \t]+(\S+)[ \t]+\((blocker|major|minor)\)[ \t]+`?([^\s`]+?):(\d+(?:-\d+)?)`?:?[ \t]+(.+?)[ \t]*",
     re.IGNORECASE,
 )
+# a `### ` heading with a severity in parentheses is meant as a finding; any other is a sub-heading, and a finding written
+# without one is caught by verdict()'s count check
+SEVERITY = re.compile(r"\((blocker|major|minor)\)", re.IGNORECASE)
+# the verdict's counts, which every finding heading must add up to
+COUNTED = re.compile(r"VERDICT:[ \t]*(\d+) blockers?,[ \t]*(\d+) majors?,[ \t]*(\d+) minors?\b.*")
 
 
 def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str]]:
     """Each finding of a report as (id, severity, path, line, title, body): its body up to the next heading of
-    levels 1 to 3 or the closing `Head:`/`VERDICT:`/`SATISFIED:` lines, outside a code fence. A `### ` heading that
-    is no finding is refused, since the review would leave it out without a word."""
+    levels 1 to 3 or the closing `Head:`/`VERDICT:`/`SATISFIED:` lines, outside a code fence. A `### ` heading with
+    a `(<severity>)` that doesn't read as a finding is refused, since the review would leave it out without a word;
+    any other is a sub-heading, which posts nothing."""
     found: list[tuple[str, str, str, str, str, list[str]]] = []
     body: list[str] | None = None  # the open finding's lines
     fenced = False
@@ -1817,7 +1962,7 @@ def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str
             fenced = not fenced
         elif not fenced and re.match(r"#{1,3} |(Head|VERDICT|SATISFIED):", line):
             body = None
-            if line.startswith("### "):
+            if line.startswith("### ") and SEVERITY.search(line):
                 heading = FINDING.fullmatch(line.rstrip())
                 if not heading:
                     raise Refused(
@@ -1888,11 +2033,23 @@ def verdict(pr: int, report: Path) -> int:
     ]
     if not passes:
         raise Refused(f"{report} has no `Verifier: <family>, pass <n>` line")
+    counted = COUNTED.fullmatch(verdicts[-1])
+    if not counted:
+        raise Refused(f"{report}: write the verdict `VERDICT: <n> blocker, <n> major, <n> minor`")
+    # a finding whose heading doesn't read as one would be left off the review without a word
+    found = findings(text, report)
+    tally = tuple(sum(f[1] == kind for f in found) for kind in ("blocker", "major", "minor"))
+    if tally != tuple(map(int, counted.groups())):
+        raise Refused(
+            f"{report}: `{verdicts[-1]}` counts {sum(map(int, counted.groups()))} findings, but {len(found)} "
+            f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
+            "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
+        )
     head, (family, number) = heads[-1].lower(), passes[-1].groups()
     heading = f"Verifier ({family}), pass {number}"
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
-    for name, severity, path, line, title, body in findings(text, report):
+    for name, severity, path, line, title, body in found:
         said = f"**{heading} · {name}** ({severity}): {title}"
         if not diff.get(path):
             outside.append(f"- {said}, at `{path}:{line}`, a file outside the diff\n\n{body}")

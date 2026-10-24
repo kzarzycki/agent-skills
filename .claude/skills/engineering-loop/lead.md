@@ -152,6 +152,8 @@ design, wireframes included for a UI, and delegate the rest.
      (`--match-head-commit`) once the base's required checks are green, or turns on auto-merge
      pinned to the head while they are pending, and waits for GitHub's merge, through the merge
      queue where the base requires one: exit 0, merged.
+     With loop.md's `Land: local signed squash` line it squashes, signs and pushes the PR from your
+     checkout instead, so run it where the signing key is (`approvals.py`'s docstring).
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
      merge queue, without a merge is exit 1. Exit 3 is what CI won't clear, once no required check is still pending: a red
