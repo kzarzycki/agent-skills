@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> [--role FILE]
-    python3 scripts/omnigent_agent.py start <claude|codex> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -408,10 +408,23 @@ class Omnigent:
                 raise Fail(f"{method} {path}: {type(e).__name__}: {e}") from e
 
     def agent_id(self, name: str) -> str:
-        agents = self.call("GET", "/v1/agents")
-        for a in agents.get("data", agents) if isinstance(agents, dict) else agents:
-            if a.get("name") == name:
-                return str(a["id"])
+        """The id of the registered agent called ``name`` (``claude`` and ``codex`` are aliases for
+        the native agents): the server's agents first, then the caller's own (``scope=user``, which
+        ``GET /v1/agents`` leaves out), following each list's pages until the name turns up."""
+        name = AGENTS.get(name, name)
+        for path in ("/v1/agents", "/v1/agents?scope=user"):
+            after = ""
+            while True:
+                sep = "&" if "?" in path else "?"
+                page = self.call("GET", path + (f"{sep}after={after}" if after else ""))
+                agents = page.get("data", page) if isinstance(page, dict) else page
+                for a in agents:
+                    if a.get("name") == name:
+                        return str(a["id"])
+                last = page.get("last_id") if isinstance(page, dict) else None
+                if not (isinstance(page, dict) and page.get("has_more") and last):
+                    break
+                after = str(last)
         raise Fail(f"agent {name} not registered")
 
     def project(self, name: str) -> dict | None:
@@ -443,7 +456,7 @@ class Omnigent:
         role: str | None = None,
     ) -> str:
         body: dict[str, object] = {
-            "agent_id": self.agent_id(AGENTS[agent]),
+            "agent_id": self.agent_id(agent),
             "title": title,
             "host_id": host_id or self.host_id,
             "workspace": workspace or os.getcwd(),
@@ -463,7 +476,10 @@ class Omnigent:
                 " set OMNIGENT_PROJECT to file it",
                 file=sys.stderr,
             )
-        if model := model or os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}"):
+        # The variable names only exist for the two aliases; any other agent takes --model.
+        if model := model or (
+            agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
+        ):
             body["model_override"] = model
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
         # starts its terminal (the session fails "Codex native bridge state is missing").
@@ -1024,9 +1040,10 @@ def start(
     ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
-    if host_id and host_id != og.host_id:
-        # A file here is not on that host; inline, a Claude lead may read it as pasted text and
-        # ask its starter for a go-ahead.
+    if (host_id and host_id != og.host_id) or agent not in AGENTS:
+        # A file here is not on that host, nor where an agent outside the two aliases runs its
+        # tools (a cloud VM); inline, a Claude lead may read it as pasted text and ask its starter
+        # for a go-ahead.
         text = f"Work on {title}. Your brief:\n\n{full}"
     else:
         # The brief goes in a file beside the report and the message only names it: a child can
@@ -2642,7 +2659,9 @@ def main(argv: list[str] | None = None) -> int:
             if name == "run"
             else "start a child, or a lead with --top-level, and return once its brief landed",
         )
-        p.add_argument("agent", choices=AGENTS)
+        p.add_argument(
+            "agent", help="claude, codex, or the name of any registered agent (your own included)"
+        )
         p.add_argument("title")
         p.add_argument("brief", type=Path, help="file with the task specifics")
         p.add_argument("report", type=Path)
@@ -2964,7 +2983,7 @@ def main(argv: list[str] | None = None) -> int:
                 registry,
                 sid,
                 report,
-                [brief_of(report)] if not remote else None,
+                [brief_of(report)] if not remote and args.agent in AGENTS else None,
                 verdict=verifier,
                 followed=args.top_level,
                 after=args.after or "",

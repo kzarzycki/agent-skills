@@ -4,7 +4,7 @@ Start each worker or verifier with its own background command, whose exit wakes 
 working meanwhile:
 
 ```bash
-python3 scripts/omnigent_agent.py run <claude|codex> <title> <brief-file> <report-path> --role <role-file>
+python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> --role <role-file>
 ```
 
 Run it from the worktree the child works in, because the script makes its current
@@ -75,6 +75,12 @@ choice, set in the environment once. Omnigent applies it as the session's
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
 `start` refuses the flag for Codex and ignores the variable.
 
+**Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
+agent's name starts that agent, found among the server's agents, then the caller's own
+(`scope=user`). Its tools may run on another machine, so its brief goes inline in the first
+message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to the aliases only
+(`--model` works for any). An unknown name fails before a session is created.
+
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
 is given, so a reviewer of the author's family is always a deliberate choice. Whether a
@@ -140,7 +146,7 @@ notice. One that still owes its report is covered by your supervisor's registry,
 and `send` armed (Supervising sessions, below); for one that owes none, keep
 `watch --children "$OMNIGENT_RUNNER_PRIMARY_SESSION_ID"` running in the background.
 
-**Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex>
+**Top-level leads.** `python3 scripts/omnigent_agent.py start --top-level <claude|codex|AGENT>
 <title> <brief-file> <report-path>` starts a lead with no parent session, still filed under
 the repo's project: the owner opens it from the sidebar and talks to it, its own children
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
