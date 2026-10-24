@@ -171,7 +171,7 @@ design, wireframes included for a UI, and delegate the rest.
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's label, `land` exits 3 with only that left
      once CI has passed the head (with `CI: none`, once `python3 scripts/approvals.py local-ci
-     <pr>` has recorded a pass on it), so the owner never approves a head CI could still
+     <pr>` has recorded a pass on it, reusing a `local-ci --record` pass on the same head), so the owner never approves a head CI could still
      reject: give them the PR link, ask for `approved:merge`, and run `land` again once it is on.
      The PR has landed only once `land` exits 0, or `gh pr view <pr> --json state,mergeCommit`
      shows `MERGED`. Then use the merge commit in the steps below.

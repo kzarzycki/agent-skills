@@ -12,7 +12,8 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
 2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
-   before each push. Once it exits 0, commit and push with `git push -u origin <branch>` as
+   before each push (with `CI: none`, `approvals.py local-ci --record` on the committed
+   head, SKILL.md, Adopting the loop). Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
    leaves its work on the branch. The lead merges your branch and opens the PR: a

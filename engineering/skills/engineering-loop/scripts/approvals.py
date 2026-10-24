@@ -6,6 +6,7 @@
     python3 scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     python3 scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
+    python3 scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     python3 scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
@@ -79,6 +80,10 @@ label or a local-ci record holds it, which GitHub never supplies; auto-merge tur
 without a merge is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
+A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
+exit, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR. When
+the record for the PR's exact head holds exit 0 and the same command, `local-ci <pr>` posts the pass from it, naming its
+time and host, instead of running the check again.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -146,6 +151,7 @@ import fnmatch
 import io
 import json
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -2080,9 +2086,16 @@ def git(*args: str) -> str:
 LOCAL_CI = ["mise", "run", "check:all"]
 
 
-def local_ci(pr: int) -> int:
-    """Run `mise run check:all` on a clean checkout at the PR head; post a record only when it passes untouched."""
-    head = pull_request(pr)["headRefOid"]
+def recorded(head: str) -> Path:
+    """Where a local-ci pass on `head` is recorded: the git common dir, which every worktree of the clone shares and no
+    commit carries."""
+    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    return common / "approvals" / "local-ci" / f"{head}.json"
+
+
+def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
+    """Run `mise run check:all` on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
+    check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
 
     def state() -> tuple[str, str]:
         # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
@@ -2096,7 +2109,7 @@ def local_ci(pr: int) -> int:
         return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
     before = state()
-    if before[0] != head:
+    if head and before[0] != head:
         raise Refused(
             f"the checkout is at {before[0]}, PR #{pr}'s head is {head}: push, or check out the head"
         )
@@ -2110,7 +2123,50 @@ def local_ci(pr: int) -> int:
         raise Refused(
             f"{command} changed the checkout, so it did not run on the head as pushed:\n{state()[1]}"
         )
-    comment(pr, f"{CHECKED}\nHead: {head}\nCommand: {command}\n")
+    record = {
+        "head": before[0],
+        "command": command,
+        "exit": code,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "host": socket.gethostname(),
+    }
+    where = recorded(before[0])
+    where.parent.mkdir(parents=True, exist_ok=True)
+    where.write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
+def reusable(head: str) -> dict[str, Any] | None:
+    """A recorded pass on exactly `head` with today's command, or None."""
+    try:
+        record = json.loads(recorded(head).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    same = (record.get("head"), record.get("command"), record.get("exit")) == (
+        head,
+        " ".join(LOCAL_CI),
+        0,
+    )
+    return record if same else None
+
+
+def local_ci(pr: int | None) -> int:
+    """With a PR: post a pass on its head, from a recorded run on that head and command or from a run now. Without
+    one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
+    if pr is None:
+        record = run_local_ci(None, None)
+        print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
+        return 0
+    head = pull_request(pr)["headRefOid"]
+    record = reusable(head)
+    if record:
+        source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+    else:
+        record = run_local_ci(pr, head)
+        source = ""
+    comment(pr, f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{source}")
     return 0
 
 
@@ -2131,7 +2187,8 @@ def main(argv: list[str]) -> int:
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
     recording = commands.add_parser("local-ci")
-    recording.add_argument("pr", type=int)
+    recording.add_argument("pr", type=int, nargs="?")
+    recording.add_argument("--record", action="store_true")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
@@ -2145,6 +2202,10 @@ def main(argv: list[str]) -> int:
         if args.command == "approve":
             return approve(args.point, args.number)
         if args.command == "local-ci":
+            if (args.pr is None) != args.record:
+                raise Refused(
+                    "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
+                )
             return local_ci(args.pr)
         if args.command == "land":
             return land(args.pr, args.wait)

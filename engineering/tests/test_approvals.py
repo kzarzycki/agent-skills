@@ -3062,11 +3062,17 @@ def test_check_reads_the_projects_own_components_and_categories(
 
 
 @pytest.fixture
-def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """A checkout at the PR head and clean; a test changes it, or what the check does to it."""
-    state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None}
+def checkout(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> dict[str, Any]:
+    """A checkout at the PR head and clean, its git common dir under tmp_path; a test changes it, or what the check
+    does to it. `runs` counts the checks run."""
+    state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None, "runs": 0}
+    state["common"] = tmp_path / "common.git"
 
     def git(*args: str) -> str:
+        if args == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
+            return f"{state['common']}\n"
         if args[0] == "rev-parse":
             return state["head"] + "\n"
         if args[0] == "ls-files":
@@ -3081,6 +3087,7 @@ def checkout(github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch) -> 
 
     def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
         assert (command, check) == (["mise", "run", "check:all"], False)
+        state["runs"] += 1
         if state["after"]:
             state["status"] = state["after"]
         return subprocess.CompletedProcess(command, state["exit"])
@@ -3099,6 +3106,15 @@ def test_a_passing_check_on_the_clean_head_is_recorded(
     assert github == [
         ("comment", 7, f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n")
     ]
+    record = json.loads(
+        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
+    )
+    assert {k: record[k] for k in ("head", "command", "exit")} == {
+        "head": HEAD,
+        "command": "mise run check:all",
+        "exit": 0,
+    }
+    assert record["time"] and record["host"]
 
 
 @pytest.mark.parametrize(
@@ -3121,6 +3137,78 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     assert approvals.main(["local-ci", "7"]) == 1
     assert github == []
     assert said in capsys.readouterr().out
+    assert not (checkout["common"] / "approvals").exists()
+
+
+@pytest.mark.parametrize(
+    "change", [{"status": " M app.py\n"}, {"exit": 2}, {"after": " M uv.lock\n"}]
+)
+def test_record_writes_only_a_passing_check_on_a_clean_unchanged_tree(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], change: dict[str, Any]
+) -> None:
+    checkout.update(change)
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert not (checkout["common"] / "approvals").exists()
+    checkout.update({"status": "", "exit": 0, "after": None})
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").exists()
+    assert github == []  # no PR yet: nothing is posted
+
+
+def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any]
+) -> None:
+    assert approvals.main(["local-ci", "--record"]) == 0
+    record = json.loads(
+        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
+    )
+    checkout["head"] = "c" * 40  # the checkout moved on: the record still proves the PR's head
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+    assert github == [
+        (
+            "comment",
+            7,
+            (
+                f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
+                f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+            ),
+        )
+    ]
+    posted = [body for kind, _pr, body in github if kind == "comment"]
+    merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
+    assert merge(merged, [approved(1, "area:web")], LOOP + "\nCI: none\n") == []
+
+
+@pytest.mark.parametrize(
+    ("file", "record"),
+    [
+        ("c" * 40, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
+        (HEAD, {"head": HEAD, "command": "mise run check", "exit": 0}),
+        (HEAD, {"head": HEAD, "command": "mise run check:all", "exit": 2}),
+        (HEAD, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
+    ],
+    ids=["another head", "another command", "a failed run", "a record naming another head"],
+)
+def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], file: str, record: dict[str, Any]
+) -> None:
+    where = checkout["common"] / "approvals" / "local-ci"
+    where.mkdir(parents=True)
+    (where / f"{file}.json").write_text(json.dumps({**record, "time": "t", "host": "h"}))
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+    assert github == [
+        ("comment", 7, f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n")
+    ]
+
+
+@pytest.mark.parametrize("argv", [["local-ci"], ["local-ci", "7", "--record"]])
+def test_local_ci_takes_a_pr_or_record(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], argv: list[str]
+) -> None:
+    assert approvals.main(argv) == 1
+    assert (checkout["runs"], github) == (0, [])
 
 
 def test_a_local_ci_record_is_the_merge_proof_without_ci(
@@ -3190,6 +3278,22 @@ def test_a_change_the_status_config_hides_still_records_nothing(
     assert approvals.main(["local-ci", "7"]) == 1
     assert github == []
     assert "the tree has changes" in capsys.readouterr().out
+
+
+def test_a_record_made_in_one_worktree_is_reused_from_another(
+    github: list[tuple[Any, ...]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    head = committed(repo)
+    git_in(repo, "worktree", "add", "-q", "--detach", str(tmp_path / "tree"), head)
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(tmp_path / "tree")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert git_in(repo, "status", "--porcelain", "--untracked-files=all") == ""  # nothing to commit
+    monkeypatch.chdir(repo)
+    assert approvals.reusable(head)["head"] == head
+    assert approvals.reusable("c" * 40) is None
 
 
 # --- the owner's policy: specs approved and merges landed without an agent's approval ---
