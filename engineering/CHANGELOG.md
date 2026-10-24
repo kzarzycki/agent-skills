@@ -5,12 +5,6 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
-## 0.23.1 - 2026-10-25
-
-A local merge check passed before review counts at landing.
-
-- `approvals.py local-ci --record` runs the merge check, `mise run check:all`, on HEAD with the same clean-tree checks as `local-ci <pr>`, and on exit 0 records the pass by commit (head, command, exit, time, host) under the git common dir, which every worktree sees and nothing commits. `local-ci <pr>` posts the pass from a record for the PR's exact head and the same command, naming its time and host, instead of running the check again; any other head, command or a failed run runs it as before, and that pass is recorded too. With `CI: none`, the loop's check on a head pushed for review is `local-ci --record` (#335).
-
 ## 0.23.0 - 2026-10-24
 
 Signed local landing, a verdict any writer can post, a chief of staff that files an intent
