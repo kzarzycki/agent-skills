@@ -52,6 +52,11 @@ yourself, keeping standards and spec as separate axes.
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
+- **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
+  or a queue, or outlast one tool call, starts detached with its output and exit code in a
+  log, `nohup flock <lock> sh -c '<cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1 &`,
+  and is polled in calls well under the tool's limit, up to a total budget you state: a
+  blocker that is only your own call timing out spends the pass on nothing.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
