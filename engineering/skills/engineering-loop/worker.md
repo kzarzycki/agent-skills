@@ -35,7 +35,8 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    of the instance) starts with the output of `git rev-parse HEAD` and the command that
    produced it, since a proof of another commit says nothing about the one under review.
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
-   commit does not already pin.
+   commit does not already pin. A fix that changes code a proof exercises reruns that proof
+   before the report, which lists each proof log with the SHA it names.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
    scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
