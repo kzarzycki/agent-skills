@@ -5,6 +5,14 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.23.3 - 2026-10-25
+
+The verifier judges each change's risk, a cause in another repo gets a generic issue there, and a project can opt in to workers in a cloud session.
+
+- The verifier judges risk on every review, a `Risk: low|high — <reason>` line that `verdict` requires, and asks for evidence that settles a risky but checkable change as a finding; a risk rule's new `verifier` term holds when that line on the head says anything but `low`, so `risk: verifier or path .github/**` sends the owner only what no check can settle. A `risk:high` the gate added for the line comes off when a later pass says `Risk: low`; the lead may dispute or raise risk, never lower it (#330).
+- A problem whose cause is in another repo (a shared skill, a tool, a project template) gets two issues: a generic one in the repo that owns the cause, naming nothing of the project when that repo is more public, and one in the project for its side, linking to it; links point from the less public repo to the more public one (#346).
+- An opt-in cloud worker, turned on by the `docs/agents/loop.md` line `Cloud worker: <agent>, gate <task>`: the lead and the verifier run on the host and only the workers run in cloud sessions, reporting on the PR (engineering-loop SKILL.md, Cloud worker). `omnigent_agent.py run|start|send|wait --pr <n>` has a cloud worker post its report as a REST comment on PR n and end its turn with the comment's URL, which `wait` writes to the report path once GitHub files the comment on that PR of the checkout's repository; `send --pr` takes only a comment newer than the report already there. Without the line the loop is unchanged (#355).
+
 ## 0.23.2 - 2026-10-25
 
 A recorded local pass counts at landing only under the gate environment it ran in.

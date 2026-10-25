@@ -33,7 +33,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Settings (the block `approvals.py` reads, below); Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, in words); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>` and `Worker model: <tier> for <condition>` (Models), which agents read. | every step but Gates |
+| `docs/agents/loop.md` | Settings (the block `approvals.py` reads, below); Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, in words); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` (Models) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -359,6 +359,56 @@ Agents are started, messaged, watched and closed with the `orchestrating-agents`
 (`../orchestrating-agents/SKILL.md`), which picks the backend and holds its rules, reports
 and questions as files among them. Inside a worker or
 verifier, review angles run as native subagents, never as full harness sessions.
+
+## Cloud worker
+
+With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead and the verifier run on
+the host and only the workers run in the cloud, as sessions of `<agent>`, a registered
+Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line nothing
+in this section applies and every role file reads as written. The split takes coding,
+compiling and unit tests off the host. What stays there is what the VM can't do: every
+`approvals.py` call and every thread resolution, since GitHub's GraphQL API answers 403 in the
+VM; the signed land, since the VM holds no key; a verifier of the other family, since Codex
+has no cloud bridge; anything that needs a device, a simulator, an emulator, a browser login
+or the owner's private network.
+
+- **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
+  triage, the merge of each worker's branch into the PR branch, the full gate (`mise run
+  check`, or `local-ci --record` with `CI: none`), the instance, the verdict's post, thread
+  resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
+  the light gate (what the VM can run: compile, unit tests, headless web tests on its
+  Chromium), before each push, and pushes its own branch. Its brief names that branch and
+  the role file by its path in the repo, since the host's worktrees and paths don't exist in
+  the VM. The verifier runs on the host in the lead's worktree, as verifier.md says.
+- **The PR is the interface for content.** The code is the worker's pushed branch. Its
+  report is one comment on the PR: the head SHA, each light-gate command with its exit
+  code, what it left out and why. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
+  workers) has the worker post it and writes it to the report path on the host, so the lead
+  reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
+  The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
+  lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
+  the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
+  the host.
+- **Control flow is the lead's own.** It starts the worker with `run --pr`, follows its turn
+  end, and sends a fix list or a failing log as a fresh `run --pr` whose brief names the
+  review or comment to read, since `run` finishes a worker once its report is in (the
+  backend's Follow-ups); `send --pr` reaches a worker still open, one whose turn ended
+  without a report. Nothing in
+  the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
+  stall the work, and nothing new watches the PR.
+- **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,
+  simulator and device tests), the instance, the acceptance examples and the evidence are
+  the lead's and the verifier's, on the host. A failure there costs a round trip (relay,
+  fix, push) instead of a local rerun, so it goes back with its diagnostics on the PR.
+- **Host builds.** The host compiles at most once per verifier pass, the full gate and the
+  instance build together, plus at most one compile for the verifier's mutation check, since
+  taking builds off the host is the split's point; a worker's iterations compile only in the
+  cloud.
+- **Nothing on GitHub names a host, a path or a session**: not the report, the verdict, the
+  evidence or a brief's text quoted there, since a public repo publishes them.
+- **Auto-fix stays off on loop PRs** (a cloud session that subscribes to its own PR), since it
+  pushes fixes and replies on threads by its own judgment, which is the lead's triage, and the
+  lead already briefs the worker on each fix.
 
 ## Rules for every role
 
