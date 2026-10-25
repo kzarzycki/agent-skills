@@ -13,8 +13,8 @@ several repos for a lead whose change spans them. The report path goes in a giti
 workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
-`pr182-verifier-p1`: the issue or PR, then the role. The brief file holds only the task
-specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
+`pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
+every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
 role file, long commands in the foreground, write the report to the path, reply with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title

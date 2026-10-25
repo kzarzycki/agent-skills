@@ -4873,3 +4873,46 @@ def test_a_followed_lead_starting_a_top_level_helper_hears_it_and_leaves_the_reg
     assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
     assert "s1=" in registry.read_text()
     assert og.subscriptions == [("lead1", "s0")]
+
+
+def test_a_message_argument_is_a_file_or_the_text_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    assert omnigent_agent.main(["relay", sid, "carry on with step 3"]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "carry on with step 3"
+    long = "Do X.\n" + "word " * 100  # past NAME_MAX: OSError File name too long before
+    assert omnigent_agent.main(["relay", sid, long]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == long
+    (tmp_path / "m.md").write_text("from a file")
+    assert omnigent_agent.main(["relay", sid, "m.md"]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "from a file"
+    capsys.readouterr()
+    assert omnigent_agent.main(["relay", sid, "missing.md"]) == 2
+    assert capsys.readouterr().err.strip() == (
+        "missing.md: no such file; pass a file or the text itself"
+    )
+
+
+def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    report, registry = tmp_path / "r.md", tmp_path / "leads.registry"
+    seen: list[str] = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "wait",
+        lambda *a, **k: seen.append(registry.read_text()) or str(report),
+    )
+    argv = ["send", sid, "use main as the base", str(report), "--registry", str(registry)]
+    assert omnigent_agent.main(argv) == 0
+    followup = tmp_path / "r.md.followup"
+    assert followup.read_text() == "use main as the base"
+    assert str(followup) in seen[0]
