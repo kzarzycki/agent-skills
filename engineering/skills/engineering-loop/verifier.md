@@ -37,6 +37,9 @@ yourself, keeping standards and spec as separate axes.
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
+- **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
+  has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
+  quarantines a test weakens a gate (Judge the risk).
 - **Out of scope:** an input the system never produces, an interleaving nobody can
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
   formatting and code-review's smell baseline are notes, not findings.
