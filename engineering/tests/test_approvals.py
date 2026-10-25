@@ -3069,6 +3069,7 @@ def checkout(
     does to it. `runs` counts the checks run."""
     state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None, "runs": 0}
     state["common"] = tmp_path / "common.git"
+    state["loop"] = LOOP
 
     def git(*args: str) -> str:
         if args == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
@@ -3096,6 +3097,7 @@ def checkout(
     monkeypatch.setattr(approvals, "git", git)
     monkeypatch.setattr(approvals.subprocess, "run", run)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)  # the faked run serves the check alone
+    monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
     return state
 
 
@@ -3104,7 +3106,11 @@ def test_a_passing_check_on_the_clean_head_is_recorded(
 ) -> None:
     assert approvals.main(["local-ci", "7"]) == 0
     assert github == [
-        ("comment", 7, f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n")
+        (
+            "comment",
+            7,
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
+        )
     ]
     record = json.loads(
         (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
@@ -3170,7 +3176,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
             "comment",
             7,
             (
-                f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
+                f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n"
                 f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
             ),
         )
@@ -3199,8 +3205,119 @@ def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
     assert github == [
-        ("comment", 7, f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n")
+        (
+            "comment",
+            7,
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
+        )
     ]
+
+
+ENV_LOOP = LOOP + "\nLocal CI env: GATE_UI_TESTS GATE_SCOPE\n"
+
+
+def recorded_pass(checkout: dict[str, Any]) -> dict[str, Any]:
+    return json.loads((checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text())
+
+
+def test_a_pass_recorded_under_another_env_runs_the_check_again(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout["loop"] = ENV_LOOP
+    monkeypatch.delenv("GATE_SCOPE", raising=False)
+    monkeypatch.setenv("GATE_UI_TESTS", "0")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert recorded_pass(checkout)["env"] == {"GATE_SCOPE": None, "GATE_UI_TESTS": "0"}
+    monkeypatch.delenv("GATE_UI_TESTS")  # unset is the default tier, not the same as 0
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 2
+    assert github == [
+        (
+            "comment",
+            7,
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
+        )
+    ]
+    assert recorded_pass(checkout)["env"] == {"GATE_SCOPE": None, "GATE_UI_TESTS": None}
+
+
+def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout["loop"] = ENV_LOOP
+    monkeypatch.setenv("GATE_UI_TESTS", "0")
+    monkeypatch.setenv("GATE_SCOPE", "changed")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    record = recorded_pass(checkout)
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+    assert github == [
+        (
+            "comment",
+            7,
+            (
+                f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
+                "Env: GATE_SCOPE=changed GATE_UI_TESTS=0\n"
+                f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+            ),
+        )
+    ]
+
+
+def test_a_record_without_env_runs_the_check_again(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any]
+) -> None:
+    where = checkout["common"] / "approvals" / "local-ci"
+    where.mkdir(parents=True)
+    old = {"head": HEAD, "command": "mise run check:all", "exit": 0, "time": "t", "host": "h"}
+    (where / f"{HEAD}.json").write_text(json.dumps(old))  # as 0.23.1 wrote it
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+    assert recorded_pass(checkout)["env"] == {}
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [{"time": None}, {"host": None}, {"time": 1}, {"env": []}],
+    ids=["no time", "no host", "a number for time", "env not a dict"],
+)
+def test_an_incomplete_record_runs_the_check_again(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], drop: dict[str, Any]
+) -> None:
+    where = checkout["common"] / "approvals" / "local-ci"
+    where.mkdir(parents=True)
+    full = {
+        "head": HEAD,
+        "command": "mise run check:all",
+        "exit": 0,
+        "env": {},
+        "time": "t",
+        "host": "h",
+    }
+    record = {k: v for k, v in {**full, **drop}.items() if v is not None}
+    (where / f"{HEAD}.json").write_text(json.dumps(record))
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+    assert github == [
+        (
+            "comment",
+            7,
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
+        )
+    ]
+
+
+@pytest.mark.parametrize("line", ["Local CI env:", "Local CI env: GATE-UI"])
+def test_an_unreadable_local_ci_env_line_is_refused(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    line: str,
+) -> None:
+    checkout["loop"] = LOOP + f"\n{line}\n"
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (checkout["runs"], github) == (0, [])
+    assert "Local CI env" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("argv", [["local-ci"], ["local-ci", "7", "--record"]])

@@ -81,9 +81,12 @@ without a merge is exit 1, and a red required check exit 3. Whatever CI won't cl
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
-exit, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR. When
-the record for the PR's exact head holds exit 0 and the same command, `local-ci <pr>` posts the pass from it, naming its
-time and host, instead of running the check again.
+exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
+`env` holds the value, or null for unset, of each variable loop.md's `Local CI env: NAME NAME…` line names, since a
+check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
+same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
+check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
+names left out, or `Env: default`).
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -150,6 +153,7 @@ import contextlib
 import fnmatch
 import io
 import json
+import os
 import re
 import socket
 import subprocess
@@ -243,6 +247,11 @@ SIGNED = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 LANDING = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?Land:", re.MULTILINE | re.IGNORECASE)
+# loop.md's `Local CI env: NAME NAME…`, the environment variables the merge check reads, written as `CI: none` is.
+LOCAL_CI_ENV = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?`?Local CI env:(.*?)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
@@ -2115,7 +2124,7 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command = " ".join(LOCAL_CI)
+    command, env = " ".join(LOCAL_CI), local_ci_env()
     code = subprocess.run(LOCAL_CI, check=False).returncode
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
@@ -2127,6 +2136,7 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
         "head": before[0],
         "command": command,
         "exit": code,
+        "env": env,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host": socket.gethostname(),
     }
@@ -2136,18 +2146,40 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
     return record
 
 
+def local_ci_env() -> dict[str, str | None]:
+    """The value of each variable loop.md's `Local CI env:` line names, None for one unset; {} without the line."""
+    found = LOCAL_CI_ENV.search(project()[1] or "")
+    names = found[1].replace("`", " ").split() if found else []
+    if found and (not names or not all(re.fullmatch(r"[A-Za-z_]\w*", name) for name in names)):
+        raise Refused(
+            f"loop.md's `{found[0].strip()}` is not a list of variable names: write `Local CI env: NAME NAME`"
+        )
+    return {name: os.environ.get(name) for name in sorted(names)}
+
+
+def env_line(env: dict[str, str | None]) -> str:
+    """The comment's line naming the environment the check ran under; unset names are left out."""
+    named = [f"{name}={value}" for name, value in env.items() if value is not None]
+    return f"Env: {' '.join(named) or 'default'}\n"
+
+
 def reusable(head: str) -> dict[str, Any] | None:
-    """A recorded pass on exactly `head` with today's command, or None."""
+    """A recorded pass on exactly `head` with today's command and environment, or None. A record without `env` (0.23.1
+    wrote none) never matches, since nothing says what tier it ran."""
     try:
         record = json.loads(recorded(head).read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(record, dict):
+    # the posting path reads time and host too: a record without them is a miss, not a crash
+    if not isinstance(record, dict) or not all(
+        isinstance(record.get(key), str) for key in ("time", "host")
+    ):
         return None
-    same = (record.get("head"), record.get("command"), record.get("exit")) == (
+    same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
         head,
         " ".join(LOCAL_CI),
         0,
+        local_ci_env(),
     )
     return record if same else None
 
@@ -2166,7 +2198,10 @@ def local_ci(pr: int | None) -> int:
     else:
         record = run_local_ci(pr, head)
         source = ""
-    comment(pr, f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{source}")
+    comment(
+        pr,
+        f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+    )
     return 0
 
 
