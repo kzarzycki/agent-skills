@@ -1,24 +1,7 @@
 # Loop facts
 
 The engineering loop's values for this repo. `engineering/skills/engineering-loop/SKILL.md`
-(Approvals and proof, Settings) defines what each setting approves and what still waits for the owner.
-
-## Settings
-
-```ini
-# what approvals.py reads; engineering-loop's SKILL.md § Settings has every key
-[loop]
-# the owner approves only the specs the risk rule matches
-spec = auto
-
-[risk]
-# the verifier's `Risk:` line
-verifier = true
-paths =
-    .github/**
-    CODEOWNERS
-    docs/agents/loop.md
-```
+(Approvals and proof) defines what each line approves and what still waits for the owner.
 
 Orchestration backend: omnigent
 
@@ -34,9 +17,13 @@ one per item. At its end, telemetry compares verifier passes per PR against the 
 
 ## Approvals
 
+- spec: auto
+- merge: auto unless risk
+- risk: verifier or path .github/** or path CODEOWNERS or path docs/agents/loop.md
+
 The owner's reason: specs and merges are approved by policy, so work doesn't stop on them,
 and the owner sees only what no automated check can settle (#330). The verifier judges each
-change's risk (`verifier`); CI, code owners and this file's own settings always reach
-the owner, which under `spec = auto` means their spec does. Also waiting for the owner: a
+change's risk (`verifier`); CI, code owners and this file's own approval rules always reach
+the owner, which under `spec: auto` means their spec does. Also waiting for the owner: a
 spec opened by an account without write access, `risk:high` on a PR or issue, and the
 verifier's cap reached with a blocker or major open.
