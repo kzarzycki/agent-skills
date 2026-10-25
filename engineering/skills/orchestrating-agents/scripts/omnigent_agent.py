@@ -11,6 +11,7 @@
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]
+    python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
 
@@ -73,7 +74,8 @@ With ``--console``, the chief of staff's console, each poll it also writes ``<re
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
-20 minutes; and it routes each event instead of posting it: the supervisor settles the routine ones
+20 minutes (a message to it other than its own counts, and none for a lead marked ``direct``,
+which the owner drives in its own session: ``direct <session> [--off]`` sets the mark); and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
 what its rules can't settle, and posts what needs the notified session or the owner as
@@ -190,6 +192,11 @@ VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier repo
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
 AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
+# A followed lead the owner drives directly, in its own session: no deadline, nudge or quiet-end
+# routing, since the owner is its follower; its DONE, failures and prompts are still routed.
+DIRECT_FIELD = "direct"
+# The supervisor's own lines to a followed lead, which start no new progress chain.
+OWN_LINES = ("Supervisor: ", REVIVED, NUDGE.split(" Run ")[0])
 # A followed lead's turn end that names one of these is news at once; any other waits for quiet.
 ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end
@@ -1699,17 +1706,18 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         return []
 
 
-def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str]:
+def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool]:
     """A registry line: ``session=report``, then the session's brief files, each after a tab,
     whether its report is a verifier's (a ``verdict`` field, which ``run``, ``start`` and ``send``
     write for one), whether it is a lead followed (a ``follow`` field, which ``start
     --top-level`` writes), whose report ``follow`` never reads, and the lead it waits on (an
-    ``after=<session>`` field, which ``start --top-level --after`` writes), else empty."""
+    ``after=<session>`` field, which ``start --top-level --after`` writes), else empty, and
+    whether the owner drives it directly (a ``direct`` field, which the ``direct`` command writes)."""
     head, *fields = line.split("\t")
     sid, report = pair(head)
     fields = [f.strip() for f in fields if f.strip()]
     after = next((f.removeprefix(AFTER_FIELD) for f in fields if f.startswith(AFTER_FIELD)), "")
-    marks = (VERDICT_FIELD, FOLLOW_FIELD)
+    marks = (VERDICT_FIELD, FOLLOW_FIELD, DIRECT_FIELD)
     return (
         sid,
         report,
@@ -1717,14 +1725,15 @@ def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str]:
         VERDICT_FIELD in fields,
         FOLLOW_FIELD in fields,
         after,
+        DIRECT_FIELD in fields,
     )
 
 
 def registered(
     path: Path,
-) -> tuple[dict[str, tuple[Path, list[Path], bool, bool, str]], list[str]]:
+) -> tuple[dict[str, tuple[Path, list[Path], bool, bool, str, bool]], list[str]]:
     """The registry's sessions with the reports they owe, their brief files, verdict and follow
-    flags and the lead each waits on, the last line
+    flags, the lead each waits on and its direct flag, the last line
     winning for a session listed twice, and its malformed lines. Blank lines and ``#`` comments
     are skipped."""
     owed, bad = {}, []
@@ -1764,6 +1773,10 @@ def arm(
         if not report:
             return rest
         files = briefs or []
+        try:  # the owner's mark outlives a re-arm: no caller of arm sets it
+            direct = bool(mine) and entry(mine[-1])[6]
+        except Fail:
+            direct = False
         if then:
             try:
                 had = entry(mine[-1])[2] if mine else []
@@ -1772,9 +1785,31 @@ def arm(
             files = [b for b in briefs_for(report, had) if b != then] + [then]
         flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
         flag += [AFTER_FIELD + after] if after else []
+        flag += [DIRECT_FIELD] * direct
         return rest + ["\t".join([f"{sid}={report}", *map(str, files), *flag])]
 
     edit_registry(path, edit)
+
+
+def mark_direct(path: Path, sid: str, on: bool = True) -> bool:
+    """Add (``on``) or remove the ``direct`` field on ``sid``'s registry line, its other fields
+    kept; False when the registry has no line for it."""
+    found = False
+
+    def edit(lines: list[str]) -> list[str]:
+        nonlocal found
+        out = []
+        for line in lines:
+            if line.partition("=")[0].strip() == sid and not line.lstrip().startswith("#"):
+                found = True
+                head, *fields = line.split("\t")
+                fields = [f for f in fields if f.strip() != DIRECT_FIELD]
+                line = "\t".join([head, *fields, *[DIRECT_FIELD] * on])
+            out.append(line)
+        return out
+
+    edit_registry(path, edit)
+    return found
 
 
 def arm_quietly(
@@ -1955,6 +1990,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
             return "rule", "act", "failed again after its revive"
         return "rule", "revive", "failed the first time: revive once"
     if kind == "deadline":
+        if event.get("direct"):
+            return "rule", "record", "the owner drives it directly: no deadline"
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
         if wait != "unknown":
@@ -1976,6 +2013,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if not ENDING.search(text) and wait == "unknown":
             return "rule", "act", "its report names no ending"
     ending = ending_of(text)
+    if event.get("direct") and ending != "DONE":
+        return "rule", "record", "the owner drives it directly: they read its turn there"
     if event.get("nudged") and not ending and wait == "unknown":  # its last words, unchanged
         return "rule", "act", "quiet again after its nudge"
     if event.get("repeat"):
@@ -2114,7 +2153,7 @@ def supervise_registry(
     # ponytail: in memory, so a restart asks the model again for an event a failed write undid
     answers: dict[str, tuple[str, str]] = {}  # the small model's answer per event id, kept for it
     looks: dict[str, tuple[dict, list[dict]]] = {}  # what each session's look this poll read
-    owed: dict[str, tuple[Path, list[Path], bool, bool, str]] = {}
+    owed: dict[str, tuple[Path, list[Path], bool, bool, str, bool]] = {}
     hosts: dict[str, str] | None = None  # ponytail: read once; a host added later shows its id
     looked: dict[str, float] = {}  # when each session's children were last read
     ended: dict[str, float] = {}
@@ -2306,6 +2345,7 @@ def supervise_registry(
             and lead.get("nudged_at") == lead.get("progress_at"),
             "revived": bool(lead.get("revives")),
             "decisions": bool(found),
+            "direct": bool(lead.get("direct")),
         }
 
         def ask() -> tuple[str, str]:
@@ -2356,7 +2396,7 @@ def supervise_registry(
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             act_on(
                 eid,
-                [(other, "tell", result) for other, (*_, after) in owed.items() if after == sid],
+                [(other, "tell", result) for other, (*_, after, _) in owed.items() if after == sid],
             )
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
@@ -2495,7 +2535,9 @@ def supervise_registry(
         outbox.append((line, event, eid, sid, kind))
         flush()
 
-    def track(sid: str, report: Path, briefs: list[Path], followed: bool, after: str) -> dict:
+    def track(
+        sid: str, report: Path, briefs: list[Path], followed: bool, after: str, direct: bool
+    ) -> dict:
         """``sid``'s state entry, updated from what its look just read."""
         nonlocal hosts
         seen = rec.seen.pop(sid, {})
@@ -2521,6 +2563,7 @@ def supervise_registry(
             report=str(report),
             briefs=[str(b) for b in briefs],
             follow=followed,
+            direct=direct,
             waits_on=[after] if after else [],
             **lead_status(info, items),
         )
@@ -2534,6 +2577,13 @@ def supervise_registry(
             float(i.get("created_at") or 0)
             for i in items
             if not from_user(i) and i.get("type") != "resource_event"
+        ]
+        # once it has acted, a new instruction to it (a relay, the owner typing) starts a new
+        # chain too; the supervisor's own lines do not. Before, progress counts from first sight.
+        own += [
+            float(i.get("created_at") or 0)
+            for i in items
+            if own and from_user(i) and not text_of(i).strip().startswith(OWN_LINES)
         ]
         if time.monotonic() - looked.get(sid, -LABEL_SECONDS) >= LABEL_SECONDS:
             looked[sid] = time.monotonic()  # its children too, one read a minute
@@ -2599,6 +2649,8 @@ def supervise_registry(
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. Each is one
         event per ``progress_at``, so new progress starts a new chain."""
+        if lead.get("direct"):
+            return  # the owner drives it in its own session: they are its follower
         if lead["wait"] == "parked":
             return  # it waits on capacity, also while its lost turn end reads running
         if lead["wait"].startswith("until "):
@@ -2641,13 +2693,13 @@ def supervise_registry(
             log("registry", None)
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
-        for sid, (report, briefs, verdict, followed, after) in owed.items():
+        for sid, (report, briefs, verdict, followed, after, direct) in owed.items():
             if any(o[1] and o[1][0] == sid for o in outbox):
                 continue  # its event is found; it waits to be posted
             try:
                 if followed:  # no report rules: only --console's routing nudges or revives it
                     event, key = follow(rec, sid, idle_since, told, holding)
-                    lead = track(sid, report, briefs, followed, after) if console else {}
+                    lead = track(sid, report, briefs, followed, after, direct) if console else {}
                     since, kind = time.time(), key[0]
                     nth = [str(lead.get("occurrences"))] if kind in ("blocked", "failed") else []
                     eid = ":".join((kind, sid, *nth, *key[1:]))
@@ -2670,7 +2722,7 @@ def supervise_registry(
                         rec, sid, report, silent, resumed, unsent, notice, briefs, verdict, ended
                     )
                     if console:
-                        label(sid, track(sid, report, briefs, followed, after))
+                        label(sid, track(sid, report, briefs, followed, after, direct))
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
@@ -2694,11 +2746,13 @@ def supervise_registry(
                 needs_you()
             save(strict=False)
         if time.monotonic() - window >= timeout:
-            print(
-                stamp(f"no event in {timeout:.0f}s: {', '.join(owed) or '(none)'}"),
-                file=sys.stderr,
-                flush=True,
-            )
+            # a lead the owner drives is quiet here by design
+            if quiet := [s for s, owes in owed.items() if not owes[5]]:
+                print(
+                    stamp(f"no event in {timeout:.0f}s: {', '.join(quiet)}"),
+                    file=sys.stderr,
+                    flush=True,
+                )
             window = time.monotonic()
         time.sleep(POLL_SECONDS)
 
@@ -2813,6 +2867,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     sub.add_parser("capacity", description="exit 0 when this host has room for another session")
+    p = sub.add_parser(
+        "direct",
+        description="mark a followed lead as driven by the owner directly: no deadline or nudge",
+    )
+    p.add_argument("session")
+    p.add_argument("--off", action="store_true", help="clear the mark")
     p = sub.add_parser("approve")
     p.add_argument("session")
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
@@ -2880,9 +2940,17 @@ def main(argv: list[str] | None = None) -> int:
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
-        if p.prog.split()[-1] not in ("start", "reap", "relay", "broadcast", "approve", "status"):
+        if p.prog.split()[-1] not in (
+            "start",
+            "reap",
+            "relay",
+            "broadcast",
+            "approve",
+            "status",
+            "direct",
+        ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
-        if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap"):
+        if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
             p.add_argument(
                 "--registry",
                 type=Path,
@@ -2902,6 +2970,13 @@ def main(argv: list[str] | None = None) -> int:
             raise Fail(
                 "--after needs --top-level and a registry: it marks the lead's registry line"
             )
+        if args.cmd == "direct":
+            if not registry:
+                raise Fail("direct needs --registry or $OMNIGENT_SUPERVISE_REGISTRY")
+            if not mark_direct(registry, sid, not args.off):
+                raise Fail(f"{registry}: no line for {sid}")
+            print(f"{sid}: {'not ' * args.off}driven by the owner directly")
+            return 0
         if args.cmd == "capacity":
             ok, line = capacity()
             print(line)
