@@ -4863,6 +4863,8 @@ def test_the_supervisor_re_executes_itself_when_its_script_is_replaced(
     ]
     assert f"restarting: {script} changed" in capsys.readouterr().out
     assert state_of(registry)["leads"]["a"]  # written before the exec
+
+
 def deadlines(registry: Path) -> list[dict]:
     log = registry.with_suffix(".events.jsonl")
     return [e for e in events_of(registry) if e["kind"] == "deadline"] if log.exists() else []
