@@ -357,7 +357,8 @@ or the owner's private network.
   waiting for it; whoever filed first owns it. An issue an open PR links is taken, so
   the lead opens its draft PR when it cuts the branch (lead.md step 3). A PR another lead
   opened is taken over only on the word of that lead or of whoever started the leads,
-  never because it looks idle.
+  recorded in the PR thread so other leads see the new owner, never because it looks
+  idle, since an idle PR may be waiting on CI or on an answer its lead still owns.
 - **Stacks are one deep.** Stacking on an unmerged branch is the exception for when
   waiting isn't possible, and only on a PR already in Land (verdict triaged, waiting for
   CI), because a base still in review changes under its stack and every change cascades.

@@ -5,7 +5,8 @@ request itself when it has none), each on its own branch in a worktree of your o
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
 design, wireframes included for a UI, and delegate the rest.
 
-1. **Intent.** File a request from the owner in their words, with its category and
+1. **Intent.** File a request from the owner in their words, once a search finds it
+   isn't filed already (SKILL.md, One concern per PR), with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
    given by its state ([issues.md](issues.md)): `needs-owner` waits until the owner
    answers what it asks, or approves (the `approved:<point>` label, their word in the
