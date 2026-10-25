@@ -83,6 +83,9 @@ yourself, keeping standards and spec as separate axes.
   in loop.md lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
+- **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
+  what it holds, and report it as not run with the exact owner action, since parking it is
+  the lead's.
 - **Gates and repros:** you may run `mise run check`. Leave every repro as a runnable file
   beside the report (the gitignored `tmp/loop/`), never in a tracked path, and name it in
   the report.
