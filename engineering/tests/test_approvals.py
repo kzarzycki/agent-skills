@@ -4193,8 +4193,26 @@ def batched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     }
 
 
-def batch_note(head: str, merge: str, batch: str, exit: int = 0) -> str:
-    return f"{approvals.BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch}\nExit: {exit}\nLog: /tmp/gate.log\n"
+def batch_note(head: str, merge: str, batch: str, exit: int = 0, env: str = "default") -> str:
+    return (
+        f"{approvals.BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch}\nExit: {exit}\nEnv: {env}\n"
+        "Gated: 2026-01-01T00:00:00Z on host\nLog: /tmp/gate.log\n"
+    )
+
+
+def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
+    """Record a green `local-ci --record` pass on `head`, as run_local_ci() writes it."""
+    where = approvals.recorded(head)
+    where.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "head": head,
+        "command": " ".join(approvals.LOCAL_CI),
+        "exit": 0,
+        "env": {} if env is None else env,
+        "time": "2026-01-01T00:00:00Z",
+        "host": "host",
+    }
+    where.write_text(json.dumps(record))
 
 
 NO_LOCAL_CHECK = "PR #7: the project has no CI (loop.md `CI: none`), and no local check passed on the head (approvals.py local-ci)"
@@ -4210,6 +4228,7 @@ def test_a_green_batch_that_merged_the_head_cleanly_is_its_merge_proof(
     batched: dict[str, str],
 ) -> None:
     head, merged, batch = batched["head"], batched["merge"], batched["batch"]
+    gated_head(head)
     assert queued_merge(head, batch_note(head, merged, batch)) == []
     # the batch's tip is the merge itself when the PR merged last
     assert queued_merge(head, batch_note(head, merged, merged)) == []
@@ -4232,6 +4251,7 @@ def test_a_red_or_unproven_batch_is_no_merge_proof(
     batched: dict[str, str], change: dict[str, Any], said: str
 ) -> None:
     head = batched["head"]
+    gated_head(head)
     fields = {"merge": batched["merge"], "batch": batched["batch"], "exit": 0}
     fields.update(
         {key: batched.get(value, value) for key, value in change.items() if key != "exit"}
@@ -4246,8 +4266,26 @@ def test_a_red_or_unproven_batch_is_no_merge_proof(
     ]
 
 
+def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
+    batched: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head, merged, batch = batched["head"], batched["merge"], batched["batch"]
+    note = batch_note(head, merged, batch)
+    ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
+    assert queued_merge(head, note) == [ungated, NO_LOCAL_CHECK]
+    gated_head(head, {"GATE_UI_TESTS": "smoke"})  # gated, but under another env than this one
+    assert queued_merge(head, note) == [ungated, NO_LOCAL_CHECK]
+    monkeypatch.setattr(approvals, "local_ci_env", lambda: {"GATE_UI_TESTS": "smoke"})
+    assert queued_merge(head, note) == [
+        f"PR #7: batch {batch} names the head's gate env `default`, its record `GATE_UI_TESTS=smoke`",
+        NO_LOCAL_CHECK,
+    ]
+    assert queued_merge(head, batch_note(head, merged, batch, env="GATE_UI_TESTS=smoke")) == []
+
+
 def test_no_batch_comment_or_one_for_another_head_leaves_the_wait(batched: dict[str, str]) -> None:
     head = batched["head"]
+    gated_head(head)
     assert queued_merge(head) == [NO_LOCAL_CHECK]
     assert queued_merge(head, batch_note("b" * 40, batched["merge"], batched["batch"])) == [
         NO_LOCAL_CHECK
@@ -4259,6 +4297,7 @@ def test_no_batch_comment_or_one_for_another_head_leaves_the_wait(batched: dict[
 
 def test_the_batch_proof_also_stands_in_for_ci(batched: dict[str, str]) -> None:
     head = batched["head"]
+    gated_head(head)
     pr = pull(
         reviews=(verdict_on(head),),
         comments=(batch_note(head, batched["merge"], batched["batch"]),),
@@ -4288,6 +4327,9 @@ def test_batch_posts_the_proof_check_merge_reads(
         "--log",
         str(log),
     ]
+    assert approvals.main(args) == 1  # the head has no pass of its own
+    assert posted == []
+    gated_head(batched["head"])
     assert approvals.main(args) == 0
     [(number, body)] = posted
     assert number == 7

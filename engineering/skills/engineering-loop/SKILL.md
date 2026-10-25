@@ -226,8 +226,10 @@ it: every merge proof but the CI wait, the head's own check passed, and nothing 
 owner-approved, since the owner's label covers one head landing alone, through `land`. The
 queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
 place of the CI wait once git shows the head merged unchanged and without conflict
-resolution into a batch whose gate passed (`approvals.py`'s docstring says how). The queue
-never resolves a conflict: a PR that conflicts goes back to its lead.
+resolution into a batch whose gate passed, and the head has its own `local-ci --record` pass
+under the environment the proof names (`approvals.py`'s docstring says how). A batch gate
+never stands in for the head's own: `batch` refuses, and `check merge` rejects, a head that
+was never gated. The queue never resolves a conflict: a PR that conflicts goes back to its lead.
 
 With the line `Opt-out: allowed` in loop.md, a developer may keep their own PRs out of the
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the

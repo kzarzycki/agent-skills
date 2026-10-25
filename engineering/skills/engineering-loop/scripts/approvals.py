@@ -96,12 +96,15 @@ gate on the batch replaces, the head's own check passed (with `CI: none` a `loca
 current env, else the aggregate `check`), and the change is not high risk and has no `approved:merge`, since the
 owner's label covers one head landing alone: such a PR lands through `land`. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
-exit and log, and the log's last lines. `check merge` takes that comment in place of the CI wait (either kind) once git
-proves it: the exit is 0, the merge commit's second parent is the head (the head landed unchanged), its tree is what
+exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
+head with no such pass under the current env. `check merge` takes that comment in place of the CI wait (either kind)
+once it holds: the exit is 0, the head has its own green `local-ci --record` pass under the current env and the env
+the comment names, since a batch gate never stands in for the head's, the merge commit's second parent is the head
+(the head landed unchanged), its tree is what
 `git merge-tree` makes of its parents (the queue resolved no conflict and added nothing), and the batch commit
 contains it; a commit the checkout lacks is fetched from `origin` first. A red, unproven or missing batch leaves the
 wait as it was, with a line saying why for each comment on the head that proves nothing. The proof is the verifier's
-verdict on the PR's own head plus the full gate on the batch that merged it.
+verdict and gate on the PR's own head plus the full gate on the batch that merged it.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -1287,12 +1290,19 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
 
 
 def unproven(head: str, fields: dict[str, str]) -> str | None:
-    """Why a batch proof's fields prove nothing about `head`, or None: its gate exited 0, its merge commit's second
-    parent is the head, so the head landed unchanged, its tree is the clean merge of its parents, so the queue resolved
-    no conflict and added nothing, and the batch commit contains it."""
+    """Why a batch proof's fields prove nothing about `head`, or None: its gate exited 0, the head has its own green
+    local-ci pass under this environment, the one the proof names, since a batch gate never stands in for the head's,
+    its merge commit's second parent is the head, so the head landed unchanged, its tree is the clean merge of its
+    parents, so the queue resolved no conflict and added nothing, and the batch commit contains it."""
     merge, batch, code = (fields.get(key, "").lower() for key in ("Merge", "Batch", "Exit"))
     if code != "0":
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
+    if (record := reusable(head)) is None:
+        return f"the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
+    if (env := env_line(record["env"])[len("Env: ") :].strip()) != fields.get("Env"):
+        return (
+            f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
+        )
     for kind, sha in (("merge", merge), ("batch", batch)):
         if not fetched(sha):
             return f"{kind} {sha} is not a commit origin has"
@@ -1357,16 +1367,22 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
 
 def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
     """Post a merge queue's batch proof on PR `pr`, which queued() reads: the head (the merge's second parent), the
-    merge, the batch, the gate's exit and log, and the log's last LOG_TAIL lines."""
+    merge, the batch, the gate's exit, the head's own local-ci pass and its env, the log, and the log's last LOG_TAIL
+    lines. Refused for a head with no green pass of its own under this environment."""
     if not fetched(merge.lower()):
         raise Refused(f"merge {merge} is not a commit here or on origin")
     head = git("rev-parse", f"{merge}^2").strip()
+    if (record := reusable(head)) is None:
+        raise Refused(
+            f"the head {head} has no green `local-ci --record` pass of its own under this environment: no batch proof without it"
+        )
     try:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
     body = (
-        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\nLog: {log}\n"
+        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n{env_line(record['env'])}"
+        f"Gated: {record['time']} on {record['host']}\nLog: {log}\n"
     )
     if tail:
         body += (
