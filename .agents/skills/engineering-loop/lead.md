@@ -48,7 +48,10 @@ design, wireframes included for a UI, and delegate the rest.
    the plan with it next, as a `## Plan` comment on the issue; where a loop.md `plan:` rule
    matches, it waits for the owner the same way. At triage, add `risk:high` to an issue
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
-   `priority:`).
+   `priority:`). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
+   you may raise it, with `risk:high` on the PR, or dispute a `Risk: high` by answering in
+   its thread with your reasoning, which the next pass re-judges; never lower it yourself,
+   since the lead is the author's side of the review.
 3. **Branch and notes.** In a checkout whose remotes name more than one GitHub repo (a
    fork with `upstream`), run `gh repo set-default <owner>/<repo>` once, naming the repo the
    PRs live in: otherwise gh reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, and the
@@ -84,6 +87,7 @@ design, wireframes included for a UI, and delegate the rest.
    both are yours (worker.md, Gates and push). Its model is the default, or, where the
    issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
    names (SKILL.md, Models).
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker).
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
@@ -105,8 +109,8 @@ design, wireframes included for a UI, and delegate the rest.
    unfinished: never triage or land on it. Post each finished report with
    `python3 scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
-   labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:` and
-   `SATISFIED:` lines. That review is what the merge gate reads. Only a mixed PR's second
+   labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
+   `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. Only a mixed PR's second
    verifier, running at the same time, gets a detached worktree at the same head, so the two
    gate runs don't collide. Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail): the fixer replies on each fixed thread with
@@ -171,7 +175,7 @@ design, wireframes included for a UI, and delegate the rest.
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's label, `land` exits 3 with only that left
      once CI has passed the head (with `CI: none`, once `python3 scripts/approvals.py local-ci
-     <pr>` has recorded a pass on it), so the owner never approves a head CI could still
+     <pr>` has recorded a pass on it, reusing a `local-ci --record` pass on the same head), so the owner never approves a head CI could still
      reject: give them the PR link, ask for `approved:merge`, and run `land` again once it is on.
      The PR has landed only once `land` exits 0, or `gh pr view <pr> --json state,mergeCommit`
      shows `MERGED`. Then use the merge commit in the steps below.
