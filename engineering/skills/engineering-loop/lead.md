@@ -160,7 +160,7 @@ design, wireframes included for a UI, and delegate the rest.
      checkout instead, so run it where the signing key is (`approvals.py`'s docstring).
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
-     merge queue, without a merge (still so on a second reading one poll later, since GitHub takes a PR out of the queue a moment before it reports the merge) is exit 1. Exit 3 is what CI won't clear, once no required check is still pending: a red
+     merge queue, without a merge (still so on a second reading one poll later, since GitHub takes a PR out of the queue a moment before it reports the merge) is exit 1. An entry still waiting for checks 10 minutes after it was queued, with no check suite on its merge-group commit, is one GitHub never told CI about: the wait dequeues it and lands the PR again. Exit 3 is what CI won't clear, once no required check is still pending: a red
      check, the owner's label, `CI: none` without a `local-ci` record, a repository without
      auto-merge or a base with no required checks whose CI has finished, or 2 hours of waiting;
      run it again once that clears. When every proof holds and only `loop:approvals` is red
