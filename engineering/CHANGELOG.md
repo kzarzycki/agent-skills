@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.23.2 - 2026-10-25
+
+A recorded local pass counts at landing only under the gate environment it ran in.
+
+- `local-ci` records the environment its check depends on and reuses a pass only under the same one: a project names the variables on a loop.md line, `Local CI env: NAME NAME…`; a record holds each one's value or null for unset, `local-ci <pr>` reuses it only when every value equals the current environment, a record without `env` (0.23.1's) is never reused, and the posted comment names the values (`Env: GATE_SCOPE=changed GATE_UI_TESTS=0`, or `Env: default`), for a fresh run and a reused one alike. Before, a pass recorded under a lighter tier was posted as if it were the full run (#340).
+
 ## 0.23.1 - 2026-10-25
 
 A local merge check that passed before review counts at landing.
