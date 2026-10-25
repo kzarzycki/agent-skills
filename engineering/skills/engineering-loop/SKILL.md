@@ -275,8 +275,10 @@ or the owner's private network.
   the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
   the host.
 - **Control flow is the lead's own.** It starts the worker with `run --pr`, follows its turn
-  end, relays a fix list or a failing log to the same worker with `send --pr`, naming the
-  review or comment to read, and starts a fresh `run --pr` when that is cheaper. Nothing in
+  end, and sends a fix list or a failing log as a fresh `run --pr` whose brief names the
+  review or comment to read, since `run` finishes a worker once its report is in (the
+  backend's Follow-ups); `send --pr` reaches a worker still open, one whose turn ended
+  without a report. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
 - **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,

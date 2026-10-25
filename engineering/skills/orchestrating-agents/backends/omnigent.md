@@ -92,7 +92,7 @@ that report, since `<report>.question` is a path here too. Only a comment GitHub
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
 repository's counts for nothing. The nudge asks for the comment, and a second turn ending
-without one fails. `send --pr <n>` relays a fix to the same worker and takes only a comment
+without one fails. `send --pr <n>` reaches a worker still open (one whose turn ended without a report, since `run` and `wait` finish a worker once its report is in; a fix pass is a fresh `run --pr`, Follow-ups) and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
