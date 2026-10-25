@@ -54,4 +54,6 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    report to a file and send the lead its path: the branch and head SHA, the gate
    exit codes, the model you ran on, anything left out and why, and what you tried and
    dropped. A follow-up starts fresh from this report, not your transcript. If you're
-   blocked, report that and stop.
+   blocked, report that and stop. Blocked on a step only the owner can unblock (SKILL.md, Owner
+   steps park), first stop that step and release what it holds, then report the exact owner
+   action, since the lead parks it and nothing else frees the slot.

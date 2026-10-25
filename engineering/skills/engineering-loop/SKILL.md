@@ -421,6 +421,17 @@ or the owner's private network.
   each in one decision-log issue, wait out a usage limit and resume, and leave a handoff
   (`handoff` skill) when finished or stuck. Never idle: schedule a time-gated check and
   keep working.
+- **Owner steps park, they don't block.** A step only the owner can unblock (a GUI
+  dialog, a locked screen, a device, a permission prompt or classifier denial, a
+  credential, an approval link that expires) is stopped at its first sign, so a hang
+  becomes a failure, and whatever it holds (a gate slot, a lock, an instance) is released.
+  Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, add
+  `needs-owner`, add a checklist line to the decision-log issue so the owner clears every
+  step in one sitting, and move to the next item; ask once, since a retry while they are
+  away fails the same way. Before a long or unattended run, try once each owner-only
+  prerequisite the queued items need (loop.md § Proof on a branch, the specs' acceptance)
+  while the owner can still answer, and check such a precondition before a heavy step
+  takes a slot.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
