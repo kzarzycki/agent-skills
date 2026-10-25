@@ -4873,6 +4873,8 @@ def test_a_followed_lead_starting_a_top_level_helper_hears_it_and_leaves_the_reg
     assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
     assert "s1=" in registry.read_text()
     assert og.subscriptions == [("lead1", "s0")]
+
+
 def deadlines(registry: Path) -> list[dict]:
     log = registry.with_suffix(".events.jsonl")
     return [e for e in events_of(registry) if e["kind"] == "deadline"] if log.exists() else []
