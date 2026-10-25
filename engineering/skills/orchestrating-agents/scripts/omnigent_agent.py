@@ -7,6 +7,7 @@
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
+    python3 scripts/omnigent_agent.py owner-said <session> <quote-file>
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
@@ -38,7 +39,11 @@ delivered (archived, a failed revive, neither pending nor in the history). A ses
 on questions (``ask_user_question``) gets the message as each question's answer instead, exit 0,
 since its pending inputs wait on the answer; an approval prompt it never answers. ``relay --from
 <name>`` is a notice from a task or an agent: a first line says it is not the owner's words, and it
-never answers a question (exit 5 while one holds it). ``broadcast``
+never answers a question (exit 5 while one holds it); a plain relay sent as a message opens with
+``[relayed by <session>]``. ``owner-said`` exits 0 when the owner typed the quote in the session,
+printing a citation (link, item, time, author), and 1 when it is only in a message an agent or
+Omnigent posted (a brief, a supervisor post, a relay) or nowhere: a lead checks a relayed owner
+decision with it. ``broadcast``
 relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
@@ -136,7 +141,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, NoReturn
 from urllib.error import HTTPError, URLError
@@ -196,6 +201,9 @@ LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
 # ``relay --from``'s first line: a notice from a task or an agent, which a reader must not take for
 # the owner's words, and which never answers an open question.
 RELAY_FROM = "[relay from {source}: not the owner's words, and no answer to an open question]"
+# A plain relay's first line: the owner's words relayed are still a relay, which a quote's
+# provenance (``owner_said``) never takes for the owner's own message.
+RELAYED = "[relayed by {who}]"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
@@ -880,6 +888,7 @@ def relay(
     confirm_seconds: float,
     answer: bool = True,
     source: str = "",
+    by: str = "",
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
     the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
@@ -888,7 +897,9 @@ def relay(
     (kzarzycki/omnigent#14). An approval prompt it never answers. With ``answer`` off, a session
     with any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
     ``source`` (a task or an agent, not the owner) ``text`` goes after a ``RELAY_FROM`` line and
-    never answers a question: it is sent as a message, held behind the question like any other."""
+    never answers a question: it is sent as a message, held behind the question like any other.
+    With ``by`` (the relaying session) a message sent, not an answer, opens with a ``RELAYED``
+    line."""
     if source:
         text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
@@ -904,6 +915,8 @@ def relay(
                 sid, e["elicitation_id"], "accept", {q["question"]: answer for q in questions}
             )
         return f"session {sid}: answered its open question: {'; '.join(asks)}"
+    if by and not source:
+        text = f"{RELAYED.format(who=by)}\n{text}"
     outcome = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":
         prompts = prompts_of(og.info(sid))
@@ -913,6 +926,58 @@ def relay(
             why = "until the session's current step ends"
         raise Queued(f"session {sid}: queued {why}; it lands then")
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
+
+
+# The first words of every message an agent or Omnigent posts into a session, never the owner's:
+# a brief's line, the supervisor's posts and lines, the relay headers, the revive and nudge lines,
+# Omnigent's subscription notices. A new message this script posts adds its opening here.
+POSTED = (
+    "Work on ",
+    "Supervisor",
+    RELAY_FROM.split("{")[0],
+    RELAYED.split("{")[0],
+    "[System:",
+    REVIVED,
+    NUDGE.split(" Run ")[0],
+)
+
+
+def owner_said(og: Omnigent, sid: str, quote: str) -> tuple[bool, str]:
+    """Whether the owner said ``quote`` in ``sid``, and the citation or why not. Their message is
+    the newest one in the whole history (paged back) holding the quote, whitespace collapsed, as
+    a ``role: user`` message with a ``created_by``, not ``is_meta`` (a harness notice) and opening
+    with none of ``POSTED``. The server stamps an API post with the same ``created_by`` as a typed
+    message, so this stops a quote copied from a relay or a post, not an agent posting an unmarked
+    message on purpose (#369)."""
+    want = " ".join(quote.split())
+    if not want:
+        raise Fail("owner-said needs a quote")
+    posted: list[dict] = []
+    after = ""
+    while True:
+        page = og.older(sid, after)
+        data = page.get("data") or []
+        for i in data:
+            if not (from_user(i) and want in " ".join(text_of(i).split())):
+                continue
+            if i.get("is_meta") or not i.get("created_by") or text_of(i).strip().startswith(POSTED):
+                posted.append(i)
+                continue
+            at = datetime.fromtimestamp(float(i.get("created_at") or 0), timezone.utc)
+            return True, (
+                f"owner said it: {og.base}/c/{sid} item {i.get('id')} at"
+                f" {at:%Y-%m-%dT%H:%MZ} by {i['created_by']}"
+            )
+        if not data or not page.get("has_more"):
+            break
+        after = str(page.get("last_id") or data[-1].get("id"))
+    if posted:
+        first = " ".join(text_of(posted[0]).split())[:60]
+        return False, (
+            f"{sid}: the quote is only in a message an agent or Omnigent posted"
+            f" (item {posted[0].get('id')}: {first!r}), never the owner's own"
+        )
+    return False, f"{sid}: the quote is in no message of its history"
 
 
 def broadcast_targets(
@@ -2925,6 +2990,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("session")
     p.add_argument("--off", action="store_true", help="clear the mark")
+    p = sub.add_parser(
+        "owner-said",
+        description="exit 0 when the owner typed QUOTE in SESSION, printing the citation",
+    )
+    p.add_argument("session")
+    p.add_argument("quote", help="the owner's words verbatim, a file or the text itself")
     p = sub.add_parser("approve")
     p.add_argument("session")
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
@@ -3000,6 +3071,7 @@ def main(argv: list[str] | None = None) -> int:
             "approve",
             "status",
             "direct",
+            "owner-said",
         ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
@@ -3054,6 +3126,7 @@ def main(argv: list[str] | None = None) -> int:
                     text_or_file(args.message)[0],
                     args.confirm_seconds,
                     source=args.source,
+                    by=own_id() or "an agent",
                 )
             )
             return 0
@@ -3070,6 +3143,10 @@ def main(argv: list[str] | None = None) -> int:
             if not args.dry_run:
                 failed |= broadcast(og, targets, text, args.confirm_seconds)
             return 1 if failed else 0
+        if args.cmd == "owner-said":
+            said, line = owner_said(og, args.session, text_or_file(args.quote)[0])
+            print(line)
+            return 0 if said else 1
         if args.cmd == "approve":
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))

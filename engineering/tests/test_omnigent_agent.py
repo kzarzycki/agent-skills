@@ -3392,6 +3392,7 @@ def relay(
 ) -> int:
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "cos")  # the relaying session its header names
     (tmp_path / "m.md").write_text(text)
     return omnigent_agent.main(["relay", sid, str(tmp_path / "m.md")])
 
@@ -3403,7 +3404,7 @@ def test_relay_to_an_idle_session_is_delivered(
     sid = og.create("claude", "lead")
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert capsys.readouterr().out.strip() == f"session {sid}: delivered"
-    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "go"
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "[relayed by cos]\ngo"
 
 
 def test_relay_to_a_session_in_a_long_step_returns_queued_and_a_rerun_sends_no_second_copy(
@@ -3472,7 +3473,7 @@ def test_relay_revives_a_reaped_runner_then_delivers(
     retried = reaped(og, {"recovered": True, "recovery": "runner_relaunched"}, 2)
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert retried == [sid]
-    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "go"
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "[relayed by cos]\ngo"
 
 
 def test_relay_of_a_message_neither_pending_nor_landed_is_not_deliverable(
@@ -4951,6 +4952,51 @@ def test_a_new_instruction_to_an_idle_lead_starts_a_new_progress_chain(
     assert bool(deadlines(registry)) is deadline
 
 
+def typed(text: str, n: int, **extra: object) -> dict:
+    """A user message as the server stores it: ``created_by`` on a typed and a posted one alike."""
+    return {**said("user", text, f"i{n}"), "created_at": 1792961740 + n, "created_by": "o", **extra}
+
+
+def test_owner_said_finds_the_owners_own_message_and_rejects_posted_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    filler = [typed(f"note {n}", n) for n in range(150)]  # the owner's words sit past one page
+    og = Fleet(
+        cos=[
+            typed("yes, force-push\nKuba's branch for #35", 999),
+            *filler,
+            typed("Supervisor [act] b-1: owner said yes, force-push Kuba's branch", 1001),
+            typed("[relayed by cos]\nyes, force-push Kuba's branch for #35", 1002),
+            typed("<task-notification>yes, force-push</task-notification>", 1003, is_meta=True),
+        ]
+    )
+    og.base = "https://omnigent.test"
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    quote = tmp_path / "q.md"
+    quote.write_text("yes, force-push Kuba's branch for #35\n")  # a line break collapsed
+    assert omnigent_agent.main(["owner-said", "cos", str(quote)]) == 0
+    assert capsys.readouterr().out.strip() == (
+        "owner said it: https://omnigent.test/c/cos item i999 at 2026-10-25T21:12Z by o"
+    )
+    og.histories["cos"].pop(0)  # only the posted copies are left
+    assert omnigent_agent.main(["owner-said", "cos", str(quote)]) == 1
+    assert "only in a message an agent or Omnigent posted (item i1002" in capsys.readouterr().out
+    quote.write_text("approve the deploy")
+    assert omnigent_agent.main(["owner-said", "cos", str(quote)]) == 1
+    assert "in no message of its history" in capsys.readouterr().out
+
+
+def test_a_plain_relay_is_marked_as_a_relay_by_the_sending_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch, "Owner (cos, 22:10): yes") == 0
+    assert (
+        omnigent_agent.text_of(og.sessions[sid][-1]) == "[relayed by cos]\nOwner (cos, 22:10): yes"
+    )
+
+
 def test_a_message_argument_is_a_file_or_the_text_itself(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4958,14 +5004,15 @@ def test_a_message_argument_is_a_file_or_the_text_itself(
     sid = og.create("claude", "lead")
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "cos")
     assert omnigent_agent.main(["relay", sid, "carry on with step 3"]) == 0
-    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "carry on with step 3"
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "[relayed by cos]\ncarry on with step 3"
     long = "Do X.\n" + "word " * 100  # past NAME_MAX: OSError File name too long before
     assert omnigent_agent.main(["relay", sid, long]) == 0
-    assert omnigent_agent.text_of(og.sessions[sid][-1]) == long
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == f"[relayed by cos]\n{long}"
     (tmp_path / "m.md").write_text("from a file")
     assert omnigent_agent.main(["relay", sid, "m.md"]) == 0
-    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "from a file"
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "[relayed by cos]\nfrom a file"
     capsys.readouterr()
     assert omnigent_agent.main(["relay", sid, "missing.md"]) == 2
     assert capsys.readouterr().err.strip() == (

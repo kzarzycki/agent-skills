@@ -198,7 +198,19 @@ the answer. An interrupt would drop the inputs pending and, on a Claude lead, ho
 message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 `relay --from <name>` is a notice from a task or an agent rather than the owner's words
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
-answers a question, so it waits behind one (exit 5) instead of becoming its answer.
+answers a question, so it waits behind one (exit 5) instead of becoming its answer. A plain
+`relay` sent as a message opens with `[relayed by <the relaying session>]`.
+
+**Checking an owner's words.** `python3 scripts/omnigent_agent.py owner-said <session>
+<quote or quote-file>` pages through the session's whole history for the newest message holding the
+quote (whitespace collapsed) that the owner typed: `role: user` with a `created_by`, not
+`is_meta`, and opening with none of the markers an agent or Omnigent posts with (`Work on `,
+`Supervisor`, the two relay headers, `[System:`, the revive and nudge lines). Exit 0 prints
+`owner said it: <server>/c/<session> item <id> at <UTC time> by <author>`; exit 1 says the quote
+is only in a posted message, or nowhere. The server stamps an API post with the same
+`created_by` as a typed message, so this catches a quote taken from a relay or a post, not an
+agent that posts an unmarked message into the session on purpose; that needs the server to stamp
+each item's origin.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
