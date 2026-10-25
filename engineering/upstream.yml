@@ -3,21 +3,22 @@ repository: https://github.com/mattpocock/skills.git
 tracked_ref: origin/main
 stable_tag_pattern: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 removal_policy: block
-substitutions:
-  # The downstream setup skill replaces the upstream one; renaming every
-  # reference by literal survives upstream rewording, which a context diff
-  # did not.
-  - find: /setup-matt-pocock-skills
-    replace: /setup-engineering-workflow-for-apm
+# Every imported skill is tuned, so its overlay replaces upstream text whole;
+# a substitution is for an untuned one.
+substitutions: []
 exclusions:
+  # Projects get docs/agents/ from the project template, not a setup skill.
   - setup-matt-pocock-skills
 owned_skills:
   - audit-third-party-software
+  - chief-of-staff
   - context-extractor
+  - demo
+  - engineering-loop
+  - omnigent-telemetry
   - operating-omnigent
+  - orchestrating-agents
 owned_overlays:
-  - source: overlays/skills/setup-engineering-workflow-for-apm
-    destination: skills/setup-engineering-workflow-for-apm
   - source: overlays/skills/ask-matt
     destination: skills/ask-matt
   - source: overlays/skills/claude-handoff
@@ -50,8 +51,6 @@ owned_overlays:
     destination: skills/prototype
   - source: overlays/skills/research
     destination: skills/research
-  - source: overlays/skills/resolving-merge-conflicts
-    destination: skills/resolving-merge-conflicts
   - source: overlays/skills/retro
     destination: skills/retro
   - source: overlays/skills/tdd
@@ -74,9 +73,6 @@ aliases:
   grilling: skills/productivity/grilling
   claude-handoff: skills/in-progress/claude-handoff
   handoff: skills/productivity/handoff
-  implement-spec: skills/in-progress/implement-spec
   loop-me: skills/in-progress/loop-me
-  pr: skills/in-progress/pr
-  retro: skills/in-progress/retro
   teach: skills/productivity/teach
   wait-what: skills/productivity/wait-what

@@ -25,6 +25,10 @@ Agent(
 ```
 Then relay messages between user and agent via SendMessage. If loaded by browser-researcher via Read, ignore this section.
 
+## Prompt Review
+
+Before submitting, check the research prompt against [references/prompt-guide.md](references/prompt-guide.md) and suggest improvements to the caller; submit the prompt as given, since the caller owns its wording.
+
 ## Platform Configuration
 
 - url: https://gemini.google.com/app

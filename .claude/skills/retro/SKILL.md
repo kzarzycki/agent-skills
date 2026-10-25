@@ -6,14 +6,16 @@ disable-model-invocation: true
 
 Run a retrospective: propose improvements to the coding agent's **environment**, not to the agent, so future runs go better. Read the primary sources for the session the user names, searching this machine's session logs if needed; default to the current session. Present the candidates to the user, most severe first.
 
+Before drafting recommendations, read and follow the `writing-for-agents` skill for agent-facing writing. If it is unavailable, state that and use the project's agent-writing conventions.
+
 ## Where to look
 
 - **Navigation**: the session spent long finding something, or files have hidden dependencies. Would a **navigation pointer** have helped?
 - **Automated checks**: the agent made a mistake a lint, type, test or filesystem check could catch. Read the repo's own check commands and CI first, so an existing check that sits unwired or silently broken is the finding, not a reinvention. A repo with no **guardrail** (no pre-commit hook and no CI job running lint, typecheck or tests) is itself a finding.
-- **Coding standards**: the reviewer missed a mistake. A **mechanical** violation (a fixed syntactic pattern, a banned API, an import shape, a file-location rule) gets a deterministic check in whichever of the repo's linter, a pre-commit hook or a CI job is cheapest. Only **judgement calls** (cross-file consistency, matching the surrounding style) go in `CODING_STANDARDS.md`. Also look for rules to remove or clarify.
+- **Coding standards**: the reviewer missed a mistake. A **mechanical** violation (a fixed syntactic pattern, a banned API, an import shape, a file-location rule) gets a deterministic check in whichever of the repo's linter, a pre-commit hook or a CI job is cheapest. Prefer building the check over merely proposing it or writing a prose rule, within the project's authorization rules. Only **judgement calls** (cross-file consistency, matching the surrounding style) go in `CODING_STANDARDS.md`. Also look for rules to remove or clarify.
 - **Steering files**: a large `AGENTS.md`, in the repo or the user's global scope, holds instructions that belong in coding standards or a check, or instructions that change no behaviour at all.
 - **Tool economy**: an expensive tool call, or custom tooling (CLIs, MCP servers) that spends tokens badly.
-- **Information access**: a crucial fact the agent could not reach, such as dev server logs or read-only access to a third-party service.
+- **Information access**: a crucial fact the agent could not reach, such as teeing dev server output to a log the agent can read, or read-only access to a third-party service.
 
 ## Where fixes belong
 

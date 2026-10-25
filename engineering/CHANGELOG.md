@@ -1,5 +1,830 @@
 # Changelog
 
+## Unreleased
+
+New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
+them here.
+
+## 0.23.3 - 2026-10-25
+
+The verifier judges each change's risk, a cause in another repo gets a generic issue there, and a project can opt in to workers in a cloud session.
+
+- The verifier judges risk on every review, a `Risk: low|high — <reason>` line that `verdict` requires, and asks for evidence that settles a risky but checkable change as a finding; a risk rule's new `verifier` term holds when that line on the head says anything but `low`, so `risk: verifier or path .github/**` sends the owner only what no check can settle. A `risk:high` the gate added for the line comes off when a later pass says `Risk: low`; the lead may dispute or raise risk, never lower it (#330).
+- A problem whose cause is in another repo (a shared skill, a tool, a project template) gets two issues: a generic one in the repo that owns the cause, naming nothing of the project when that repo is more public, and one in the project for its side, linking to it; links point from the less public repo to the more public one (#346).
+- An opt-in cloud worker, turned on by the `docs/agents/loop.md` line `Cloud worker: <agent>, gate <task>`: the lead and the verifier run on the host and only the workers run in cloud sessions, reporting on the PR (engineering-loop SKILL.md, Cloud worker). `omnigent_agent.py run|start|send|wait --pr <n>` has a cloud worker post its report as a REST comment on PR n and end its turn with the comment's URL, which `wait` writes to the report path once GitHub files the comment on that PR of the checkout's repository; `send --pr` takes only a comment newer than the report already there. Without the line the loop is unchanged (#355).
+
+## 0.23.2 - 2026-10-25
+
+A recorded local pass counts at landing only under the gate environment it ran in.
+
+- `local-ci` records the environment its check depends on and reuses a pass only under the same one: a project names the variables on a loop.md line, `Local CI env: NAME NAME…`; a record holds each one's value or null for unset, `local-ci <pr>` reuses it only when every value equals the current environment, a record without `env` (0.23.1's) is never reused, and the posted comment names the values (`Env: GATE_SCOPE=changed GATE_UI_TESTS=0`, or `Env: default`), for a fresh run and a reused one alike. Before, a pass recorded under a lighter tier was posted as if it were the full run (#340).
+
+## 0.23.1 - 2026-10-25
+
+A local merge check that passed before review counts at landing.
+
+- `approvals.py local-ci --record` runs the merge check, `mise run check:all`, on HEAD with the same clean-tree checks as `local-ci <pr>`, and on exit 0 records the pass by commit (head, command, exit, time, host) under the git common dir, which every worktree sees and nothing commits. `local-ci <pr>` posts the pass from a record for the PR's exact head and the same command, naming its time and host, instead of running the check again; any other head, command or a failed run runs it as before, and that pass is recorded too. With `CI: none`, the loop's check on a head pushed for review is `local-ci --record` (#335).
+
+## 0.23.0 - 2026-10-24
+
+Signed local landing, a verdict any writer can post, a chief of staff that files an intent
+issue and delegates without investigating, a broadcast to every lead, any registered agent by
+name, and headless browser checks.
+
+- Chief of staff page shows every Omnigent session on every host, grouped by project and coloured by what the owner must do (needs you, when convenient, running, done), red items first with what to do, where and why, and what changed since the owner last looked (#274).
+- `omnigent_agent.py start` and `run` label a session `omni.role` with its engineering-loop role, from the `--role` file's name (`lead`, `worker`, `verifier`), and `supervise --console` labels the chief of staff's own session `omni.role=cos`, so Omnigent's usage metrics can split spend by role (#276).
+- `omnigent_agent.py broadcast <message-file>` relays one message to every followed lead in the registry, `--include`'s sessions and, with `--active-hours N`, every recently updated top-level session, all at once, printing one line per target and exiting 1 when one failed or could not be read; never its own session, an archived one, an automations project's or one with a question or approval prompt pending (`skipped: waiting on a question`), which `relay` would answer with the broadcast; `--project`, `--host`, `--exclude` narrow it and `--dry-run` lists it (#277).
+- The native orchestration backend starts only native subagents of its own harness: the bare-CLI path (`codex exec`, `claude -p`) is gone, and a child of another model family points to the Omnigent backend. The engineering loop's Independent verification names the backend as a condition of the other-family verifier (#278).
+- The supervisor reads a timed wait from the time its wait names: of several UTC times after `STILL WORKING`, the one in a sentence or line that says "wait", else the earliest still to come when the message was written, else the earliest (#283).
+- The supervisor reads `USER NEEDED` anywhere in a lead's message as its ending, so an ask after a `DONE` line reaches the owner instead of reading as done (#285).
+- The routing table, the supervisor's follow rules, the chief of staff's ending rules and the loop's Turns rule state that a `USER NEEDED` line wins over an earlier `DONE` or `PARKED` line, as `ending_of` already reads it (#290).
+- The chief of staff page takes a board bullet's own 🔴🟡🟢⚪ marker as its level (#291).
+- `approvals.py verdict` reads a verifier report's `###` headings without a `(<severity>)` as sub-headings, posting nothing for them, instead of refusing the whole report; it refuses a report whose finding headings don't add up to its `VERDICT: <n> blocker, <n> major, <n> minor` counts, so a finding in any other shape is never dropped without a word (#293).
+- `post_demo.sh` posts in a repo with immutable releases: when `immutable-releases` reports `enabled: true` it creates one prerelease per post, `demo-pr<N>-<sha7>-<time>`, with the videos attached by the same `gh release create`, instead of uploading to the shared `demos` release, which GitHub refuses with HTTP 422. Other repos keep `demos` (#295).
+- `supervise --registry` reports a followed lead's prompt only after it has been pending for 120 s (`PROMPT_CONFIRM_SECONDS`), re-reading the session at each look. Omnigent shows a child's prompt on its parent too, and the lead answers it within seconds, so the `--console` supervisor no longer posts the owner an approval that clears by itself (#297).
+- `omnigent_agent.py` and `omnigent_telemetry.py` no longer read `config.yaml`'s `server:`: outside a session they act on `--server` or the one login, and refuse otherwise, since one account runs workloads on several servers (#302).
+- The chief of staff page groups the board's asks, and its "Needs you now" list, by project or by the area a bullet names (`- 🔴 **voice_note:** …`); the "Board: when convenient" group is gone (#304).
+- `omnigent_agent.py` acts on the session's own Omnigent server (`$RUNNER_SERVER_URL`) ahead of `config.yaml`'s, with `--server` to name one; the chief-of-staff page and the detached supervisor name it too, for hosts with runners for several servers (#312).
+- The chief of staff files an intent issue before starting a lead and hands the lead that issue as its spec, so an ask's intent and state survive on the issue board across sessions; non-repo work gets none (#314).
+- The chief of staff delegates a new ask without investigating it: it files the intent issue with the owner's words and only cheap missing facts, asks when the intent is unclear, and starts the lead, whose first step is the investigation (#316).
+- `engineering-loop`: workers and verifiers run browser tests and UI drives in a headless browser of their own, attach to the owner's open automation browser only when the check needs its logins, and where headless is impossible open one in the background without focus, saying which test needed it (#318).
+- `land` can land a PR as a locally signed squash: with loop.md's `Land: local signed squash to <branch>, allowed signers <path>`, it squashes the proven PR here, signs it with the checkout's SSH key, checks it against the allowed signers, and pushes it to the PR's branch and then the base, so a repo that trusts only its maintainers' signatures can use the loop's landing; without the line landing is unchanged (#320).
+- The merge gate counts a verifier review posted by any account that can write to the repo, not only the PR's author or the account running it, so a colleague (or their agent) who verifies or fixes someone else's PR can post the verdict that lands it, in CI too (#323).
+- `omnigent_agent.py start` and `run` take any registered agent's name, a user's own included (`claude` and `codex` stay aliases): the lookup reads the server's agents, then the caller's (`scope=user`), following pages, and an unknown name fails before any session is created. An agent outside the two aliases gets its brief inline in the first message, since its tools may run on another machine (#327).
+
+## 0.22.0 - 2026-10-21
+
+A chief of staff that runs from its own home and wakes only on a lead's news, through a
+supervisor console that settles routine events; `land --wait` lands a PR end to end; worker
+models named as tiers.
+
+- `omnigent_agent.py reap` with `--registry` or `$OMNIGENT_SUPERVISE_REGISTRY` drops each
+  session it finishes from the supervisor registry before archiving it (#249), so a chief of
+  staff that reaps its finished lead is not woken by `archived` for its own reap, and no longer
+  edits the registry by hand.
+- A chief of staff's handover file and memory bank come from the project's instructions, with
+  `tmp/loop/chief-of-staff.md` and the repo's bank as defaults, so it can run from a home of
+  its own across projects (#230). A handover file in a repo with a remote is pushed after
+  each rewrite and pulled on takeover, and a restart into another permission mode or harness
+  is a fresh session that takes over from the file.
+- A project may name its worker model in loop.md as a tier, `Worker model: <top|mid|small> for
+  <condition>` (#245, #247): the lead starts a worker whose issue matches on that tier's model
+  from the worker family's newest generation, the closest higher tier there when that
+  generation lacks it, never an older generation's model and never a frontier model above
+  `top` (Claude Fable, Codex Astra, #250), and on the harness default
+  otherwise, so a cheaper worker model is one line the owner can change.
+- A chief of staff wakes only on a lead's news (#238). `supervise --registry` follows a lead
+  whose line ends in `follow`, posting to `--notify` a turn end that names `DONE`, `USER NEEDED`
+  or `PARKED`, any other turn end once the lead and its live children were quiet for 300 s, a
+  prompt, a failure, and `archived`, which drops the line; it never revives or nudges one.
+  `start --top-level` with a registry arms that line and subscribes nobody, since 404 of 521
+  subscription-woken chief-of-staff turns changed nothing; without one it subscribes as before.
+  The chief-of-staff skill follows leads through one detached supervisor, and its handover names
+  it.
+- `approvals.py`, `board.py`, `labels.py` and the demo skill's `post_demo.sh` refuse to run
+  in a checkout whose remotes name several GitHub repos while `gh repo set-default` names
+  none (#236). gh then reads every `{owner}/{repo}` and `gh pr` as `upstream`'s, so a
+  verdict posted from a fork's checkout landed on the upstream PR of the same number.
+- `approvals.py land <pr> --wait` is the one background command a lead starts to land
+  (#235): it marks a draft ready, waits while required checks are pending with none red,
+  merges, or turns on auto-merge, and waits for GitHub's merge, through a merge queue too
+  (exit 0 only once merged), and ends on every other outcome: auto-merge turned off or the PR
+  out of the queue (exit 1), what CI won't clear (exit 3, so the owner is
+  asked only about a head CI has passed) or 2 hours (exit 3). It replaces lead.md's two
+  hand-written waiters, one of which watched a check named `check` that a repo may not have
+  and so never ended. `land` also refuses (exit 1) a head GitHub reports `BEHIND` or `DIRTY`,
+  naming the fix, where GitHub's own refusal read as a required check `expected`, and marks
+  nothing ready nor merges while that merge state is `UNKNOWN` (exit 3; `--wait` reads again).
+- The package's file inventory leaves out `__pycache__` and `*.pyc` (#223), so a script imported
+  from a skill folder no longer fails `vendor-engineering-check` on a bytecode cache git ignores.
+- `post_demo.sh` uploads each video as an asset of the repo's `demos` prerelease and links it
+  in the `## Demo` comment (#234), since `gh pr comment` has no `--attach` and every post with
+  a video failed. The video is a download link, not an inline player.
+- `omnigent_agent.py approve <session> [--decline]` answers a session's pending approval prompts
+  through Omnigent's resolve route, printing each tool call it answered (#229). `relay` to a
+  session blocked only on a question answers it with the message through the same route,
+  instead of interrupting it, which held the message up to 7 minutes (kzarzycki/omnigent#14).
+  A chief of staff runs `approve` on the owner's word, and quotes an approval in a lead's
+  brief word for word.
+- `omnigent_agent.py start --top-level --host <name|id>` starts a lead on another Omnigent
+  host (#215), since an agent's `sys_session_create` makes only children, which run on their
+  parent's runner. On another host `--workspace` and the report are absolute paths there, the
+  brief goes inline in the first message, and the lead is followed with `watch`.
+- The chief-of-staff skill states how to work delegated and under load (#224):
+  - a delegated decision is reported as options, a recommendation and the action taken;
+  - a chief of staff records an owner's approval as a label with a quoted comment, and leaves
+    the written record to the owner;
+  - a release checks the standing decisions first;
+  - an adopted session becomes a lead;
+  - an overloaded host's leads park at a clean checkpoint;
+  - a lead rewriting a shared checkout has it to itself;
+  - a chief of staff counts why it involved the owner, and proposes a fix for a cause that
+    repeats.
+
+  The handover names the exact subscribe and info-only takeover calls, quotes the owner with
+  the session id they spoke in, and records revives spent on every lead (#196's A1 dry run).
+- `omnigent_agent.py` under load (#226):
+  - `capacity` says whether this host has room for another session, and `start` and `run`
+    wait for it, failing after 10 minutes;
+  - a message whose POST timed out is confirmed from the history instead of failing the
+    `start`, which had archived sessions that took their brief;
+  - `run`'s usage says a lead (`--top-level`) uses `start`, then `watch`.
+- `omnigent_agent.py start` and `run` take `--permission-mode <mode>`, defaulting from
+  `$OMNIGENT_PERMISSION_MODE`, for a Claude child (#213). Omnigent applies it at terminal launch.
+  Codex takes none: its CLI fails to start with the flag, so `start` refuses it there.
+- New owned skill `omnigent-telemetry` (#206): `scripts/omnigent_telemetry.py` reports
+  Omnigent spend, tokens by model, session trees, scheduled-task health and Codex rate limits
+  over the last N days from the API, the server's Postgres and local Codex rollouts, with
+  one-line anomaly flags (`SUBAGENT_EXPLOSION`, `VERIFIER_CHURN`, `FORK_BLOAT`,
+  `SUBSCRIPTION_AMPLIFICATION`, `CRON_FAIL_LOOP`, `SIDEBAR_NOISE`) and `--html` for an
+  offline page of the same numbers. A source that does not answer leaves its sections out
+  and the report names them.
+- `omnigent_agent.py run` takes a report written in the same clock tick as its launch (#185):
+  it compared the report's mtime with `time.time_ns()`, which runs ahead of the kernel's coarse
+  file clock, so three `run` tests failed in most runs. A report already at the path is still a
+  pass before; only one newer than it counts.
+- `status`, `watch` and `run`/`wait`'s failure lines print the session's last assistant message,
+  or `(none)`, never a user message such as the brief or an injected reminder (#185).
+- Cheaper runs, from the 2026-10-19 retro (#207). Continuing on the other model family, or
+  replacing a chief of staff, starts a fresh session from the notes or handover file,
+  never a fork of the old one; `operating-omnigent` lists the fork endpoint with when not
+  to use it. A later verifier pass reviews its delta in one session, with no `code-review`
+  axis sub-agents. A verifier reviews a pushed PR head only, never a helper script or a
+  mid-edit snapshot, and a proof log's commit SHA is its whole provenance.
+- A chief of staff relays an owner message to a lead in one call (#202): `omnigent_agent.py
+  relay` returns at once with exit 0 (delivered), 5 (queued, and it will land) or 4 (not
+  deliverable, and why), whatever the lead is doing and on whichever host. A lead blocked on
+  a question gets the message as its answer (#229); an approval prompt never does. `status` reads a lead's state, queued inputs and last message in one call.
+- A chief of staff reports to the owner at task level (#199): a task started, what blocks it,
+  a decision the owner must make, its result. A lead's interim progress, such as a verifier
+  pass, a gate re-run or a worker's hand-off, stays in the lead's session.
+- A chief of staff nudges only a stalled lead (#201). A lead waiting on its own worker,
+  verifier or CI, or on another lead, gets no nudge and no escalation, and a lead waiting
+  on another lead hears of that lead's merge from the chief of staff.
+- A chief of staff's handover file is one page, overwritten in the turn its state changes,
+  before the owner hears it: owner contact, standing decisions, live leads, closed, follow
+  (#196). A successor in either harness takes over from that file alone, never from
+  transcripts.
+- `retro` again has the agent read the `writing-for-agents` skill before drafting, or say it
+  is unavailable; names teeing dev-server output to a log the agent can read; and prefers
+  building a deterministic check over proposing one (#216).
+- `supervise --registry --console`, the chief of staff's console, keeps its state where a
+  successor or the web UI can read it (#255); without `--console` the supervisor behaves as
+  before. Each poll writes `<registry>.state.json` (schema `cos-state/1`, atomically) with an
+  entry per registry session (title, host, state, wait, ending, first line, `progress_at`,
+  budgets) and the ids of events already posted, loaded on start, so a restart re-posts no
+  follow end and keeps each lead's progress; appends each event to `<registry>.events.jsonl`;
+  and labels each session with `status.line` and `status.at`, written only when the line
+  changes or once a minute. A followed lead with no progress for 20 minutes, its own history
+  and its live children counted, raises a `deadline` event, whatever its status reads, unless
+  it is parked or ended with `DONE` or `USER NEEDED`; a nudged one with an unknown wait a
+  second, 10 minutes later.
+- `omnigent_agent.py report <session> [<path>]` prints a lead's report, or any file of its workspace or host, through Omnigent's file API from any host: exit 4 for a missing file, 1 for an offline host (#256).
+- `supervise --registry --console` settles routine events itself and wakes the chief of staff
+  within hard bounds (#257); without `--console` it posts every line as before. Each event is
+  routed by one table (`route`): archived, parked, a named wait and exact repeats need no post;
+  a quiet end goes to one small-model call (`claude -p`, `claude-haiku-5-5` unless
+  `$OMNIGENT_SMALL_MODEL`; 20 s, 4,000 characters in, 200 tokens out; anything unclear routes
+  act), and so does a `USER NEEDED` a `--decisions` file's standing decisions may cover. The
+  supervisor sends the stall nudge (once per progress chain) and the revive (once per lead) and
+  tells each lead started with `start --top-level --after <session>` of that lead's `DONE`, each
+  through `relay` as an intent in `state.json` that a restart looks up in the lead's history and
+  never sends twice. What needs the chief of staff or the owner is posted as `Supervisor [act]
+  b-<id>: …` or `Supervisor [owner] b-<id>: …`, with each lead's status row and report head, at
+  most one post per 5 minutes and 30 model calls an hour, both windows kept across a restart; a
+  pending post is looked up by its id in the notified session's history after a crash and sent
+  again only when missing. `status.line` on the notified session shows `needs you: <n>` while
+  owner events wait. `--fyi post` also posts every line; `events.jsonl` names how each event was
+  settled.
+- `chief-of-staff` acts on `Supervisor [act]`/`[owner]` posts from what they carry, never nudges a lead whose history shows the supervisor's `LEAD_NUDGE`, follows with `supervise --console --decisions <board>` and `start --after`, and takes over from the predecessor's registry and state file (`leads.registry` → `leads.state.json`) read with `report`; the board drops its Live leads table (#258).
+- `omnigent_agent.py supervise --console` reads a followed lead's report when its last message is only the report's path, once per message, and takes the lead's `ending` and `wait` from the report's first line, so a lead that ended `DONE` or names its wait is no longer nudged at the progress deadline (#264).
+- `omnigent_agent.py supervise --console` reads a `STILL WORKING` that names a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17 UTC`) as a timed wait and raises no progress deadline before that time plus 20 minutes; a wait word now counts only opening the `STILL WORKING` text or after `on`/`for`, so "per lead event" no longer reads as a wait on a lead (#266).
+- `engineering-loop/scripts/browse.py` renders a web UI in headless Chromium and saves a screenshot, after an optional scripted interaction (`--do`); `--omnigent` signs it in to an Omnigent server with the CLI's login. worker.md asks for a rendered check on every web UI change and verifier.md drives the UI the same way (#268).
+- `chief-of-staff/scripts/cos_page.py` serves one tailnet-only page of the supervisor's state: each lead with its Omnigent session link, state, wait, last line and age; events waiting on the owner; recent events with how each was settled (#270).
+- `omnigent_agent.py start` and `run` print a stderr line when a top-level session matches no Omnigent project, naming the name looked up and `OMNIGENT_PROJECT`, instead of leaving it unfiled in silence (#272).
+
+## 0.21.1 - 2026-10-18
+
+Two fixes to `omnigent_agent.py`.
+
+- A session files under the Omnigent project whose name matches the repo's ignoring case,
+  spaces and punctuation, so `voice_note` files under "Voice note" (#194). An exact name wins;
+  two loose matches with no exact one fail and name `OMNIGENT_PROJECT`. Letters and digits in
+  any script count.
+- `reap` exits 1 when a finish failed, after trying every session (#192).
+
+## 0.21.0 - 2026-10-17
+
+No model is hardcoded or picked in the pack (#175), and a finished sub-agent is archived (#188).
+The latter needs an Omnigent build with kzarzycki/omnigent 4dd0af32, a new requirement, so this
+is a minor version.
+
+- A Codex verifier no longer defaults to `gpt-6.1-sol`: every child runs on `--model`, else
+  `OMNIGENT_MODEL_<AGENT>`, else its harness's configured default (Codex:
+  `~/.codex/config.toml`).
+- `engineering-loop` SKILL.md § Models and `lead.md` step 4 no longer pick a model per item: a
+  lead leaves it to the default unless the owner names one. A launch that fails on capacity is
+  retried later on the same model, never on another (`backends/omnigent.md` § Model).
+- A finished sub-agent is archived, like a top-level session, instead of having its turn
+  interrupted and its terminals ended and being left unarchived (#188). It needs an Omnigent
+  build with kzarzycki/omnigent 4dd0af32, where archiving a sub-agent leaves the runner it
+  shares with its parent up; an older build stops that runner and the parent with it.
+  `reap` prints `archived` for every session it finishes.
+
+## 0.20.0 - 2026-10-17
+
+A chief of staff hears its leads through Omnigent session subscriptions, not a detached
+supervisor job (#182). It needs an Omnigent build with subscriptions (kzarzycki/omnigent#6);
+a Codex chief also needs its shell to name its session (kzarzycki/omnigent#9).
+
+- `omnigent_agent.py start --top-level` subscribes the session it runs in to the new lead,
+  before the brief is sent. Omnigent then posts the chief a notice each time the lead ends a
+  turn or waits on a prompt, and revives the chief for it. A subscribe that fails, or a shell
+  that doesn't name its session, prints `not subscribed` and the start still succeeds: follow
+  that lead with `watch`.
+- `chief-of-staff` follows its leads by those notices and subscribes with
+  `sys_session_subscribe` to a lead it takes over. The launchd supervisor is gone from the
+  skill and the README.
+- `send` bounds a follow-up's report by the session's own workspace, so a lead working in a
+  parent directory or a sibling repo no longer has its report rejected.
+- `watch` counts a native session's turn end only once it has held for 30s, since a Claude
+  session reads idle in the middle of a turn.
+- Ending a sub-agent interrupts its turn before ending its terminals. Ending only the terminals
+  left a Codex child's turn running, and an ended verifier kept working and overwrote a report.
+
+## 0.19.1 - 2026-10-17
+
+- An Omnigent child's label names its work. Omnigent labels a child by a model summary of its
+  first message, not by its title, and that message was the same line for every child, so
+  labels came out as "Read Brief and Execute". The line now leads with the title
+  (`Work on pr182-verifier-p2: read <brief> and do what it says.`), and
+  `backends/omnigent.md` asks for titles that name the issue or PR.
+
+## 0.19.0 - 2026-10-16
+
+A chief of staff, an optional session the owner talks to while leads do the work (#179).
+
+- New skill `chief-of-staff`, explicit-only (`/chief-of-staff` or a direct request): it sorts
+  each owner message, starts one top-level lead per independent ask with the owner's words
+  quoted, relays follow-ups, follows the leads with the detached `supervise --registry` job
+  and reports their results, questions and stalls. A lead behaves the same with or without
+  one, and every session started without it is a lead, as before.
+- With Hindsight configured (`~/.hindsight/coding-agent.json`), the chief recalls and retains
+  the owner's preferences and standing decisions per repo (`scripts/memory.py`). Workers and
+  verifiers get no memory, and `verifier.md` says a verifier reads none.
+- `omnigent_agent.py start` and `run` take `--workspace <dir>`: a lead for a change across
+  sibling repos works in their parent, its report under the starter's `tmp/loop/`. Without
+  it nothing changes. `lead.md` says each PR still follows its own repo's `docs/agents/`.
+
+## 0.18.3 - 2026-10-15
+
+A waiter takes a child's report only once it is final (#165), and a taken title no longer
+fails a start (#174).
+
+- `run`, `send` and `wait` count a report only once the child's turn has ended and the file
+  is unchanged since, and read it again before returning it: a child can rewrite its report
+  until then (a verifier revising its verdict, a lead writing progress at its report path).
+  Omnigent can lose a turn end (kzarzycki/omnigent#4), so a report quiet for 10 minutes
+  together with the session's history counts too. The supervisor's `report written` follows
+  the same rule.
+- The brief's preamble, `orchestrating-agents` § Rules and `lead.md` § Report say the report
+  path holds the final report, written once at the end, and progress goes to another file.
+- A create Omnigent refuses with 409, a title an earlier child of the same parent holds
+  (archived ones too), tries the next free `<title>-r<n>`, the sequence the abandoned-start
+  retry uses, and prints the title it used.
+
+Starting a lead the owner can open (#152).
+
+- `omnigent_agent.py start --top-level` starts a lead as a top-level session in the repo's
+  project, which the owner opens from the sidebar and whose children report to it, not to
+  the session that started it (#152). Its brief says only the owner's quoted words
+  approve, and it asks the owner in its own session (`USER NEEDED`) instead of writing a
+  question; `run` refuses the flag. Without it, `start` and `run` are unchanged.
+- The one-line message naming a brief file reads "Your brief is the file …", no longer
+  naming the lead as its sender.
+
+Starting and collecting agents is its own skill, `orchestrating-agents` (#151).
+
+- `engineering-loop/orchestration/{native,omnigent,herdr-link}.md` are now
+  `orchestrating-agents/backends/`, and `engineering-loop/scripts/omnigent_agent.py` is
+  `orchestrating-agents/scripts/omnigent_agent.py`: a brief or command that names the old
+  path names the new one. Installed skills are siblings, so from the loop's folder it is
+  `../orchestrating-agents/scripts/omnigent_agent.py`.
+- The backend choice and the "Reports are files" rule moved from the loop's SKILL.md to the
+  new skill, which also states questions as files and that whoever starts a child collects
+  it. The loop keeps its roles and points at the new skill.
+- `operating-omnigent` now covers the Omnigent install and its raw `sys_*` tools only.
+
+Fixes.
+
+- `supervise --registry` counts a verifier's report only with its `SATISFIED:` line, as
+  `wait` does: a registry line carries a `verdict` field, written by `run` and `start` for a
+  verifier role and by `send --verdict` (#167).
+- `approvals.py land` waits on a head no check ran on instead of crashing on its null
+  `statusCheckRollup` (#172).
+
+## 0.18.2 - 2026-10-14
+
+A finished sub-agent no longer takes its lead down with it (#163).
+
+- `run`, `wait`, `reap` and `start`'s abandon path end a sub-agent's terminals and leave it
+  unarchived, where they used to unbind and archive it. The child's turn-end idle bound it
+  back to the parent's runner, and the archive's delayed stop then stopped that shared runner,
+  so the lead was revived without its context (kzarzycki/omnigent#5). A top-level session is
+  archived as before. `reap` prints `archived` or `ended` for each session it finishes, and
+  operating-omnigent's Archive row says never to archive a sub-agent.
+
+`omnigent_agent.py supervise --registry` supervises sessions from a process that outlives its
+caller (#158).
+
+- `supervise --registry <file> [--notify <session>]` runs until stopped, re-reading the file's
+  `session=report` lines each poll. It prints every line with the local time and, with
+  `--notify`, posts it into that session as `Supervisor: <line>`, reviving a reaped one first.
+  Lines wait in order until posted, so a failed post delays a line but loses none, and a
+  terminal event drops the session's line once its own line is posted, unless a newer brief
+  armed it again meanwhile. Errors and a quiet `--timeout` window are logged and never stop it.
+- `run`, `start` and `send` arm the registry (`--registry`, else
+  `$OMNIGENT_SUPERVISE_REGISTRY`) once their message is in the history; `run`, `send` and
+  `wait` disarm it when they return the report or a question. A line carries the session's
+  brief files after the report, each after a tab: `start` writes its `<report>.brief`, and
+  `send` appends its message file.
+- After a revive, which can drop a session's context, `supervise` sends it one line naming its
+  brief files (the registry's, else `<report>.brief`) and the report it owes, in place of
+  nothing. Like the resume line, it is no instruction, so a report written for the brief still
+  counts. A failed send of it is tried again at the next look.
+- Silence counts the session's children: a lead waiting on its own worker or verifier
+  gets no resume line while a child of it was updated within `--silent-seconds`.
+- A resume line already in the history counts as sent, so a restarted supervisor gives up on a
+  session still silent after it instead of sending a second.
+- `orchestration/omnigent.md` shows how to run it detached under launchd or a systemd user
+  unit; the chief-of-staff passages and `lead.md` § Waiting use it in place of
+  in-session watchers, which die with the session.
+- A regression test that one-shot `supervise` reads no other session after a caller event
+  (#156).
+
+The per-thread role is the lead (#150).
+
+- `coordinator.md` is now `lead.md`, and the loop's files call the role "lead": most
+  multi-agent systems use "coordinator" for the project-level agent, the layer a chief of
+  staff fills. A brief that names `coordinator.md` names `lead.md` now.
+- SKILL.md, Roles: a session whose brief names no role is the lead.
+- `lead.md` opens with one PR per story, as its Branch step and issues.md, Epics already
+  said.
+
+## 0.18.1 - 2026-10-14
+
+`omnigent_agent.py supervise` keeps a stalled session from going unnoticed (#154).
+
+- `supervise <session>=<report>...` checks that sessions owing a report are alive: it
+  revives a reaped runner in place, sends one resume line to a session silent past
+  `--silent-seconds` (default 1800), and exits once one reports, asks, blocks, fails or
+  is given up on. A chief of staff supervises its coordinators with it, since Omnigent can
+  lose a sub-agent coordinator's turn end and leave it `running`.
+
+## 0.18.0 - 2026-10-14
+
+`land` works on a private repo on GitHub's free plan (#145).
+
+- GitHub answers the rules read there with a 403 naming its plan: `land` reads that as no
+  required checks, merges pinned to the head once its proofs hold, never asks for
+  auto-merge, and says GitHub enforces nothing on the base. Any other error still fails.
+- The consumer e2e test's fixture repos turn off git's auto-maintenance, whose background
+  repack removed loose objects while the local clone copied them (#144).
+
+A project may let a person work outside the loop (`Opt-out: allowed`).
+
+- With the line `Opt-out: allowed` in loop.md, `check merge` reads a PR with no loop trail
+  (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links,
+  no `Reverts #<n>` line, not an exempt bot PR) as outside the loop: one line saying so,
+  exit 0, so the approvals workflow posts success and its author merges it their usual way.
+  `land` prints the same line and exits 1, so the loop never merges it or turns auto-merge
+  on. A developer opts out with `Engineering loop: off` in their personal instructions.
+  Without the line nothing changes (#134).
+- SKILL.md, Adopting the loop, and coordinator.md, Land, cover a repo without a merge
+  queue (#137): the same ruleset without the queue, and `land` merges directly or by
+  auto-merge.
+- `docs/agents/issue-tracker.md` takes an optional `## Board` mapping loop columns to the
+  board's, one list item each, such as ``- `Build` is `In progress` ``; several loop columns
+  may share one board column (#135). `board.py <issue> <column>` takes the loop's name and
+  sets the mapped board column, and `board.py column` prints the loop's name, the earliest
+  of those sharing the board's status. Without the section nothing changes.
+
+Practices proven in a project's local workflow, now the loop's.
+
+- A child that idles saying it is waiting gets a background wait from the coordinator on
+  its process or log, which asks for the report when it fires; a worker never ends a turn
+  on a wait (coordinator.md, Waiting; worker.md).
+- Every proof log starts with `git rev-parse HEAD` and the command that produced it, and
+  the verifier treats a proof whose SHA isn't the reviewed head as missing
+  (worker.md, Report; verifier.md).
+- Anything an agent writes under a person's GitHub account opens with `> 🤖 AI`; the
+  records `approvals.py` posts keep their format, and its `## Spec`/`## Plan` lookup skips
+  a leading marker line (github.md, Posting under a person's account).
+
+The owner approves only the critical specs (`spec: auto`, #133).
+
+- loop.md § Approvals takes `spec: auto`: every spec a writer opened, epics included, is
+  approved by policy, except one a risk rule matches (a `risk:` line, or a conditional
+  `merge:` or `spec:` line), which waits for the owner's
+  record and `approved:spec`. The gate judges the rules on the labels of the issue and the
+  PR and the PR's files (at `check build` the files pushed so far), and `check` says which
+  rule holds the spec. Under `spec: auto` a risk rule holds the spec instead of the merge,
+  so no `approved:merge` wait comes from it; `risk:high` and the cap still hold the merge.
+  `spec: auto unless risk` keeps its meaning.
+
+The owner signs off a landed change in use where loop.md asks for it.
+
+- loop.md § Approvals takes `signoff: <condition>` lines, read and judged as `risk:` rules
+  are. The spec records `Sign-off: owner` or `Sign-off: none`; `owner` asks for a sign-off
+  where no rule does, and `none` never waives a matching rule.
+- `Implements #<n>` is a PR link that leaves the issue open, like `Part of`. Where loop.md
+  has a `signoff:` line, `check merge` and `land` need `Implements` for an issue that waits
+  for a sign-off and a closing keyword for any other (`Part of` suits both). Without the
+  line nothing changes.
+- After landing, an `Implements` issue moves to the new board column `Sign-off`, between
+  `Verify` and `Done`, and the owner closes it once they have tried it
+  (issues.md, Sign-off). `board.py column` orders it there.
+
+## 0.17.0 - 2026-10-09
+
+A bot's lock- or manifest-only PR merges without a verifier review (#106).
+
+- loop.md § Approvals takes `bot: <login> <condition>`, such as
+  `bot: dependabot[bot] path uv.lock or path pyproject.toml`. `check merge` and `land`
+  waive the verifier review for a PR that bot opened when every file it changes matches
+  the condition on its path and every commit is the bot's (authors, and a committer that is the bot or no account);
+  any other file, a renamed or copied one, or a person's commit or rebase needs the review as usual. Without the line, no PR is
+  exempt. The login matches with or without `[bot]`, and only a bot account.
+- The verifier resolves no review thread.
+- The merge gate does not enforce reviewer family (#118): the verifier names its family
+  in the review heading for the record, and the gate checks only that the newest pass on
+  the head is satisfied, whichever family wrote it. The coordinator still prefers a
+  verifier of the other family when it is installed and within quota; otherwise a fresh
+  same-family session is the normal path, and the PR body names which ran.
+- An unreadable `cap:` line in loop.md, such as `- cap: 3 passes`, is refused at the
+  start of `check` and `land` (#119): the refusal is the only line printed, and `land`
+  marks no draft ready. Before, a PR a risk rule or `risk:high` already held never read
+  the cap, so `check merge` printed its proofs and `land` marked the draft ready.
+- The cap hold (0.14.0) applies when a verifier review at the cap or later left a
+  blocker or major open, and also when it says `SATISFIED: no` with none open; the hold
+  line says "was not satisfied or left a blocker or major open".
+
+## 0.16.0 - 2026-10-09
+
+Labels as code: `area:` and `kind:` labels, synced with in-place renames, and the
+assignee says whose an issue is (#103).
+
+- Categories are `kind:bug`, `kind:enhancement`, `kind:chore` and `kind:documentation`;
+  `documentation` is renamed to `kind:documentation`. A component's label is `area:<name>`, an extra category's
+  `kind:<name>`. `approvals.py` reads only these names, and loop.md conditions
+  (`component billing`, `category bug`) match them. Migration, since the old names no
+  longer count: upgrade the pack, run `python3 scripts/labels.py --dry-run` from the
+  installed engineering-loop skill in the project's checkout, then without the flag, then
+  rerun `approvals.py check`. `setup:github` runs the sync only once project-templates
+  wires it in, a follow-up.
+- `scripts/labels.py [--dry-run]` syncs the repo's labels with the loop's set and
+  `docs/agents/issue-tracker.md`: renames in place (the loop's map, the tracker's new
+  `## Renamed labels`, and each bare component name), creates and updates the listed
+  labels, deletes an unlisted one only when no issue or PR carries it, and never renames,
+  folds or deletes Dependabot's or one whose name has a comma.
+- `approvals.py check build` refuses an issue assigned to anyone but its spec's approver;
+  once every build proof holds it assigns the approver where no one is, and the PR its
+  issue's assignees, recording each assignment in a comment first. `approvals.py release <issue>` removes, on parking or dropping, only
+  an assignee the loop added.
+
+## 0.15.0 - 2026-10-09
+
+Approvals come only from people, and risk is defined in one place (#121).
+
+- `approvals.py approve` takes only `--by owner`: a person's record, written on their
+  word. `check` and `land` no longer ask for a coordinator record, and an agent's earlier
+  record approves nothing. Without a loop.md policy line every spec needs the owner's
+  current record and `approved:spec`; a plan needs them only where a `plan:` rule asks.
+- loop.md § Approvals `spec: auto unless risk` approves by policy, with no record or
+  label, the spec of a `bug`, of an issue with a `Found while #<n>` line, or of a native
+  sub-issue of an epic with the owner's current approval, opened by an account whose
+  collaborator permission is admin, maintain or write. `needs-owner` still blocks.
+- `risk: <condition>` lines define high risk, with the conditions `merge:` rules had. A
+  change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
+  matches, or the cap was reached with a core finding open; only then does the merge wait
+  for the owner's `approved:merge`, and the wait line says why. `merge: auto unless risk`
+  states the default. When the gate infers high risk, `check merge` and `land` add
+  `risk:high` to the PR; a failure to add it is reported, never fatal.
+- Migration: a `merge: <condition>` line reads as a `risk:` rule until the project
+  rewrites it, so its paths still hold merges for the owner. A `spec: <condition>` line
+  reads as one only beside `spec: auto unless risk`; without that line the owner approves
+  every spec already, so a legacy `spec: always` holds no merge.
+
+## 0.14.0 - 2026-10-09
+
+- `scripts/gate.py` and `approvals.py record-check`, the old names kept through 0.13, are gone:
+  run `approvals.py` and `approvals.py local-ci`.
+- No fix lands without review (#116). `approvals.py land` merges only a head with a
+  satisfied verifier review on that exact commit: any commit after the verdict, a merge of
+  main included, needs a verifier pass of its own. A head that only took in main's changes
+  to other files is no longer covered.
+- The cap is defined once, in SKILL.md § The cap: 5 passes by default, or a project's own
+  through a loop.md line `cap: <n>`, which `approvals.py` reads too. When a review at the
+  cap or later left a blocker or major open, the owner decides: a fix and one pass past
+  the cap, scoped to the open items, or leaving the code untouched. `land` holds such a PR
+  for the owner's `approved:merge` label, added after the head's push. When the cap's last
+  pass leaves only minor or edge findings, they go to the ledger and an issue, and the PR
+  lands with no owner stop.
+
+## 0.13.1 - 2026-10-09
+
+- `approvals.py land` reruns a stale `loop:approvals`. Resolving a review thread starts no
+  GitHub Actions workflow, so the FAILURE the approvals workflow posted while a thread was
+  open stayed on the head and `land` exited 3 for good. When every proof holds and that
+  status is the only required check that is red, `land` reruns the Actions run its target URL
+  names (`gh run rerun`) and exits 3. A run still in progress is waited on, and a status naming
+  no run of this repo is reported; neither is rerun.
+
+## 0.13.0 - 2026-10-09
+
+The merge contract's landing (kzarzycki/agent-skills#108, #106) and the launcher's resilience (#93).
+
+- `approvals.py land <pr>` is the one way an agent lands a PR. It refuses (exit 1, the PR
+  untouched) on a missing proof; marks a draft ready and waits (exit 3: run it again once CI
+  starts); then merges at the head (`gh pr merge --squash --match-head-commit`), or turns on
+  auto-merge pinned to the head while only required checks are pending. Required checks are
+  the base's rulesets and branch protection; a base requiring none needs every check green,
+  and a draft's skipped run is no result.
+- The gates are the merge approval. A loop.md § Approvals `merge:` rule (same conditions as
+  `spec:`, plus `path <glob>` read from the PR's files) asks for the owner's `approved:merge`;
+  a `merge:` condition the gate can't read asks for it too. With no rule, no label is needed.
+  A project that wants the 0.12.0 behaviour, a label on every merge, writes `- merge: always`.
+- The verifier's verdict is a GitHub PR review: `approvals.py verdict <pr> <report>` posts the
+  report on its reviewed `Head:` with one inline thread per finding, and refuses a report it
+  can't parse. `check merge` and `land` need the newest pass's reviews on that commit
+  satisfied with 0 blocker and 0 major, on the head or with only a main merge since that
+  touches no PR file; no unresolved review thread; and no person's latest
+  `CHANGES_REQUESTED`. A verdict comment no longer counts. Only a review by the PR's author
+  or the viewer counts.
+- A repo without `docs/agents/loop.md` has no rules: each issue the PR names needs
+  `approved:spec` and no `needs-owner`. The loop's files are read from the checkout's top
+  level, so a run from a subdirectory reads the same rules.
+- The loop docs: land only through `approvals.py land`; every fix after a verdict, a note's
+  included, gets a delta pass, and after pass 3 a delta check; who replies on and resolves
+  which review thread (`ADDRESSED`, `WONT_FIX`, `INVALID`).
+- `gate.py` and `record-check` stay as aliases until 0.14.0, which removes them.
+- `omnigent_agent.py watch` exits as soon as a session ends a turn, blocks on a prompt or
+  fails (#97); worktrees nest inside the project and the agent that starts them (#101); the
+  launcher retries idempotent reads, never doubles a timed-out create and nudges a turn that
+  ended without its report (#107); `send` revives a reaped session in place (#111).
+
+## 0.12.0 - 2026-10-07
+
+The merge contract's agent-skills part (kzarzycki/agent-skills#102, #104).
+
+- `scripts/gate.py` is `scripts/approvals.py`, with the subcommands `check`, `approve`,
+  `verdict` and `local-ci`. `local-ci` (formerly `record-check`) runs `mise run check:all` on a
+  clean checkout at the PR head for a `CI: none` repo; a record of the old `mise run check`
+  still counts. `gate.py` and `record-check` stay for this release as aliases with the same
+  output and exit code.
+- `check merge` reads one check, the aggregate `check` on the head, counting only its newest
+  run per workflow, so a red advisory check or a run cancelled by a newer green one no longer
+  blocks (replaces #76).
+- The merge approval is the owner's `approved:merge` label, added after the head's push (dated
+  by GitHub's repository activity) and still present; the `Approved: merge` record and
+  `approve merge` are gone, and a loop.md `merge:` rule is ignored. `check merge` exits 1 when
+  a proof is missing (Evidence, the verdict, an approved spec) and 3 while it waits for a green
+  `check` or the label, which the approvals workflow posts as a `pending` `loop:approvals`
+  status. The coordinator asks the owner only once `check` is green, turns on auto-merge with
+  `gh pr ready` (`gh pr merge <pr> --auto --squash --match-head-commit <head>`), and deletes
+  no remote branch: GitHub deletes the merged head branch.
+- `headed()` matches a comment's whole first line, so `## Specification notes` is no `## Spec`.
+- `approved:spec` is the ready state and `ready-for-agent` is gone: `check build` needs
+  `approved:spec`, a size, a category and a component, and no `needs-owner`. A `wayfinder:`
+  ticket needs `approved:spec` in place of `ready-for-agent`. Category, component and size
+  names are read through one rule, `label_names`: the loop's fixed set plus
+  `docs/agents/issue-tracker.md`.
+- `board.py column` prints the later of the issue's board column and the one its labels give,
+  so an issue with `approved:spec` reads `Ready`.
+- The loop docs use the contract's task names (`check`, `check:all`, `test:changed`,
+  `loop:approvals`, `setup:dev`, `setup:github`, `pr:demo`, `agent:sync`) and point at
+  `mise tasks ls` for what each does. Main requires exactly `check` and `loop:approvals`;
+  hooks are git hooks, and the proofs leave the push. The verification flow: the worker runs
+  `test:changed` while iterating and `check` before each push; the PR goes ready once
+  `check` passed and the verifier is satisfied; a check red after ready goes back to draft
+  and to a worker with the failing log, while the coordinator waits on one
+  `gh pr checks --watch --fail-fast`. An epic's stories are filed before its approval is
+  asked for, and each has its own approval.
+
+## 0.11.0 - 2026-10-06
+
+- Human review findings on an open PR (`coordinator.md`, Land): each review comment is triaged
+  with One concern per PR. A blocker, a major or a bug the PR introduced is fixed on that PR's
+  branch; anything else is answered on its thread and waits for the merge. The fixes follow the
+  review trail below: the PR goes back to draft, each fix is a pushed commit replied on its
+  thread, and the PR is ready again after a verifier pass. No fix cascades down a stack: a merge
+  queue tests each PR on top of main, and a stacked PR follows Stacks are one deep.
+- Review trail on the PR (`SKILL.md`, `coordinator.md`, `worker.md`, `github.md`): the PR opens
+  as a draft with the first push, and each verifier pass is posted as a PR review with one inline
+  comment per finding, labelled `Verifier (<family>), pass <n>`, and the verdict in its summary.
+  Each fix is its own commit, replied on its thread with the SHA and the thread resolved; a
+  deferred finding's reply links its issue. The PR goes ready once no blocker or major is open,
+  and is squashed on merge. `github.md` gives the `gh api` calls (review, thread reply,
+  `resolveReviewThread`).
+- Adopting the loop (`SKILL.md`): a new repo starts from kzarzycki/project-templates with
+  Copier (`loop_enabled`); an existing repo copies the rendered CI workflow, `gate.yml`,
+  pre-commit and pre-push hooks, mise `check`/`gate`/`merge-queue` tasks and main's ruleset from
+  there, so the pack keeps no second copy. CI skips draft PRs and runs on `ready_for_review`;
+  merge-queue and push runs are unaffected, and the local pre-push gate checks a draft.
+- The merge gate lets an exact revert through without a new spec: a PR whose body says
+  `Reverts #<n>`, with #n merged and a diff that is file for file the inverse of #n's (line
+  order, file status and modes included), skips the spec proofs and the verifier verdict, and
+  `approve merge` records `Verdict: exact revert of #<n>`. It still needs Evidence, green CI and
+  the merge approvals. A merge rule's owner check reads the union of the PR's issues' labels, so
+  a path rule also holds on a PR that names no issue.
+
+## 0.10.0 - 2026-10-06
+
+- Land small and soon (`SKILL.md`): every PR branches off `origin/main` and merges as soon as
+  its gates pass. An epic lands as one PR per sub-issue, each off main, with no epic or
+  integration branch; work not yet usable lands unexposed (no entry point, or a flag the user
+  docs don't name), and the sub-issue that exposes it comes last.
+- Stacks are one deep, and only on a PR already in Land; the stacked PR moves onto main the
+  moment its base lands, moved by the coordinator only when it owns that PR (otherwise a
+  comment naming the merge SHA asks its owner). A stacked PR keeps its own `Closes`; they are
+  copied to the base only when the base contains the stacked work.
+- One concern per PR, rewritten: a finding goes on the open PR's branch only when it makes that
+  PR wrong or unmergeable; anything else, a satisfied verdict's note included, waits for the
+  merge and starts from main. Never push to a PR someone else owns. A process fix that makes
+  the open PR wrong follows this rule too, instead of going to a separate PR.
+- Revert first: when main goes red after a merge, or a merged change proves wrong in use, the
+  first fix is a revert PR off main, and the reverted PR's issues reopen. Accept starts by
+  reading main's push run on the merge SHA.
+- Waiting: while a PR waits for CI, the coordinator moves other ready items forward.
+
+## 0.9.2 - 2026-10-05
+
+- Epics (`issues.md`): an epic is an issue whose goal is an outcome the owner tracks, with
+  its work items as native sub-issues and the `epic` label. Two levels only, so every work
+  item shows under its epic on the board. Convert an issue whose spec already states the
+  outcome rather than file a new one; the epic closes when its sub-issues are done.
+- Triage places what a PR leaves unfixed by one test: would closing the issue without it be
+  dishonest? Within the issue's acceptance, the issue stays open and the PR says `Part of #n`.
+  Outside it, a new issue with a `Found while #n` line, attached as a sub-issue of the
+  originating issue's epic, so follow-ups no longer grow into loose chains.
+- A change to an approved spec's scope or acceptance removes `approved:spec` and parks the
+  issue with `needs-owner`; a wording fix keeps the label.
+- Landing: closing keywords fire only on a PR merged into the default branch, so a stacked
+  PR's issues are closed on the PR that reaches it, or by the coordinator. A replacement PR
+  carries `Closes` for every issue the replaced one closed.
+- `gate.py` reads `Part of #n` as naming the spec, like `Closes #n`, so a PR that leaves its
+  spec open still passes the gate.
+- `github.md`: setting a parent with `addSubIssue`, after reading the current one, since an
+  issue has at most one and a repeated add is refused.
+
+## 0.9.1 - 2026-10-05
+
+- Upstream intake, mattpocock/skills `d81f3a1..24fe0ef` (v1.3.1).
+- `ask-matt` (ported): once `/diagnosing-bugs` has fixed a bug, run `/retro` in the same
+  session to ask what would have prevented it; a finding that no seam can lock the bug down
+  still goes to `/improve-codebase-architecture`.
+
+## 0.9.0 - 2026-10-03
+
+- New owned skill `demo`: record a change a user sees running at the PR's head and post the
+  video to the PR. `scripts/post_demo.sh` posts one `## Demo` comment with the videos attached
+  (`gh pr comment --attach`), refuses a checkout that is not the PR's head, and minimizes
+  earlier demo comments as outdated. One file per recorder, read only for the surface in play:
+  VHS for a CLI or TUI, Playwright for a web page, `simctl` for the iOS simulator,
+  `screenrecord` for Android. When to record is the project's rule, not the skill's.
+- `pr`: Evidence names the demo when one was recorded, or suggests one when the project's
+  instructions call for it. A repo PR template's headings win; the sections fit under them.
+- `ask-matt` routes `/demo`.
+
+## 0.8.3 - 2026-10-02
+
+- An approval names the spec or plan by its last edit, as GitHub's edit history shows it
+  (`Spec: as edited 2026-10-02 14:35:27 UTC`), instead of a 12-character hash a person could
+  not check against the text. Any edit still needs approving again. Records written with the
+  hash no longer count: an issue approved before this release needs one more approval.
+- A re-approval says why: `The spec changed after the last approval, so it was checked
+  again.` (the head moved, for a merge). `approve` then minimizes, as outdated, each earlier
+  record it supersedes, so the issue shows only the approvals that count. Another approver's
+  record of the same version stays open. Minimized comments stay readable, and the gate still
+  reads them.
+- A merge path rule reads every file a PR changes, not just GraphQL's first 100. Past that page
+  the gate lists the files through the REST API, up to GitHub's 3000. Adopting the template
+  commits the synced agent files, so the adoption PR alone was refused as "more than 100
+  changed files".
+
+## 0.8.2 - 2026-10-02
+
+- Under `CI: none`, the merge proof is a record, not a sentence. `gate.py record-check <pr>` runs
+  `mise run check` on a clean checkout at the PR head and posts `Local check passed` with the
+  head commit. The merge gate needs that record on the current head. It no longer reads
+  `## Evidence` for `mise run check` and `exit 0`. That matching was brittle, and it was not
+  tied to the head, so a line written for an earlier commit still passed.
+- Instructions are code for the further-pass rule (coordinator step 7). A fix after a satisfied
+  verdict skips another verifier pass only when it changes nothing an agent or tool reads. A
+  skill, role file, brief, `AGENTS.md`, `docs/agents/` file or prompt needs the pass.
+
+## 0.8.1 - 2026-10-02
+
+- `gate.py` reads a PR's changed files only when a merge rule has a path condition. A PR with
+  more than one page of files is refused only then, and at the merge point. Before this, every
+  build check refused such a PR, and the pre-push hook refused the very push that would shrink
+  it, because the hook reads the PR as GitHub last saw it. `approve merge` now refuses the
+  unread page too, instead of judging a path rule on a truncated list.
+- A project without CI says so with the line `CI: none` in `docs/agents/loop.md`. Its merge
+  proof is then the PR's Evidence naming `mise run check` with exit 0 on the head, in place of
+  green CI checks. Projects with CI keep the CI proof.
+
+## 0.8.0 - 2026-10-01
+
+The engineering loop ships as a method any project turns on. No upstream change.
+
+- New owned skill `engineering-loop`: intent, spec, build, gates, proof,
+  verify, land, with coordinator, worker and verifier roles, triage, the
+  three-pass cap and the landing rule. It names no project: each step reads
+  `mise run check` or the project's `docs/agents/loop.md`, `issue-tracker.md`
+  or `coding-standards.md`, and a test fails on a project term. It carries
+  the generic coding standards, the owner-on-the-loop rules and status
+  conventions, and three stdlib scripts: `board.py` (move a ticket),
+  `gate.py` (the proof gate) and `omnigent_agent.py` (its project defaults to the
+  repo's name).
+- A project configures the loop rather than forking it: `loop.md § Practice`
+  names the skill that fills a stage (defaults: `grilling`, `to-spec`,
+  `code-review`, `pr`), and `§ Approvals` lists the spec, plan or merge points
+  that wait for a person. The loop keeps the state, the gate, the cross-family
+  verifier and the merge whatever the practice.
+- Every step leaves proof on GitHub, and `scripts/gate.py check <build|merge>`
+  checks it: the issues the PR closes are specced and labelled (what
+  `spec_gate.py` did), each approval is recorded, and at merge the PR has its
+  `## Evidence`, a posted verifier verdict, green CI and a merge approval on its
+  head. The coordinator approves spec, plan and merge itself (`gate.py
+  approve`), the verifier only gives the verdict (`gate.py verdict`), and a
+  `§ Approvals` rule adds a person's approval, made by adding the
+  `approved:<point>` label. A project runs the gate as `mise run gate`, adding
+  its own checks; the loop, a pre-push hook and CI call it. A step is skipped
+  only when the owner asks: `size:XS` no longer skips the verifier.
+- Orchestration backends: native subagents (the default), Omnigent and
+  herdr-link, picked by `Orchestration backend: <name>` in personal
+  instructions. Without the other model family, the verifier is a fresh session
+  of the same family and the PR body says `verifier: same family`; the brief
+  never says so.
+- The loop's issue conventions (states, categories, sizes, board columns) are
+  its `issues.md`, and its `github.md` does them on GitHub (`gh` operations,
+  board moves, the issue-batch protocol the setup skill used to write). Both
+  are read in place, never copied: a project's `issue-tracker.md` holds the
+  line `Tracker: GitHub (engineering-loop's github.md)`, its Components, what
+  is Never on GitHub, and optionally Extra labels and Extra categories.
+- Removed `setup-engineering-workflow-for-apm`: the project template writes
+  `docs/agents/`, and two writers drift apart. `to-spec`, `triage`,
+  `to-tickets`, `implement-spec`, `ask-matt`, `code-review` and `wayfinder`
+  send a user without `docs/agents/issue-tracker.md` to create it. Drop
+  `/setup-engineering-workflow-for-apm` from your own instructions.
+
+## 0.7.0 - 2026-09-30
+
+Upstream `mattpocock/skills` `c55ee46..d81f3a1` (release v1.3).
+
+- Removed `resolving-merge-conflicts`, as upstream did in `daa01d8`: nothing
+  replaces it, because the agent works through a merge or rebase conflict
+  without a dedicated skill. Drop any reference to `/resolving-merge-conflicts`
+  or the `resolving-merge-conflicts` skill from your own instructions.
+  `ask-matt` and `implement-spec` no longer name it.
+- The domain glossary is now `GLOSSARY.md`, and the multi-context map
+  `GLOSSARY-MAP.md`, in every skill that reads or writes it, and
+  `domain-modeling`'s format file is `GLOSSARY-FORMAT.md`. The skills no longer
+  look for `CONTEXT.md` or `CONTEXT-MAP.md`: `git mv` an existing one to the new name.
+- `implement-spec` (ported): the goal is one integration branch with every ticket
+  resolved the way the tracker closes work. A draft PR opens only when the
+  tracker closes work through PRs or the user asks, after the first merge. Each
+  implementer checks its worktree's base, builds with `tdd` and merges the
+  integration tip before reporting. Upstream's description wording is declined.
+- `ask-matt` (ported): `retro` closes the main flow, and `implement-spec` is
+  routed as landing on one integration branch.
+- `pr` (ported): the glossary rename. Upstream's reformatted component-tree
+  example and CREDITS rewording touch text the tuned skill had already condensed away.
+- `codebase-design`, `diagnosing-bugs`, `domain-modeling`,
+  `improve-codebase-architecture`, `tdd`, `triage`, `wait-what` (ported): the
+  glossary rename only. `grill-with-docs`, `to-spec`, `to-tickets` and the setup
+  skill take the same rename for consistency.
+- Upstream graduated `implement-spec`, `pr` and `retro` out of `in-progress/`;
+  the package now imports them from `skills/engineering/`.
+- A skill is retired by removing its `vendir.yml` entry and its overlay: the
+  refresh prunes the leaf and proposes a minor version. A configured leaf that
+  vanishes upstream still stops the refresh.
+
+## 0.6.2 - 2026-09-30
+
+- `to-spec` writes the spec into the issue the conversation started from, under
+  the original text quoted in full, instead of filing a second issue. The
+  project's `docs/agents/issue-tracker.md` can send it to a comment where an
+  issue's body is not the skill's to rewrite. With no issue it files one, as before.
+
+## 0.6.1 - 2026-09-29
+
+- `code-review` hands each reviewer this skill's path and its section instead
+  of a paraphrased brief, which had dropped the smell baseline and report rules.
+- The tuning contract says the same for any skill that prescribes a subagent's
+  brief.
+
 ## 0.6.0 - 2026-09-23
 
 - Tuned all 26 imported skills, the setup overlay and the owned skills

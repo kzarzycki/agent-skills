@@ -8,11 +8,11 @@ disable-model-invocation: true
 
 Break a plan, spec, or conversation into **tickets**: tracer-bullet vertical slices, each naming the tickets that **block** it.
 
-GitHub Issues is the default tracker; `docs/agents/issue-tracker.md` configures it, and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to run `/setup-engineering-workflow-for-apm`.
+GitHub Issues is the default tracker; `docs/agents/issue-tracker.md` names its realization file (for GitHub, the `engineering-loop` skill's `github.md`), and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to create it: the project template writes one.
 
 ## Draft
 
-Work from the conversation. If the user passes a reference (spec path, issue number or URL), read its full body and comments. Explore the code as far as the slicing needs, use the `CONTEXT.md` vocabulary, and respect the ADRs in the area. Look for prefactoring that makes the change easy; it goes first.
+Work from the conversation. If the user passes a reference (spec path, issue number or URL), read its full body and comments. Explore the code as far as the slicing needs, use the `GLOSSARY.md` vocabulary, and respect the ADRs in the area. Look for prefactoring that makes the change easy; it goes first.
 
 - Each slice cuts a narrow but complete path through every layer (schema, API, UI, tests), never one layer on its own.
 - A finished slice is demoable or verifiable on its own.
@@ -33,7 +33,7 @@ Present the breakdown as a numbered list: title, blocked by, and the end-to-end 
 
 ## Publish
 
-Render the approved tickets as one complete batch, every ticket's title, body, labels and blockers in dependency order (blockers first), and have the user review it before any issue is created. Publish it following `docs/agents/issue-tracker.md` for approval, markers, resume, creation and relationship wiring rather than improvising tracker commands. Don't close or edit a parent issue; linking the tickets to it is the only change it gets.
+Render the approved tickets as one complete batch, every ticket's title, body, labels and blockers in dependency order (blockers first), and have the user review it before any issue is created. Publish it following the realization file's issue-batch protocol for approval, markers, resume, creation and relationship wiring rather than improvising tracker commands. Don't close or edit a parent issue; linking the tickets to it is the only change it gets.
 
 - **Real tracker** (GitHub, Linear, …): one issue per ticket in the issue template, linked by the platform's native blocking and sub-issue relationships where it has them, otherwise by the "Blocked by" section. Label each `ready-for-agent` unless told otherwise; the tickets are agent-grabbable by construction.
 - **Local files**, when the repo configures them instead: one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order, in the local template; never one combined file.

@@ -1,0 +1,58 @@
+---
+name: demo
+description: Record a short video of a change running and post it to its PR, so a reviewer judges a visible change without checking out the branch. Use when a PR changes what a user sees (a command and its output, a page, a screen, a speed-up), on "record a demo", or when the project's instructions or spec ask for one.
+---
+
+# Demo
+
+A demo is the change running, recorded at the PR's head and posted on the PR, so a
+person can watch it work in a minute instead of checking out the branch. Whether a PR
+gets one is the project's call: its agent instructions say when to suggest a demo and
+when to record one. Without such a rule, record only when asked.
+
+## Record
+
+When the project's agent docs name a demo command, such as `mise run pr:demo <script>`, use
+it. Otherwise pick the recorder for the surface and read its file:
+
+| Surface | Recorder | Read |
+|---|---|---|
+| CLI or TUI | VHS tape | [recorders/cli.md](recorders/cli.md) |
+| Web page | Playwright video | [recorders/browser.md](recorders/browser.md) |
+| iOS simulator | `simctl` | [recorders/ios.md](recorders/ios.md) |
+| Android emulator or device | `screenrecord` | [recorders/android.md](recorders/android.md) |
+
+A change that spans surfaces gets one short video per surface, posted together.
+
+- Record the real build at the PR's head, so the video proves the change rather than a
+  mock. `post_demo.sh` refuses to post from a checkout that is not the PR's head or has
+  uncommitted changes; it checks when posting, so record from that same checkout.
+- Drive it from a script (a tape, a test, a command list) next to the e2e scenario it
+  shows, so a re-recording after a fix is one command and shows a path the tests check.
+- Keep secrets off screen (tokens, passwords, `env` output, customer data): anyone who
+  can read the PR can download the video, and secret scanning does not read video.
+- Produce MP4 with H.264, the one format every browser and player opens.
+- Write the video to a temporary folder, never into the repo, since every recording
+  would grow every clone.
+
+## Post
+
+```sh
+scripts/post_demo.sh [--pr <number>] "<what it shows>" <video.mp4>...
+```
+
+`scripts/` is relative to this skill's folder. The script uploads each video as an asset
+of the repo's `demos` prerelease, creating it on first use, and posts one `## Demo`
+comment naming the head commit and linking the videos. It minimizes your earlier `## Demo`
+comments as outdated so only the current one is open. The PR defaults to the current
+branch's. A repo with immutable releases refuses uploads to a published release, so there
+the script creates one prerelease per post (`demo-pr<N>-<sha7>-<time>`) with the videos
+attached by the same `gh release create`, and links those. Then name the demo in the PR body's Evidence.
+
+The video is a link to download, not a player inline in the comment: GitHub plays only
+videos dragged into its web editor, and neither `gh` nor the API can make that upload.
+An asset is named `pr<N>-<sha7>-<i>.mp4`, so a recording of a newer commit never
+replaces the video an older comment links.
+
+A project that records often wraps both steps in one task (record to a temporary
+folder, then `post_demo.sh`) and names that task in its agent docs.

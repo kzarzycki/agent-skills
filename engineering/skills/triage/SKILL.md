@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Move issues on the project tracker through a small state machine of triage roles. The maintainer asks in natural language ("what needs my attention?", "look at #42", "move #42 to ready-for-agent", "what's ready for agents?"); act on it.
 
-When the tracker config (`docs/agents/issue-tracker.md`) makes external pull requests a request surface, a PR is an issue with attached code: same roles, same states, with the PR deltas noted below. Resolve a bare `#42` to an issue or PR per that config.
+When the tracker's realization file (named in `docs/agents/issue-tracker.md`) makes external pull requests a request surface, a PR is an issue with attached code: same roles, same states, with the PR deltas noted below. Resolve a bare `#42` to an issue or PR per that file.
 
 Start every comment or issue you post during triage with:
 
@@ -28,7 +28,7 @@ States:
 - `ready-for-human`: needs a human to implement. For a PR, ready for a human to merge.
 - `wontfix`: will not be actioned.
 
-A triaged issue carries exactly one category and one state. These are canonical names; apply the repo's label mapping, and if none is configured tell the user to run `/setup-engineering-workflow-for-apm`. If state labels conflict, flag it and ask before doing anything else.
+A triaged issue carries exactly one category and one state. These are canonical names; apply the repo's label mapping (the `engineering-loop` skill's `issues.md` where the project runs the loop), or these names when it has none. If state labels conflict, flag it and ask before doing anything else.
 
 An unlabeled issue goes to `needs-triage`, and from there to `needs-info`, `ready-for-agent`, `ready-for-human` or `wontfix`; `needs-info` returns to `needs-triage` when the reporter replies. The maintainer can override any transition; flag one that looks unusual and ask before proceeding.
 
@@ -40,14 +40,14 @@ Query the tracker and show three buckets, oldest first, with counts and a one-li
 2. `needs-triage`.
 3. `needs-info` with reporter activity since the last triage notes.
 
-When PRs are in scope, include external PRs (the tracker config defines external) and tag each line `[PR]` or `[issue]`. The filter is for discovery only; a PR the maintainer names is triaged whoever wrote it.
+When PRs are in scope, include external PRs (the realization file defines external) and tag each line `[PR]` or `[issue]`. The filter is for discovery only; a PR the maintainer names is triaged whoever wrote it.
 
 ## Triage one issue or PR
 
-1. **Gather.** Read the whole thing: body, comments, labels, author, dates, and the diff for a PR. If earlier triage notes exist, check which questions the reporter has since answered and never re-ask a resolved one. Explore the code in `CONTEXT.md` vocabulary, respecting the ADRs in the area, then check (a) redundancy: search for an existing implementation by domain concept, not the request's wording, and report where you looked; (b) prior rejection: read `.out-of-scope/*.md` and surface a match ([OUT-OF-SCOPE.md](OUT-OF-SCOPE.md)).
+1. **Gather.** Read the whole thing: body, comments, labels, author, dates, and the diff for a PR. If earlier triage notes exist, check which questions the reporter has since answered and never re-ask a resolved one. Explore the code in `GLOSSARY.md` vocabulary, respecting the ADRs in the area, then check (a) redundancy: search for an existing implementation by domain concept, not the request's wording, and report where you looked; (b) prior rejection: read `.out-of-scope/*.md` and surface a match ([OUT-OF-SCOPE.md](OUT-OF-SCOPE.md)).
 2. **Recommend** a category and state with your reasoning and a short summary of the relevant code, including whether it already exists. Wait for direction.
 3. **Verify the claim** before any grilling: reproduce a bug from the reporter's steps; check out a PR and run the relevant tests or commands. Report confirmed (with the code path), failed, or insufficient detail, which points to `needs-info`. A confirmed claim makes a much stronger brief.
-4. **Grill** only if the request needs fleshing out, with the `grilling` and `domain-modeling` skills, updating `CONTEXT.md` and ADRs as decisions land.
+4. **Grill** only if the request needs fleshing out, with the `grilling` and `domain-modeling` skills, updating `GLOSSARY.md` and ADRs as decisions land.
 5. **Apply the outcome.**
    - `ready-for-agent`: post an agent brief ([AGENT-BRIEF.md](AGENT-BRIEF.md)).
    - `ready-for-human`: the same brief structure, plus why it can't be delegated (judgment calls, external access, design decisions, manual testing).

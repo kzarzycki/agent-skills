@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.6.0
+      ref: ^0.23.3
 ```
 
 Then run:
@@ -28,9 +28,81 @@ the same inventory to `.agents/skills/`. Those paths are generated; edit the
 package sources: tuned skills under `engineering/overlays/skills/`, owned skills
 under `engineering/skills/`.
 
-The independently versioned release tag is `engineering-v0.6.0`. APM resolves
+## Turn on the engineering loop
+
+The `engineering-loop` skill runs every change as intent, spec, build, gates,
+proof, an independent verifier and landing. A project turns it on with one line
+in its `AGENTS.md`, for example "Every change that lands as a PR runs the
+`engineering-loop` skill", and states its own facts in files it owns:
+
+- its mise tasks, each described in `mise tasks ls`: `check` before every push,
+  the `check:` parts that CI and the merge queue run, and `loop:approvals
+  <build|merge> [pr]`, the proofs (`scripts/approvals.py check`), run by the loop
+  and CI;
+- `docs/agents/loop.md`: the owner, how to prove a change, acceptance
+  references, the skill for each stage it changes, where a person must approve
+  too, the worktree command, the ledger path;
+- `docs/agents/issue-tracker.md`: the line `Tracker: GitHub (engineering-loop's
+  github.md)`, its components, what must never reach the tracker;
+- `docs/agents/coding-standards.md`: the domain's facts.
+
+The files the loop runs on (CI, git hooks, mise tasks, the ruleset) come
+from kzarzycki/project-templates; the skill's § Adopting the loop lists them.
+
+Each developer picks how agents run (the `orchestrating-agents` skill) with one line in their personal
+instructions, `Orchestration backend: <native|omnigent|herdr-link>`; no line
+means native subagents. The verifier comes from the other model family when the
+backend can start it (Omnigent can; native starts only its own harness's subagents);
+otherwise the PR body says `verifier: same family`.
+
+## Start a chief of staff
+
+A chief of staff is an optional session you talk to while leads do the work.
+Without one, every session you start is a lead, as before.
+
+- One per project, or one across projects from a home repo of its own. It runs
+  in the directory its project's instructions name, by default the project's
+  main checkout. Its state is the handover file and the memory bank those
+  instructions name: by default `tmp/loop/chief-of-staff.md` in the directory it
+  runs in and the bank `coding-agent-<repo>`. A handover file in a repo with a remote is pushed, so a
+  successor on another host pulls it.
+- Switch it at any time, to either harness: the handover file is one page the
+  chief rewrites whenever its state changes, and a successor takes over by
+  reading that file alone.
+- A project can span sibling repos: name them to it. It starts a lead for a
+  change across them in their parent directory, so the lead can work in all of
+  them, and each PR still follows its own repo's `docs/agents/` files.
+- Start it through Omnigent in that directory, in Claude or Codex,
+  and ask it to act as the project's chief of staff (`/chief-of-staff` in Claude
+  Code). Each lead it starts is a top-level session in either harness, which you
+  can open and talk to directly.
+- It hears from its leads through Omnigent session subscriptions, so it needs no
+  process of its own running. An Omnigent without them leaves it to `watch`
+  each lead from its session.
+- Memory is used when `~/.hindsight/coding-agent.json` exists: the chief of staff
+  recalls and retains your decisions (the skill's Memory section).
+
+The package is released under independently versioned `engineering-vX.Y.Z` tags. APM resolves
 the consumer constraint against package-prefixed tags and records the selected
 tag and commit in `apm.lock.yaml`.
+
+## Changing a skill for one repo
+
+Take the first rung that holds:
+
+1. **Fill a fact** in the repo's `docs/agents/` files.
+2. **Extend:** a project skill under `.apm/skills/` with a different name that
+   says "follow `<skill>` with these differences". It keeps receiving pack fixes.
+3. **Fork: not supported yet.** A same-name copy in `.apm/skills/` replaces
+   the pack's skill, but on APM 0.30.0 no setup passes `mise run agent-sync`
+   reliably. Without a `skills:` subset, `apm audit --ci` reports the copy as
+   drift. With a subset that leaves the skill out, the copy is removed and
+   restored on alternate syncs, so every other sync fails audit. A subset is
+   also an allow-list, so skills the pack adds later would not be installed
+   until listed. Declarative overrides are proposed upstream in
+   [microsoft/apm#2413](https://github.com/microsoft/apm/issues/2413); until
+   then, extend instead or change the pack.
+4. **Change the pack** upstream, here.
 
 ## Install from the Claude marketplace
 
@@ -47,11 +119,11 @@ own release instead of installing the upstream `main` branch directly.
 Three kinds of source ship under `engineering/skills/`:
 
 - Owned skills, edited in place: `audit-third-party-software`,
-  `context-extractor`, `operating-omnigent`.
+  `chief-of-staff`, `context-extractor`, `demo`, `engineering-loop`, `omnigent-telemetry`,
+  `operating-omnigent`, `orchestrating-agents`.
 - Owned overlays under `overlays/skills/<name>/`, reproduced into
-  `skills/<name>/`: `setup-engineering-workflow-for-apm` and every imported
-  skill tuned for current models (listed under `owned_overlays` in
-  `upstream.yml`).
+  `skills/<name>/`: every imported skill tuned for current models (listed
+  under `owned_overlays` in `upstream.yml`).
 - Imported skills not yet tuned, generated from the locked upstream source with
   the `substitutions` in `upstream.yml` applied.
 
@@ -74,9 +146,13 @@ maintenance routine ports the intent or declines it and records the decision in
 next upstream change to a tuned skill stops the intake again. An upstream
 deletion of a tuned skill fails the intake outright.
 
+To retire a skill, remove its `vendir.yml` entry and, for a tuned one, its
+overlay directory and `owned_overlays` entry, then run the refresh: it prunes
+the generated leaf and proposes a minor version.
+
 ### Upstream beta skills
 
-`claude-handoff`, `implement-spec`, `loop-me`, and `retro` come from upstream's
+`claude-handoff` and `loop-me` come from upstream's
 `in-progress` bucket rather than `engineering`. Upstream excludes that bucket
 from its own plugin and reserves the right to change or delete those skills
 without warning, so treat them as beta.

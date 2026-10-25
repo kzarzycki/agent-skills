@@ -8,10 +8,11 @@ future coding-agent adapters.
 ## Source ownership
 
 - Owned skills, edited in place: `skills/audit-third-party-software/`,
-  `skills/context-extractor/`, `skills/operating-omnigent/`.
+  `skills/chief-of-staff/`, `skills/context-extractor/`, `skills/demo/`, `skills/engineering-loop/`,
+  `skills/omnigent-telemetry/`, `skills/operating-omnigent/`, `skills/orchestrating-agents/`.
 - Owned overlays, canonical under `overlays/skills/<name>/` and reproduced into
-  `skills/<name>/`: `setup-engineering-workflow-for-apm` and every tuned
-  imported skill (listed under `owned_overlays` in `upstream.yml`).
+  `skills/<name>/`: every tuned imported skill (listed under `owned_overlays` in
+  `upstream.yml`).
 - Everything else under `skills/` is generated from `upstream.yml`,
   `vendir.yml`, `vendir.lock.yml`, the substitutions and `provenance.yml`.
 
@@ -31,9 +32,14 @@ A tuned skill carries only what a strong current model would not do unprompted.
   capitals), step-by-step choreography for things the model sequences well,
   verification scaffolding, repetition.
 - Delegation (subagents, parallel work) is the model's judgment, not a
-  requirement.
+  requirement, except in `engineering-loop`, whose role split is its method.
+  A skill that does prescribe a subagent's brief hands it the skill's path and
+  the sections to follow, since a paraphrase drops the formats and gates.
 - Stay harness-neutral (no tool names of one agent) and tracker-neutral
-  (`docs/agents/issue-tracker.md` configures the tracker).
+  (`docs/agents/issue-tracker.md` names the tracker's realization file).
+- `engineering-loop` names no project: a project's facts live in its
+  `docs/agents/` files, and `tests/test_engineering_loop.py` fails on a
+  project term.
 - Give every "never" or "must" its reason in the same sentence.
 
 ## Upstream intake
@@ -49,6 +55,8 @@ run on a schedule; a manual intake follows it too.
 ## Checks
 
 Before every commit that changes this package, run
-`mise run vendor-engineering-check`. Also run
+`mise run vendor-engineering-check`. A change's changelog entry is its own file in
+`changelog.d/` ([its README](changelog.d/README.md)), never a line added to `CHANGELOG.md`.
+Also run
 `mise run test-engineering-package` and validate both JSON manifests when
 package metadata changes.

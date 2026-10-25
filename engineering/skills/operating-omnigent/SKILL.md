@@ -1,7 +1,7 @@
 ---
 name: operating-omnigent
-description: "Operate a local Omnigent install — crashes, blank UI, restarts, session attach/resume/dispose, process topology — and drive other agents via the sys_* MCP tools."
-when_to_use: "Any omnigent operational question or when spawning/monitoring other agents from inside a turn."
+description: "Operate a local Omnigent install — crashes, blank UI, restarts, session attach/resume/dispose, process topology — and its raw sys_* MCP tools. Starting and collecting agents through a backend is orchestrating-agents'."
+when_to_use: "Any omnigent operational question, or a sys_* call that orchestrating-agents' omnigent_agent.py does not make."
 ---
 
 # Operating Omnigent
@@ -16,7 +16,7 @@ raw kills, and killing a runner orphans it rather than disposing its session.
 | Piece | Find it | Notes |
 |---|---|---|
 | Server (API + web UI) | `omnigent.cli server` on `127.0.0.1:6767` | One per machine. DB `~/.omnigent/chat.db`, artifacts `~/.omnigent/artifacts`. |
-| Runner | `omnigent.runner._entry`, one PID per open session | Each spawns its own `tmux` and `claude`/`codex` terminal, so `ps` looks crowded. Idle-reaps after `runner.idle_timeout_s` (3600 s). |
+| Runner | `omnigent.runner._entry`, one PID per open session | Each spawns its own `tmux` and `claude`/`codex` terminal, so `ps` looks crowded. Idle-reaps after `runner.idle_timeout_s` (3600 s); the session then shows `runner_online: false` and is revived in place (§ Commands). |
 | Logs | server `~/.omnigent/logs/server/local-server-*.log`; runner `~/.omnigent/logs/host-runner/runner-<id>.log`; CLI `~/.omnigent/logs/cli-*.log` | One file per session ever. Count live `omnigent.runner._entry` PIDs, never log files or numbers in old notes. |
 
 `curl` is often missing from PATH in non-login shells; probe with `python3` urllib or
@@ -27,8 +27,9 @@ the CLI. Without `omnigent` on PATH, use
 
 ```python
 import urllib.request, json
+
 g = lambda p: urllib.request.urlopen("http://127.0.0.1:6767" + p, timeout=5)
-g("/health").read()   # {"status":"ok"}: the server is alive
+g("/health").read()  # {"status":"ok"}: the server is alive
 ```
 
 - `/health` unreachable: the server is down; `omnigent server start`.
@@ -55,8 +56,10 @@ g("/health").read()   # {"status":"ok"}: the server is alive
 |---|---|---|
 | Restart server | `omnigent stop && omnigent server start` (`omnigent server status` to check) | Drops every websocket and interrupts mid-turn work; sessions persist in SQLite. |
 | Attach to a live session | `omnigent attach conv_xxx` | Interactive; needs a real terminal, not a headless shell. Starts nothing. |
-| Reopen a stored session | `omnigent resume conv_xxx` | claude-native lands in `omnigent claude`. |
-| Archive (reversible) | `PATCH /v1/sessions/conv_xxx` with `{"archived": true}` | Hidden; transcript kept. |
+| Reopen a stored session | `omnigent resume conv_xxx` | Interactive, like `attach`: fails headless. claude-native lands in `omnigent claude`. |
+| Revive a reaped session | `POST /v1/sessions/conv_xxx/events` with `{"type": "retry_session", "data": {}}`, then poll `GET /v1/sessions/conv_xxx` until `runner_online` is true, then send as usual | Relaunches the runner on the same session and keeps its whole conversation; replies `{"queued": false, "recovered": true, "recovery": "runner_relaunched"}`; a native terminal already up gives `"recovered": true, "recovery": "native_terminal_ready"`, and a live runner `"recovered": false, "recovery": "already_connected"`, which is success too, so read `recovery`, not `recovered` alone. No runner to relaunch is an HTTP error. It is the web UI's "Resume session" button and works headless, unlike `omnigent resume`; the engineering-loop launcher's `send` does it by itself. Fallback: `PATCH /v1/sessions/conv_xxx` with `{"runner_id": ""}` (empty string clears, null leaves unchanged), then `POST /v1/hosts/<host_id>/runners` with `{"session_id", "workspace"}`; without the clear it fails 400 "session already has a runner bound". |
+| Fork | `POST /v1/sessions/conv_xxx/fork` with optional `title`, `agent_id` (a built-in agent, switching the fork's harness) and `up_to_response_id` (copy only up to that response) | A new session holding a copy of the source's items, all of them by default. Every turn of the fork re-reads that copy, so it suits branching a short conversation, not a harness switch after a usage limit or a point diagnosis off a long session: start a fresh session briefed from the work's handover or notes file instead. |
+| Archive (reversible) | `PATCH /v1/sessions/conv_xxx` with `{"archived": true}` | Hidden; transcript kept. About 8 s later (the Undo window) it stops the session and the runner bound to it. A sub-agent's archive releases only its own session on the runner it shares with its parent, which stays up, on a build with kzarzycki/omnigent 4dd0af32; an older build stops that runner and takes the parent offline. |
 | Dispose (irreversible, owner-level) | `DELETE /v1/sessions/conv_xxx` | Removes tasks, terminals, files and the row. A running turn keeps running and the runner process is orphaned until the idle timeout; killing it sooner needs the user's approval for `kill <pid>`. |
 
 If `OMNIGENT_RUNNER_ID` is set, you are running inside a runner and a server restart
@@ -124,7 +127,8 @@ brief ("commit to a local branch, do not push").
   `sys_session_create` children, `session_out_of_tree` for independent chats and
   `sub_agent_busy` mid-turn); `sys_cancel_async` cancels only local `sys_call_async`
   tasks; `DELETE` frees resources while the turn runs on. For cleanup, let runners
-  idle-reap or archive or dispose over HTTP.
+  idle-reap, archive a session (a sub-agent's archive leaves its parent's runner up) or
+  dispose over HTTP.
 
 ## Native-TUI child hangs at startup
 

@@ -97,7 +97,8 @@ Decide after the last rerun, from `git diff --quiet origin/main...HEAD -- engine
 - **Skills changed:** a release. The tool already set the version, one bump past the
   newest `engineering-v*` tag (minor when a skill was added). Give that version a
   `CHANGELOG.md` entry, or extend its entry if one exists, with the upstream range,
-  each ported or declined delta in one line, and any newly tuned skill.
+  each ported or declined delta in one line, and any newly tuned skill, and move the
+  `changelog.d/` entries under it ([changelog.d/README.md](changelog.d/README.md)).
 - **Skills unchanged** (every delta declined, or upstream touched only files outside
   the package): no release. Restore `engineering/apm.yml`,
   `engineering/.claude-plugin/plugin.json` and `engineering/tests/consumer/apm.yml`

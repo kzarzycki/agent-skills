@@ -52,6 +52,17 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
         "GIT_COMMITTER_NAME": "Package Test",
         "GIT_COMMITTER_EMAIL": "package-test@example.invalid",
         "GIT_CONFIG_NOSYSTEM": "1",
+        # apm resolves a ref through the GitHub API when it can reach it, which bypasses the
+        # git insteadOf below and installs the real release instead of the fixture (#166);
+        # an unreachable proxy keeps every HTTP call local, so only git, on file URLs, works
+        "HTTPS_PROXY": "http://127.0.0.1:9",
+        "HTTP_PROXY": "http://127.0.0.1:9",
+        # no background repack of a fixture repo while a local clone copies its loose objects (#144)
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "maintenance.auto",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_CONFIG_KEY_1": "gc.auto",
+        "GIT_CONFIG_VALUE_1": "0",
     }
 
 
@@ -63,11 +74,21 @@ def _expected_skills() -> set[str]:
 
 
 def _file_manifest(root: Path) -> dict[str, str]:
+    """Every file under root by its sha256, leaving out the bytecode Python caches, as git and the install do: a
+    script imported from a skill folder writes it there."""
     return {
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in root.rglob("*")
-        if path.is_file()
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
     }
+
+
+def test_file_manifest_leaves_out_python_bytecode(tmp_path: Path) -> None:
+    (tmp_path / "s" / "__pycache__").mkdir(parents=True)
+    (tmp_path / "s" / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"x")
+    (tmp_path / "s" / "b.pyc").write_bytes(b"x")
+    (tmp_path / "s" / "a.py").write_text("")
+    assert list(_file_manifest(tmp_path)) == ["s/a.py"]
 
 
 def _installed_skills(consumer: Path, target: str) -> set[str]:

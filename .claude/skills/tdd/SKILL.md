@@ -5,7 +5,7 @@ description: Test-driven development in red-green vertical slices at agreed seam
 
 # Test-Driven Development
 
-Build in red-green cycles that leave tests worth keeping. Read `CONTEXT.md`, when it exists, so test names use the project's domain language, and respect the ADRs for the area.
+Build in red-green cycles that leave tests worth keeping. Read `GLOSSARY.md`, when it exists, so test names use the project's domain language, and respect the ADRs for the area.
 
 ## Seams
 

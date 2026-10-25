@@ -21,15 +21,16 @@ def render_summary(
     test_result: str,
     setup_contract_changed: bool,
     transitioned_to_owned: tuple[str, ...] = (),
+    retired: tuple[str, ...] = (),
 ) -> str:
     previous_commit = previous.source_commit if previous else "none"
     old_skills = set(previous.included_skills if previous else ())
     new_skills = set(proposed.included_skills)
     added = tuple(sorted(new_skills - old_skills))
-    removed = tuple(sorted(old_skills - new_skills - set(transitioned_to_owned)))
+    removed = tuple(sorted(old_skills - new_skills - set(transitioned_to_owned) - set(retired)))
     if removed or setup_contract_changed or patch_failures:
         version = "BLOCKED"
-    elif added:
+    elif added or retired:
         version = "minor"
     else:
         version = "patch"
@@ -38,6 +39,7 @@ def render_summary(
         f"Proposed source commit: {proposed.source_commit}",
         f"Added skills: {_names(added)}",
         f"Removed skills: {_names(removed)}",
+        f"Retired skills: {_names(retired)}",
         f"Changed skills: {_names(tuple(sorted(changed_skills)))}",
         f"Patch hashes: {_hashes(proposed.patch_files)}",
         f"Patch failures: {_names(patch_failures)}",
