@@ -1184,6 +1184,7 @@ The doc.
 Head: {HEAD}
 VERDICT: 1 blocker, 0 major, 2 minor
 SATISFIED: no
+Risk: low — a test fixture
 """
 
 
@@ -1225,7 +1226,7 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
         "body": (
             f"{heading} on {HEAD[:7]}.\n\n"
             f"- **{heading} · S1** (minor): a file outside the diff, at `docs/old.md:3`, a file outside the diff\n\n"
-            "The doc.\n\nVERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\n"
+            "The doc.\n\nVERDICT: 1 blocker, 0 major, 2 minor\nSATISFIED: no\nRisk: low — a test fixture\n"
         ),
         "comments": [
             {
@@ -1298,6 +1299,7 @@ The run.
 Head: {HEAD}
 VERDICT: 0 blocker, 1 major, 1 minor
 SATISFIED: no
+Risk: low — a test fixture
 """
 
 
@@ -1399,6 +1401,7 @@ Ends M1's body.
 Head: {HEAD}
 VERDICT: 0 blocker, 0 major, 1 minor
 SATISFIED: yes
+Risk: low — a test fixture
 """
 
 
@@ -3939,3 +3942,163 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
     assert (shell.returncode, "me/fork them/fork" in shell.stderr) == (
         (1, True) if refused else (77, False)
     )
+
+
+# --- the verifier judges risk (`risk: verifier`) ---
+
+
+VERIFIED = POLICY.replace("- risk: path `billing/**`\n", "- risk: verifier\n")
+
+
+def judging(risk: str | None, commit: str = HEAD, **fields: Any) -> dict[str, Any]:
+    """A satisfied verifier review whose last line is `Risk: <risk>`, or none with None."""
+    review = verdict_on(commit, **fields)
+    return {**review, "body": review["body"] + (f"Risk: {risk}\n" if risk else "")}
+
+
+@pytest.fixture
+def gating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, Any], list[tuple[int, str]]]:
+    """`check merge` in a checkout with a `risk: verifier` loop.md: the PR it reads, and every comment it posts."""
+    agents = tmp_path / "docs" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "issue-tracker.md").write_text(TRACKER)
+    (agents / "loop.md").write_text(VERIFIED)
+    state: dict[str, Any] = {}
+    comments: list[tuple[int, str]] = []
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
+    monkeypatch.setattr(approvals, "comment", lambda number, body: comments.append((number, body)))
+    monkeypatch.chdir(tmp_path)
+    return state, comments
+
+
+def judged_pr(*reviews: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    pr = pull(reviews=reviews, files=("app.py",), **fields)
+    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:enhancement")]
+    return pr
+
+
+def test_risk_low_from_the_verifier_merges_without_the_owner(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+    capsys: pytest.CaptureFixture[str],
+    added: list[tuple[int, str, bool]],
+) -> None:
+    state, comments = gating
+    state["pull"] = judged_pr(judging("low — a flag on two test commands"))
+    assert approvals.main(["check", "merge", "7"]) == 0
+    assert capsys.readouterr().out == ""
+    assert (added, comments) == ([], [])
+
+
+@pytest.mark.parametrize(
+    ("risk", "said"),
+    [
+        ("high — it narrows the test selection", "says `Risk: high — it narrows the test selection`"),
+        ("medium — unsure", "says `Risk: medium — unsure`"),
+        (None, "has no `Risk:` line"),
+    ],
+    ids=["high", "another-word", "no-line"],
+)
+def test_risk_high_another_word_or_no_line_waits_for_the_owner_and_flags_the_pr(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+    capsys: pytest.CaptureFixture[str],
+    added: list[tuple[int, str, bool]],
+    risk: str | None,
+    said: str,
+) -> None:
+    state, comments = gating
+    state["pull"] = judged_pr(judging(risk))
+    why = f"it matches a risk rule (verifier): the verifier's pass 1 on {HEAD[:7]} {said}"
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert capsys.readouterr().out.splitlines() == [HELD + why]
+    assert added == [(7, "risk:high", True)]
+    assert [number for number, _ in comments] == [7]
+    assert comments[0][1].startswith(f"{approvals.FLAGGED}, since {why}.")
+    signed = judged_pr(judging(risk), labels=("risk:high", *OWNED))
+    assert merge(signed, signed["closingIssuesReferences"]["nodes"], VERIFIED) == []
+
+
+def test_a_risk_low_on_an_older_head_or_by_a_stranger_does_not_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "writer", lambda login: False)
+    issues = [approved(1, "area:web", "kind:enhancement")]
+    older = judged_pr(judging("low — fine", commit=OLD))
+    assert approvals.proofs("merge", older, issues, VERIFIED) != []  # no verdict on the head lands nothing
+    high = judging("high — a gate weakened")
+    stranger = judging("low — fine", author="stranger", heading="Verifier (claude), pass 2")
+    pr = judged_pr(high, stranger)
+    assert merge(pr, issues, VERIFIED) == [
+        HELD
+        + f"it matches a risk rule (verifier): the verifier's pass 1 on {HEAD[:7]} says `Risk: high — a gate weakened`"
+    ]
+    # a mixed PR's two verifiers on one pass: both must say low
+    other = judging("high — CI permissions", heading="Verifier (codex), pass 1")
+    assert approvals.judged(judged_pr(judging("low — fine"), other)) == (
+        f"the verifier's pass 1 on {HEAD[:7]} says `Risk: high — CI permissions`"
+    )
+
+
+def test_a_path_term_holds_whatever_the_verifier_says() -> None:
+    loop = POLICY.replace("- risk: path `billing/**`\n", "- risk: verifier or path .github/**\n")
+    pr = pull(reviews=(judging("low — a workflow comment"),), files=(".github/ci.yml",))
+    issues = [approved(1, "area:web", "kind:enhancement")]
+    assert merge(pr, issues, loop) == [HELD + "it matches a risk rule (verifier or path .github/**)"]
+    assert merge({**pr, "files": {"nodes": [{"path": "app.py"}]}}, issues, loop) == []
+
+
+def test_under_spec_auto_the_verifier_term_holds_the_merge_not_the_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "writer", lambda login: True)
+    loop = "## Approvals\n\n- spec: auto\n- risk: verifier or path `billing/**`\n"
+    owned = by("worker", specced(5, "kind:enhancement"))
+    pr = pull(reviews=(judging("low — fine"),), files=("app.py",))
+    assert approvals.proofs("build", pr, [owned], loop) == []
+    assert approvals.risk(pr, [owned], loop) is None
+    high = pull(reviews=(judging("high — surprises users"),), files=("app.py",))
+    assert approvals.proofs("build", high, [owned], loop) == []
+    assert approvals.risk(high, [owned], loop) == (
+        "it matches a risk rule's `verifier` term: the verifier's pass 1 on"
+        f" {HEAD[:7]} says `Risk: high — surprises users`"
+    )
+
+
+def test_the_gates_risk_high_comes_off_when_a_later_pass_judges_it_low_and_a_raise_stays(
+    gating: tuple[dict[str, Any], list[tuple[int, str]]],
+    capsys: pytest.CaptureFixture[str],
+    added: list[tuple[int, str, bool]],
+) -> None:
+    state, _ = gating
+    flagged = note(f"{approvals.FLAGGED}, since …", createdAt="2026-10-01T11:00:01Z")
+    rejudged = judging("low — the lead's reason holds", heading="Verifier (claude), pass 2")
+    state["pull"] = judged_pr(judging("high — x"), rejudged, labels=("risk:high",))
+    state["pull"]["comments"]["nodes"].append(flagged)
+    assert approvals.main(["check", "merge", "7"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "PR #7: removed the `risk:high` the gate added, since the verifier now judges the risk low"
+    ]
+    assert added == [(7, "risk:high", False)]
+    added.clear()
+    # the lead raised it again after the gate's comment: only the owner lowers it
+    state["pull"] = judged_pr(judging("high — x"), rejudged, labels=("risk:high",))
+    state["pull"]["comments"]["nodes"].append({**flagged, "createdAt": "2026-10-01T10:30:00Z"})
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert added == []
+    # a person's label with no gate comment stays too
+    state["pull"] = judged_pr(rejudged, labels=("risk:high",))
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert added == []
+
+
+def test_a_report_without_a_risk_line_posts_nothing(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(REPORT.replace("Risk: low — a test fixture\n", ""))
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert capsys.readouterr().out == (
+        f"{report} has no `Risk: low|high — <reason>` line: the report is unfinished\n"
+    )
+    assert [call for call in reviewing if call[0] == "review"] == []
