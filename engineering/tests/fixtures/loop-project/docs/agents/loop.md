@@ -1,20 +1,13 @@
 # Loop facts
 
-## Settings
+## Practice
 
-```ini
-[loop]
-spec = auto unless risk
+- Spec: to-spec
 
-[practice]
-spec = to-spec
+## Approvals
 
-[risk]
-labels =
-    size:L
-    size:XL
-    area:api
-paths =
-    billing/**
-    .github/**
-```
+- spec: auto unless risk
+- merge: auto unless risk
+- risk: size:L or larger, or component `api`
+- risk: path `billing/**`
+- merge: path `.github/**`

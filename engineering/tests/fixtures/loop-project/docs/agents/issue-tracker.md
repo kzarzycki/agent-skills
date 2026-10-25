@@ -1,21 +1,21 @@
 Tracker: GitHub (engineering-loop's github.md)
 
-## Settings
+## Components
 
-```ini
-# every issue carries at least one component: where the change lands
-[components]
-api = the HTTP service.
-web = the browser UI and its e2e suite, not `api`.
-agents = the loop, skills and CI.
+Every issue carries at least one: where the change lands.
 
-[labels]
-triaged-by-bot = classifies only.
-
-[categories]
-ops = an operational outcome with no code change.
-```
+- **`api`**: the HTTP service.
+- **`web`**: the browser UI and its e2e suite, not `api`.
+* `agents`: the loop, skills and CI.
 
 ## Never on GitHub
 
 - **`customer emails`**: write "a customer" instead.
+
+## Extra labels
+
+- **`triaged-by-bot`**: classifies only.
+
+## Extra categories
+
+- **`ops`**: an operational outcome with no code change.
