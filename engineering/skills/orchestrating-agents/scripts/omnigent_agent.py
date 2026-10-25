@@ -3,7 +3,7 @@
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -24,7 +24,8 @@ can rewrite its report until then. The first turn that ends with neither gets on
 it; a second fails. With ``--pr N`` (a worker in a cloud session, which can't write a host
 file) the preamble has the child post its report as a comment on PR N through REST and end its
 turn with the comment's URL; ``wait --pr N`` then writes that comment's body to the report path,
-so the report is a file here as for any child. A lead launches it as one background command, so its
+so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
+the report there. A lead launches it as one background command, so its
 exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
@@ -1166,8 +1167,9 @@ def wait(
     seconds. With ``since`` (a follow-up), only a report modified after that ``st_mtime_ns``
     counts: the one from the earlier turn is still there. A report that counts is returned once
     ``settled``, read again first, since the child can rewrite it until its turn ends. With ``pr``
-    (a cloud worker), a turn whose last message links a comment on that PR has that comment's body
-    written to ``report`` as the report.
+    (a cloud worker), a turn whose last message links a comment on that PR (created after ``since``)
+    has that comment's body written to ``report`` as the report; a file already there never counts,
+    since only this wait writes it.
     """
     deadline = time.monotonic() + timeout
     idle_since, nudged = None, False
@@ -1182,6 +1184,8 @@ def wait(
     )
 
     def counts() -> bool:
+        if pr:
+            return False
         try:
             mtime = report.stat().st_mtime_ns
         except FileNotFoundError:
@@ -1221,11 +1225,10 @@ def wait(
         )
         if turn_ended and not counts():
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
-        if turn_ended and not counts() and pr and (body := pr_report(said, pr)) is not None:
+        if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
-            if counts():  # the turn has ended on the comment's URL: nothing rewrites it now
-                break
+            break  # the turn has ended on the comment's URL: nothing rewrites it now
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
             if question.exists():
@@ -1254,10 +1257,11 @@ def wait(
     return str(report)
 
 
-def pr_report(said: str, pr: int) -> str | None:
+def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
     """The body of the comment ``said`` links that GitHub files on PR ``pr`` of this checkout's
-    repository, or None when it links none: the comment's own ``issue_url`` decides, since the
-    link's repository and number are only what the worker typed."""
+    repository, created after ``since`` (a ``st_mtime_ns``) when given, or None when it links none:
+    the comment's own ``issue_url`` decides, since the link's repository and number are only what
+    the worker typed."""
     links = [m for m in COMMENT_URL.finditer(said) if int(m[2]) == pr]
     if not links:
         return None
@@ -1266,6 +1270,11 @@ def pr_report(said: str, pr: int) -> str | None:
         if m[1].lower() != repo.lower():
             continue
         comment = json.loads(gh("api", f"repos/{repo}/issues/comments/{m[3]}"))
+        # ponytail: GitHub's clock against this host's file clock; a host clock ahead by more than
+        # a turn rejects a fresh comment. Upgrade: compare with the old report's comment id.
+        created = str(comment.get("created_at")).replace("Z", "+00:00")
+        if since is not None and datetime.fromisoformat(created).timestamp() * 1e9 <= since:
+            continue  # the turn before's report
         if str(comment.get("issue_url")).lower().endswith(f"/repos/{repo}/issues/{pr}".lower()):
             return comment.get("body") or ""
     return None
@@ -2859,7 +2868,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("session")
     p.add_argument("report", type=Path)
     for p in sub.choices.values():
-        if p.prog.split()[-1] in ("run", "start", "wait"):
+        if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
                 "--pr",
                 type=int,
@@ -3010,11 +3019,13 @@ def main(argv: list[str] | None = None) -> int:
                     pass
             send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
             # armed once the message is in the history, as start arms: before it, the report or
-            # question of the turn before reads as newer than the last instruction
-            arm_quietly(
-                registry, args.session, report, then=args.brief.resolve(), verdict=args.verdict
-            )
-            print(wait(og, args.session, report, args.timeout, args.verdict, since))
+            # question of the turn before reads as newer than the last instruction; never for
+            # --pr, as start skips it
+            if not args.pr:
+                arm_quietly(
+                    registry, args.session, report, then=args.brief.resolve(), verdict=args.verdict
+                )
+            print(wait(og, args.session, report, args.timeout, args.verdict, since, args.pr))
             arm_quietly(registry, args.session)
             return 0
         if args.pr and args.top_level:
