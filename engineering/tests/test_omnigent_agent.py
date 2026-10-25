@@ -1452,6 +1452,94 @@ def test_a_second_turn_that_ends_without_the_report_fails(tmp_path: Path) -> Non
     assert og.posts == 2  # the brief and one nudge
 
 
+def fake_gh(monkeypatch: pytest.MonkeyPatch, comments: dict[str, dict]) -> list[tuple[str, ...]]:
+    """``gh`` faked for a checkout of ``o/r``: ``repo view`` names it, ``api`` answers a comment
+    of ``comments`` by its id. Returns the calls."""
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str) -> str:
+        calls.append(args)
+        if args[:2] == ("repo", "view"):
+            return "o/r\n"
+        return json.dumps(comments[args[1].rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    return calls
+
+
+def on_pr(n: int, body: str = "", repo: str = "o/r") -> dict:
+    return {"issue_url": f"https://api.github.com/repos/{repo}/issues/{n}", "body": body}
+
+
+def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    calls = fake_gh(monkeypatch, {"42": on_pr(7, "Head: abc\nGates: 0\n")})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    argv = ["run", "claude-cloud", "t", "b.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == str(tmp_path / "r.md")
+    assert (tmp_path / "r.md").read_text() == "Head: abc\nGates: 0\n"
+    assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
+    brief = omnigent_agent.text_of(og.sessions["s0"][1])
+    assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
+    assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.com/o/r/pull/8#issuecomment-1",  # another PR
+        "https://github.com/another/repo/pull/7#issuecomment-2",  # another repo, the same number
+        "https://github.com/o/r/pull/7#issuecomment-3",  # a comment GitHub files on PR 8
+    ],
+)
+def test_a_cloud_worker_s_second_turn_without_a_comment_on_its_pr_fails(
+    link: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply=f"pushed; see {link}")
+    fake_gh(monkeypatch, {"1": on_pr(8), "2": on_pr(7, repo="another/repo"), "3": on_pr(8)})
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    with pytest.raises(omnigent_agent.Fail, match="without a report comment on PR #7"):
+        omnigent_agent.wait(og, sid, report, pr=7)
+    assert og.posts == 2 and not report.exists()
+    assert omnigent_agent.PR_NUDGE.format(pr=7) in [
+        omnigent_agent.text_of(i) for i in og.sessions[sid]
+    ]
+
+
+@pytest.mark.parametrize(
+    "reply, code",
+    [
+        ("fixed; https://github.com/o/r/pull/7#issuecomment-42", 1),  # the turn before's comment
+        ("fixed, pushed", 1),  # no comment
+        ("https://github.com/o/r/pull/7#issuecomment-43", 0),  # a fresh one
+    ],
+)
+def test_a_cloud_worker_s_follow_up_takes_only_a_report_comment_newer_than_its_report(
+    reply: str, code: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply=reply)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    old, fresh = on_pr(7, "the first report"), on_pr(7, "the fix report")
+    old["created_at"], fresh["created_at"] = "2001-01-01T00:00:00Z", "2001-09-09T02:00:00Z"
+    fake_gh(monkeypatch, {"42": old, "43": fresh})
+    monkeypatch.chdir(tmp_path)
+    sid = og.create("claude-cloud", "t")
+    report = tmp_path / "r.md"
+    report.write_text("the first report")
+    os.utime(report, (1e9, 1e9))  # 2001-09-09T01:46:40Z, written by the first turn's wait
+    (tmp_path / "fix.md").write_text("fix ST1, read the review on PR #7")
+    argv = ["send", sid, "fix.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == code
+    assert report.read_text() == ("the fix report" if code == 0 else "the first report")
+    assert og.posts == 1 + code  # the follow-up, and a nudge for a turn without a fresh one
+
+
 def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
