@@ -3939,7 +3939,7 @@ FS = "/v1/sessions/s9/resources/environments/default/filesystem"
 def test_report_reads_an_absolute_path_from_the_host_with_each_segment_encoded(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = f"{FS}/Users/k/my%20dir/r%23.md?base=host"
+    path = f"{FS}/Users/k/my%20dir/r%23.md?limit=1000&base=host"
     seen = serve_files(monkeypatch, {path: {"content": "# done\n"}})
     assert omnigent_agent.main(["report", "s9", "/Users/k/my dir/r#.md"]) == 0
     assert seen[-1:] == [path]  # no leading %2F, '/' kept between segments
@@ -3949,30 +3949,33 @@ def test_report_reads_an_absolute_path_from_the_host_with_each_segment_encoded(
 def test_report_reads_a_relative_path_in_the_workspace_without_base(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    seen = serve_files(monkeypatch, {f"{FS}/tmp/r.md": {"content": "hi"}})
+    seen = serve_files(monkeypatch, {f"{FS}/tmp/r.md?limit=1000": {"content": "hi"}})
     assert omnigent_agent.main(["report", "s9", "tmp/r.md"]) == 0
-    assert seen == [f"{FS}/tmp/r.md"]
+    assert seen == [f"{FS}/tmp/r.md?limit=1000"]
 
 
 def test_report_reads_an_absolute_path_inside_the_workspace_relative_to_it(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # a host on an older Omnigent answers 404 to an absolute file read it serves relative
-    files = {"/v1/sessions/s9": {"workspace": "/Users/k/ws"}, f"{FS}/tmp/r.md": {"content": "ok"}}
+    files = {
+        "/v1/sessions/s9": {"workspace": "/Users/k/ws"},
+        f"{FS}/tmp/r.md?limit=1000": {"content": "ok"},
+    }
     seen = serve_files(monkeypatch, files)
     assert omnigent_agent.main(["report", "s9", "/Users/k/ws/tmp/r.md"]) == 0
-    assert seen == ["/v1/sessions/s9", f"{FS}/tmp/r.md"]
+    assert seen == ["/v1/sessions/s9", f"{FS}/tmp/r.md?limit=1000"]
     assert (
         omnigent_agent.main(["report", "s9", "/Users/k/wsx/r.md"]) == 4
     )  # a sibling stays absolute
-    assert seen[-1] == f"{FS}/Users/k/wsx/r.md?base=host"
+    assert seen[-1] == f"{FS}/Users/k/wsx/r.md?limit=1000&base=host"
 
 
 def test_report_lists_a_directory_one_entry_per_line(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     listing = {"data": [{"name": "a.md", "type": "file"}, {"name": "sub", "type": "directory"}]}
-    serve_files(monkeypatch, {f"{FS}/tmp?base=host": listing})
+    serve_files(monkeypatch, {f"{FS}/tmp?limit=1000&base=host": listing})
     assert omnigent_agent.main(["report", "s9", "/tmp"]) == 0
     assert capsys.readouterr().out == "a.md\nsub/\n"
 
@@ -3995,7 +3998,7 @@ def test_report_without_a_path_reads_the_registry_line_else_exits_2(
 ) -> None:
     registry = tmp_path / "leads.registry"
     registry.write_text("s9=/Users/k/r.md\n")
-    path = f"{FS}/Users/k/r.md?base=host"
+    path = f"{FS}/Users/k/r.md?limit=1000&base=host"
     seen = serve_files(monkeypatch, {path: {"content": "x"}})
     assert omnigent_agent.main(["report", "s9", "--registry", str(registry)]) == 0
     assert seen[-1:] == [path]
@@ -4159,7 +4162,7 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
     assert "--strict-mcp-config" in cmd
     assert "- merge on green" in cmd[cmd.index("--system-prompt") + 1]
     assert kw["input"] == "x" * 4000 and kw["timeout"] == 20
-    assert kw["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "200"
+    assert kw["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "1000"
     monkeypatch.setenv("OMNIGENT_SMALL_MODEL", "claude-other")
     REAL_TRIAGE("e", "")
     assert calls[1]["cmd"][3] == "claude-other"
@@ -5041,3 +5044,73 @@ def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
     followup = tmp_path / "r.md.followup"
     assert followup.read_text() == "use main as the base"
     assert str(followup) in seen[0]
+
+
+def test_a_report_s_ending_is_read_past_its_title_and_a_report_without_one_still_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = omnigent_agent.report_head
+    assert head("# Report\n\nDONE: merged #1\n- notes") == "DONE: merged #1"
+    assert head("# R\n\nbody\n\nSTILL WORKING: waiting on\nthe worker\n\nlater") == (
+        "STILL WORKING: waiting on\nthe worker"
+    )
+    assert head("# R\n\nbody") == "# R" and head("") == ""
+    for report, action in (
+        ("# Report\n\nDONE: merged", "done"),
+        ("# Report\n\nnotes\n\nSTILL WORKING on the verifier", "record"),
+        ("# Report\n\nBLOCKED: no access", "act"),
+    ):
+        event = {"kind": "ended", "last": "/r/a.md", "head": head(report)}
+        assert omnigent_agent.route(event, lambda: ("act", ""))[1] == action, report
+    registry, og, _ = path_only_lead(tmp_path, "# Title\n\nDONE: merged\nmore")
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert state_of(registry)["leads"]["a"]["ending"] == "DONE"
+
+
+def test_a_child_s_session_id_is_a_named_wait() -> None:
+    sid = "ef38cdf6" + "0" * 24
+    assert (
+        omnigent_agent.wait_of("STILL WORKING: waiting on ef38cdf6 (s1806-r3: round 2)")
+        == "ef38cdf6"
+    )
+    assert omnigent_agent.wait_of(f"STILL WORKING on {sid}") == sid
+    assert omnigent_agent.wait_of("STILL WORKING: on deadbeefcafe-ish things") == "unknown"
+
+
+def test_a_failed_small_model_call_names_what_it_printed(monkeypatch: pytest.MonkeyPatch) -> None:
+    said = "API Error: Claude's response exceeded the 1000 output token maximum."
+    monkeypatch.setattr(
+        omnigent_agent.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, said + "\n", ""),
+    )
+    assert REAL_TRIAGE("an event", "") == ("unsure", f"small model: exit 1: {said}")
+    monkeypatch.setattr(
+        omnigent_agent.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 2, "", ""),
+    )
+    assert REAL_TRIAGE("an event", "") == ("unsure", "small model: exit 2")
+
+
+def test_a_top_level_start_from_a_followed_lead_subscribes_that_lead_and_arms_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "own_id", lambda: "lead")
+    monkeypatch.chdir(tmp_path)
+    registry, brief = tmp_path / "registry", tmp_path / "b.md"
+    registry.write_text(f"lead={tmp_path / 'l.md'}\tfollow\n")
+    brief.write_text("do X")
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "a.md"), "--top-level"]
+    assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
+    assert registry.read_text() == f"lead={tmp_path / 'l.md'}\tfollow\n"
+    assert og.subscriptions == [("lead", "s0")]
+    assert "started from lead lead" in capsys.readouterr().err
+    registry.write_text(
+        f"lead={tmp_path / 'l.md'}\n"
+    )  # owes a report, not followed: arms as before
+    args[4] = str(tmp_path / "c.md")
+    assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
+    assert "s1=" in registry.read_text() and og.subscriptions == [("lead", "s0")]
