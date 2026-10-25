@@ -627,6 +627,25 @@ class Omnigent:
         missing file is ``Gone``. Each segment is encoded alone, with no leading ``%2F``. An
         absolute path inside the session's workspace is read relative to it, since a host on an
         older Omnigent answers 404 to an absolute file read (``base=host``) it serves relative."""
+        out = self.filesystem(sid, path)
+        if "content" in out:
+            return out["content"]
+        return "\n".join(
+            e["name"] + ("/" if e.get("type") == "directory" else "") for e in out.get("data", [])
+        )
+
+    def modified(self, sid: str, path: str) -> float:
+        """When ``path`` was last written (epoch seconds), from its folder's listing through
+        ``sid``'s file API; 0 when the folder does not list it."""
+        folder, _, name = path.rpartition("/")
+        entries = self.filesystem(sid, folder or "/" * path.startswith("/")).get("data", [])
+        return max(
+            (float(e.get("modified_at") or 0) for e in entries if e.get("name") == name),
+            default=0.0,
+        )
+
+    def filesystem(self, sid: str, path: str) -> dict:
+        """``read_file``'s answer as the server gives it: a file's ``content`` or a folder's ``data``."""
         if path.startswith("/"):
             try:  # no workspace known: the absolute read reports its own error
                 root = str(self.info(sid).get("workspace") or "").rstrip("/") + "/"
@@ -644,11 +663,7 @@ class Omnigent:
             if isinstance(e.__cause__, HTTPError) and e.__cause__.code == 404:
                 raise Gone(f"{path}: not found") from e
             raise
-        if "content" in out:
-            return out["content"]
-        return "\n".join(
-            e["name"] + ("/" if e.get("type") == "directory" else "") for e in out.get("data", [])
-        )
+        return out
 
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
@@ -2727,6 +2742,19 @@ def supervise_registry(
         log(("active", sid), None)
         return at
 
+    def written(sid: str, lead: dict) -> float:
+        """When the lead's report was last written, else 0 (the error logged): a report it writes
+        as it goes (a merge queue, a gate log) is progress while its messages are quiet."""
+        if not lead["report"]:
+            return 0.0
+        try:
+            at = og.modified(sid, lead["report"])
+        except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
+            log(("written", sid), f"{sid}: report not read: {reason(e)}")
+            return 0.0
+        log(("written", sid), None)
+        return at
+
     def label(sid: str, lead: dict) -> None:
         """Write ``sid``'s status labels when the line changed or the last write is
         ``LABEL_SECONDS`` old, so a quiet poll writes nothing."""
@@ -2763,7 +2791,8 @@ def supervise_registry(
             return  # its follower was told and it waits on them
         if time.time() - lead["progress_at"] < DEADLINE_SECONDS:
             return
-        lead["progress_at"] = max(lead["progress_at"], og.active(sid))  # read only once due
+        # read only once due
+        lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
         quiet = time.time() - lead["progress_at"]
         steps = [(DEADLINE_SECONDS, "")]
         # one nudge per progress chain: the chain it was spent on is the one that waits longer

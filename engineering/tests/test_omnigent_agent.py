@@ -2295,12 +2295,21 @@ class Fleet:
         self.labels: list[tuple[str, dict]] = []  # each label write
         self.unlabelled = 0  # the next label writes that fail
         self.files: dict[str, str] = {}  # what read_file finds, by path
+        self.written: dict[str, float | Exception] = {}  # what modified finds (or raises), by path
+        self.stats: list[str] = []  # each modified read
         self.pages = 0  # history pages read back
 
     def read_file(self, sid: str, path: str) -> str:
         if path not in self.files:
             raise omnigent_agent.Gone(f"{path}: not found")
         return self.files[path]
+
+    def modified(self, sid: str, path: str) -> float:
+        self.stats.append(path)
+        at = self.written.get(path, 0.0)
+        if isinstance(at, Exception):
+            raise at
+        return at
 
     def older(self, sid: str, after: str = "") -> dict:
         self.pages += 1
@@ -2824,6 +2833,48 @@ def test_progress_starts_from_the_leads_real_activity_not_from_first_sight(
         assert progress == max(items[-1]["created_at"], og.kids.get("a", 0.0))
     else:
         assert time.time() - 60 < progress <= time.time()
+
+
+@pytest.mark.parametrize(
+    ("written_ago", "deadline"),
+    [
+        (1300.0, "no progress 22m (merge)"),  # written after its last message: counts from then
+        (100.0, None),  # written while its messages were quiet: progress, no deadline
+        (None, "no progress 60m (merge)"),  # not listed
+        (omnigent_agent.Fail("GET: HTTP 409"), "no progress 60m (merge)"),  # its host is offline
+    ],
+)
+def test_a_report_being_written_is_progress_once_the_lead_is_due(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    written_ago: float | Exception | None,
+    deadline: str | None,
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+    og.snap = {"status": "running"}
+    report = str(tmp_path / "a.md")
+    if written_ago is not None:
+        og.written[report] = (
+            written_ago if isinstance(written_ago, Exception) else time.time() - written_ago
+        )
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert [p.split("\n")[0] for p in fyis(og)] == (
+        [f"Supervisor: a t-a: {deadline}"] if deadline else []
+    )
+    assert og.stats == [report]
+    if written_ago == 100.0:
+        assert state_of(registry)["leads"]["a"]["progress_at"] == og.written[report]
+
+
+def test_a_lead_not_yet_due_has_its_report_left_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 120), ending("STILL WORKING: merge queue", 60))
+    og.snap = {"status": "running"}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert og.stats == [] and fyis(og) == []
 
 
 LIVE_TIMED = (
@@ -4001,6 +4052,17 @@ def test_report_lists_a_directory_one_entry_per_line(
     serve_files(monkeypatch, {f"{FS}/tmp?limit=1000&base=host": listing})
     assert omnigent_agent.main(["report", "s9", "/tmp"]) == 0
     assert capsys.readouterr().out == "a.md\nsub/\n"
+
+
+def test_modified_reads_the_files_time_from_its_folders_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = [{"name": "r.md.brief", "modified_at": 5}, {"name": "r.md", "modified_at": 7}]
+    seen = serve_files(monkeypatch, {f"{FS}/tmp/loop?limit=1000&base=host": {"data": entries}})
+    og = omnigent_agent.Omnigent()
+    assert og.modified("s9", "/tmp/loop/r.md") == 7.0
+    assert seen[-1] == f"{FS}/tmp/loop?limit=1000&base=host"  # one listing, not the file
+    assert og.modified("s9", "/tmp/loop/gone.md") == 0.0
 
 
 def test_report_exits_4_naming_a_missing_file_and_1_for_other_statuses(
