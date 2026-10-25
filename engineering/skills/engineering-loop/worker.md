@@ -6,6 +6,7 @@ Read the notes, the spec, [coding-standards.md](coding-standards.md) and the pro
 `docs/agents/coding-standards.md` first. Run every command in your worktree, never in the
 main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
+A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, Cloud worker.
 
 1. **Build**, with the Build skill when loop.md § Practice names one, under these rules.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub

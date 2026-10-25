@@ -81,6 +81,20 @@ agent's name starts that agent, found among the server's agents, then the caller
 message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to the aliases only
 (`--model` works for any). An unknown name fails before a session is created.
 
+**Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
+so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
+on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
+GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
+and end its turn with only the comment's URL. `wait` (and so `run`) with `--pr <n>` fetches
+the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
+report path, so whatever reads the report reads a file as for any child. A question goes in
+that report, since `<report>.question` is a path here too. A link to another PR's comment
+counts for nothing; the nudge asks for the comment, and a second turn ending without one
+fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
+would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
+with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
+the repo, since the VM has the checkout but not this host's paths.
+
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
 is given, so a reviewer of the author's family is always a deliberate choice. Whether a
