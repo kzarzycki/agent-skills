@@ -432,6 +432,14 @@ or the owner's private network.
   prerequisite the queued items need (loop.md § Proof on a branch, the specs' acceptance)
   while the owner can still answer, and check such a precondition before a heavy step
   takes a slot.
+- **One heavy gate per host slot.** Leads on one host share its cores, and gates run at
+  once slow every one of them several times over and starve new sessions of the capacity
+  to start. So the project's test part runs behind a host-wide slot that every worktree
+  shares: the template's `scripts/gate-slot` (`GATE_SLOTS` slots, default 1; a lock frees
+  itself however the run exits), or, in a project without it, the same lock on a file under
+  `~/.cache/engineering-loop/` around its heavy check. A parallel runner takes the
+  `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
+  `test:changed` while iterating and the lint parts stay outside the slot.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
