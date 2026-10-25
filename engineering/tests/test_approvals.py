@@ -3994,7 +3994,10 @@ def test_risk_low_from_the_verifier_merges_without_the_owner(
 @pytest.mark.parametrize(
     ("risk", "said"),
     [
-        ("high — it narrows the test selection", "says `Risk: high — it narrows the test selection`"),
+        (
+            "high — it narrows the test selection",
+            "says `Risk: high — it narrows the test selection`",
+        ),
         ("medium — unsure", "says `Risk: medium — unsure`"),
         (None, "has no `Risk:` line"),
     ],
@@ -4025,7 +4028,9 @@ def test_a_risk_low_on_an_older_head_or_by_a_stranger_does_not_count(
     monkeypatch.setattr(approvals, "writer", lambda login: False)
     issues = [approved(1, "area:web", "kind:enhancement")]
     older = judged_pr(judging("low — fine", commit=OLD))
-    assert approvals.proofs("merge", older, issues, VERIFIED) != []  # no verdict on the head lands nothing
+    assert (
+        approvals.proofs("merge", older, issues, VERIFIED) != []
+    )  # no verdict on the head lands nothing
     high = judging("high — a gate weakened")
     stranger = judging("low — fine", author="stranger", heading="Verifier (claude), pass 2")
     pr = judged_pr(high, stranger)
@@ -4044,7 +4049,9 @@ def test_a_path_term_holds_whatever_the_verifier_says() -> None:
     loop = POLICY.replace("- risk: path `billing/**`\n", "- risk: verifier or path .github/**\n")
     pr = pull(reviews=(judging("low — a workflow comment"),), files=(".github/ci.yml",))
     issues = [approved(1, "area:web", "kind:enhancement")]
-    assert merge(pr, issues, loop) == [HELD + "it matches a risk rule (verifier or path .github/**)"]
+    assert merge(pr, issues, loop) == [
+        HELD + "it matches a risk rule (verifier or path .github/**)"
+    ]
     assert merge({**pr, "files": {"nodes": [{"path": "app.py"}]}}, issues, loop) == []
 
 

@@ -89,7 +89,7 @@ check again; a record without env is never reused. The posted comment names the 
 names left out, or `Env: default`).
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
-`Verifier: <family>, pass <n>` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
+`Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
 headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
 inline comment per finding, moved to the nearest line of the diff when its
 line is outside it and saying so, and in the review's body when its file is outside the diff.
@@ -137,9 +137,15 @@ review. A `signoff: <condition>` line says whose change the owner signs off in u
 the PR to link each issue such a rule matches, or whose spec has a line `Sign-off: owner`, with `Implements #<n>`,
 which leaves it open for the sign-off, and every other issue with a closing keyword (`Part of` suits both); without
 a `signoff:` line no keyword is checked and `Implements` is a link like `Part of`. A condition the gate can read is `always`, `size:L`
-(`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
-glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
-condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
+(`size:L or larger`, `size:L+`), `component <name>`, `category <name>`, `path <glob>` (bare, or in backticks for a
+glob with a space or comma) or `verifier`, joined by `or`, judged on the labels of the PR and its issues and the PR's
+files; a risk condition the gate can't read matches, since nothing else would enforce it. `verifier` holds in a risk
+rule at the merge (under `spec: auto` too, since the verdict comes after the build) when the verifier judges the
+change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any word but `low`, or
+has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a PR that needs
+none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that line comes with a comment
+saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again after that
+comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says. A `plan:` rule never reads a path, and
 any other words make it the loop's alone, since a plan comes before the change. The spec is the issue
 body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the first backticked name of each
@@ -595,12 +601,19 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     try:
         label(pull["number"], RISK_LABEL, add=True)
     except subprocess.CalledProcessError as exc:
-        return [f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"]
+        return [
+            f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
+        ]
     if (verdict := judged(pull)) and verdict in why:
         try:
-            comment(pull["number"], f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n")
+            comment(
+                pull["number"],
+                f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n",
+            )
         except subprocess.CalledProcessError as exc:
-            return [f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it ({exc})"]
+            return [
+                f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it ({exc})"
+            ]
     return []
 
 
@@ -625,7 +638,9 @@ def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
     except subprocess.CalledProcessError as exc:
         return [f"{where}: could not remove `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc})"]
     pull["labels"] = unlabelled["labels"]
-    return [f"{where}: removed the `{RISK_LABEL}` the gate added, since the verifier now judges the risk low"]
+    return [
+        f"{where}: removed the `{RISK_LABEL}` the gate added, since the verifier now judges the risk low"
+    ]
 
 
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
