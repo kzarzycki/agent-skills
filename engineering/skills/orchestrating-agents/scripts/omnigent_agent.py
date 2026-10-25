@@ -2161,7 +2161,7 @@ def supervise_registry(
     # event keeps its registry line until posted, and the restarted supervisor finds it again.
     outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
     window = time.monotonic()
-    script = script or Path(__file__).resolve()
+    script = script or Path(os.path.realpath(__file__))
     try:
         ran = script.stat().st_mtime_ns
     except OSError:
