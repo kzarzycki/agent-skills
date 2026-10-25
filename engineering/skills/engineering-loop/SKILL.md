@@ -393,6 +393,13 @@ closing the spec's issue without it be dishonest?
   until its sub-issues are done. Otherwise it stands alone. Attached, it counts toward
   the epic's progress instead of starting a chain of follow-ups the board shows as a flat
   list.
+- **Its cause is in another repo** (a shared skill, a tool, a project template): two
+  issues. In the repo that owns the cause, a generic one: problem, cause, fix and
+  acceptance, the case described so it holds anywhere; when that repo is more public than
+  this one, it names none of this project's names, products, customers, tickets or links.
+  Here, one for this project's side: what happened, the plan (adopting the fix, a
+  workaround meanwhile), and a link to the generic issue. Links point from the less
+  public repo to the more public one, never back.
 
 A rejected finding is not real, so it gets no issue.
 
