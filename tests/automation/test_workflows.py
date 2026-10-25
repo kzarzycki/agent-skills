@@ -17,9 +17,11 @@ def _steps(workflow: dict) -> list[dict]:
     return [step for job in workflow["jobs"].values() for step in job.get("steps", [])]
 
 
-def test_engineering_ci_is_path_scoped_and_runs_all_deterministic_gates() -> None:
+def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     workflow = _workflow("engineering-ci.yml")
-    paths = set(workflow["on"]["pull_request"]["paths"])
+    # qualify is a required check: a path-filtered PR run never reports, so the PR never merges
+    assert not workflow["on"]["pull_request"]
+    paths = set(workflow["on"]["push"]["paths"])
     commands = "\n".join(step.get("run", "") for step in _steps(workflow))
     whitespace = next(
         step for step in _steps(workflow) if step.get("name") == "Check changed-file whitespace"
@@ -39,7 +41,6 @@ def test_engineering_ci_is_path_scoped_and_runs_all_deterministic_gates() -> Non
         "README.md",
         "CLAUDE.md",
     } <= paths
-    assert set(workflow["on"]["push"]["paths"]) == paths
     assert whitespace["env"]["BASE_SHA"] == (
         "${{ github.event.pull_request.base.sha || github.event.before }}"
     )
@@ -126,5 +127,4 @@ def test_all_actions_are_pinned_to_full_commit_shas() -> None:
 def test_consumer_generated_state_triggers_qualification() -> None:
     workflow = _workflow("engineering-ci.yml")
     required = {".agents/**", ".claude/**", "apm.yml", "apm.lock.yaml"}
-    assert required <= set(workflow["on"]["pull_request"]["paths"])
     assert required <= set(workflow["on"]["push"]["paths"])
