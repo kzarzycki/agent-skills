@@ -338,11 +338,14 @@ KINDS = {bool: "true or false", int: "a whole number", list: "an array of string
 
 
 def block(text: str, file: str) -> dict[str, Any]:
-    """The file's settings block, parsed as TOML; refused without one, since a file still on the line form would
-    otherwise lose its settings unnoticed, or when it is no TOML."""
-    found = SETTINGS.search(text)
+    """The file's settings block, parsed as TOML; refused without one under `## Settings`, since a file still on the
+    line form would otherwise lose its settings unnoticed, or when it is no TOML. Only that section is searched, so
+    a TOML example elsewhere in the prose is never read as the settings."""
+    found = SETTINGS.search(section(text, "Settings"))
     if found is None:
-        raise Refused(f"{file} has no ```toml settings block: SKILL.md § Settings has its keys")
+        raise Refused(
+            f"{file} has no ```toml settings block under ## Settings: SKILL.md § Settings has its keys"
+        )
     try:
         return tomllib.loads(found[1])
     except tomllib.TOMLDecodeError as exc:

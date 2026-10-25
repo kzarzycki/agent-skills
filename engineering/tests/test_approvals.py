@@ -474,6 +474,22 @@ def test_a_loop_md_without_its_settings_block_or_with_one_that_is_not_toml_is_re
             approvals.settings(loop_md(broken))
 
 
+EXAMPLE = "## Example\n\n```toml\n[loop]\nci = false\n```\n\n"
+
+
+def test_a_toml_example_outside_settings_is_never_read_as_the_settings() -> None:
+    """Only the block under `## Settings` is read: an example in the prose neither replaces nor stands in for it."""
+    document = EXAMPLE + loop_md("[loop]\nci = true\n[risk]\nalways = true\n")
+    assert approvals.settings(document)["ci"] is True
+    assert approvals.ruled(set(), [], document) == "it matches a risk rule (always)"
+    with pytest.raises(approvals.Refused, match="loop.md has no ```toml settings block"):
+        approvals.settings("## Approvals\n\n- risk: always\n\n" + EXAMPLE)
+    tracker = EXAMPLE + loop_md('[components]\nbilling = "invoices"\n')
+    assert approvals.label_names(tracker)["component"] == {"area:billing"}
+    with pytest.raises(approvals.Refused, match="issue-tracker.md has no ```toml settings block"):
+        approvals.label_names("## Components\n\n- `billing`: invoices.\n\n" + EXAMPLE)
+
+
 @pytest.mark.parametrize(
     ("terms", "labels", "paths", "hit"),
     [
