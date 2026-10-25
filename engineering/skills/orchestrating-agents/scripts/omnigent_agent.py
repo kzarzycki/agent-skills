@@ -624,7 +624,9 @@ class Omnigent:
         url = f"/v1/sessions/{sid}/resources/environments/default/filesystem/{segments}"
         try:
             # a directory lists 20 entries unless asked; 1000 is the server's most
-            out = self.call("GET", url + "?limit=1000" + ("&base=host" if path.startswith("/") else ""))
+            out = self.call(
+                "GET", url + "?limit=1000" + ("&base=host" if path.startswith("/") else "")
+            )
         except Fail as e:
             if isinstance(e.__cause__, HTTPError) and e.__cause__.code == 404:
                 raise Gone(f"{path}: not found") from e
@@ -3232,7 +3234,10 @@ def main(argv: list[str] | None = None) -> int:
         # its lead's to hear, not the chief of staff's: subscribe the lead, arm nothing.
         # ponytail: a helper whose lead is gone pages no one; its lead's revive or reap finds it.
         if registry and args.top_level and (lead := followed_caller(registry)):
-            print(f"started from lead {lead}: it follows {args.title!r}, not {registry}", file=sys.stderr)
+            print(
+                f"started from lead {lead}: it follows {args.title!r}, not {registry}",
+                file=sys.stderr,
+            )
             registry = None
         sid, survivors = start(
             og,
