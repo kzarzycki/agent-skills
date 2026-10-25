@@ -125,7 +125,11 @@ its landing order.
   the sessions, and writes nothing.
 - **Adopted sessions.** A session the owner hands you that they started themselves is a lead
   from then on: subscribe to it as above or add its line to the registry (`<session>=<report>`, a tab, `follow`), and answer its reversible
-  questions under the owner's standing decisions (Authority).
+  questions under the owner's standing decisions (Authority). A lead the owner works with in
+  its own session (they talk to it there, not through you) you mark with `python3 <script>
+  direct <session>` (`--off` clears it): the supervisor still tells you its `DONE`, failures
+  and approval prompts, but raises no deadline, sends no nudge and leaves its quiet ends and
+  questions to the owner, who reads them there.
 - **Host load.** Before starting or resuming sessions on a host, check its capacity: load
   average per core and available memory, in one call on that host with `python3 <script> capacity`
   (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,
