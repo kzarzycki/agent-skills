@@ -218,6 +218,17 @@ because `land` is what refuses a PR whose proof is missing. A repo without
 such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
 which the loop obeys and never overrides.
 
+A project may instead land a base through a batching merge queue of its own: it merges every
+waiting PR's verified head onto the base, runs the full gate once on the result and pushes
+the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
+`python3 scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
+it: every merge proof but the CI wait, the head's own check passed, and nothing high risk or
+owner-approved, since the owner's label covers one head landing alone, through `land`. The
+queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
+place of the CI wait once git shows the head merged unchanged and without conflict
+resolution into a batch whose gate passed (`approvals.py`'s docstring says how). The queue
+never resolves a conflict: a PR that conflicts goes back to its lead.
+
 With the line `Opt-out: allowed` in loop.md, a developer may keep their own PRs out of the
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
 PR. `check merge` then reads a PR with no loop trail (no verifier review, no

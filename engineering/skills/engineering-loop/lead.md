@@ -141,6 +141,10 @@ design, wireframes included for a UI, and delegate the rest.
      `approved:merge` label on the head that lands (SKILL.md, Approvals and proof); you
      never add it. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
+   - Where the project lands this base through a batching merge queue (its own instructions
+     name it), enqueue the PR there instead of running `land`, once `approvals.py check queue
+     <pr> --head <sha>` exits 0, and go on with the next item: the queue tells you the outcome.
+     A PR it evicts comes back with the gate log or the conflict; fix it like any finding.
    - Run `python3 scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: `mise run check` passed on the head, the
      newest verifier review, satisfied with no core finding open, covers it, and every review
