@@ -36,7 +36,9 @@ exit 0 once it is in the history (or a copy the session has not answered yet alr
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
 on questions (``ask_user_question``) gets the message as each question's answer instead, exit 0,
-since its pending inputs wait on the answer; an approval prompt it never answers. ``broadcast``
+since its pending inputs wait on the answer; an approval prompt it never answers. ``relay --from
+<name>`` is a notice from a task or an agent: a first line says it is not the owner's words, and it
+never answers a question (exit 5 while one holds it). ``broadcast``
 relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
@@ -191,6 +193,9 @@ LEAD_REVIVE = (
     " turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
 )
 LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
+# ``relay --from``'s first line: a notice from a task or an agent, which a reader must not take for
+# the owner's words, and which never answers an open question.
+RELAY_FROM = "[relay from {source}: not the owner's words, and no answer to an open question]"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
@@ -868,19 +873,30 @@ def send(
     return "delivered"
 
 
-def relay(og: Omnigent, sid: str, text: str, confirm_seconds: float, answer: bool = True) -> str:
+def relay(
+    og: Omnigent,
+    sid: str,
+    text: str,
+    confirm_seconds: float,
+    answer: bool = True,
+    source: str = "",
+) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
     the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
     gets ``text`` as each one's answer instead: its pending inputs wait on the answer, and an
     interrupt would drop them and hold input until the question's hook marker goes stale
     (kzarzycki/omnigent#14). An approval prompt it never answers. With ``answer`` off, a session
-    with any prompt pending (a question or an approval) is skipped instead, sent nothing."""
+    with any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
+    ``source`` (a task or an agent, not the owner) ``text`` goes after a ``RELAY_FROM`` line and
+    never answers a question: it is sent as a message, held behind the question like any other."""
+    if source:
+        text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
     pending = info.get("pending_elicitations") or []
     if pending and not answer:
         return f"session {sid}: skipped: waiting on a question"
     asks = questions_of(info)
-    if asks and len(asks) == len(pending):
+    if asks and len(asks) == len(pending) and not source:
         for e in pending:
             questions = e["params"]["ask_user_question"].get("questions") or []
             answer = text.strip()  # a message file's trailing newline would reach the answer
@@ -2871,6 +2887,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("relay")
     p.add_argument("session")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
+    p.add_argument(
+        "--from",
+        dest="source",
+        default="",
+        metavar="NAME",
+        help="a notice from NAME (a task, an agent), not the owner's words: it says so in its first"
+        " line and never answers an open question",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
@@ -3023,7 +3047,15 @@ def main(argv: list[str] | None = None) -> int:
             print(og.read_file(sid, args.path))
             return 0
         if args.cmd == "relay":
-            print(relay(og, args.session, text_or_file(args.message)[0], args.confirm_seconds))
+            print(
+                relay(
+                    og,
+                    args.session,
+                    text_or_file(args.message)[0],
+                    args.confirm_seconds,
+                    source=args.source,
+                )
+            )
             return 0
         if args.cmd == "broadcast":
             text = text_or_file(args.message)[0]
