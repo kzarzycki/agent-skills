@@ -35,10 +35,11 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
-on questions (``ask_user_question``) gets the message as each question's answer instead, exit 0,
-since its pending inputs wait on the answer; an approval prompt it never answers. ``relay --from
-<name>`` is a notice from a task or an agent: a first line says it is not the owner's words, and it
-never answers a question (exit 5 while one holds it). ``broadcast``
+on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
+--answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
+the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
+or an agent: a first line says it is not the owner's words, and it never answers a question,
+even with ``--answer``. ``broadcast``
 relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
@@ -878,25 +879,28 @@ def relay(
     sid: str,
     text: str,
     confirm_seconds: float,
-    answer: bool = True,
+    answer: bool = False,
     source: str = "",
+    skip: bool = False,
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
-    the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
-    gets ``text`` as each one's answer instead: its pending inputs wait on the answer, and an
-    interrupt would drop them and hold input until the question's hook marker goes stale
-    (kzarzycki/omnigent#14). An approval prompt it never answers. With ``answer`` off, a session
-    with any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
+    the session holds it, ``Gone`` when it cannot be delivered. A session waiting on a question
+    holds ``text`` behind it like any message (``Queued``): an unrelated relay arriving while a
+    question is open must not become its answer. With ``answer``, a session blocked only on
+    questions gets ``text`` as each one's answer instead: its pending inputs wait on the answer,
+    and an interrupt would drop them and hold input until the question's hook marker goes stale
+    (kzarzycki/omnigent#14). An approval prompt it never answers. With ``skip``, a session with
+    any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
     ``source`` (a task or an agent, not the owner) ``text`` goes after a ``RELAY_FROM`` line and
-    never answers a question: it is sent as a message, held behind the question like any other."""
+    never answers a question, even with ``answer``."""
     if source:
         text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
     pending = info.get("pending_elicitations") or []
-    if pending and not answer:
+    if pending and skip:
         return f"session {sid}: skipped: waiting on a question"
     asks = questions_of(info)
-    if asks and len(asks) == len(pending) and not source:
+    if answer and asks and len(asks) == len(pending) and not source:
         for e in pending:
             questions = e["params"]["ask_user_question"].get("questions") or []
             answer = text.strip()  # a message file's trailing newline would reach the answer
@@ -997,7 +1001,7 @@ def broadcast(
 
     def one(sid: str) -> str:
         try:
-            return relay(og, sid, text, confirm_seconds, False).removeprefix(f"session {sid}: ")
+            return relay(og, sid, text, confirm_seconds, skip=True).removeprefix(f"session {sid}: ")
         except Queued as e:
             return str(e).removeprefix(f"session {sid}: ")
         except Exception as e:  # noqa: BLE001 - one target's failure is its line, never the others'
@@ -2895,6 +2899,12 @@ def main(argv: list[str] | None = None) -> int:
         help="a notice from NAME (a task, an agent), not the owner's words: it says so in its first"
         " line and never answers an open question",
     )
+    p.add_argument(
+        "--answer",
+        action="store_true",
+        help="give the message as the answer to the session's open question; without it, a"
+        " session waiting on a question holds the message behind it (exit 5)",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
@@ -3053,6 +3063,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.session,
                     text_or_file(args.message)[0],
                     args.confirm_seconds,
+                    answer=args.answer,
                     source=args.source,
                 )
             )

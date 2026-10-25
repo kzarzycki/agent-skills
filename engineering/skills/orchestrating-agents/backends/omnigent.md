@@ -192,13 +192,15 @@ with no further call. Exit 4: not deliverable, and why (archived, a revive that 
 neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
 revived in place first, as `send` does. A lead blocked only on questions (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
-prompts) holds every message until the question is answered, so `relay` answers each with the
-message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
-the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
-message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+prompts) holds every message until the question is answered, so a plain `relay` waits behind
+it (exit 5) and lands once the question is answered: a relay that arrives while a question is
+open must not become its answer. `relay --answer` answers each question with the message
+instead (exit 0), through Omnigent's resolve route: the turn carries on with it as the
+answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the message up
+to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 `relay --from <name>` is a notice from a task or an agent rather than the owner's words
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
-answers a question, so it waits behind one (exit 5) instead of becoming its answer.
+answers a question, even with `--answer`.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
