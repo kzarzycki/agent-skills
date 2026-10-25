@@ -2724,10 +2724,13 @@ def supervise_registry(
     while True:
         flush()
         if not outbox and not retry and reloadable(script, seen):
-            if console:
-                save(strict=False)
-            print(stamp(f"restarting: {script} changed"), flush=True)
-            os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
+            try:
+                if console:
+                    save()  # an unsaved state would be lost: keep running, try next poll
+                print(stamp(f"restarting: {script} changed"), flush=True)
+                os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
+            except Fail:
+                pass
         if console:
             recover()
             for again in retry[:]:
