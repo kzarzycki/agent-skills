@@ -30,7 +30,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # no __pycache__ left in the sibling skill's folder
@@ -197,14 +197,12 @@ def codex_rate_limits(pattern: str = ROLLOUTS) -> dict | None:
 
 
 def day(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).date().isoformat()
+    return datetime.fromtimestamp(ts, tz=UTC).date().isoformat()
 
 
 def window_start(days: int, now: float) -> int:
     """UTC midnight of the first of the last ``days`` days, today included."""
-    today = datetime.fromtimestamp(now, tz=timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    today = datetime.fromtimestamp(now, tz=UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return int((today - timedelta(days=days - 1)).timestamp())
 
 
@@ -382,7 +380,7 @@ def window_name(w: dict) -> str:
 
 def resets(w: dict) -> str:
     at = w.get("resets_at")
-    return datetime.fromtimestamp(at, tz=timezone.utc).strftime("%m-%d %H:%M UTC") if at else "?"
+    return datetime.fromtimestamp(at, tz=UTC).strftime("%m-%d %H:%M UTC") if at else "?"
 
 
 def model_cells(m: dict) -> list[str]:
@@ -405,7 +403,7 @@ TASK_HEAD = ["task", "name", "runs", "ok", "failed", "skipped", "last error", "w
 
 
 def tree_cells(t: dict) -> list[str]:
-    updated = datetime.fromtimestamp(t["updated_at"], tz=timezone.utc).strftime("%m-%d %H:%M")
+    updated = datetime.fromtimestamp(t["updated_at"], tz=UTC).strftime("%m-%d %H:%M")
     if "subagents" not in t:
         return [t["id"][:8], updated, "", "", "", "", "", usd(t["cost_usd"]), t["title"]]
     return [

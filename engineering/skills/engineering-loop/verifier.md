@@ -77,9 +77,9 @@ yourself, keeping standards and spec as separate axes.
   check, test selection, threshold, required status) and the weakening is the change
   itself; it changes CI permissions, secrets, branch protection or the loop's own approval
   rules; or it changes what users see in a significant way the spec did not ask for, or
-  asked for only vaguely, so the owner would be surprised. Each loop.md line `- risk-criteria:
-  <text>` adds a criterion of the project's. Anything else is low. A `risk: verifier` rule
-  in loop.md lets a low change merge without the owner, so judge it on the diff, not on
+  asked for only vaguely, so the owner would be surprised. loop.md § Risk criteria, where it
+  has one, adds the project's own. Anything else is low. `verifier = true` in loop.md's
+  `[risk]` lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
 - **Gates and repros:** you may run `mise run check`. Leave every repro as a runnable file
