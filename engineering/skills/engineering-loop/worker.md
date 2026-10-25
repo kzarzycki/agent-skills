@@ -8,12 +8,12 @@ main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
 A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, Cloud worker.
 
-1. **Build**, with the Build skill when loop.md § Practice names one, under these rules.
+1. **Build**, with the Build skill when loop.md's `practice` names one, under these rules.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
 2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
-   before each push (with `CI: none`, `approvals.py local-ci --record` on the committed
+   before each push (with `ci: false`, `approvals.py local-ci --record` on the committed
    head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report.
    Once it exits 0, commit and push with `git push -u origin <branch>` as
@@ -37,7 +37,8 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    of the instance) starts with the output of `git rev-parse HEAD` and the command that
    produced it, since a proof of another commit says nothing about the one under review.
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
-   commit does not already pin.
+   commit does not already pin. A fix that changes code a proof exercises reruns that proof
+   before the report, which lists each proof log with the SHA it names.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
    scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
