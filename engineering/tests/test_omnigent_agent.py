@@ -4110,7 +4110,7 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
     assert "--strict-mcp-config" in cmd
     assert "- merge on green" in cmd[cmd.index("--system-prompt") + 1]
     assert kw["input"] == "x" * 4000 and kw["timeout"] == 20
-    assert kw["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "200"
+    assert kw["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "1000"
     monkeypatch.setenv("OMNIGENT_SMALL_MODEL", "claude-other")
     REAL_TRIAGE("e", "")
     assert calls[1]["cmd"][3] == "claude-other"
@@ -4817,3 +4817,59 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
     assert not omnigent_agent.brief_of(report).exists()
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
+
+
+REPORT_DONE = "# Fix the parser\n\nDONE: merged #12 (abc123)\n\n## Details\n" + "x\n" * 50
+
+
+@pytest.mark.parametrize(
+    ("report", "action"),
+    [
+        (REPORT_DONE, "done"),
+        ("# Fix\n\nBuilt the parser.\n\nSTILL WORKING: waiting on the worker\n", "record"),
+        ("# Fix\n\nBuilt the parser.\n", "act"),
+        ("# Long\n" + "y\n" * 5000 + "DONE: landed\n", "done"),  # past REPORT_CHARS: its end
+    ],
+)
+def test_a_report_path_routes_on_the_whole_report_not_its_title(report: str, action: str) -> None:
+    event = {"kind": "ended", "last": "/r/a.md", "head": omnigent_agent.excerpt(report)}
+    assert omnigent_agent.route(event, lambda: ("unsure", "x"))[1] == action
+
+
+def test_a_failed_small_model_call_says_why(monkeypatch: pytest.MonkeyPatch) -> None:
+    said = "API Error: Claude's response exceeded the 200 output token maximum"
+    monkeypatch.setattr(
+        omnigent_agent.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, f"\n{said}\n", ""),
+    )
+    assert REAL_TRIAGE("e", "") == ("unsure", f"small model: exit 1: {said}")
+
+
+def test_a_still_working_naming_a_session_or_issue_waits_on_it() -> None:
+    assert omnigent_agent.wait_of("STILL WORKING: waiting on ef38cdf6 (s1806-r3)") == "ef38cdf6"
+    assert omnigent_agent.wait_of("STILL WORKING, waiting for #412 to land") == "#412"
+    assert omnigent_agent.wait_of("STILL WORKING: waiting on the day of traffic") == "unknown"
+    assert omnigent_agent.wait_of("STILL WORKING on the verifier, then ef38cdf6") == "verifier"
+
+
+def test_a_followed_lead_starting_a_top_level_helper_hears_it_and_leaves_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    registry, brief = tmp_path / "registry", tmp_path / "b.md"
+    brief.write_text("install it")
+    registry.write_text(f"lead1={tmp_path / 'l.md'}\tfollow\n")
+    before = registry.read_text()
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "h.md"), "--top-level"]
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "lead1")
+    assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
+    assert registry.read_text() == before
+    assert og.subscriptions == [("lead1", "s0")]
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "cos")  # anyone else: armed, as before
+    args[2], args[4] = "t2", str(tmp_path / "h2.md")
+    assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
+    assert "s1=" in registry.read_text()
+    assert og.subscriptions == [("lead1", "s0")]

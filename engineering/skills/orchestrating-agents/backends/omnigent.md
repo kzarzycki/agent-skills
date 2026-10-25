@@ -326,7 +326,9 @@ armed it again for the next brief while the event was being posted, which it doe
 that brief is in the history.
 
 A line ending in the field `follow` (`<session>=<report>`, the brief file, `follow`: what `start
---top-level` writes with a registry) is a lead the supervisor follows, which owes no report and is
+--top-level` writes with a registry, except when the session running it is itself a followed
+lead: that lead's own top-level helper is subscribed to the lead and left out of the registry,
+so it reports to its lead, not to the notified session) is a lead the supervisor follows, which owes no report and is
 never given up on, nor revived or sent the resume line as a session owing a report is (with
 `--console` its routing may nudge or revive it). Its lines go to `--notify` as the others do, but only
 when they are news, so the notified session is not woken for a turn that changed nothing:
@@ -361,11 +363,12 @@ lead's first line, whatever its status reads; a lead whose wait is unknown and t
 on this chain (`nudged_at`, the `progress_at` its nudge was sent at) gets a second, `no progress
 <n>m after a nudge`, 10 minutes later. The
 wait comes from the lead's last message: `parked` for a `PARKED` ending, the thing a `STILL
-WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, opening it or after `on`/`for`), else
-`unknown`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, opening it or after `on`/`for`; else
+a session id or `#<n>` after `on`/`for`, such as `waiting on ef38cdf6`), else `unknown`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that
-is only a report's path takes its ending and wait from the report's first line, read once per
+is only a report's path takes its ending and wait from the whole report (past 4,000 characters,
+its start and its end), since the ending sits on line 3 or at the end, not on its title line, read once per
 last message (a failed read is logged once and leaves them as the message gave them). None for a
 parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
 none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
