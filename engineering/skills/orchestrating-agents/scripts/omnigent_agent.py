@@ -1986,6 +1986,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "absorb", "archived: drop its row"
     if kind == "blocked":
         if event.get("question"):
+            if event.get("direct"):
+                return "rule", "record", "the owner drives it directly: they answer its question"
             return "rule", "act", "a question: the chief of staff answers it with one relay"
         return "rule", "owner", "an approval prompt: only the owner approves"
     if kind == "failed":
@@ -2013,7 +2015,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if event.get("head") is None:
             return "rule", "read-report", "its last message is a report path"
         text, wait = event["head"], wait_of(event["head"])
-        if not ENDING.search(text) and wait == "unknown":
+        if not ENDING.search(text) and wait == "unknown" and not event.get("direct"):
             return "rule", "act", "its report names no ending"
     ending = ending_of(text)
     if event.get("direct") and ending != "DONE":
@@ -2581,12 +2583,15 @@ def supervise_registry(
             for i in items
             if not from_user(i) and i.get("type") != "resource_event"
         ]
-        # once it has acted, a new instruction to it (a relay, the owner typing) starts a new
-        # chain too; the supervisor's own lines do not. Before, progress counts from first sight.
+        # once it has acted or been seen, a new instruction to it (a relay, the owner typing)
+        # starts a new chain too; the supervisor's own lines do not. On first sight progress
+        # counts from then, not from its brief.
         own += [
             float(i.get("created_at") or 0)
             for i in items
-            if own and from_user(i) and not text_of(i).strip().startswith(OWN_LINES)
+            if (own or lead.get("progress_at"))
+            and from_user(i)
+            and not text_of(i).strip().startswith(OWN_LINES)
         ]
         if time.monotonic() - looked.get(sid, -LABEL_SECONDS) >= LABEL_SECONDS:
             looked[sid] = time.monotonic()  # its children too, one read a minute

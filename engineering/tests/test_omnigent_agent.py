@@ -4855,6 +4855,35 @@ def test_a_direct_lead_still_reports_done_and_records_a_quiet_end() -> None:
     assert omnigent_agent.route(deadline, lambda: ("act", ""))[1] == "record"
 
 
+def test_a_direct_lead_s_question_and_quiet_report_stay_with_the_owner() -> None:
+    no_model = lambda: pytest.fail("no model call")
+    question = {"kind": "blocked", "question": True, "direct": True}
+    assert omnigent_agent.route(question, no_model)[1] == "record"
+    prompt = {"kind": "blocked", "direct": True}
+    assert omnigent_agent.route(prompt, no_model)[1] == "owner"
+    quiet = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "Here is what I found."}
+    assert omnigent_agent.route(quiet, no_model)[1] == "record"
+    done = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "DONE: shipped"}
+    assert omnigent_agent.route(done, no_model)[1] == "done"
+
+
+def test_a_later_instruction_to_a_lead_with_no_output_starts_a_new_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 4000))
+    og.snap = {"status": "running"}
+
+    def later(poll: int) -> None:
+        offset[0] = {1: 1140.0, 2: 1201.0}[poll]
+        if poll == 1:
+            og.histories["a"].append(told("carry on with the revised task", 0))
+
+    supervised(og, registry, monkeypatch, 3, later, notify="cos", console=True, fyi="post")
+    assert deadlines(registry) == []
+
+
 def test_direct_marks_and_clears_a_registry_line_keeping_its_other_fields(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4888,6 +4917,8 @@ def test_a_new_instruction_to_an_idle_lead_starts_a_new_progress_chain(
     og.snap = {"status": "running"}  # the relay woke it
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
     assert bool(deadlines(registry)) is deadline
+
+
 def test_a_message_argument_is_a_file_or_the_text_itself(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
