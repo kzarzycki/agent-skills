@@ -106,15 +106,17 @@ def test_a_board_column_the_loop_does_not_name_is_printed_as_is() -> None:
 
 MAPPED = """# Issue tracker
 
-## Board
+## Settings
 
-- `Build` is `In progress`
-- `Verify` is `In progress`
-- `Sign-off` is `In review`
+```ini
+[board]
+Build = In progress
+Verify = In progress
+Sign-off = In review
 
-## Components
-
-- `web`
+[components]
+web =
+```
 """
 
 
@@ -124,7 +126,7 @@ def test_the_tracker_maps_loop_columns_to_board_columns() -> None:
         "Verify": "In progress",
         "Sign-off": "In review",
     }
-    assert board.mapping(None) == board.mapping("## Board\n\nNo mapping here.\n") == {}
+    assert board.mapping(None) == board.mapping("## Settings\n\n```ini\n```\n") == {}
 
 
 def test_column_reads_a_shared_board_column_as_its_earliest_loop_column() -> None:
