@@ -4849,6 +4849,8 @@ def test_relay_from_a_task_to_an_idle_session_is_delivered_with_its_header(
     assert omnigent_agent.text_of(og.sessions[sid][-1]) == (
         omnigent_agent.RELAY_FROM.format(source="sync") + "\nsynced"
     )
+
+
 def deadlines(registry: Path) -> list[dict]:
     log = registry.with_suffix(".events.jsonl")
     return [e for e in events_of(registry) if e["kind"] == "deadline"] if log.exists() else []
