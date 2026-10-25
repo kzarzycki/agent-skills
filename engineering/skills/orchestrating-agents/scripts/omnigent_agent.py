@@ -1255,24 +1255,31 @@ def wait(
 
 
 def pr_report(said: str, pr: int) -> str | None:
-    """The body of the comment on ``pr`` that ``said`` links, or None when it links none there."""
-    m = next((m for m in COMMENT_URL.finditer(said) if int(m[2]) == pr), None)
-    return comment_body(m[1], m[3]) if m else None
+    """The body of the comment ``said`` links that GitHub files on PR ``pr`` of this checkout's
+    repository, or None when it links none: the comment's own ``issue_url`` decides, since the
+    link's repository and number are only what the worker typed."""
+    links = [m for m in COMMENT_URL.finditer(said) if int(m[2]) == pr]
+    if not links:
+        return None
+    repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+    for m in links:
+        if m[1].lower() != repo.lower():
+            continue
+        comment = json.loads(gh("api", f"repos/{repo}/issues/comments/{m[3]}"))
+        if str(comment.get("issue_url")).lower().endswith(f"/repos/{repo}/issues/{pr}".lower()):
+            return comment.get("body") or ""
+    return None
 
 
-def comment_body(repo: str, cid: str) -> str:
-    """An issue or PR comment's body, through REST (``gh api``)."""
+def gh(*args: str) -> str:
+    """``gh``'s output, run in this checkout with its login; a failure is a ``Fail``."""
     try:
         return subprocess.run(
-            ["gh", "api", f"repos/{repo}/issues/comments/{cid}", "--jq", ".body"],
-            capture_output=True,
-            text=True,
-            timeout=HTTP_SECONDS,
-            check=True,
+            ["gh", *args], capture_output=True, text=True, timeout=HTTP_SECONDS, check=True
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()
-        raise Fail(f"report comment {repo} {cid} unreadable: {why}") from e
+        raise Fail(f"gh {' '.join(args)}: {why}") from e
 
 
 def reap(

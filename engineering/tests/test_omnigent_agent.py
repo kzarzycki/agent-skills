@@ -1452,40 +1452,61 @@ def test_a_second_turn_that_ends_without_the_report_fails(tmp_path: Path) -> Non
     assert og.posts == 2  # the brief and one nudge
 
 
+def fake_gh(monkeypatch: pytest.MonkeyPatch, comments: dict[str, dict]) -> list[tuple[str, ...]]:
+    """``gh`` faked for a checkout of ``o/r``: ``repo view`` names it, ``api`` answers a comment
+    of ``comments`` by its id. Returns the calls."""
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str) -> str:
+        calls.append(args)
+        if args[:2] == ("repo", "view"):
+            return "o/r\n"
+        return json.dumps(comments[args[1].rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    return calls
+
+
+def on_pr(n: int, body: str = "", repo: str = "o/r") -> dict:
+    return {"issue_url": f"https://api.github.com/repos/{repo}/issues/{n}", "body": body}
+
+
 def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    fetched: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        omnigent_agent,
-        "comment_body",
-        lambda repo, cid: fetched.append((repo, cid)) or "Head: abc\nGates: 0\n",
-    )
+    calls = fake_gh(monkeypatch, {"42": on_pr(7, "Head: abc\nGates: 0\n")})
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
     argv = ["run", "claude-cloud", "t", "b.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert capsys.readouterr().out.splitlines()[-1] == str(tmp_path / "r.md")
     assert (tmp_path / "r.md").read_text() == "Head: abc\nGates: 0\n"
-    assert fetched == [("o/r", "42")] and og.posts == 1  # no nudge
+    assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.com/o/r/pull/8#issuecomment-1",  # another PR
+        "https://github.com/another/repo/pull/7#issuecomment-2",  # another repo, the same number
+        "https://github.com/o/r/pull/7#issuecomment-3",  # a comment GitHub files on PR 8
+    ],
+)
 def test_a_cloud_worker_s_second_turn_without_a_comment_on_its_pr_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    link: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    og = FakeOmnigent(reply="pushed; see https://github.com/o/r/pull/8#issuecomment-1")
-    fetched: list[str] = []
-    monkeypatch.setattr(omnigent_agent, "comment_body", lambda repo, cid: fetched.append(cid) or "")
+    og = FakeOmnigent(reply=f"pushed; see {link}")
+    fake_gh(monkeypatch, {"1": on_pr(8), "2": on_pr(7, repo="another/repo"), "3": on_pr(8)})
     report = tmp_path / "r.md"
     sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
     with pytest.raises(omnigent_agent.Fail, match="without a report comment on PR #7"):
         omnigent_agent.wait(og, sid, report, pr=7)
-    assert og.posts == 2 and not fetched and not report.exists()  # another PR's comment: none
+    assert og.posts == 2 and not report.exists()
     assert omnigent_agent.PR_NUDGE.format(pr=7) in [
         omnigent_agent.text_of(i) for i in og.sessions[sid]
     ]
