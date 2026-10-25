@@ -2541,6 +2541,26 @@ def test_land_wait_says_auto_merge_was_turned_off_without_a_merge(
     )
 
 
+def test_land_wait_reads_again_a_pr_out_of_the_queue_before_github_says_merged(
+    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"] = proven("IN_PROGRESS")
+    later += [
+        proven("SUCCESS", isInMergeQueue=True),
+        proven("SUCCESS"),  # out of the queue, not reported merged yet
+        proven("SUCCESS", state="MERGED"),
+    ]
+    assert waited(capsys, landing) == (
+        0,
+        [
+            f"PR #7: auto-merge on at {HEAD}, once check pass",
+            f"PR #7: in the merge queue at {HEAD}",
+            "PR #7 is merged",
+        ],
+        [(*MERGE, "--auto")],
+    )
+
+
 def test_land_wait_ends_with_exit_3_on_a_red_check_under_auto_merge_already_on(
     landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
 ) -> None:
