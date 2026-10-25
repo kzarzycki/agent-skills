@@ -199,6 +199,10 @@ question's answer, because a question holds every message behind it until answer
 the owner's answer to it the same way. `relay` never answers an approval prompt; `approve`
 does, on the owner's word (the table above).
 
+A scheduled task or an agent that relays to you passes `relay --from <its name>`, so its
+message opens with `[relay from <name>: …]` and never becomes the answer to a question of yours:
+only the owner answers what you asked the owner. Set that flag in each task's prompt you write.
+
 ## Authority
 
 Only the owner's own words approve anything. Your notes and briefs are guidance, so they

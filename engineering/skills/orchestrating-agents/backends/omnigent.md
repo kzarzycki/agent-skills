@@ -196,6 +196,9 @@ prompts) holds every message until the question is answered, so `relay` answers 
 message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
 the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
 message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+`relay --from <name>` is a notice from a task or an agent rather than the owner's words
+(a scheduled job's status line to a chief of staff): its first line says so, and it never
+answers a question, so it waits behind one (exit 5) instead of becoming its answer.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]

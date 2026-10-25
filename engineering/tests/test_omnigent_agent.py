@@ -4817,3 +4817,35 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
     assert not omnigent_agent.brief_of(report).exists()
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
+
+
+def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # the question holds every message behind it
+    sid = og.create("claude", "cos")
+    og.prompts = [QUESTION]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    (tmp_path / "m.md").write_text("ACTION NEEDED: the sync printed a note")
+    argv = ["relay", sid, str(tmp_path / "m.md"), "--from", "skills-sync"]
+    assert omnigent_agent.main(argv) == omnigent_agent.QUEUED
+    assert og.resolved == []
+    assert og.posts == 1
+    header = omnigent_agent.RELAY_FROM.format(source="skills-sync")
+    assert "Which base?" in capsys.readouterr().err  # it names the question that holds it
+    sent = [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]]
+    assert sent == [f"{header}\nACTION NEEDED: the sync printed a note"]
+
+
+def test_relay_from_a_task_to_an_idle_session_is_delivered_with_its_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "cos")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("synced")
+    assert omnigent_agent.main(["relay", sid, str(tmp_path / "m.md"), "--from", "sync"]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == (
+        omnigent_agent.RELAY_FROM.format(source="sync") + "\nsynced"
+    )
