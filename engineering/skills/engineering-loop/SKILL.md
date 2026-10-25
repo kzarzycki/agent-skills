@@ -374,7 +374,7 @@ or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
   triage, the merge of each worker's branch into the PR branch, the full gate (`mise run
-  check`, or `local-ci --record` with `CI: none`), the instance, the verdict's post, thread
+  check`, or `local-ci --record` with `ci: false`), the instance, the verdict's post, thread
   resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes its own branch. Its brief names that branch and
@@ -579,7 +579,7 @@ A rejected finding is not real, so it gets no issue.
 
 ## The cap
 
-The cap is 5 passes, unless the project's loop.md sets its own with `cap: <n>`.
+The cap is 5 passes, unless the project's loop.md sets its own with `cap` under `loop` in its settings.
 Every other file says "the cap", so this is the one place to change it, and
 `approvals.py` reads the same value. Pass 1 reviews the PR's full diff; each later pass
 up to the cap reviews the diff since the previous report and reruns its repros. No fix
