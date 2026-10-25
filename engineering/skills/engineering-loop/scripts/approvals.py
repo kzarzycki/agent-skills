@@ -2170,7 +2170,10 @@ def reusable(head: str) -> dict[str, Any] | None:
         record = json.loads(recorded(head).read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(record, dict):
+    # the posting path reads time and host too: a record without them is a miss, not a crash
+    if not isinstance(record, dict) or not all(
+        isinstance(record.get(key), str) for key in ("time", "host")
+    ):
         return None
     same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
         head,

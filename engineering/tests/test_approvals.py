@@ -3276,6 +3276,37 @@ def test_a_record_without_env_runs_the_check_again(
     assert recorded_pass(checkout)["env"] == {}
 
 
+@pytest.mark.parametrize(
+    "drop",
+    [{"time": None}, {"host": None}, {"time": 1}, {"env": []}],
+    ids=["no time", "no host", "a number for time", "env not a dict"],
+)
+def test_an_incomplete_record_runs_the_check_again(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], drop: dict[str, Any]
+) -> None:
+    where = checkout["common"] / "approvals" / "local-ci"
+    where.mkdir(parents=True)
+    full = {
+        "head": HEAD,
+        "command": "mise run check:all",
+        "exit": 0,
+        "env": {},
+        "time": "t",
+        "host": "h",
+    }
+    record = {k: v for k, v in {**full, **drop}.items() if v is not None}
+    (where / f"{HEAD}.json").write_text(json.dumps(record))
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+    assert github == [
+        (
+            "comment",
+            7,
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
+        )
+    ]
+
+
 @pytest.mark.parametrize("line", ["Local CI env:", "Local CI env: GATE-UI"])
 def test_an_unreadable_local_ci_env_line_is_refused(
     github: list[tuple[Any, ...]],
