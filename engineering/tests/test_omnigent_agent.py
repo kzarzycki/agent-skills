@@ -4817,3 +4817,49 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
     assert not omnigent_agent.brief_of(report).exists()
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
+
+
+def test_reloadable_takes_a_replaced_script_once_it_is_stable_and_compiles(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    ran = script.stat().st_mtime_ns
+    seen = {"ran": ran, "last": ran}
+    assert not omnigent_agent.reloadable(script, seen)  # unchanged
+    os.utime(script, ns=(ran + 10**9, ran + 10**9))
+    assert not omnigent_agent.reloadable(script, seen)  # changed: wait one look
+    assert omnigent_agent.reloadable(script, seen)  # stable and compiles
+    script.write_text("def broken(:\n")
+    os.utime(script, ns=(ran + 2 * 10**9, ran + 2 * 10**9))
+    assert not omnigent_agent.reloadable(script, seen)
+    assert not omnigent_agent.reloadable(script, seen)
+    assert "does not load" in capsys.readouterr().err
+    assert not omnigent_agent.reloadable(script, seen)  # logged once, kept running
+    assert capsys.readouterr().err == ""
+    script.unlink()
+    assert not omnigent_agent.reloadable(script, seen)  # an install replacing it
+
+
+def test_the_supervisor_re_executes_itself_when_its_script_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    execs: list[tuple[str, list[str]]] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        execs.append((path, argv))
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    monkeypatch.setattr(omnigent_agent.sys, "argv", ["agent.py", "supervise", "--registry", "r"])
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 5, bump, console=True, script=script)
+    assert execs == [
+        (sys.executable, [sys.executable, str(script), "supervise", "--registry", "r"])
+    ]
+    assert f"restarting: {script} changed" in capsys.readouterr().out
+    assert state_of(registry)["leads"]["a"]  # written before the exec
