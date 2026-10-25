@@ -355,7 +355,8 @@ error again after a recovery is news and the one a restart finds again is not.
 A followed lead also has a progress deadline, since a lead that reads running for good, or goes
 quiet a second time with the same last message, makes none of those events. Its progress,
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
-none) and its live children's activity, read on first sight, then once a minute and again when
+none), once it has any, a message to it that is not the supervisor's own (a relay or the owner
+typing, which starts a new chain), and its live children's activity, read on first sight, then once a minute and again when
 the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
 lead with neither counts from first sight. With
 no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
@@ -373,7 +374,11 @@ last message (a failed read is logged once and leaves them as the message gave t
 parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
 none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
 then waits on its follower, who was told. Each deadline is one event per
-lead and `progress_at`, so new progress starts a new chain.
+lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
+`direct` field (`omnigent_agent.py direct <session>`, `--off` clears it), one the owner drives in
+its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
+routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
+`DONE`, failures and prompts route as any lead's.
 
 **Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
 `route`'s table (the design's § Routing an event), and settles what needs no decision itself.

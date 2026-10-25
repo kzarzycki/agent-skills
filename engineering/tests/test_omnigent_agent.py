@@ -4484,7 +4484,7 @@ def test_a_top_level_start_after_another_lead_writes_the_after_field(
     assert omnigent_agent.main([*args, "--registry", str(registry), "--after", "s9"]) == 0
     line = registry.read_text().strip()
     assert line.endswith("\tfollow\tafter=s9")
-    assert omnigent_agent.entry(line)[2:] == ([tmp_path / "a.md.brief"], False, True, "s9")
+    assert omnigent_agent.entry(line)[2:] == ([tmp_path / "a.md.brief"], False, True, "s9", False)
 
 
 def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer(
@@ -4873,6 +4873,104 @@ def test_a_followed_lead_starting_a_top_level_helper_hears_it_and_leaves_the_reg
     assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
     assert "s1=" in registry.read_text()
     assert og.subscriptions == [("lead1", "s0")]
+def deadlines(registry: Path) -> list[dict]:
+    log = registry.with_suffix(".events.jsonl")
+    return [e for e in events_of(registry) if e["kind"] == "deadline"] if log.exists() else []
+
+
+def direct_lead(tmp_path: Path) -> Path:
+    registry = following(tmp_path)
+    assert omnigent_agent.mark_direct(registry, "a")
+    return registry
+
+
+def test_a_lead_the_owner_drives_directly_gets_no_deadline_and_no_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = direct_lead(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: building", 3600))
+    og.snap = {"status": "running"}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post", timeout=0)
+    assert fyis(og) == []
+    assert deadlines(registry) == []
+    assert "no event in" not in capsys.readouterr().err  # only a direct lead is registered
+    assert state_of(registry)["leads"]["a"]["direct"] is True
+
+
+def test_a_direct_lead_still_reports_done_and_records_a_quiet_end() -> None:
+    def route(last: str) -> tuple[str, str, str]:
+        event = {"kind": "ended", "last": last, "direct": True, "decisions": True}
+        return omnigent_agent.route(event, lambda: pytest.fail("no small model for it"))
+
+    assert route("DONE: merged #5")[1] == "done"
+    assert route("Here is what I found.")[:2] == ("rule", "record")
+    assert route("Which one?\n\nUSER NEEDED")[:2] == ("rule", "record")
+    deadline = {"kind": "deadline", "last": "", "direct": True}
+    assert omnigent_agent.route(deadline, lambda: ("act", ""))[1] == "record"
+
+
+def test_a_direct_lead_s_question_and_quiet_report_stay_with_the_owner() -> None:
+    no_model = lambda: pytest.fail("no model call")
+    question = {"kind": "blocked", "question": True, "direct": True}
+    assert omnigent_agent.route(question, no_model)[1] == "record"
+    prompt = {"kind": "blocked", "direct": True}
+    assert omnigent_agent.route(prompt, no_model)[1] == "owner"
+    quiet = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "Here is what I found."}
+    assert omnigent_agent.route(quiet, no_model)[1] == "record"
+    done = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "DONE: shipped"}
+    assert omnigent_agent.route(done, no_model)[1] == "done"
+
+
+def test_a_later_instruction_to_a_lead_with_no_output_starts_a_new_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 4000))
+    og.snap = {"status": "running"}
+
+    def later(poll: int) -> None:
+        offset[0] = {1: 1140.0, 2: 1201.0}[poll]
+        if poll == 1:
+            og.histories["a"].append(told("carry on with the revised task", 0))
+
+    supervised(og, registry, monkeypatch, 3, later, notify="cos", console=True, fyi="post")
+    assert deadlines(registry) == []
+
+
+def test_direct_marks_and_clears_a_registry_line_keeping_its_other_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = following(tmp_path)
+    before = registry.read_text()
+    argv = ["direct", "a", "--registry", str(registry)]
+    assert omnigent_agent.main(argv) == 0
+    assert registry.read_text() == before.rstrip("\n") + "\tdirect\n"
+    assert omnigent_agent.entry(registry.read_text().strip())[6] is True
+    omnigent_agent.arm(registry, "a", tmp_path / "a.md", followed=True)  # a re-arm keeps it
+    assert omnigent_agent.entry(registry.read_text().strip())[6] is True
+    assert omnigent_agent.main([*argv, "--off"]) == 0
+    assert omnigent_agent.entry(registry.read_text().strip())[6] is False
+    capsys.readouterr()
+    assert omnigent_agent.main(["direct", "zz", "--registry", str(registry)]) == 1
+    assert "no line for zz" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("message", "deadline"),
+    [
+        ("Owner's answer: free the disk, then carry on.", False),  # a relay: a new chain
+        (omnigent_agent.LEAD_NUDGE, True),  # the supervisor's own line: no progress
+    ],
+)
+def test_a_new_instruction_to_an_idle_lead_starts_a_new_progress_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str, deadline: bool
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 40000), ending("Disk full.\n\nUSER NEEDED", 34000), told(message, 5))
+    og.snap = {"status": "running"}  # the relay woke it
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert bool(deadlines(registry)) is deadline
 
 
 def test_a_message_argument_is_a_file_or_the_text_itself(
