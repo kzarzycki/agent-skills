@@ -157,6 +157,15 @@ loop.md § Approvals holds the policy, one line each:
   rewrites it, and so does a `spec:` condition beside `spec: auto unless risk` or
   `spec: auto`; without either the owner approves every spec, so a `spec:` condition
   holds nothing.
+  A condition's `verifier` term holds when the verifier judges the change high: the newest
+  pass on the head, by a trusted account, says `Risk: high`, any word but `low`, or has no
+  `Risk:` line (verifier.md). It joins the other terms with `or`, and paths beside it hold
+  whatever the verifier says, so `risk: verifier or path .github/** or path CODEOWNERS`
+  lets the verifier decide and keeps those files the owner's. The gate judges it at the
+  merge, under `spec: auto` too, since the verdict comes after the build, and quotes the
+  line. A `risk:high` it added for that line comes off when a later pass says `Risk: low`;
+  one added again after it stays. `- risk-criteria: <text>` lines add the project's own
+  criteria, which the verifier reads.
 - `plan: <condition>` asks for the owner's approval of a matching plan.
 - `bot: <login> <condition>`, such as `bot: dependabot[bot] path uv.lock or path
   pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
@@ -175,7 +184,7 @@ loop.md § Approvals holds the policy, one line each:
   keyword is checked, and `Implements` is a link like `Part of`.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
-matches (unless under `spec: auto`, where it held the spec), or the cap was reached with a blocker or major open (The cap). A high-risk spec
+matches (unless under `spec: auto`, where it held the spec, but for its `verifier` term), or the cap was reached with a blocker or major open (The cap). A high-risk spec
 covered by policy is still built and PR'd; its merge waits for the owner's
 `approved:merge` label on the PR, asked for once `check` is green on the head: it counts
 only when added after that head's push, and a push removes it, so it never covers code the

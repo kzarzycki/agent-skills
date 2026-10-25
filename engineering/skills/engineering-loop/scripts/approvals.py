@@ -89,7 +89,7 @@ check again; a record without env is never reused. The posted comment names the 
 names left out, or `Env: default`).
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
-`Verifier: <family>, pass <n>` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
+`Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
 headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
 inline comment per finding, moved to the nearest line of the diff when its
 line is outside it and saying so, and in the review's body when its file is outside the diff.
@@ -137,9 +137,15 @@ review. A `signoff: <condition>` line says whose change the owner signs off in u
 the PR to link each issue such a rule matches, or whose spec has a line `Sign-off: owner`, with `Implements #<n>`,
 which leaves it open for the sign-off, and every other issue with a closing keyword (`Part of` suits both); without
 a `signoff:` line no keyword is checked and `Implements` is a link like `Part of`. A condition the gate can read is `always`, `size:L`
-(`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
-glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
-condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
+(`size:L or larger`, `size:L+`), `component <name>`, `category <name>`, `path <glob>` (bare, or in backticks for a
+glob with a space or comma) or `verifier`, joined by `or`, judged on the labels of the PR and its issues and the PR's
+files; a risk condition the gate can't read matches, since nothing else would enforce it. `verifier` holds in a risk
+rule at the merge (under `spec: auto` too, since the verdict comes after the build) when the verifier judges the
+change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any word but `low`, or
+has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a PR that needs
+none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that line comes with a comment
+saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again after that
+comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says. A `plan:` rule never reads a path, and
 any other words make it the loop's alone, since a plan comes before the change. The spec is the issue
 body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the first backticked name of each
@@ -232,9 +238,12 @@ SIGNOFF = re.compile(
 QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
 CONDITION = re.compile(
     r"\balways\b|\b(size:(?:XS|S|M|L|XL))(\+|[ \t]+or[ \t]+larger\b)?"
-    r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*(?:`([^`]+)`|([^\s`,;]+))",
+    r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*(?:`([^`]+)`|([^\s`,;]+))|\b(verifier)\b",
     re.IGNORECASE,
 )
+# the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
+# label is the gate's to take off again when a later pass judges the risk low
+FLAGGED = f"`{RISK_LABEL}` added by the gate"
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 # loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
@@ -388,15 +397,17 @@ def practice_plans(loop: str) -> bool:
 
 
 def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool | None:
-    """Whether a rule's condition holds; None when it has words the gate can't read, or a path and no paths yet
-    (the loop judges it)."""
+    """Whether a rule's condition holds on labels and paths; None when it has words the gate can't read, or a path and
+    no paths yet (the loop judges it). The `verifier` term never holds here: ruled() adds the verifier's judgment."""
     if re.sub(r"[,;]|\bor\b|\s", "", CONDITION.sub("", condition), flags=re.IGNORECASE):
         return None
     unread = False
     for found in CONDITION.finditer(condition):
-        size, larger, kind, name, quoted, bare = found.groups()
+        size, larger, kind, name, quoted, bare, verifier = found.groups()
         glob = quoted or bare
-        if size:
+        if verifier:
+            hit = False  # the verifier's judgment, which ruled() reads where a verdict exists
+        elif size:
             index = SIZE_ORDER.index("size:" + size[5:].upper())
             hit = bool(
                 labels & set(SIZE_ORDER[index:] if larger else SIZE_ORDER[index : index + 1])
@@ -411,6 +422,12 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
         if hit:
             return True
     return None if unread else False
+
+
+def has_verifier(condition: str) -> bool:
+    """Whether a rule's condition has the `verifier` term: CONDITION's own match, so the word inside a path or a
+    label's name is no term."""
+    return any(found.group(7) for found in CONDITION.finditer(condition))
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
@@ -462,23 +479,49 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
     return None if (files.get("totalCount") or 0) > len(found) else found
 
 
-def ruled(labels: set[str], files: list[str] | None, loop: str | None) -> str | None:
+def ruled(
+    labels: set[str], files: list[str] | None, loop: str | None, judged: str | None = None
+) -> str | None:
     """Why a risk rule (risk_rules) holds on these labels and files, or None; a condition the gate can't read
-    matches, since nothing else would enforce it."""
+    matches, since nothing else would enforce it. `judged` is why the verifier holds the change high (judged()), which
+    its `verifier` term reads; None where no verdict is read, such as a spec before the build."""
     for condition in risk_rules(loop):
         hit = matches(condition, labels, files)
         if hit:
             return f"it matches a risk rule ({condition})"
         if hit is None:
             return f"a risk rule the gate can't judge holds until a person does ({condition})"
+        if judged and has_verifier(condition):
+            return f"it matches a risk rule ({condition}): {judged}"
+    return None
+
+
+def judged(pull: dict[str, Any]) -> str | None:
+    """Why the verifier holds the change high, or None: the highest pass on the head (passes) says `Risk: high`, any
+    other word than `low`, or has no `Risk:` line; a mixed PR's two verifiers both must say `low`. A head no review
+    covers is None, since reviewed() then refuses the merge, or the PR needs no review (exempt, an exact revert)."""
+    found = passes(pull)
+    if isinstance(found, str):
+        return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
+    head = pull["headRefOid"].lower()
+    on_head = [(number, lines) for commit, number, lines in found if commit == head]
+    if not on_head:
+        return None
+    last = max(number for number, _ in on_head)
+    for number, lines in on_head:
+        said = lines.get("Risk")
+        if number == last and not re.match(r"low\b", said or "", re.IGNORECASE):
+            line = "has no `Risk:` line" if said is None else f"says `Risk: {said}`"
+            return f"the verifier's pass {last} on {head[:7]} {line}"
     return None
 
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
     """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
-    labels of the PR and its issues and the PR's files, except under `spec: auto`, where the rule holds the spec
-    instead (spec_hold) and the owner approved the change before it was built; or a review at the cap was not
-    satisfied or left a blocker or major open (capped)."""
+    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under `spec:
+    auto`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
+    was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
+    blocker or major open (capped)."""
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
@@ -486,8 +529,12 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
-        if why := ruled(labels, paths(pull), loop):
+        if why := ruled(labels, paths(pull), loop, judged(pull)):
             return why
+    elif any(has_verifier(condition) for condition in risk_rules(loop)):
+        # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
+        if why := judged(pull):
+            return f"it matches a risk rule's `verifier` term: {why}"
     limit = cap(loop)
     if capped(pull, limit):
         return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
@@ -549,16 +596,56 @@ def linked(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
 
 def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """Add `risk:high` to a high-risk PR that lacks it, so the board shows why it waits; a line when GitHub refuses,
-    never a failure, since the merge already waits for the owner either way."""
-    if RISK_LABEL in names(pull) or risk(pull, issues, loop) is None:
+    never a failure, since the merge already waits for the owner either way. Added for the verifier's `Risk:` line,
+    it comes with a FLAGGED comment, and comes off once a later pass judges the risk low (unflag)."""
+    if RISK_LABEL in names(pull):
+        return unflag(pull, issues, loop)
+    if (why := risk(pull, issues, loop)) is None:
         return []
+    where = f"PR #{pull['number']}"
     try:
         label(pull["number"], RISK_LABEL, add=True)
     except subprocess.CalledProcessError as exc:
         return [
-            f"PR #{pull['number']}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
+            f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
         ]
+    if (verdict := judged(pull)) and verdict in why:
+        try:
+            comment(
+                pull["number"],
+                f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n",
+            )
+        except subprocess.CalledProcessError as exc:
+            return [
+                f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it ({exc})"
+            ]
     return []
+
+
+def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """Take off a `risk:high` the gate added for the verifier's `Risk:` line (FLAGGED) once nothing holds the change
+    high without it, since the verifier re-judges a disputed risk. A label added after the gate's comment is a
+    person's or the lead's raise, which only the owner lowers."""
+    flagged = [note["createdAt"] for note in notes(pull) if note["body"].startswith(FLAGGED)]
+    added = [
+        event["createdAt"]
+        for event in pull["timelineItems"]["nodes"]
+        if (event.get("label") or {}).get("name") == RISK_LABEL
+    ]
+    if not flagged or max(added, default="") > max(flagged):
+        return []
+    unlabelled = {**pull, "labels": {"nodes": [{"name": n} for n in names(pull) - {RISK_LABEL}]}}
+    if risk(unlabelled, issues, loop) is not None:
+        return []
+    where = f"PR #{pull['number']}"
+    try:
+        label(pull["number"], RISK_LABEL, add=False)
+    except subprocess.CalledProcessError as exc:
+        return [f"{where}: could not remove `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc})"]
+    pull["labels"] = unlabelled["labels"]
+    return [
+        f"{where}: removed the `{RISK_LABEL}` the gate added, since the verifier now judges the risk low"
+    ]
 
 
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
@@ -894,7 +981,7 @@ def proofs(
 
 
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
-    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:` lines: a body
+    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:` lines: a body
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
     A string names why none can be read."""
@@ -912,7 +999,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
             {
                 key.strip(): value.strip()
                 for key, _, value in (line.partition(":") for line in review["body"].splitlines())
-                if key.strip() in ("VERDICT", "SATISFIED")
+                if key.strip() in ("VERDICT", "SATISFIED", "Risk")
             },
         )
         for review in found
@@ -1735,8 +1822,9 @@ def check(point: str, pr: int | None) -> int:
         print(why)
         return 0
     found, issues = gated(point, pull, tracker, loop)
-    waiting = waits(pull, issues, loop) if point == "merge" else []
+    # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
+    waiting = waits(pull, issues, loop) if point == "merge" else []
     for line in holds(pull, issues, loop) + found + waiting + after:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -2035,6 +2123,9 @@ def verdict(pr: int, report: Path) -> int:
     satisfied = [line for line in lines if line.startswith("SATISFIED:")]
     if not satisfied or not verdicts:
         raise Refused(f"{report} has no `VERDICT:` or `SATISFIED:` line: the report is unfinished")
+    judgments = [line for line in lines if re.match(r"Risk:[ \t]*\S", line)]
+    if not judgments:
+        raise Refused(f"{report} has no `Risk: low|high — <reason>` line: the report is unfinished")
     # the head the verifier reviewed, which a push since the review may have moved the PR's head past
     heads = [
         found[1] for line in lines if (found := re.fullmatch(r"Head:[ \t]*([0-9a-fA-F]{40})", line))
@@ -2080,7 +2171,7 @@ def verdict(pr: int, report: Path) -> int:
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
     summary = "\n\n".join(
-        [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}"]
+        [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}\n{judgments[-1]}"]
     )
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
