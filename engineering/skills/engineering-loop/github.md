@@ -46,7 +46,7 @@ leading line when it reads the heading.
 
 `uv run scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
 prints the same plan and writes nothing. Run it by hand, `--dry-run` first: the project's
-`mise run setup:github` runs it only once project-templates wires it in. Its docstring says what it does, in order. The calls it makes:
+`mise run setup:github` runs it too. Its docstring says what it does, in order. The calls it makes:
 
 - Rename in place, so every open and closed issue and PR keeps the label and its timeline
   shows no remove and add: `gh api -X PATCH 'repos/{owner}/{repo}/labels/<old>' -f new_name=<new>`
