@@ -20,7 +20,7 @@ inside the repository: it infers the repo from the remote.
   `gh api graphql -f p=<parent id> -f s=<sub-issue id> -f query='mutation($p:ID!,$s:ID!){addSubIssue(input:{issueId:$p,subIssueId:$s}){subIssue{parent{number}}}}'`.
   Already that parent: done. Another parent: it belongs to that epic; `replaceParent:true`
   moves it only when that one is wrong.
-- Write access, which `spec = auto unless risk` asks of a sub-issue's author: GitHub's
+- Write access, which `spec: auto unless risk` asks of a sub-issue's author: GitHub's
   collaborator permission, `gh api 'repos/{owner}/{repo}/collaborators/<login>/permission' --jq .permission`,
   is `admin`, `maintain` or `write`. It covers access through a team, which an issue's
   `author_association` does not.
@@ -103,13 +103,14 @@ loop column the issue's board column shows and the one its labels give, so an is
 `Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
 
 A board with other column names, or one column for several loop columns, maps them in the
-project's `docs/agents/issue-tracker.md` settings under an optional `[board]`, one
-`loop column = board column` line per mapping:
+project's `docs/agents/issue-tracker.md` under an optional `## Board`, one list item per
+mapping, the loop column first and the board's second, both in backticks:
 
-```ini
-[board]
-Build = In progress
-Verify = In progress
+```markdown
+## Board
+
+- `Build` is `In progress`
+- `Verify` is `In progress`
 ```
 
 A loop column the section does not name keeps its own name. `board.py <issue> <column>` sets
