@@ -7,6 +7,8 @@ import itertools
 import json
 import re
 import subprocess
+import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -24,20 +26,21 @@ LOOP = (PROJECT / "docs" / "agents" / "loop.md").read_text()
 
 
 def loop_md(settings: str = "") -> str:
-    """A loop.md whose settings block holds `settings`, TOML."""
-    return f"# Loop facts\n\n## Settings\n\n```toml\n{settings}```\n\nThe prose for people.\n"
+    """A loop.md whose settings block holds `settings`, YAML."""
+    return f"# Loop facts\n\n## Settings\n\n```yaml\n{settings}```\n\nThe prose for people.\n"
 
 
 BARE = loop_md()  # a loop.md with no settings, so no rules
 
 
 def add(loop: str, section: str, settings: str) -> str:
-    """`loop` with `settings` added to its `[section]`, made at the block's end where it has none."""
-    header = f"[{section}]\n"
+    """`loop` with `settings`, keys written flush left, added to its `section`, made at the block's end where it has
+    none."""
+    header, settings = f"\n{section}:\n", textwrap.indent(settings, "  ")
     if header in loop:
         return loop.replace(header, header + settings, 1)
-    end = loop.index("```", loop.index("```toml\n") + len("```toml\n"))
-    return loop[:end] + header + settings + loop[end:]
+    end = loop.index("```", loop.index("```yaml\n") + len("```yaml\n"))
+    return loop[:end] + header[1:] + settings + loop[end:]
 
 
 HEAD, BASE = "a" * 40, "b" * 40
@@ -239,7 +242,7 @@ def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections()
         "size": {"size:XS", "size:S", "size:M", "size:L", "size:XL"},
     }
     assert approvals.label_names(
-        loop_md('[components]\n"area:web" = ""\n[categories]\n"kind:ops" = ""\n')
+        loop_md('components:\n  area:web: ""\ncategories:\n  kind:ops: ""\n')
     ) == {
         "category": approvals.CATEGORIES | {"kind:ops"},
         "component": {"area:web"},
@@ -250,12 +253,12 @@ def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections()
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ('[sizes]\nXXL = ""\n', "issue-tracker.md has an unknown settings section [sizes]"),
-        ('components = "api"\n', "issue-tracker.md has a setting `components` outside a section"),
-        ("[components]\napi\n", "issue-tracker.md's settings block is not TOML"),
+        ('sizes:\n  XXL: ""\n', "issue-tracker.md has an unknown settings section `sizes`"),
+        ("components: api\n", "issue-tracker.md has a setting `components` outside a section"),
+        ("[components]\napi\n", "issue-tracker.md's settings block is not YAML"),
         (
-            "[components]\napi = 1\n",
-            "issue-tracker.md's `api` in [components] must be a string, not 1",
+            "components:\n  api: 1\n",
+            "issue-tracker.md's `components.api` must be a string, not 1",
         ),
     ],
 )
@@ -265,7 +268,7 @@ def test_a_tracker_block_off_its_schema_is_refused_naming_the_key(
     with pytest.raises(approvals.Refused) as raised:
         approvals.label_names(loop_md(settings))
     assert str(raised.value).startswith(refused)
-    with pytest.raises(approvals.Refused, match="issue-tracker.md has no ```toml settings block"):
+    with pytest.raises(approvals.Refused, match="issue-tracker.md has no ```yaml settings block"):
         approvals.label_names("## Components\n\n- `billing`: invoices.\n")
 
 
@@ -384,7 +387,7 @@ def test_each_link_keeps_its_kind_and_a_closing_keyword_wins() -> None:
 # --- approval rules ---
 
 
-def test_loop_md_settings_are_read_from_its_toml_block() -> None:
+def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
     assert approvals.settings(LOOP) == {
         "spec": {"auto": ["bug", "follow-up", "sub-issue"]},
         "practice": {"spec": "to-spec"},
@@ -395,65 +398,65 @@ def test_loop_md_settings_are_read_from_its_toml_block() -> None:
     }
     assert approvals.settings(None) == approvals.settings(BARE) == {}
     commented = loop_md(
-        '# a comment\n[loop]\ncap = 3  # passes\n[risk]\npaths = [\n  # a note\n  "a/**",\n]\n'
+        "# a comment\nloop:\n  cap: 3  # passes\nrisk:\n  paths:\n    # a note\n    - a/**\n"
     )
     assert approvals.settings(commented) == {"cap": 3, "risk": {"paths": ["a/**"]}}
     bots = loop_md(
-        '[bot."dependabot[bot]"]\npaths = ["uv.lock"]\n[bot."renovate[bot]"]\npaths = ["a", "b"]\n'
+        "bot:\n  dependabot[bot]:\n    paths:\n      - uv.lock\n  renovate[bot]:\n    paths:\n      - a\n      - b\n"
     )
     assert approvals.settings(bots)["bot"] == [
         {"login": "dependabot[bot]", "paths": ["uv.lock"]},
         {"login": "renovate[bot]", "paths": ["a", "b"]},
     ]
-    # only the first toml block is the settings: a later one is an example in the prose
-    later = loop_md("[loop]\ncap = 3\n") + "```toml\n[loop]\ncap = 4\n```\n"
+    # only the first yaml block is the settings: a later one is an example in the prose
+    later = loop_md("loop:\n  cap: 3\n") + "```yaml\nloop:\n  cap: 4\n```\n"
     assert approvals.settings(later) == {"cap": 3}
 
 
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ("[loop]\ncaps = 3\n", "loop.md has an unknown setting `caps` in [loop]"),
-        ('[risk]\npath = ["a/**"]\n', "loop.md has an unknown setting `path` in [risk]"),
-        ('[plan]\npaths = ["a/**"]\n', "loop.md has an unknown setting `paths` in [plan]"),
+        ("loop:\n  caps: 3\n", "loop.md has an unknown setting `loop.caps`"),
+        ("risk:\n  path:\n    - a/**\n", "loop.md has an unknown setting `risk.path`"),
+        ("plan:\n  paths:\n    - a/**\n", "loop.md has an unknown setting `plan.paths`"),
         (
-            '[practice]\nreviews = "code-review"\n',
-            "loop.md has an unknown setting `reviews` in [practice]",
+            "practice:\n  reviews: code-review\n",
+            "loop.md has an unknown setting `practice.reviews`",
         ),
-        ('[approvals]\nspec = "auto"\n', "loop.md has an unknown settings section [approvals]"),
-        ('spec = "auto"\n', "loop.md has a setting `spec` outside a section"),
+        ("approvals:\n  spec: auto\n", "loop.md has an unknown settings section `approvals`"),
+        ("spec: auto\n", "loop.md has a setting `spec` outside a section"),
         (
-            '[bot]\npaths = ["uv.lock"]\n',
-            'loop.md\'s `paths` in [bot] must be a [bot."paths"] section',
-        ),
-        (
-            '[loop]\ncap = "three"\n',
-            "loop.md's `cap` in [loop] must be a whole number, not 'three'",
-        ),
-        ("[loop]\ncap = true\n", "loop.md's `cap` in [loop] must be a whole number, not True"),
-        ('[loop]\nci = "false"\n', "loop.md's `ci` in [loop] must be true or false, not 'false'"),
-        (
-            '[spec]\nauto = "auto unless risk"\n',
-            "loop.md's `auto` in [spec] must be true, false or an array of bug, follow-up, sub-issue, not 'auto unless risk'",
+            "bot:\n  paths:\n    - uv.lock\n",
+            "loop.md's `bot.paths` must be a section holding `paths`",
         ),
         (
-            '[spec]\nauto = ["bugs"]\n',
-            "loop.md's `auto` in [spec] must be true, false or an array of bug, follow-up, sub-issue, not ['bugs']",
+            "loop:\n  cap: three\n",
+            "loop.md's `loop.cap` must be a whole number, not 'three'",
         ),
-        ('[loop]\nspec = "auto"\n', "loop.md has an unknown setting `spec` in [loop]"),
+        ("loop:\n  cap: true\n", "loop.md's `loop.cap` must be a whole number, not True"),
+        ('loop:\n  ci: "false"\n', "loop.md's `loop.ci` must be true or false, not 'false'"),
         (
-            '[risk]\nlabels = "size:L, size:XL"\n',
-            "loop.md's `labels` in [risk] must be an array of strings, not 'size:L, size:XL'",
+            "spec:\n  auto: auto unless risk\n",
+            "loop.md's `spec.auto` must be true, false or a list of bug, follow-up, sub-issue, not 'auto unless risk'",
         ),
         (
-            "[risk]\nlabels = [1]\n",
-            "loop.md's `labels` in [risk] must be an array of strings, not [1]",
+            "spec:\n  auto:\n    - bugs\n",
+            "loop.md's `spec.auto` must be true, false or a list of bug, follow-up, sub-issue, not ['bugs']",
         ),
-        ('[bot."dependabot[bot]"]\n', 'loop.md\'s [bot."dependabot[bot]"] lacks `paths`'),
-        ('[land]\nsigned_squash_to = "main"\n', "loop.md's [land] lacks `allowed_signers`"),
+        ("loop:\n  spec: auto\n", "loop.md has an unknown setting `loop.spec`"),
         (
-            '[land]\nsigned_squash_to = ""\nallowed_signers = "s"\n',
-            "loop.md's `signed_squash_to` in [land] is empty",
+            "risk:\n  labels: size:L, size:XL\n",
+            "loop.md's `risk.labels` must be a list of strings, not 'size:L, size:XL'",
+        ),
+        (
+            "risk:\n  labels:\n    - 1\n",
+            "loop.md's `risk.labels` must be a list of strings, not [1]",
+        ),
+        ("bot:\n  dependabot[bot]:\n", "loop.md's `bot.dependabot[bot]` lacks `paths`"),
+        ("land:\n  signed_squash_to: main\n", "loop.md's `land` lacks `allowed_signers`"),
+        (
+            'land:\n  signed_squash_to: ""\n  allowed_signers: s\n',
+            "loop.md's `land.signed_squash_to` is empty",
         ),
     ],
 )
@@ -465,28 +468,102 @@ def test_settings_that_do_not_match_the_schema_are_refused_naming_the_key(
     assert str(raised.value) == refused
 
 
-def test_a_loop_md_without_its_settings_block_or_with_one_that_is_not_toml_is_refused() -> None:
+def test_a_loop_md_without_its_settings_block_or_with_one_that_is_not_yaml_is_refused() -> None:
     """A project still on the line form would otherwise lose its risk rules unnoticed."""
-    with pytest.raises(approvals.Refused, match="loop.md has no ```toml settings block"):
+    with pytest.raises(approvals.Refused, match="loop.md has no ```yaml settings block"):
         approvals.settings("## Approvals\n\n- risk: path `.github/**`\n")
-    for broken in ("[loop]\nspec = auto\n", "[loop]\ncap = 3\ncap = 4\n", "[risk]\n[risk]\n"):
-        with pytest.raises(approvals.Refused, match="loop.md's settings block is not TOML"):
+    for broken in ("loop:\n  cap: 3\n ci: true\n", "risk:\n  paths: [a/**\n", "loop:\n\tcap: 3\n"):
+        with pytest.raises(approvals.Refused, match="loop.md's settings block is not YAML:"):
             approvals.settings(loop_md(broken))
+    with pytest.raises(approvals.Refused, match="loop.md's settings block is not YAML sections"):
+        approvals.settings(loop_md("- loop\n"))
+    for twice, key in (
+        ("loop:\n  cap: 3\n  cap: 4\n", "loop.cap"),
+        ("risk: {}\nrisk: {}\n", "risk"),
+    ):
+        with pytest.raises(approvals.Refused, match=f"loop.md's `{key}` is set twice"):
+            approvals.settings(loop_md(twice))
 
 
-EXAMPLE = "## Example\n\n```toml\n[loop]\nci = false\n```\n\n"
+@pytest.mark.parametrize(
+    ("settings", "refused"),
+    [
+        ("practice:\n  plan: no\n", "loop.md's `practice.plan` must be a string, not False"),
+        ("practice:\n  plan: 1.10\n", "loop.md's `practice.plan` must be a string, not 1.1"),
+        (
+            "risk:\n  labels:\n    - on\n",
+            "loop.md's `risk.labels` must be a list of strings, not [True]",
+        ),
+        (
+            "loop:\n  local_ci_env:\n    - 1.10\n",
+            "loop.md's `loop.local_ci_env` must be a list of strings",
+        ),
+        ("loop:\n  ci: off-ish\n", "loop.md's `loop.ci` must be true or false, not 'off-ish'"),
+        ("bot:\n  yes:\n    paths: []\n", "loop.md's `bot.True` is no name: quote it"),
+    ],
+)
+def test_what_yaml_1_1_reads_as_another_type_is_refused_naming_the_key(
+    settings: str, refused: str
+) -> None:
+    """PyYAML follows YAML 1.1: `no`, `on` and `yes` are booleans and `1.10` the number 1.1, never the name written."""
+    with pytest.raises(approvals.Refused) as raised:
+        approvals.settings(loop_md(settings))
+    assert str(raised.value).startswith(refused)
+    quoted = settings.replace("no\n", '"no"\n').replace("1.10", '"1.10"').replace("on\n", '"on"\n')
+    if quoted != settings:
+        approvals.settings(loop_md(quoted))
 
 
-def test_a_toml_example_outside_settings_is_never_read_as_the_settings() -> None:
+def test_a_tracker_name_yaml_reads_as_a_boolean_is_refused_naming_it() -> None:
+    with pytest.raises(
+        approvals.Refused, match="issue-tracker.md's `components.True` is no name: quote it"
+    ):
+        approvals.label_names(loop_md("components:\n  on: the on-call rota.\n"))
+    assert (
+        "area:on"
+        in approvals.label_names(loop_md('components:\n  "on": the on-call rota.\n'))["component"]
+    )
+
+
+def test_skill_mds_settings_examples_pass_their_schema() -> None:
+    """SKILL.md § Settings shows loop.md's block, then issue-tracker.md's: each is what the scripts read."""
+    skill = (SCRIPTS.parent / "SKILL.md").read_text()
+    loop, tracker = re.findall(
+        r"^```yaml\n(.*?)^```$", skill[skill.index("### Settings") :], re.DOTALL | re.MULTILINE
+    )[:2]
+    assert approvals.settings(loop_md(loop))["bot"] == [
+        {"login": "dependabot[bot]", "paths": ["uv.lock", "**/package.json"]}
+    ]
+    assert approvals.tracker_settings(loop_md(tracker))["renames"] == {"frontend": "area:web"}
+
+
+def test_a_script_run_without_pyyaml_says_in_one_line_how_to_run_it() -> None:
+    """`-S` leaves out site-packages, where PyYAML is installed, as a bare `python3` without it would."""
+    run = subprocess.run(
+        [sys.executable, "-S", str(SCRIPTS / "approvals.py"), "check", "build"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert run.returncode == 1
+    assert run.stderr.splitlines() == [
+        f"approvals.py needs PyYAML: run it with `uv run {SCRIPTS / 'approvals.py'}`, which installs it"
+    ]
+
+
+EXAMPLE = "## Example\n\n```yaml\nloop:\n  ci: false\n```\n\n"
+
+
+def test_a_yaml_example_outside_settings_is_never_read_as_the_settings() -> None:
     """Only the block under `## Settings` is read: an example in the prose neither replaces nor stands in for it."""
-    document = EXAMPLE + loop_md("[loop]\nci = true\n[risk]\nalways = true\n")
+    document = EXAMPLE + loop_md("loop:\n  ci: true\nrisk:\n  always: true\n")
     assert approvals.settings(document)["ci"] is True
     assert approvals.ruled(set(), [], document) == "it matches a risk rule (always)"
-    with pytest.raises(approvals.Refused, match="loop.md has no ```toml settings block"):
+    with pytest.raises(approvals.Refused, match="loop.md has no ```yaml settings block"):
         approvals.settings("## Approvals\n\n- risk: always\n\n" + EXAMPLE)
-    tracker = EXAMPLE + loop_md('[components]\nbilling = "invoices"\n')
+    tracker = EXAMPLE + loop_md("components:\n  billing: invoices\n")
     assert approvals.label_names(tracker)["component"] == {"area:billing"}
-    with pytest.raises(approvals.Refused, match="issue-tracker.md has no ```toml settings block"):
+    with pytest.raises(approvals.Refused, match="issue-tracker.md has no ```yaml settings block"):
         approvals.label_names("## Components\n\n- `billing`: invoices.\n\n" + EXAMPLE)
 
 
@@ -518,7 +595,7 @@ def test_a_rule_holds_on_its_first_matching_term_or_is_left_to_the_loop(
 def test_a_path_naming_the_verifier_is_no_verifier_term() -> None:
     """The line form searched the rule's text for `verifier`, so a path holding the word held every PR the verifier
     judged high; the gate now reads the `verifier` field alone."""
-    loop = loop_md('[risk]\npaths = ["docs/verifier.md"]\n')
+    loop = loop_md("risk:\n  paths:\n    - docs/verifier.md\n")
     assert (
         approvals.ruled(set(), ["app.py"], loop, "the verifier's pass 1 says `Risk: high`") is None
     )
@@ -602,13 +679,13 @@ def test_a_heading_is_the_comments_whole_first_line() -> None:
 
 
 def test_a_due_plan_needs_its_comment_and_approval() -> None:
-    plans = loop_md('[practice]\nplan = "writing-plans"\n')
+    plans = loop_md("practice:\n  plan: writing-plans\n")
     assert approvals.proofs("build", pull(), [approved(1, "area:web")], plans) == [
         "#1 has no `## Plan` comment, and one is due"
     ]
     assert (
         approvals.proofs(
-            "build", pull(), [approved(1, "area:web")], loop_md("[plan]\nalways = true\n")
+            "build", pull(), [approved(1, "area:web")], loop_md("plan:\n  always: true\n")
         )
         == []
     )
@@ -617,7 +694,7 @@ def test_a_due_plan_needs_its_comment_and_approval() -> None:
     assert (
         approvals.proofs("build", pull(), [planned], BARE) == []
     )  # no agent approves a plan either
-    assert approvals.proofs("build", pull(), [planned], loop_md("[plan]\nalways = true\n")) == [
+    assert approvals.proofs("build", pull(), [planned], loop_md("plan:\n  always: true\n")) == [
         "#1 has no `Approved: plan` record by the owner",
         "#1 lacks the `approved:plan` label",
     ]
@@ -758,10 +835,10 @@ def test_one_job_name_in_two_workflows_is_two_checks() -> None:
 
 
 def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
-    no_ci = add(LOOP, "loop", "ci = false\n")
+    no_ci = add(LOOP, "loop", "ci: false\n")
     missing = [
         (
-            "PR #7: the project has no CI (loop.md `ci = false`), and no local check passed on"
+            "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on"
             " the head (approvals.py local-ci)"
         )
     ]
@@ -794,7 +871,7 @@ def test_more_comments_than_one_page_is_refused() -> None:
     with pytest.raises(
         approvals.Refused, match="#7 has more than 2 comments: the gate reads one page"
     ):
-        approvals.ran(crowded, loop_md("[loop]\nci = false\n"))
+        approvals.ran(crowded, loop_md("loop:\n  ci: false\n"))
 
 
 def test_a_pr_without_its_proof_names_each_missing_one() -> None:
@@ -811,7 +888,7 @@ def test_a_pr_without_its_proof_names_each_missing_one() -> None:
 
 
 def test_a_risk_path_rule_holds_only_a_pr_touching_its_path() -> None:
-    rule = loop_md('[risk]\npaths = ["billing/**"]\n')
+    rule = loop_md("risk:\n  paths:\n    - billing/**\n")
     billing = pull(files=("billing/invoice.py",), reviews=(VERDICT,))
     assert merge(billing, [approved(1, "area:web")], rule) == [BILLING]
     assert (
@@ -827,7 +904,7 @@ def test_a_risk_path_rule_holds_only_a_pr_touching_its_path() -> None:
 
 # --- sign-off: the owner checks a landed change in use ---
 
-SIGNOFF = add(LOOP, "signoff", 'labels = ["area:web"]\npaths = ["app/**"]\n')
+SIGNOFF = add(LOOP, "signoff", "labels:\n  - area:web\npaths:\n  - app/**\n")
 LANDED = pull(reviews=(VERDICT,), labels=OWNED)
 
 
@@ -920,10 +997,10 @@ def test_signoff_paths_past_the_files_the_gate_reads_ask_for_the_signoff() -> No
 
 def test_signoff_always_asks_for_implements_and_a_rule_matching_nothing_asks_for_none() -> None:
     web = approved(1, "area:web")
-    assert approvals.linked(linking("Closes"), [web], add(LOOP, "signoff", "always = true\n"))[
+    assert approvals.linked(linking("Closes"), [web], add(LOOP, "signoff", "always: true\n"))[
         0
     ].startswith("#1 waits for the owner's sign-off after landing")
-    nothing = add(LOOP, "signoff", 'labels = ["area:nothing"]\n')
+    nothing = add(LOOP, "signoff", "labels:\n  - area:nothing\n")
     assert approvals.linked(linking("Closes"), [web], nothing) == []
 
 
@@ -1750,15 +1827,15 @@ def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> No
 
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
     assert approvals.cap(None) == approvals.cap(BARE) == 5  # SKILL.md § The cap
-    assert approvals.cap(loop_md("[loop]\ncap = 3\n")) == 3
-    with pytest.raises(approvals.Refused, match="`cap` in \\[loop\\] must be a whole number"):
-        approvals.cap(loop_md('[loop]\ncap = "3 passes"\n'))
+    assert approvals.cap(loop_md("loop:\n  cap: 3\n")) == 3
+    with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
+        approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
     major = verdict_on(
         OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 3"
     )
     later = verdict_on(HEAD, heading="Verifier (claude), pass 4")
     assert capped(major, later) == []
-    assert capped(major, later, loop=loop_md("[loop]\ncap = 3\n")) == [
+    assert capped(major, later, loop=loop_md("loop:\n  cap: 3\n")) == [
         (
             HELD + "a verifier review at the cap (pass 3) or later"
             " was not satisfied or left a blocker or major open, so the owner decides"
@@ -1838,7 +1915,7 @@ def test_an_unresolved_review_thread_lets_nothing_land() -> None:
     assert verified(VERDICT, threads=(True, True)) == []
 
 
-BOTS = add(LOOP, 'bot."dependabot[bot]"', 'paths = ["uv.lock", "**/package.json"]\n')
+BOTS = add(LOOP, "bot", 'dependabot[bot]:\n  paths:\n    - uv.lock\n    - "**/package.json"\n')
 UNREVIEWED = ["PR #7: no verifier review posted (approvals.py verdict)"]
 
 
@@ -1925,7 +2002,7 @@ def test_more_reviews_or_threads_than_one_page_is_refused() -> None:
 
 # --- risk rules at the merge ---
 
-GITHUB_RULE = loop_md('[risk]\npaths = [".github/**"]\n')
+GITHUB_RULE = loop_md("risk:\n  paths:\n    - .github/**\n")
 
 
 def test_a_risk_path_rule_asks_for_the_label_only_on_a_pr_touching_its_path() -> None:
@@ -1943,10 +2020,10 @@ def test_a_risk_path_rule_asks_for_the_label_only_on_a_pr_touching_its_path() ->
         + "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a"
         " person judges them"
     ]
-    assert waits(loop_md('[risk]\nlabels = ["area:web"]\n'), "README.md") == [
+    assert waits(loop_md("risk:\n  labels:\n    - area:web\n"), "README.md") == [
         HELD + "it matches a risk rule (label `area:web`)"
     ]
-    assert waits(loop_md('[risk]\nlabels = ["kind:ops"]\n'), "README.md") == []
+    assert waits(loop_md("risk:\n  labels:\n    - kind:ops\n"), "README.md") == []
 
 
 # --- land ---
@@ -2399,9 +2476,9 @@ def test_land_never_reruns_the_approvals_run_on_a_failed_proof(
             "PR #7: `loop:approvals` is PENDING on the head commit",
         ),
         (
-            {"loop": "ci = false\n"},
+            {"loop": "ci: false\n"},
             (
-                "PR #7: the project has no CI (loop.md `ci = false`), and no local check passed on the head"
+                "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head"
                 " (approvals.py local-ci)"
             ),
         ),
@@ -2494,9 +2571,9 @@ def test_settings_off_the_schema_are_refused_before_any_proof_and_before_ready(
     waited, and `land` marked the draft ready. The bad `cap` setting now comes first, alone, and nothing reaches GitHub.
     """
     (tmp_path / "docs" / "agents" / "loop.md").write_text(
-        add(GITHUB_RULE, "loop", 'cap = "3 passes"\n')
+        add(GITHUB_RULE, "loop", "cap: 3 passes\n")
     )
-    refused = ["loop.md's `cap` in [loop] must be a whole number, not '3 passes'"]
+    refused = ["loop.md's `loop.cap` must be a whole number, not '3 passes'"]
     risky = pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high", *OWNED))
     risky["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     risky["isDraft"] = True
@@ -2678,10 +2755,10 @@ def test_land_wait_ends_with_exit_3_on_a_red_check_under_auto_merge_already_on(
     [
         (GITHUB_RULE, (".github/ci.yml",), GITHUB),
         (
-            add(GITHUB_RULE, "loop", "ci = false\n"),
+            add(GITHUB_RULE, "loop", "ci: false\n"),
             ("app.py",),
             (
-                "PR #7: the project has no CI (loop.md `ci = false`), and no local check passed on the head"
+                "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head"
                 " (approvals.py local-ci)"
             ),
         ),
@@ -2803,7 +2880,7 @@ def test_land_refuses_a_head_behind_or_in_conflict_with_its_base_before_marking_
 # --- land: a local signed squash, where loop.md says so ---
 
 REPO = "https://github.com/kzarzycki/scratch-gate-revert"
-SIGNED_LAND = 'signed_squash_to = "main"\nallowed_signers = "signers"\n'
+SIGNED_LAND = "signed_squash_to: main\nallowed_signers: signers\n"
 
 
 def sh(*args: str, cwd: Path) -> str:
@@ -2967,9 +3044,9 @@ def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
         "PR #7 targets release, but loop.md lands signed squashes only to main"
     ]
     loop = tmp_path / "docs" / "agents" / "loop.md"
-    loop.write_text(loop.read_text().replace(SIGNED_LAND, 'signed_squash_to = "main"\n'))
+    loop.write_text(loop.read_text().replace("  allowed_signers: signers\n", ""))
     assert refused_untouched(landing, signing, capsys) == [
-        "loop.md's [land] lacks `allowed_signers`"
+        "loop.md's `land` lacks `allowed_signers`"
     ]
 
 
@@ -2987,9 +3064,9 @@ def test_land_with_the_line_waits_for_pending_checks_without_auto_merge(
 
 # --- opt-out: a person keeps their PR out of the loop ---
 
-OPTED = add(LOOP, "loop", "opt_out = true\n")
+OPTED = add(LOOP, "loop", "opt_out: true\n")
 OUTSIDE = (
-    "PR #7 is outside the loop (loop.md `opt_out = true`, no verifier review, spec approval,"
+    "PR #7 is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
     " revert or bot exemption): its author merges it"
 )
 
@@ -3037,7 +3114,7 @@ def test_any_loop_trail_keeps_the_pr_in_the_loop(landing: dict[str, Any], trail:
 def test_an_exempt_bot_pr_keeps_its_trail() -> None:
     pr = {**pull(files=("uv.lock",)), "author": {"__typename": "Bot", "login": "dependabot"}}
     pr["authored"] = {"nodes": [authored("dependabot[bot]")]}
-    assert approvals.outside(pr, add(BOTS, "loop", "opt_out = true\n")) is None
+    assert approvals.outside(pr, add(BOTS, "loop", "opt_out: true\n")) is None
     assert approvals.outside(pr, OPTED) is not None  # no `bot` entry: a person's PR like any other
 
 
@@ -3046,7 +3123,7 @@ def test_a_policy_covered_spec_is_no_trail(landing: dict[str, Any]) -> None:
     mine["reviews"]["nodes"] = []
     mine["closingIssuesReferences"]["nodes"] = [
         specced(1, "kind:bug")
-    ]  # `[spec] auto` naming `bug` covers a bug
+    ]  # `spec.auto` naming `bug` covers a bug
     assert approvals.outside(mine, OPTED) == OUTSIDE
 
 
@@ -3091,7 +3168,7 @@ def test_a_run_from_a_subdirectory_reads_the_checkouts_loop_files(
     agents = repo / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
-    (agents / "loop.md").write_text(loop_md('[practice]\nplan = "writing-plans"\n'))
+    (agents / "loop.md").write_text(loop_md("practice:\n  plan: writing-plans\n"))
     (repo / "src").mkdir()
     pr = pull()
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
@@ -3154,7 +3231,7 @@ def test_check_reads_the_projects_own_components_and_categories(
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(
-        loop_md('[components]\nbilling = "invoices."\n\n[categories]\nresearch = ""\n')
+        loop_md('components:\n  billing: invoices.\ncategories:\n  research: ""\n')
     )
     (agents / "loop.md").write_text(BARE)
     pr = pull()
@@ -3289,7 +3366,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
     ]
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
-    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci = false\n")) == []
+    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
 
 
 @pytest.mark.parametrize(
@@ -3319,7 +3396,7 @@ def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
     ]
 
 
-ENV_LOOP = add(LOOP, "loop", 'local_ci_env = ["GATE_UI_TESTS", "GATE_SCOPE"]\n')
+ENV_LOOP = add(LOOP, "loop", "local_ci_env:\n  - GATE_UI_TESTS\n  - GATE_SCOPE\n")
 
 
 def recorded_pass(checkout: dict[str, Any]) -> dict[str, Any]:
@@ -3413,14 +3490,14 @@ def test_an_incomplete_record_runs_the_check_again(
     ]
 
 
-@pytest.mark.parametrize("names", ['["GATE-UI"]', '["GATE_UI GATE_SCOPE"]'])
+@pytest.mark.parametrize("names", ["\n  - GATE-UI", "\n  - GATE_UI GATE_SCOPE"])
 def test_a_local_ci_env_that_is_no_list_of_variable_names_is_refused(
     github: list[tuple[Any, ...]],
     checkout: dict[str, Any],
     capsys: pytest.CaptureFixture[str],
     names: str,
 ) -> None:
-    checkout["loop"] = add(LOOP, "loop", f"local_ci_env = {names}\n")
+    checkout["loop"] = add(LOOP, "loop", f"local_ci_env:{names}\n")
     assert approvals.main(["local-ci", "7"]) == 1
     assert (checkout["runs"], github) == (0, [])
     assert "`local_ci_env`" in capsys.readouterr().out
@@ -3440,7 +3517,7 @@ def test_a_local_ci_record_is_the_merge_proof_without_ci(
     assert approvals.main(["local-ci", "7"]) == 0
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
-    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci = false\n")) == []
+    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
 
 
 def git_in(where: Path, *args: str) -> str:
@@ -3522,7 +3599,7 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
 # --- the owner's policy: specs approved and merges landed without an agent's approval ---
 
 POLICY = loop_md(
-    '[spec]\nauto = ["bug", "follow-up", "sub-issue"]\n\n[risk]\npaths = ["billing/**"]\n'
+    "spec:\n  auto:\n    - bug\n    - follow-up\n    - sub-issue\nrisk:\n  paths:\n    - billing/**\n"
 )
 EDITED = "2026-10-02T14:35:27Z"
 
@@ -3611,7 +3688,7 @@ def test_spec_policy_covers_only_the_kinds_auto_names(writers: list[str]) -> Non
         assert [approvals.spec_policy(spec, {kind}) for spec in (bug, follow_up, child)] == [
             spec is covered for spec in (bug, follow_up, child)
         ]
-    assert approvals.spec_kinds(loop_md('[spec]\nauto = ["bug"]\n')) == {"bug"}
+    assert approvals.spec_kinds(loop_md("spec:\n  auto:\n    - bug\n")) == {"bug"}
     assert approvals.spec_kinds(AUTO) == approvals.spec_kinds(BARE) == set()
 
 
@@ -3630,7 +3707,7 @@ def test_a_spec_policy_covers_needs_no_record_or_label_and_one_it_does_not_needs
     ]
     # without the policy, a bug is the owner's to approve like any spec
     assert approvals.proofs(
-        "build", pull(), [bug], loop_md('[risk]\npaths = ["billing/**"]\n')
+        "build", pull(), [bug], loop_md("risk:\n  paths:\n    - billing/**\n")
     ) == [
         "#1 has no `Approved: spec` record by the owner",
         "#1 lacks the `approved:spec` label",
@@ -3640,7 +3717,9 @@ def test_a_spec_policy_covers_needs_no_record_or_label_and_one_it_does_not_needs
     ]
 
 
-AUTO = loop_md('[spec]\nauto = true\n\n[risk]\nlabels = ["area:api"]\npaths = ["billing/**"]\n')
+AUTO = loop_md(
+    "spec:\n  auto: true\nrisk:\n  labels:\n    - area:api\n  paths:\n    - billing/**\n"
+)
 
 
 def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
@@ -3649,7 +3728,7 @@ def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
 
 def test_spec_auto_is_its_own_policy() -> None:
     assert approvals.spec_auto(AUTO) and not approvals.spec_auto(POLICY)
-    assert not approvals.spec_auto(loop_md("[spec]\nauto = false\n")) and not approvals.spec_auto(
+    assert not approvals.spec_auto(loop_md("spec:\n  auto: false\n")) and not approvals.spec_auto(
         BARE
     )
 
@@ -3669,8 +3748,8 @@ def test_spec_auto_approves_every_spec_a_writer_opened_but_one_a_risk_rule_holds
         by("drive-by", specced(6, "kind:bug")),
     )
     assert approvals.holds(pull(), [feature, held, outsider], AUTO) == [
-        "#4: its spec is the owner's to approve under `[spec] auto = true`, since it matches a risk rule (label `area:api`)",
-        "#6: its spec is the owner's to approve under `[spec] auto = true`, since its author @drive-by can't write to the repo",
+        "#4: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (label `area:api`)",
+        "#6: its spec is the owner's to approve under `spec.auto: true`, since its author @drive-by can't write to the repo",
     ]
     assert approvals.proofs("build", pull(), [held, outsider], AUTO) == [
         "#4 has no `Approved: spec` record by the owner",
@@ -3689,7 +3768,7 @@ def test_under_spec_auto_a_file_the_spec_did_not_foresee_holds_the_spec(
     feature = by("worker", specced(1, "kind:enhancement"))
     pushed = pull(files=("app.py", "billing/a.py"))
     assert approvals.holds(pushed, [feature], AUTO) == [
-        "#1: its spec is the owner's to approve under `[spec] auto = true`, since it matches a risk rule (path `billing/**`)"
+        "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path `billing/**`)"
     ]
     assert approvals.proofs("build", pushed, [feature], AUTO) == [
         "#1 has no `Approved: spec` record by the owner",
@@ -3701,7 +3780,7 @@ def test_under_spec_auto_a_file_the_spec_did_not_foresee_holds_the_spec(
     crowded["files"]["totalCount"] = 101
     assert approvals.holds(crowded, [feature], AUTO) == [
         (
-            "#1: its spec is the owner's to approve under `[spec] auto = true`, since the gate can't read every file"
+            "#1: its spec is the owner's to approve under `spec.auto: true`, since the gate can't read every file"
             " the PR changes, so the risk rule's `paths` hold until a person judges them"
         )
     ]
@@ -3716,7 +3795,7 @@ def test_under_spec_auto_a_risk_rule_holds_no_merge_but_risk_high_and_the_cap_do
     assert approvals.risk(done, [owned], AUTO) is None
     marked = pull(reviews=(VERDICT,), files=("billing/a.py",), labels=("risk:high",))
     assert approvals.risk(marked, [owned], AUTO) == "`risk:high` is on PR #7"
-    # the same PR beside `[spec] auto` as an array waits for the owner's merge label
+    # the same PR beside `spec.auto` as a list waits for the owner's merge label
     assert approvals.risk(done, [owned], POLICY) == "it matches a risk rule (path `billing/**`)"
 
 
@@ -3755,7 +3834,7 @@ def test_a_high_risk_merge_waits_for_the_owner_and_says_why(
     labels: tuple[str, ...], issue_labels: tuple[str, ...], files: tuple[str, ...], why: str
 ) -> None:
     loop = loop_md(
-        '[spec]\nauto = ["bug", "follow-up", "sub-issue"]\n\n[risk]\nlabels = ["size:L", "size:XL", "area:api"]\npaths = ["billing/**"]\n'
+        "spec:\n  auto:\n    - bug\n    - follow-up\n    - sub-issue\nrisk:\n  labels:\n    - size:L\n    - size:XL\n    - area:api\n  paths:\n    - billing/**\n"
     )
     found = approved(1, "area:web", *issue_labels)
     assert merge(pull(reviews=(VERDICT,), labels=labels, files=files), [found], loop) == [
@@ -4059,10 +4138,12 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
     )
 
 
-# --- the verifier judges risk (`verifier = true`) ---
+# --- the verifier judges risk (`verifier: true`) ---
 
 
-VERIFIED = loop_md('[spec]\nauto = ["bug", "follow-up", "sub-issue"]\n\n[risk]\nverifier = true\n')
+VERIFIED = loop_md(
+    "spec:\n  auto:\n    - bug\n    - follow-up\n    - sub-issue\nrisk:\n  verifier: true\n"
+)
 
 
 def judging(risk: str | None, commit: str = HEAD, **fields: Any) -> dict[str, Any]:
@@ -4162,7 +4243,7 @@ def test_a_risk_low_on_an_older_head_or_by_a_stranger_does_not_count(
 
 def test_a_path_term_holds_whatever_the_verifier_says() -> None:
     loop = loop_md(
-        '[spec]\nauto = ["bug", "follow-up", "sub-issue"]\n\n[risk]\nverifier = true\npaths = [".github/**"]\n'
+        "spec:\n  auto:\n    - bug\n    - follow-up\n    - sub-issue\nrisk:\n  verifier: true\n  paths:\n    - .github/**\n"
     )
     pr = pull(reviews=(judging("low — a workflow comment"),), files=(".github/ci.yml",))
     issues = [approved(1, "area:web", "kind:enhancement")]
@@ -4170,17 +4251,21 @@ def test_a_path_term_holds_whatever_the_verifier_says() -> None:
     assert merge({**pr, "files": {"nodes": [{"path": "app.py"}]}}, issues, loop) == []
 
 
-@pytest.mark.parametrize("spec", ["", "auto = true\n"], ids=["merge", "spec-auto"])
+@pytest.mark.parametrize("spec", ["", "  auto: true\n"], ids=["merge", "spec-auto"])
 @pytest.mark.parametrize(
     "condition",
-    ['paths = ["docs/verifier.md"]', 'paths = ["verifier/**"]', 'labels = ["area:verifier"]'],
+    [
+        "  paths:\n    - docs/verifier.md",
+        "  paths:\n    - verifier/**",
+        "  labels:\n    - area:verifier",
+    ],
 )
 def test_the_word_verifier_in_a_path_or_label_is_no_verifier_term(
     spec: str, condition: str
 ) -> None:
     """A rule without the `verifier` term holds as it did before it: the verifier's `Risk:` line, high or missing,
     holds nothing."""
-    loop = loop_md(f"[spec]\n{spec}\n[risk]\n{condition}\n")
+    loop = loop_md(f"spec:\n{spec}risk:\n{condition}\n")
     issues = [approved(1, "area:web", "kind:enhancement")]
     for review in (judging("high — a gate changed"), judging(None)):
         assert approvals.risk(pull(reviews=(review,), files=("app.py",)), issues, loop) is None
@@ -4190,7 +4275,7 @@ def test_under_spec_auto_the_verifier_term_holds_the_merge_not_the_spec(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(approvals, "writer", lambda login: True)
-    loop = loop_md('[spec]\nauto = true\n\n[risk]\nverifier = true\npaths = ["billing/**"]\n')
+    loop = loop_md("spec:\n  auto: true\nrisk:\n  verifier: true\n  paths:\n    - billing/**\n")
     owned = by("worker", specced(5, "kind:enhancement"))
     pr = pull(reviews=(judging("low — fine"),), files=("app.py",))
     assert approvals.proofs("build", pr, [owned], loop) == []

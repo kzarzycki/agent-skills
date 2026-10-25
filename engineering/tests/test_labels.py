@@ -25,23 +25,23 @@ TRACKER = """Tracker: GitHub (engineering-loop's github.md)
 
 ## Settings
 
-```toml
-[components]
-api = "the HTTP service."
-"area:web" = "the browser UI."
+```yaml
+components:
+  api: the HTTP service.
+  area:web: the browser UI.
 
-[labels]
-triaged-by-bot = "classifies only."
+labels:
+  triaged-by-bot: classifies only.
 
-[renames]
-frontend = "area:web"
+renames:
+  frontend: area:web
 ```
 """
 
 
 def tracked(settings: str) -> str:
     """An issue-tracker.md whose settings block holds `settings`."""
-    return f"## Settings\n\n```toml\n{settings}```\n"
+    return f"## Settings\n\n```yaml\n{settings}```\n"
 
 
 class Repo:
@@ -167,7 +167,7 @@ def test_gh_failing_exits_1_with_its_reason(monkeypatch: pytest.MonkeyPatch, rep
 
 def test_the_tracker_can_send_documentation_elsewhere_before_the_loops_rename() -> None:
     tracker = tracked(
-        '[categories]\ndocs = "only docs change."\n\n[renames]\ndocumentation = "kind:docs"\n'
+        "categories:\n  docs: only docs change.\nrenames:\n  documentation: kind:docs\n"
     )
     actions, _ = labels.plan({"documentation": ("0075ca", "")}, tracker)
     assert actions[0] == ("rename", "documentation", "kind:docs", "")
@@ -179,9 +179,7 @@ def test_a_label_whose_name_has_a_comma_is_kept_never_deleted_or_folded(
 ) -> None:
     # GitHub reads `labels=blocked, upstream` as two labels an issue must both carry, so no count can be trusted
     (tmp_path / "docs" / "agents" / "issue-tracker.md").write_text(
-        TRACKER.replace(
-            'frontend = "area:web"\n', 'frontend = "area:web"\n"p1, customer" = "area:web"\n'
-        )
+        TRACKER.replace("frontend: area:web\n", "frontend: area:web\n  p1, customer: area:web\n")
     )
     repo.labels |= {"blocked, upstream": ("ededed", ""), "p1, customer": ("ededed", "")}
     assert labels.main([]) == 0
@@ -201,7 +199,7 @@ def test_dependabots_label_is_never_renamed_even_when_a_component_shares_its_nam
     repo: Repo, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (tmp_path / "docs" / "agents" / "issue-tracker.md").write_text(
-        TRACKER.replace("[labels]", 'python = "the Python package."\n\n[labels]')
+        TRACKER.replace("\nlabels:\n", "  python: the Python package.\n\nlabels:\n")
     )
     assert labels.main([]) == 0
     out = capsys.readouterr().out.splitlines()

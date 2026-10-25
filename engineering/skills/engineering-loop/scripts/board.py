@@ -1,11 +1,15 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run -q --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["PyYAML==6.0.3"]
+# ///
 """Board move (engineering loop): put an issue in a column of the repo's project board.
 
-    python3 scripts/board.py <issue> <column>
-    python3 scripts/board.py column <issue>
+    uv run scripts/board.py <issue> <column>
+    uv run scripts/board.py column <issue>
 
 The columns are the loop's stages (the skill's issues.md, Board), each shown in the board column of its own name unless
-the `[board]` section of docs/agents/issue-tracker.md's settings block maps it to another, one key per loop column
+the `board` section of docs/agents/issue-tracker.md's settings block maps it to another, one key per loop column
 (`Build = "In progress"`), several loop columns to one board column allowed. A name that is
 no loop column is taken as a board column. Adds the issue to the board when it is not there yet,
 then sets its Status. Ids are looked up by name on every call: GitHub changes option ids whenever a field is edited.
@@ -113,7 +117,7 @@ COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Sign-off", "Don
 
 
 def mapping(tracker: str | None) -> dict[str, str]:
-    """The board column of each loop column docs/agents/issue-tracker.md's `[board]` names; a loop column it does not
+    """The board column of each loop column docs/agents/issue-tracker.md's `board` names; a loop column it does not
     name keeps its own name (callers use `.get(name, name)`)."""
     return tracker_settings(tracker).get("board", {}) if tracker else {}
 

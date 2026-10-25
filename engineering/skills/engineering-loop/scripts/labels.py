@@ -1,13 +1,17 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run -q --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["PyYAML==6.0.3"]
+# ///
 """Label sync (engineering loop): make the repo's labels the loop's fixed set plus docs/agents/issue-tracker.md's.
 
-    python3 scripts/labels.py [--dry-run]
+    uv run scripts/labels.py [--dry-run]
 
 Run in the project's checkout, from the installed engineering-loop skill, `--dry-run` first. The project's
 `mise run setup:github` runs it only once project-templates wires it in. One line per change, then one per label it keeps:
 
 - Renames first, in place (`PATCH labels/<old>`), so every open and closed issue and PR keeps its label: the
-  tracker's `[renames]` (`old = new`), then the loop's own (`bug`, `enhancement` and `chore` to their `kind:` names,
+  tracker's `renames` (`old: new`), then the loop's own (`bug`, `enhancement` and `chore` to their `kind:` names,
   `documentation` to `kind:documentation`), then each component's and extra category's bare name to its `area:` or
   `kind:` label. Dependabot's labels are never renamed or folded. A rename whose new name already exists is a fold: each issue or PR with the old label gets the new
   one and loses the old, then the old is deleted. An old name the repo lacks is skipped, so the map can stay.
@@ -18,7 +22,7 @@ Run in the project's checkout, from the installed engineering-loop skill, `--dry
   deleted or folded, since its carriers can't be counted. Dependabot's are kept, since it recreates them and its PRs use them.
 
 A second run changes nothing. `--dry-run` reads the same and writes nothing. Without docs/agents/issue-tracker.md it
-refuses, since nothing would say which labels are the repo's. Exit 1 with gh's reason. Stdlib only.
+refuses, since nothing would say which labels are the repo's. Exit 1 with gh's reason. Stdlib, and PyYAML through approvals.py.
 """
 
 from __future__ import annotations
@@ -105,7 +109,7 @@ def wanted(tracker: str) -> dict[str, tuple[str, str]]:
 
 
 def renames(tracker: str) -> list[tuple[str, str]]:
-    """Old name to new, in order: the tracker's `[renames]`, the loop's, then each component's and extra category's
+    """Old name to new, in order: the tracker's `renames`, the loop's, then each component's and extra category's
     bare name to its label."""
     tracked = tracker_settings(tracker)
     mapped = list(tracked.get("renames", {}).items())

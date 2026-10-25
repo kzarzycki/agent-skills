@@ -1,13 +1,17 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run -q --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["PyYAML==6.0.3"]
+# ///
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
-    python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
-    python3 scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
-    python3 scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
-    python3 scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
-    python3 scripts/approvals.py local-ci <pr>              # with `ci = false`: run `mise run check:all` on the PR head
-    python3 scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
-    python3 scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
+    uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
+    uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
+    uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
+    uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
+    uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
+    uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
@@ -15,7 +19,7 @@ those tasks.
 
 `check build` needs every issue the PR closes to be free of `needs-owner`, with exactly one category, a component and
 exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its spec approved: the
-owner's current record and `approved:spec`, unless loop.md's `[spec] auto` covers it
+owner's current record and `approved:spec`, unless loop.md's `spec.auto` covers it
 (below). A `## Plan` comment needs the same where the `plan` rule asks, and is due when loop.md's `practice` names a
 `plan` skill. Category, component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's
 (`label_names`): a category is `kind:<name>`, a component `area:<name>`, whether the tracker file names it bare or in
@@ -36,19 +40,19 @@ pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit 
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with
-`ci = false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
+`ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below) unless under `[spec] auto = true`, or a review at the cap or later not satisfied or
+PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
 failure to add it and carrying on. A push removes the label (the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
 GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
-With `opt_out = true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
+With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
 `Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
 workflow posts success and its author merges it their usual way; `land` prints the same line and exits 1, so the
 loop never merges it or turns auto-merge on for it. Risk rules and `risk:high` hold no such PR. `check build` is
-unchanged. A spec a policy covers is no trail, since under `[spec] auto = true` every issue is covered.
+unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
 PR when one fails, or when GitHub's merge state says the head is behind a base that requires it up to date
 (`BEHIND`) or conflicts with it (`DIRTY`): merge the base in, rerun the gates and get a verdict on the merge. While
@@ -59,9 +63,9 @@ has neither, nor auto-merge: GitHub's 403 on its rules reads as none required, a
 there, so its proofs are the only gate. With every required check
 green and the label where the change is high risk: `gh pr merge --squash --match-head-commit <head>`, exit 0. While only
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
-exit 0. Otherwise (a red check, the label, no auto-merge, `ci = false` without a record) exit 3: run it again. A
+exit 0. Otherwise (a red check, the label, no auto-merge, `ci: false` without a record) exit 3: run it again. A
 merged PR: exit 0; a closed one: exit 1.
-With loop.md's `[land]` section (`signed_squash_to = <branch>`, `allowed_signers = <path>`), for a repo that trusts only
+With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the same proofs and waits
 hold, but where `land` would merge it squashes the PR in this checkout instead: one commit with the head's tree on the
 base's tip, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key (`gpg.format ssh`, `user.signingkey`) and
@@ -117,32 +121,32 @@ A spec or plan is named by its last edit as GitHub shows it in the edit history 
 a person can open the version approved. Every approval is a new comment: a re-approval says the spec or plan
 changed, and `approve` minimizes as outdated each earlier record, which it supersedes.
 
-loop.md's settings block (SKILL.md § Settings), TOML, holds the owner's standing policy, checked against SCHEMA: a
+loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `[loop]` holds `cap`, `ci`, `opt_out` and `local_ci_env`; `[spec]` holds `auto`.
-`[spec] auto` as an array approves by policy, with no record or label, the spec of an issue of each kind it names:
+the block. `loop` holds `cap`, `ci`, `opt_out` and `local_ci_env`; `spec` holds `auto`.
+`spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
 account GitHub's collaborator permission gives admin, maintain or write. A high-risk one is still built; its merge
-waits for the owner. `[spec] auto = true` approves every spec the same
+waits for the owner. `spec.auto: true` approves every spec the same
 way, epics included, except one the risk rule matches on the labels of the issue and the PR and the PR's files (at
 `check build` the files pushed so far), or one opened by an account without write access: those need the owner's
-record and label, and `check` says why. Under `[spec] auto = true` the risk rule holds the spec instead of the merge, since
+record and label, and `check` says why. Under `spec.auto: true` the risk rule holds the spec instead of the merge, since
 the owner approved the change before it was built; `risk:high` and the cap still hold the merge. Without `auto`, or
-with `false` or an empty array, the owner approves every spec, and the gates are the merge approval of a change that is not high risk.
+with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change that is not high risk.
 
-A rule (`[risk]`, `[plan]`, `[signoff]`) is a section of terms, any one of which matches: `always = true`; `labels`,
-label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `[risk]` alone
-`verifier = true`. A list is an array of strings. The gate reads the keys, never the words of a rule, so a path or
-label can never read as a term. Paths it can't judge, past the one page of files it reads, hold. The `[plan]` rule asks
-for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `[bot."<login>"]` section,
-such as `[bot."dependabot[bot]"]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
+A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
+label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `risk` alone
+`verifier: true`. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
+label can never read as a term. Paths it can't judge, past the one page of files it reads, hold. The `plan` rule asks
+for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `bot.<login>` section,
+such as `bot.dependabot[bot]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
 review when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it changes, none renamed or copied,
-matches one of its paths (exempt); without one, every PR needs the review. The `[signoff]` rule says whose change the
+matches one of its paths (exempt); without one, every PR needs the review. The `signoff` rule says whose change the
 owner signs off in use after it lands: `check merge` needs the PR to link each issue it matches, or whose spec has a
 line `Sign-off: owner`, with `Implements #<n>`, which leaves it open for the sign-off, and every other issue with a
-closing keyword (`Part of` suits both); without a `[signoff]` section no keyword is checked and `Implements` is a link like
-`Part of`. `verifier` holds at the merge (under `[spec] auto = true` too, since the verdict comes after the build) when the
+closing keyword (`Part of` suits both); without a `signoff` section no keyword is checked and `Implements` is a link like
+`Part of`. `verifier` holds at the merge (under `spec.auto: true` too, since the verdict comes after the build) when the
 verifier judges the change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any
 word but `low`, or has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a
 PR that needs none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that term comes with a
@@ -150,7 +154,8 @@ comment saying so, and the gate takes the label off once a later pass says `Risk
 after that comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says.
 The spec is the issue body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the keys of its settings block's
-`[components]` and `[categories]` (tracker_settings). Reads and writes through `gh`. Stdlib only.
+`components` and `categories` (tracker_settings). Reads and writes through `gh`. Stdlib, and PyYAML for the settings
+block (SKILL.md § Settings says how it is delivered).
 """
 
 from __future__ import annotations
@@ -166,11 +171,17 @@ import socket
 import subprocess
 import sys
 import time
-import tomllib
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
+try:
+    import yaml
+except ImportError:  # run as `python3 approvals.py` where PyYAML isn't installed
+    sys.exit(
+        f"{Path(sys.argv[0]).name} needs PyYAML: run it with `uv run {sys.argv[0]}`, which installs it"
+    )
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
@@ -305,13 +316,13 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 class Table(dict):
-    """A settings section whose every key is required, such as `[land]`."""
+    """A settings section whose every key is required, such as `land`."""
 
 
-# loop.md's settings (SKILL.md § Settings), one TOML table each: each key's type, or a tuple of the values it allows.
-# A list is an array of strings; `[bot."<login>"]` is a table per bot.
+# loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
+# A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
-# the specs `[spec] auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
+# the specs `spec.auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
 SPEC_KINDS = ("bug", "follow-up", "sub-issue")
 SCHEMA: dict[str, dict[str, Any]] = {
     "loop": {
@@ -332,50 +343,77 @@ SCHEMA: dict[str, dict[str, Any]] = {
 TRACKED: dict[str, Any] = dict.fromkeys(
     ("components", "categories", "labels", "renames", "board"), str
 )
-# the settings block: a docs/agents/ file's first fenced `toml` block, under its `## Settings` heading
-SETTINGS = re.compile(r"^```toml[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
-KINDS = {bool: "true or false", int: "a whole number", list: "an array of strings", str: "a string"}
+# the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` heading
+SETTINGS = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
+KINDS = {bool: "true or false", int: "a whole number", list: "a list of strings", str: "a string"}
 
 
 def block(text: str, file: str) -> dict[str, Any]:
-    """The file's settings block, parsed as TOML; refused without one under `## Settings`, since a file still on the
-    line form would otherwise lose its settings unnoticed, or when it is no TOML. Only that section is searched, so
-    a TOML example elsewhere in the prose is never read as the settings."""
+    """The file's settings block, parsed as YAML; refused without one under `## Settings`, since a file still on the
+    line form would otherwise lose its settings unnoticed, or when it is no YAML mapping. Only that section is
+    searched, so a YAML example elsewhere in the prose is never read as the settings. A key set twice is refused,
+    since YAML would keep the last one silently."""
     found = SETTINGS.search(section(text, "Settings"))
     if found is None:
         raise Refused(
-            f"{file} has no ```toml settings block under ## Settings: SKILL.md § Settings has its keys"
+            f"{file} has no ```yaml settings block under ## Settings: SKILL.md § Settings has its keys"
         )
     try:
-        return tomllib.loads(found[1])
-    except tomllib.TOMLDecodeError as exc:
-        raise Refused(f"{file}'s settings block is not TOML: {exc}") from None
+        once(yaml.compose(found[1], Loader=yaml.SafeLoader), file)
+        data = yaml.safe_load(found[1])
+    except yaml.YAMLError as exc:
+        raise Refused(f"{file}'s settings block is not YAML: {exc}") from None
+    if data is None:  # an empty block: no settings
+        return {}
+    if not isinstance(data, dict):
+        raise Refused(f"{file}'s settings block is not YAML sections of `key: value`, but {data!r}")
+    return data
+
+
+def once(node: Any, file: str, path: str = "") -> None:
+    """Refuse a key set twice in the same section of the block's YAML node tree, naming it."""
+    if isinstance(node, yaml.MappingNode):
+        seen = set()
+        for key, value in node.value:
+            if key.value in seen:
+                raise Refused(f"{file}'s `{path}{key.value}` is set twice")
+            seen.add(key.value)
+            once(value, file, f"{path}{key.value}.")
 
 
 def sections(data: dict[str, Any], file: str) -> dict[str, dict[str, Any]]:
-    """The block's tables, refusing a key outside one, since every setting belongs to a section."""
+    """The block's sections, refusing a key outside one, since every setting belongs to a section. A section with no
+    keys under it is empty."""
     for name, value in data.items():
-        if not isinstance(value, dict):
+        if value is None:
+            data[name] = {}
+        elif not isinstance(value, dict):
             raise Refused(f"{file} has a setting `{name}` outside a section")
     return data
 
 
 def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md") -> dict[str, Any]:
-    """A section's values checked against its schema (a table of keys, or one type for any key), refusing one that
-    doesn't match it and naming the key, so a mistyped setting is never read as a rule nobody wrote."""
+    """A section's values checked against its schema (a map of keys, or one type for any key), refusing one that
+    doesn't match it and naming the key, so a mistyped setting is never read as a rule nobody wrote. Types match
+    exactly, which also refuses what YAML 1.1 reads as another type where a name was meant (`no` as false, `1.10` as
+    a float), naming the key, since such a value is never the name written."""
     for key, value in section.items():
-        where = f"`{key}` in [{name}]"
+        where = f"`{name}.{key}`"
+        if not isinstance(
+            key, str
+        ):  # `on:`, `no:` or `1.10:` as a name is read as a boolean or a number
+            raise Refused(f"{file}'s {where} is no name: quote it")
         kind = schema.get(key) if isinstance(schema, dict) else schema
         if kind is None:
             raise Refused(f"{file} has an unknown setting {where}")
-        if isinstance(kind, tuple):  # true, false, or an array naming some of the tuple's values
+        if isinstance(kind, tuple):  # true, false, or a list naming some of the tuple's values
             if not (
                 isinstance(value, bool)
                 or isinstance(value, list)
                 and all(isinstance(item, str) and item in kind for item in value)
             ):
                 raise Refused(
-                    f"{file}'s {where} must be true, false or an array of {', '.join(kind)}, not {value!r}"
+                    f"{file}'s {where} must be true, false or a list of {', '.join(kind)}, not {value!r}"
                 )
         # bool is an int to Python, so a type is matched exactly
         elif type(value) is not kind or (
@@ -387,12 +425,12 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                 f"{file}'s {where} is empty"
             )  # a name's description may be empty, a path may not
     if isinstance(schema, Table) and (missing := [key for key in schema if key not in section]):
-        raise Refused(f"{file}'s [{name}] lacks `{'`, `'.join(missing)}`")
+        raise Refused(f"{file}'s `{name}` lacks `{'`, `'.join(missing)}`")
     return section
 
 
 def settings(loop: str | None) -> dict[str, Any]:
-    """loop.md's settings block, checked against SCHEMA: `[loop]`'s keys at the top level, every other section under
+    """loop.md's settings block, checked against SCHEMA: `loop`'s keys at the top level, every other section under
     its name and `bot` a list of `{login, paths}`; {} without loop.md, which has no rules. A loop.md without the block
     is refused rather than read as one without rules, since a project still on the line form would otherwise lose its
     risk rules unnoticed."""
@@ -402,9 +440,13 @@ def settings(loop: str | None) -> dict[str, Any]:
     for name, section in sections(block(loop, "loop.md"), "loop.md").items():
         if name == "bot":
             for login, bot in section.items():
-                where = f'bot."{login}"'
+                where = f"bot.{login}"
+                if not isinstance(login, str):
+                    raise Refused(f"loop.md's `{where}` is no name: quote it")
+                if bot is None:  # a login with nothing under it
+                    bot = {}
                 if not isinstance(bot, dict):
-                    raise Refused(f"loop.md's `{login}` in [bot] must be a [{where}] section")
+                    raise Refused(f"loop.md's `{where}` must be a section holding `paths`")
                 data.setdefault("bot", []).append(
                     {"login": login, **typed(bot, SCHEMA["bot"], where)}
                 )
@@ -413,17 +455,17 @@ def settings(loop: str | None) -> dict[str, Any]:
         elif name in SCHEMA:
             data[name] = typed(section, SCHEMA[name], name)
         else:
-            raise Refused(f"loop.md has an unknown settings section [{name}]")
+            raise Refused(f"loop.md has an unknown settings section `{name}`")
     return data
 
 
 def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
     """docs/agents/issue-tracker.md's settings block, checked against TRACKED: each section's names with their text.
-    `[components]` and `[categories]` name a label bare (`billing`) or in full (`area:billing`)."""
+    `components` and `categories` name a label bare (`billing`) or in full (`area:billing`)."""
     data = sections(block(tracker, "issue-tracker.md"), "issue-tracker.md")
     unknown = [name for name in data if name not in TRACKED]
     if unknown:
-        raise Refused(f"issue-tracker.md has an unknown settings section [{unknown[0]}]")
+        raise Refused(f"issue-tracker.md has an unknown settings section `{unknown[0]}`")
     return {
         name: typed(section, TRACKED[name], name, "issue-tracker.md")
         for name, section in data.items()
@@ -431,13 +473,13 @@ def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
 
 
 def spec_auto(loop: str | None) -> bool:
-    """Whether loop.md's `[spec] auto` is true, under which a risk rule holds the spec instead of the merge."""
+    """Whether loop.md's `spec.auto` is true, under which a risk rule holds the spec instead of the merge."""
     return settings(loop).get("spec", {}).get("auto") is True
 
 
 def spec_kinds(loop: str | None) -> set[str]:
-    """The kinds of spec loop.md's `[spec] auto` array names (SPEC_KINDS), which the policy approves; empty when it
-    is no array."""
+    """The kinds of spec loop.md's `spec.auto` list names (SPEC_KINDS), which the policy approves; empty when it
+    is no list."""
     auto = settings(loop).get("spec", {}).get("auto")
     return set(auto) if isinstance(auto, list) else set()
 
@@ -458,9 +500,9 @@ def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) ->
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR needs no verifier review: its author is a bot a `[bot."<login>"]` section of loop.md names, and every
+    """Whether the PR needs no verifier review: its author is a bot a `bot.<login>` section of loop.md names, and every
     file it changes matches one of that section's `paths` (lock and manifest files). GitHub's
-    GraphQL spells a bot's login without the `[bot]` REST and the setting write, so both compare without it; a person
+    GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare without it; a person
     can't hold a bot's login, so the author's type is checked too. Every commit's authors must be the bot, and its
     committer the bot or no account (GitHub's web-flow committer on the bot's own commits), since a person's push
     or rebase of its branch is a change no verifier saw. A renamed or copied file refuses it, since GraphQL
@@ -540,8 +582,8 @@ def judged(pull: dict[str, Any]) -> str | None:
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
     """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
-    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under `[spec]
-    auto = true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
+    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
+    `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
     was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
     blocker or major open (capped)."""
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
@@ -567,7 +609,7 @@ def signoff(
     pull: dict[str, Any], issue: dict[str, Any], loop: str | None
 ) -> tuple[bool, str] | None:
     """Whether the owner signs the issue's change off in use after it lands, and why; None when loop.md has no
-    `[signoff]` section, which leaves every link as it was. The rule is judged as the risk rule is (matches), on the
+    `signoff` section, which leaves every link as it was. The rule is judged as the risk rule is (matches), on the
     labels of the PR and this issue and the PR's files, and paths it can't judge hold; with no term matching, the
     spec's own `Sign-off: owner` line asks for it. A spec's `Sign-off: none` never waives a matching rule, since the
     rule is the owner's standing word."""
@@ -819,7 +861,7 @@ def approvals(where: str, node: dict[str, Any], point: str, value: str) -> list[
 
 
 def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
-    """Whether a kind `[spec] auto` names (`kinds`) approves the issue's spec: `bug`, an issue labelled a bug;
+    """Whether a kind `spec.auto` names (`kinds`) approves the issue's spec: `bug`, an issue labelled a bug;
     `follow-up`, one an agent raised (a `Found while #n` line in its body); `sub-issue`, a native sub-issue of an epic
     with the owner's current spec record and `approved:spec`, opened by someone with write access. An epic is never
     covered: the owner approves it."""
@@ -841,7 +883,7 @@ def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
 
 
 def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
-    """Why `[spec] auto = true` leaves the issue's spec to the owner, or None when the policy approves it: a risk rule (ruled)
+    """Why `spec.auto: true` leaves the issue's spec to the owner, or None when the policy approves it: a risk rule (ruled)
     on the labels of the issue and the PR and the files pushed so far, so a file the spec didn't foresee still reaches
     the owner; or an author without write access, since anyone who can open an issue would otherwise have their own
     spec approved."""
@@ -854,12 +896,12 @@ def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> 
 
 
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
-    """A line per issue whose spec `[spec] auto = true` leaves to the owner (spec_hold), approved or not, so a gate run says
+    """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`."""
     if not spec_auto(loop):
         return []
     return [
-        f"#{issue['number']}: its spec is the owner's to approve under `[spec] auto = true`, since {why}"
+        f"#{issue['number']}: its spec is the owner's to approve under `spec.auto: true`, since {why}"
         for issue in issues
         if not any(label.startswith("wayfinder:") for label in names(issue))
         and (why := spec_hold(pull, issue, loop))
@@ -954,8 +996,8 @@ def proofs(
 ) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without docs/agents/loop.md (`loop` None) an issue needs only the
-    `approved:spec` label; with it, the owner's record and the label, unless a kind `[spec] auto` names covers it
-    (spec_policy) or `[spec] auto = true` does (spec_hold). A plan needs them where the `plan` rule asks. What the merge
+    `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
+    (spec_policy) or `spec.auto: true` does (spec_hold). A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
     rule, found = settings(loop), []
     kinds, every = spec_kinds(loop), spec_auto(loop)
@@ -1120,7 +1162,7 @@ def opted_out(loop: str | None) -> bool:
 
 
 def signed(loop: str | None) -> tuple[str, Path] | None:
-    """loop.md's `[land]` section as (branch, signers), None without one."""
+    """loop.md's `land` section as (branch, signers), None without one."""
     land = settings(loop).get("land")
     return (land["signed_squash_to"], Path(land["allowed_signers"]).expanduser()) if land else None
 
@@ -1217,9 +1259,9 @@ def signed_squash(pull: dict[str, Any], signers: Path) -> str:
 
 
 def outside(pull: dict[str, Any], loop: str | None) -> str | None:
-    """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `opt_out = true`. A trail
+    """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `opt_out: true`. A trail
     is a verifier review (passes), an `Approved: spec` record or `approved:spec` on an issue it links, a `Reverts #<n>`
-    line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `[spec] auto = true` every issue is covered,
+    line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `spec.auto: true` every issue is covered,
     so a person who opted out could never link one."""
     if not opted_out(loop):
         return None
@@ -1232,14 +1274,14 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
         if READY in names(issue) or records(issue, "spec"):
             return None
     return (
-        f"PR #{pull['number']} is outside the loop (loop.md `opt_out = true`, no verifier review, spec approval,"
+        f"PR #{pull['number']} is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
         " revert or bot exemption): its author merges it"
     )
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
-    `ci = false` a local-ci pass."""
+    `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
@@ -1250,7 +1292,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
             found = []
         else:
             found = [
-                f"{where}: the project has no CI (loop.md `ci = false`), and no local check passed on the head (approvals.py local-ci)"
+                f"{where}: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
             ]
     else:
         found = ci(where, pull, required)
@@ -1725,7 +1767,7 @@ def viewer() -> str | None:
 
 def writer(login: str) -> bool:
     """Whether `login` can write to the repo, by GitHub's collaborator permission; an account GitHub refuses to look
-    up can't. ponytail: a bot's GraphQL login lacks the `[bot]` REST needs, so a bot author fails closed; add the
+    up can't. ponytail: a bot's GraphQL login lacks the `bot` REST needs, so a bot author fails closed; add the
     suffix when a project's bot opens sub-issues."""
     try:
         permission = gh(

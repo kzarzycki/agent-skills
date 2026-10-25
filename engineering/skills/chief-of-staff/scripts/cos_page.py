@@ -32,9 +32,9 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 
 sys.dont_write_bytecode = True  # no __pycache__ beside the skill's scripts
 _OA = Path(__file__).resolve().parents[2] / "orchestrating-agents" / "scripts" / "omnigent_agent.py"
