@@ -335,10 +335,11 @@ or the owner's private network.
   retry is a full-context turn.
 - **Flaky tests.** A project's `check` retries a failed test once, with its runner's own
   retry option, and prints each test that passed only on the retry; the gate is then green.
-  Without one, rerun only the failed tests once, which tells a flake from a failure; the
-  push still waits for a whole `check` that exits 0 (and its `local-ci` record), so a
-  project whose gate is long adds the retry option rather than pay each flake's minutes
-  again. Each test that passed on the retry has one open
+  Without one, rerun only the failed tests once, then only the parts of `check` the failure
+  stopped, never the whole gate, whose minutes each flake would otherwise cost again; all
+  green, the gate is green, and the report gives each command with its exit code. A
+  `ci: false` project needs the retry option, since its `local-ci` record runs the whole
+  `check`. Each test that passed on the retry has one open
   `kind:bug` issue titled `Flaky: <test id>`: search the open issues for the id before
   filing, and comment each occurrence on it (head SHA, PR, failure line), so two leads find
   the same issue and its comments count the occurrences. The third occurrence gets a PR
