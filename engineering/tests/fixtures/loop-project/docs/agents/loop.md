@@ -1,13 +1,23 @@
 # Loop facts
 
-## Practice
+## Settings
 
-- Spec: to-spec
+```yaml
+spec:
+  auto:
+    - bug
+    - follow-up
+    - sub-issue
 
-## Approvals
+practice:
+  spec: to-spec
 
-- spec: auto unless risk
-- merge: auto unless risk
-- risk: size:L or larger, or component `api`
-- risk: path `billing/**`
-- merge: path `.github/**`
+risk:
+  labels:
+    - size:L
+    - size:XL
+    - area:api
+  paths:
+    - billing/**
+    - .github/**
+```
