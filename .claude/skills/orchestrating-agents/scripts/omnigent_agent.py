@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path>
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -21,7 +21,11 @@ reason and the child's last message (for a failed session, its ``last_task_error
 A report already at the path is a pass before: only one written after the launch counts. It counts
 once final (``settled``): the child's turn has ended and the file is unchanged since, since a child
 can rewrite its report until then. The first turn that ends with neither gets one nudge to write
-it; a second fails. A lead launches it as one background command, so its
+it; a second fails. With ``--pr N`` (a worker in a cloud session, which can't write a host
+file) the preamble has the child post its report as a comment on PR N through REST and end its
+turn with the comment's URL; ``wait --pr N`` then writes that comment's body to the report path,
+so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
+the report there. A lead launches it as one background command, so its
 exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
@@ -161,6 +165,14 @@ TRANSIENT = (TimeoutError, socket.timeout, ConnectionResetError)  # socket.timeo
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 NUDGE = "Your turn ended without the report. Run any long command in the foreground, then write the report to {report}."
+# A cloud worker's report: a comment on the PR its last message links (wait --pr).
+COMMENT_URL = re.compile(
+    r"https://github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/(\d+)#issuecomment-(\d+)"
+)
+PR_NUDGE = (
+    "Your turn ended without the report. Run any long command in the foreground, then post the"
+    " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
+)
 # The line after a revive, which can relaunch a session with its context dropped: it names the
 # brief files and the report. Like the resume line, no instruction; found by this fixed start.
 REVIVED = "Your session was restarted and may have lost its context."
@@ -249,6 +261,16 @@ The owner authorized this task; do it now, without asking for a go-ahead. This f
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
+
+"""
+# A worker in a cloud session can't write a host file, and GitHub's GraphQL API answers 403 there,
+# so it reports on the PR through REST; the comment is public, so it names nothing of the host.
+PR_PREAMBLE = """\
+The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
+{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
+When done, reply with only the comment's URL.
 
 """
 # A top-level lead talks to the owner directly, so it asks instead of writing a question; and since
@@ -1016,9 +1038,11 @@ def start(
     permission_mode: str | None = None,
     host_id: str | None = None,
     subscribe: bool = True,
+    pr: int | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
-    lead subscribes its starter unless ``subscribe`` is false: a supervisor follows it instead."""
+    lead subscribes its starter unless ``subscribe`` is false: a supervisor follows it instead.
+    With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``)."""
     if permission_mode and agent != "claude":
         raise Fail(
             f"--permission-mode is for claude sessions; a {agent} session fails to launch with it"
@@ -1034,8 +1058,9 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    full = (LEAD_PREAMBLE if top_level else PREAMBLE).format(
+    full = (LEAD_PREAMBLE if top_level else PR_PREAMBLE if pr else PREAMBLE).format(
         report=report,
+        pr=pr,
         role=f"Your role file is {role}; read it first.\n" if role else "",
     ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
@@ -1131,6 +1156,7 @@ def wait(
     timeout: float = 3 * 3600,
     verdict: bool = False,
     since: int | None = None,
+    pr: int | None = None,
 ) -> str:
     """Return the report path, or raise with the child's last message once it cannot deliver one.
 
@@ -1140,15 +1166,26 @@ def wait(
     child is blocked on an approval or input prompt (nothing answers it), or after ``timeout``
     seconds. With ``since`` (a follow-up), only a report modified after that ``st_mtime_ns``
     counts: the one from the earlier turn is still there. A report that counts is returned once
-    ``settled``, read again first, since the child can rewrite it until its turn ends.
+    ``settled``, read again first, since the child can rewrite it until its turn ends. With ``pr``
+    (a cloud worker), a turn whose last message links a comment on that PR (created after ``since``)
+    has that comment's body written to ``report`` as the report; a file already there never counts,
+    since only this wait writes it.
     """
     deadline = time.monotonic() + timeout
     idle_since, nudged = None, False
     ended: dict[str, float] = {}
     question = question_of(report)
-    missing = f"a verdict in {report}" if verdict else str(report)
+    missing = (
+        f"a verdict in {report}"
+        if verdict
+        else f"a report comment on PR #{pr}"
+        if pr
+        else str(report)
+    )
 
     def counts() -> bool:
+        if pr:
+            return False
         try:
             mtime = report.stat().st_mtime_ns
         except FileNotFoundError:
@@ -1188,6 +1225,10 @@ def wait(
         )
         if turn_ended and not counts():
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
+        if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text(body)
+            break  # the turn has ended on the comment's URL: nothing rewrites it now
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
             if question.exists():
@@ -1198,7 +1239,7 @@ def wait(
                     f"session {sid} ended (failed): {error}\nrunner log: {runner_log(info)}\nlast message: {said}"
                 )
             if not nudged:  # often a turn ended on a background command: one reminder
-                nudge = NUDGE.format(report=report)
+                nudge = PR_NUDGE.format(pr=pr) if pr else NUDGE.format(report=report)
                 print(
                     f"session {sid} ended ({status}) without {missing}; nudging once",
                     file=sys.stderr,
@@ -1214,6 +1255,40 @@ def wait(
             )
         time.sleep(POLL_SECONDS)
     return str(report)
+
+
+def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
+    """The body of the comment ``said`` links that GitHub files on PR ``pr`` of this checkout's
+    repository, created after ``since`` (a ``st_mtime_ns``) when given, or None when it links none:
+    the comment's own ``issue_url`` decides, since the link's repository and number are only what
+    the worker typed."""
+    links = [m for m in COMMENT_URL.finditer(said) if int(m[2]) == pr]
+    if not links:
+        return None
+    repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
+    for m in links:
+        if m[1].lower() != repo.lower():
+            continue
+        comment = json.loads(gh("api", f"repos/{repo}/issues/comments/{m[3]}"))
+        # ponytail: GitHub's clock against this host's file clock; a host clock ahead by more than
+        # a turn rejects a fresh comment. Upgrade: compare with the old report's comment id.
+        created = str(comment.get("created_at")).replace("Z", "+00:00")
+        if since is not None and datetime.fromisoformat(created).timestamp() * 1e9 <= since:
+            continue  # the turn before's report
+        if str(comment.get("issue_url")).lower().endswith(f"/repos/{repo}/issues/{pr}".lower()):
+            return comment.get("body") or ""
+    return None
+
+
+def gh(*args: str) -> str:
+    """``gh``'s output, run in this checkout with its login; a failure is a ``Fail``."""
+    try:
+        return subprocess.run(
+            ["gh", *args], capture_output=True, text=True, timeout=HTTP_SECONDS, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        why = (getattr(e, "stderr", "") or str(e)).strip()
+        raise Fail(f"gh {' '.join(args)}: {why}") from e
 
 
 def reap(
@@ -2793,6 +2868,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("session")
     p.add_argument("report", type=Path)
     for p in sub.choices.values():
+        if p.prog.split()[-1] in ("run", "start", "send", "wait"):
+            p.add_argument(
+                "--pr",
+                type=int,
+                help="a cloud worker's PR: it reports as a comment there, which wait writes to the report path",
+            )
         if p.prog.split()[-1] in ("send", "wait"):
             p.add_argument(
                 "--verdict",
@@ -2890,7 +2971,11 @@ def main(argv: list[str] | None = None) -> int:
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
         if args.cmd == "wait":
-            print(wait(og, args.session, args.report.resolve(), args.timeout, args.verdict))
+            print(
+                wait(
+                    og, args.session, args.report.resolve(), args.timeout, args.verdict, pr=args.pr
+                )
+            )
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             archive_delivered(og, args.session)
@@ -2934,13 +3019,17 @@ def main(argv: list[str] | None = None) -> int:
                     pass
             send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
             # armed once the message is in the history, as start arms: before it, the report or
-            # question of the turn before reads as newer than the last instruction
-            arm_quietly(
-                registry, args.session, report, then=args.brief.resolve(), verdict=args.verdict
-            )
-            print(wait(og, args.session, report, args.timeout, args.verdict, since))
+            # question of the turn before reads as newer than the last instruction; never for
+            # --pr, as start skips it
+            if not args.pr:
+                arm_quietly(
+                    registry, args.session, report, then=args.brief.resolve(), verdict=args.verdict
+                )
+            print(wait(og, args.session, report, args.timeout, args.verdict, since, args.pr))
             arm_quietly(registry, args.session)
             return 0
+        if args.pr and args.top_level:
+            raise Fail("--pr is for a cloud worker; a top-level lead writes its own report")
         if args.cmd == "run" and args.top_level:
             raise Fail(
                 "run --top-level: a lead asks the owner in its own session, so there is no question"
@@ -2977,8 +3066,11 @@ def main(argv: list[str] | None = None) -> int:
             workspace=str(workspace),
             host_id=host,
             subscribe=not (registry and args.top_level),  # the supervisor follows it instead
+            pr=args.pr,
         )
-        if not remote or (registry and args.top_level):
+        # a supervisor reads the report file, which for --pr only wait writes: it would revive
+        # and nudge a cloud worker toward a host path it can't write
+        if (not remote or (registry and args.top_level)) and not args.pr:
             arm_quietly(
                 registry,
                 sid,
@@ -2990,7 +3082,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(sid, flush=True)
         if args.cmd == "run":
-            print(wait(og, sid, report, args.timeout, verifier, launched))
+            print(wait(og, sid, report, args.timeout, verifier, launched, args.pr))
             arm_quietly(registry, sid)
             archive_delivered(og, sid)
         if survivors:

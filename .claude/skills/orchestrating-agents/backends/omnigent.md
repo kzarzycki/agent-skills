@@ -81,6 +81,24 @@ agent's name starts that agent, found among the server's agents, then the caller
 message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to the aliases only
 (`--model` works for any). An unknown name fails before a session is created.
 
+**Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
+so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
+on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
+GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
+and end its turn with only the comment's URL. `wait` (and so `run`) with `--pr <n>` fetches
+the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
+report path, so whatever reads the report reads a file as for any child. A question goes in
+that report, since `<report>.question` is a path here too. Only a comment GitHub files on
+PR n of this checkout's repository (`gh repo view`, checked against the comment's
+`issue_url`) counts, since the link is only what the worker typed: another PR's or another
+repository's counts for nothing. The nudge asks for the comment, and a second turn ending
+without one fails. `send --pr <n>` reaches a worker still open (one whose turn ended without a report, since `run` and `wait` finish a worker once its report is in; a fix pass is a fresh `run --pr`, Follow-ups) and takes only a comment
+created after the report already there, so a turn that ends on the old comment's link, or on
+none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
+would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
+with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
+the repo, since the VM has the checkout but not this host's paths.
+
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
 is given, so a reviewer of the author's family is always a deliberate choice. Whether a
