@@ -244,7 +244,6 @@ CONDITION = re.compile(
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
 FLAGGED = f"`{RISK_LABEL}` added by the gate"
-VERIFIER = re.compile(r"\bverifier\b", re.IGNORECASE)
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 # loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
@@ -425,6 +424,12 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
     return None if unread else False
 
 
+def has_verifier(condition: str) -> bool:
+    """Whether a rule's condition has the `verifier` term: CONDITION's own match, so the word inside a path or a
+    label's name is no term."""
+    return any(found.group(7) for found in CONDITION.finditer(condition))
+
+
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     """Whether the PR needs no verifier review: its author is a bot a loop.md `bot: <login> <condition>` line names,
     and every file it changes matches that line's condition on its path alone (lock and manifest files). GitHub's
@@ -486,7 +491,7 @@ def ruled(
             return f"it matches a risk rule ({condition})"
         if hit is None:
             return f"a risk rule the gate can't judge holds until a person does ({condition})"
-        if judged and VERIFIER.search(condition):
+        if judged and has_verifier(condition):
             return f"it matches a risk rule ({condition}): {judged}"
     return None
 
@@ -526,7 +531,7 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         labels = names(pull).union(*(names(issue) for issue in issues))
         if why := ruled(labels, paths(pull), loop, judged(pull)):
             return why
-    elif any(VERIFIER.search(condition) for condition in risk_rules(loop)):
+    elif any(has_verifier(condition) for condition in risk_rules(loop)):
         # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
         if why := judged(pull):
             return f"it matches a risk rule's `verifier` term: {why}"

@@ -4055,6 +4055,21 @@ def test_a_path_term_holds_whatever_the_verifier_says() -> None:
     assert merge({**pr, "files": {"nodes": [{"path": "app.py"}]}}, issues, loop) == []
 
 
+@pytest.mark.parametrize("spec", ["", "- spec: auto\n"], ids=["merge", "spec-auto"])
+@pytest.mark.parametrize(
+    "condition", ["path docs/verifier.md", "path `verifier/**`", "component verifier"]
+)
+def test_the_word_verifier_in_a_path_or_label_is_no_verifier_term(
+    spec: str, condition: str
+) -> None:
+    """A rule without the `verifier` term holds as it did before it: the verifier's `Risk:` line, high or missing,
+    holds nothing."""
+    loop = f"## Approvals\n\n{spec}- risk: {condition}\n"
+    issues = [approved(1, "area:web", "kind:enhancement")]
+    for review in (judging("high — a gate changed"), judging(None)):
+        assert approvals.risk(pull(reviews=(review,), files=("app.py",)), issues, loop) is None
+
+
 def test_under_spec_auto_the_verifier_term_holds_the_merge_not_the_spec(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
