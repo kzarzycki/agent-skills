@@ -5,7 +5,8 @@ request itself when it has none), each on its own branch in a worktree of your o
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
 design, wireframes included for a UI, and delegate the rest.
 
-1. **Intent.** File a request from the owner in their words, with its category and
+1. **Intent.** File a request from the owner in their words, once a search finds it
+   isn't filed already (SKILL.md, One concern per PR), with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
    given by its state ([issues.md](issues.md)): `needs-owner` waits until the owner
    answers what it asks, or approves (the `approved:<point>` label, their word in the
@@ -59,8 +60,9 @@ design, wireframes included for a UI, and delegate the rest.
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
-   proof) with the branch's first push (github.md, Review trail; board:
-   `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
+   proof) with the branch's first push, made when you cut it (an empty commit when nothing
+   is written yet), since the open PR is the claim another lead's search finds
+   (github.md, Review trail; board: `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and

@@ -349,9 +349,16 @@ or the owner's private network.
   it restarts the PR's review and CI and couples two concerns; chains of follow-up PRs come
   from PRs landing slower than they are produced, and fast landing makes the wait cheap.
   Never push to a PR someone else owns, since that rewrites work under its owner: comment
-  on it, or wait for it to land and start from main. Before starting a fix, look for one
-  in flight on the board's `Build` column and in open PRs: use it, and don't pause other
-  work waiting for it.
+  on it, or wait for it to land and start from main. Before filing an issue or starting a
+  fix, search the open issues and PRs of this repo, and of the repo that owns the cause,
+  for the symptom (the test id, the error line, the file), since the board's `Build`
+  column misses an issue filed an hour ago and agents sharing one account share an
+  assignee: comment your evidence on what you find, use it, and don't pause other work
+  waiting for it; whoever filed first owns it. An issue an open PR links is taken, so
+  the lead opens its draft PR when it cuts the branch (lead.md step 3). A PR another lead
+  opened is taken over only on the word of that lead or of whoever started the leads,
+  recorded in the PR thread so other leads see the new owner, never because it looks
+  idle, since an idle PR may be waiting on CI or on an answer its lead still owns.
 - **Stacks are one deep.** Stacking on an unmerged branch is the exception for when
   waiting isn't possible, and only on a PR already in Land (verdict triaged, waiting for
   CI), because a base still in review changes under its stack and every change cascades.
