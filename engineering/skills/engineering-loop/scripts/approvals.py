@@ -1939,6 +1939,14 @@ def landing(
         raise Refused(f"{where} is closed: nothing to land")
     auto = pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]
     if merging and not auto:
+        # GitHub takes a PR out of the queue a moment before it reports the merge: read it once more first
+        time.sleep(POLL)
+        pull = pull_request(pr)
+        if pull["state"] == "MERGED":
+            print(f"{where} is merged")
+            return 0, None
+        auto = pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]
+    if merging and not auto:
         raise Refused(
             f"{where}: auto-merge was turned off, or the PR left the merge queue, without a merge"
         )

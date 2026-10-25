@@ -95,7 +95,11 @@ design, wireframes included for a UI, and delegate the rest.
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
-7. **Verify** (board: `Verify`). Commit and push, then start the verifier on that pushed
+7. **Verify** (board: `Verify`). Commit and push. Before each pass, rerun on the head every
+   proof the spec's acceptance needs whose log names another commit, since the verifier
+   counts it as missing and the pass is spent on it:
+   `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
+   prints the ones to rerun. Then start the verifier on that pushed
    head (SKILL.md, Independent verification) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
@@ -160,7 +164,7 @@ design, wireframes included for a UI, and delegate the rest.
      checkout instead, so run it where the signing key is (`approvals.py`'s docstring).
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
-     merge queue, without a merge is exit 1. Exit 3 is what CI won't clear, once no required check is still pending: a red
+     merge queue, without a merge (still so on a second reading one poll later, since GitHub takes a PR out of the queue a moment before it reports the merge) is exit 1. Exit 3 is what CI won't clear, once no required check is still pending: a red
      check, the owner's label, `ci: false` without a `local-ci` record, a repository without
      auto-merge or a base with no required checks whose CI has finished, or 2 hours of waiting;
      run it again once that clears. When every proof holds and only `loop:approvals` is red

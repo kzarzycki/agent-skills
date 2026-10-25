@@ -109,7 +109,9 @@ starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1
 child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
-brief with an empty backtick span (a name an unquoted heredoc ran). The server is ``--server``, else the session's ``$RUNNER_SERVER_URL``, else the one login; the host comes
+brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
+file or the text itself: one naming no file is the text when it holds whitespace, else exit 2;
+``send`` given text keeps it in ``<report>.followup`` for its registry line. The server is ``--server``, else the session's ``$RUNNER_SERVER_URL``, else the one login; the host comes
 from ``~/.omnigent/config.yaml``; the bearer token from Omnigent's
 own ``cli_auth`` (run in the omnigent tool venv), which refreshes and persists it. Stdlib only.
 """
@@ -118,6 +120,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import errno
 import fcntl
 import http.client
 import json
@@ -2707,6 +2710,26 @@ def reason(e: Exception) -> str:
     return str(e) if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
 
 
+def text_or_file(arg: str) -> tuple[str, Path | None]:
+    """A brief or message argument: the file it names, read, and that file; else the text itself
+    and None, when it reads as text (it holds whitespace, or is too long for a file name). One word
+    naming no file is a usage error (exit 2), since it is most likely a mistyped path."""
+    try:
+        return Path(arg).read_text(), Path(arg)
+    except OSError as e:
+        if e.errno == errno.ENAMETOOLONG or (
+            isinstance(e, FileNotFoundError) and re.search(r"\s", arg)
+        ):
+            return arg, None
+        error = Fail(
+            f"{arg}: no such file; pass a file or the text itself"
+            if isinstance(e, FileNotFoundError)
+            else f"{arg}: {reason(e)}"
+        )
+        error.code = 2 if isinstance(e, FileNotFoundError) else 1
+        raise error from e
+
+
 def archive_delivered(og: Omnigent, sid: str) -> None:
     """Finish a session whose report or verdict came back (``Omnigent.archive``): its agent process
     frees the runner's file descriptors. A failed finish is reported, not fatal."""
@@ -2738,7 +2761,7 @@ def main(argv: list[str] | None = None) -> int:
             "agent", help="claude, codex, or the name of any registered agent (your own included)"
         )
         p.add_argument("title")
-        p.add_argument("brief", type=Path, help="file with the task specifics")
+        p.add_argument("brief", help="the task specifics: a file, or the text itself")
         p.add_argument("report", type=Path)
         p.add_argument("--role", help="worker/verifier role file the child reads first")
         p.add_argument("--confirm-seconds", type=float, default=60.0)
@@ -2783,15 +2806,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     p = sub.add_parser("send")
     p.add_argument("session")
-    p.add_argument("brief", type=Path, help="file with the answer or follow-up")
+    p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser("relay")
     p.add_argument("session")
-    p.add_argument("message", type=Path, help="file with the message; it owes no report")
+    p.add_argument("message", help="the message, a file or the text itself; it owes no report")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
-    p.add_argument("message", type=Path, help="file with the message; it owes no report")
+    p.add_argument("message", help="the message, a file or the text itself; it owes no report")
     p.add_argument(
         "--registry",
         type=Path,
@@ -2920,10 +2943,10 @@ def main(argv: list[str] | None = None) -> int:
             print(og.read_file(sid, args.path))
             return 0
         if args.cmd == "relay":
-            print(relay(og, args.session, args.message.read_text(), args.confirm_seconds))
+            print(relay(og, args.session, text_or_file(args.message)[0], args.confirm_seconds))
             return 0
         if args.cmd == "broadcast":
-            text = args.message.read_text()
+            text = text_or_file(args.message)[0]
             targets, unsent = broadcast_targets(
                 og, registry, args.active_hours, args.include, args.project, args.host, args.exclude
             )
@@ -3017,13 +3040,17 @@ def main(argv: list[str] | None = None) -> int:
                     break
                 except FileNotFoundError:
                     pass
-            send(og, args.session, args.brief.read_text(), report, args.confirm_seconds)
+            text, then = text_or_file(args.brief)
+            if then is None:  # the registry lists a file, for the revive line to name
+                then = report.with_name(report.name + ".followup")
+                then.write_text(text)
+            send(og, args.session, text, report, args.confirm_seconds)
             # armed once the message is in the history, as start arms: before it, the report or
             # question of the turn before reads as newer than the last instruction; never for
             # --pr, as start skips it
             if not args.pr:
                 arm_quietly(
-                    registry, args.session, report, then=args.brief.resolve(), verdict=args.verdict
+                    registry, args.session, report, then=then.resolve(), verdict=args.verdict
                 )
             print(wait(og, args.session, report, args.timeout, args.verdict, since, args.pr))
             arm_quietly(registry, args.session)
@@ -3035,7 +3062,7 @@ def main(argv: list[str] | None = None) -> int:
                 "run --top-level: a lead asks the owner in its own session, so there is no question"
                 " for run to return; use start --top-level, then watch <session>"
             )
-        brief = args.brief.read_text()
+        brief = text_or_file(args.brief)[0]
         verifier = bool(args.role and "verifier" in args.role)
         if args.author == args.agent and verifier and not args.same_family:
             raise Fail(
