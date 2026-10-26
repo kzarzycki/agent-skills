@@ -567,6 +567,26 @@ class Omnigent:
             )
         return matches[0] if matches else None
 
+    def home(self, name: str) -> dict | None:
+        """The project a new session files under: ``OMNIGENT_PROJECT``'s, else the calling
+        session's (its own, then its primary's), else the one matching ``name``. A scheduled run
+        is filed in its task's project, and its repo's name need not match that project's."""
+        if os.environ.get("OMNIGENT_PROJECT"):
+            return self.project(name)
+        for sid in dict.fromkeys(filter(None, (own_id(), parent_id()))):
+            try:
+                pid = self.info(sid).get("project_id")
+            except Fail:  # a stale or unreadable caller only loses its project, not the spawn
+                continue
+            if pid:
+                projects = self.call("GET", "/v1/projects")
+                projects = (
+                    projects.get("data", projects) if isinstance(projects, dict) else projects
+                )
+                if found := [p for p in projects if str(p.get("id")) == str(pid)]:
+                    return found[0]
+        return self.project(name)
+
     def create(
         self,
         agent: str,
@@ -584,8 +604,8 @@ class Omnigent:
             "host_id": host_id or self.host_id,
             "workspace": workspace or os.getcwd(),
         }
-        # Filed under the repo's project, when one exists, so spawned sessions don't crowd the top level.
-        if project := self.project(name := project_name()):
+        # Filed under a project, when one is found, so spawned sessions don't crowd the top level.
+        if project := self.home(name := project_name()):
             body["project_id"] = str(project["id"])
         # A sub-agent of the runner's primary session (the lead, also when a child runs
         # this): hidden from the owner's sidebar and unread badge, and gone with it. Top level
@@ -736,7 +756,7 @@ class Omnigent:
         project does not exist, as ``create`` files them)."""
         if top_level:
             # the list filters by the project's exact name; "" is the unfiled sessions
-            project = quote((self.project(project_name()) or {}).get("name", ""))
+            project = quote((self.home(project_name()) or {}).get("name", ""))
             path = f"/v1/sessions?kind=default&project={project}&limit=100"
         elif parent := parent_id():
             path = f"/v1/sessions/{parent}/child_sessions?limit=100"
