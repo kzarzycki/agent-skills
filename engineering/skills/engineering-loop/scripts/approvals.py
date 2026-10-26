@@ -40,7 +40,8 @@ pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit 
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check `land` reads (below) to be green on the head, less the `loop:approvals`
-status it posts and the job it runs in, which would make it wait on itself (with
+status it posts and the job it runs in, which would make it wait on itself: the approvals job passes its own check
+run as `APPROVALS_CHECK_RUN_ID: ${{ job.check_run_id }}`, and in Actions without it `check merge` holds (with
 `ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
@@ -228,7 +229,7 @@ PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSI
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ databaseId workflow {{ name }} }} }} }}
+    __typename ... on CheckRun {{ databaseId name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -261,6 +262,8 @@ GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
 # the commit status the project's approvals workflow posts; its target is the Actions run that posted it
 APPROVALS = "loop:approvals"
+# the approvals job's own check run, `${{ job.check_run_id }}`: check merge skips it, see head_checks
+CHECK_RUN = "APPROVALS_CHECK_RUN_ID"
 RUN = re.compile(r"/actions/runs/(\d+)")
 # land --wait: seconds between reads of the PR, and how long it waits in all before it exits 3
 POLL, CEILING = 30, 2 * 60 * 60
@@ -1305,6 +1308,14 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     # land's checks, so the two never disagree on one head; a base requiring only the status requires nothing more
     elif (base := required_checks(pull["baseRefName"])) == {APPROVALS}:
         found = []
+    # in Actions without the id it can't tell its own job from a sibling still running: skipping either breaks a rule
+    elif os.environ.get("GITHUB_RUN_ID") and not os.environ.get(CHECK_RUN):
+        found = [
+            (
+                f"{where}: check merge runs in Actions without {CHECK_RUN}, so it can't tell its own job from "
+                f"another; set `{CHECK_RUN}: ${{{{ job.check_run_id }}}}` in the approvals job's env"
+            )
+        ]
     else:
         found = ci(where, pull, base - {APPROVALS}, posting=True)
     return found
@@ -1491,8 +1502,10 @@ def head_checks(
     the aggregate `check`; empty: every check); how many checks GitHub returned when it holds more than that one
     page, else None; and the names whose only run is a draft's skip, which the ready PR's CI has not reached yet.
     `posting` (check merge) skips the `loop:approvals` status and the job it runs in, since the approvals workflow
-    posts the one from inside the other: reading either, it would wait on itself. Every other check counts, its own
-    workflow's completed jobs too."""
+    posts the one from inside the other: reading either, it would wait on itself. The job is the check run whose id
+    the workflow passes in CHECK_RUN; every other check counts, its own workflow's other jobs too, running or not.
+    In Actions without the id, ran() holds instead: skipping every running job of its workflow run would pass over a
+    sibling still validating the head, and skipping none would wait on itself, so only the id keeps both rules."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
     every = contexts["contexts"]["nodes"] if contexts else []
@@ -1502,14 +1515,10 @@ def head_checks(
         else None
     )
     wanted = {"check"} if required is None else required
-    # ponytail: the job this runs in is the one of its workflow run (GITHUB_RUN_ID) still running, so a sibling job
-    # of that run running alongside it is skipped too; have the approvals job need it, or match the check run's
-    # databaseId against `job.check_run_id` passed in by the workflow if a project runs one in parallel.
-    own = os.environ.get("GITHUB_RUN_ID") if posting else None
+    own = os.environ.get(CHECK_RUN) if posting else None
 
     def itself(node: dict[str, Any]) -> bool:
-        run = (node.get("checkSuite") or {}).get("workflowRun") or {}
-        return bool(own) and str(run.get("databaseId")) == own and node.get("status") != "COMPLETED"
+        return bool(own) and str(node.get("databaseId")) == own
 
     # CI skips a draft, and GitHub counts the skipped run as passing: one completed before the newest ready-for-review
     # is the draft's and says nothing about the ready PR. A run that completed on the draft is the head's result.

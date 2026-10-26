@@ -169,7 +169,8 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals`
   workflow, which turns `mise run loop:approvals merge`'s exit into the `loop:approvals`
   commit status on the head (0 success, 1 failure, 3 pending, since a job's own result can't
-  hold a merge as pending), runs again when CI completes, posts success on a merge-queue
+  hold a merge as pending), passes its job's `APPROVALS_CHECK_RUN_ID: ${{ job.check_run_id }}`
+  so the check skips that job and no other (without it, in Actions, the check holds), runs again when CI completes, posts success on a merge-queue
   commit, and removes `approved:merge` on a push;
 - `.github/check-paths.yml`: each part's path filter;
 - the test runner's retry of a failed test, once (Rules for every role, Flaky tests);
