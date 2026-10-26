@@ -77,8 +77,13 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
-(`scope=user`). Several agents can share a name, so a name two of them hold fails, listing
-their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
+(`scope=user`). Several agents can share a name, since each upload of one spec registers another
+agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
+identity and bookkeeping (`id`, `version`, `created_at`, `updated_at`, `object`), the name starts the newest by `created_at`: copies of one spec can't be told
+apart, and an agent record has no host (`--host` picks that per session), so an id in project
+config would only be wrong on another server. Both are compared since each holds fields the other
+lacks: the record policies, skills and terminals, the config instructions and model. When they
+differ, the name fails, listing their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
 from a file as the aliases do; any other may run its tools on another machine, so its brief goes
 inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases only (`--model`
 works for any), and so does permission mode, except Antigravity: it asks for approval of every

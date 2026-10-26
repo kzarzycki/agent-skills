@@ -123,7 +123,8 @@ child always runs on its parent's runner. On a host other than this one ``--work
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
 writes here. A session on another host waits on no capacity here. ``AGENT`` is a registered
-agent's name or id; a name several agents hold fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
+agent's name or id; a name several agents hold starts the newest when their records and configs match
+apart from identity and bookkeeping (copies of one spec), else fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
 file or the text itself: one naming no file is the text when it holds whitespace, else exit 2;
 ``send`` given text keeps it in ``<report>.followup`` for its registry line. The server is ``--server``, else the session's ``$RUNNER_SERVER_URL``, else the one login; the host comes
@@ -157,6 +158,8 @@ from urllib.request import Request, urlopen
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
+# an agent record and config field that names or dates one agent, not what it does
+IDENTITY = ("id", "version", "created_at", "updated_at", "object")
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
 RUNNING = {"running", "launching", "queued", "starting"}
@@ -509,8 +512,12 @@ class Omnigent:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
-        Several agents can share a name, so a name two of them hold fails, listing their ids,
-        rather than pick by order."""
+        Each upload of one spec registers another agent under its name, and an agent record has
+        no host, so copies whose record and config (``GET /v1/agents/{id}/config``) match apart
+        from identity and bookkeeping (``IDENTITY``) can't be told
+        apart: the name resolves to the newest by ``created_at``. The record carries policies,
+        skills and terminals, the config instructions and model, so both are compared. Agents
+        that differ are refused, listing their ids, rather than picked by order."""
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
         for path in ("/v1/agents", "/v1/agents?scope=user"):
@@ -528,11 +535,19 @@ class Omnigent:
                 if not (isinstance(page, dict) and page.get("has_more") and last):
                     break
                 after = str(last)
-        if len(named) > 1:
-            raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
         if not named:
             raise Fail(f"agent {name} not registered")
-        return next(iter(named.values()))
+        if len(named) > 1:
+            specs = [
+                [
+                    {k: v for k, v in d.items() if k not in IDENTITY}
+                    for d in (a, self.call("GET", f"/v1/agents/{i}/config"))
+                ]
+                for i, a in named.items()
+            ]
+            if any(spec != specs[0] for spec in specs):
+                raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
+        return max(named.values(), key=lambda a: (a.get("created_at") or 0, str(a.get("id"))))
 
     def project(self, name: str) -> dict | None:
         """The project (a sidebar group) called ``name``, or None when there is none. Case, spaces
