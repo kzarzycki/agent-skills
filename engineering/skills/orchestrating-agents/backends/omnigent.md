@@ -85,7 +85,11 @@ message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to th
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
 on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
-and end its turn with only the comment's URL. `wait` (and so `run`) with `--pr <n>` fetches
+and end its turn with only the comment's URL. A cloud session (harness `acp:claude-cloud`)
+runs in the environment its workspace's untracked `.claude/settings.local.json` names in
+`remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` copy a
+worktree's missing pin from its main checkout (keeping the file's other settings) and refuse
+when neither has one. `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the

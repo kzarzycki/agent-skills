@@ -484,9 +484,15 @@ class Omnigent:
                 raise Fail(f"{method} {path}: {type(e).__name__}: {e}") from e
 
     def agent_id(self, name: str) -> str:
-        """The id of the registered agent called ``name`` (``claude`` and ``codex`` are aliases for
-        the native agents): the server's agents first, then the caller's own (``scope=user``, which
-        ``GET /v1/agents`` leaves out), following each list's pages until the name turns up."""
+        return str(self.agent(name)["id"])
+
+    def harness(self, name: str) -> str:
+        return str(self.agent(name).get("harness") or "")
+
+    def agent(self, name: str) -> dict:
+        """The record of the registered agent called ``name`` (``claude`` and ``codex`` are aliases
+        for the native agents): the server's agents first, then the caller's own (``scope=user``,
+        which ``GET /v1/agents`` leaves out), following each list's pages until the name turns up."""
         name = AGENTS.get(name, name)
         for path in ("/v1/agents", "/v1/agents?scope=user"):
             after = ""
@@ -496,7 +502,7 @@ class Omnigent:
                 agents = page.get("data", page) if isinstance(page, dict) else page
                 for a in agents:
                     if a.get("name") == name:
-                        return str(a["id"])
+                        return a
                 last = page.get("last_id") if isinstance(page, dict) else None
                 if not (isinstance(page, dict) and page.get("has_more") and last):
                     break
@@ -1139,6 +1145,55 @@ def capacity() -> tuple[bool, str]:
 def taken(e: Fail) -> bool:
     """Whether a create failed with 409: Omnigent refuses a title a sibling already holds."""
     return isinstance(e.__cause__, HTTPError) and e.__cause__.code == 409
+
+
+CLOUD_HARNESS = "acp:claude-cloud"
+SETTINGS = Path(".claude") / "settings.local.json"
+
+
+def pin_environment(workspace: Path) -> None:
+    """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
+    takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
+    worktree lacks, and without it lands in the account's default environment. A worktree missing
+    the pin takes its main checkout's; with neither, fail before any session exists."""
+
+    def settings(root: Path) -> dict:
+        try:
+            data = json.loads((root / SETTINGS).read_text())
+        except FileNotFoundError:
+            return {}
+        except ValueError as e:
+            raise Fail(f"{root / SETTINGS} is not JSON: {e}") from e
+        return data if isinstance(data, dict) else {}
+
+    def pin(data: dict) -> str:
+        remote = data.get("remote")
+        return str(remote.get("defaultEnvironmentId") or "") if isinstance(remote, dict) else ""
+
+    own = settings(workspace)
+    if pin(own):
+        return
+    dirs = subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute"]
+        + ["--git-dir", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        check=False,  # no checkout: no main to copy from
+    ).stdout.splitlines()
+    main = Path(dirs[1]).parent if len(dirs) == 2 and dirs[0] != dirs[1] else None
+    if main and (env := pin(settings(main))):
+        remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
+        own["remote"] = {**remote, "defaultEnvironmentId": env}
+        (workspace / SETTINGS).parent.mkdir(exist_ok=True)
+        (workspace / SETTINGS).write_text(json.dumps(own, indent=2) + "\n")
+        print(f"pinned {workspace / SETTINGS} to {main}'s environment {env}", file=sys.stderr)
+        return
+    raise Fail(
+        f"{workspace / SETTINGS} names no remote.defaultEnvironmentId"
+        + (f", nor does {main / SETTINGS}" if main else "")
+        + ": the cloud session would land in the account's default environment; pin the"
+        ' environment there ({"remote": {"defaultEnvironmentId": "<id>"}})'
+    )
 
 
 def start(
@@ -3400,6 +3455,9 @@ def main(argv: list[str] | None = None) -> int:
         # The file's own mtime, never the clock: the kernel stamps files from a coarse clock that
         # lags time.time_ns() by up to a tick, so a report written that soon would read as older.
         launched = report.stat().st_mtime_ns if not remote and report.exists() else None
+        # The aliases are native harnesses; a workspace on another host is that host's to check.
+        if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
+            pin_environment(workspace)
         if not remote:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # A followed lead's own top-level helper (an install or a salvage on another host) is

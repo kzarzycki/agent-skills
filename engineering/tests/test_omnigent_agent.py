@@ -53,6 +53,10 @@ class FakeOmnigent:
         self.subscriptions: list[tuple[str, str]] = []
         self.resolved: list[tuple[str, str, str, dict | None]] = []
         self.host_id = "h"  # this host
+        self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
+
+    def harness(self, agent: str) -> str:
+        return self.harnesses.get(agent, "")
 
     def create(
         self,
@@ -1600,6 +1604,95 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     for nudge in (omnigent_agent.NUDGE, omnigent_agent.PR_NUDGE):
         assert "detached" in nudge and "foreground" not in nudge
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
+
+
+def checkout_with_worktree(tmp_path: Path, pin: dict | None) -> tuple[Path, Path]:
+    """A main checkout, with ``pin`` as its settings.local.json when given, and a worktree of it."""
+    main, tree = (
+        tmp_path / "main checkout",
+        tmp_path / "the tree",
+    )  # spaces: paths split on lines only
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(main)]
+    subprocess.run(["git", "init", "-q", str(main)], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "i"], check=True)
+    subprocess.run([*git, "worktree", "add", "-q", "-b", "w", str(tree)], check=True)
+    if pin is not None:
+        (main / ".claude").mkdir()
+        (main / ".claude" / "settings.local.json").write_text(json.dumps(pin))
+    return main, tree
+
+
+def start_cloud(
+    og: FakeOmnigent, workspace: Path, agent: str = "claude-cloud", title: str = "t"
+) -> int:
+    (workspace / "b.md").write_text("do X")
+    argv = ["start", agent, title, "b.md", f"tmp/{title}.md", "--confirm-seconds", "0"]
+    return omnigent_agent.main([*argv, "--workspace", str(workspace)])
+
+
+def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    _, tree = checkout_with_worktree(tmp_path, {"remote": {"defaultEnvironmentId": "env_a"}})
+    monkeypatch.chdir(tree)
+    assert start_cloud(og, tree) == 0
+    settings = tree / ".claude" / "settings.local.json"
+    assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_a"}}
+    assert "env_a" in capsys.readouterr().err and len(og.sessions) == 1
+    # a worktree already pinned keeps its own pin
+    settings.write_text(json.dumps({"remote": {"defaultEnvironmentId": "env_b"}}))
+    assert start_cloud(og, tree, title="t2") == 0
+    assert json.loads(settings.read_text()) == {"remote": {"defaultEnvironmentId": "env_b"}}
+
+
+def test_a_worktree_s_other_settings_stay_when_it_gains_the_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    _, tree = checkout_with_worktree(tmp_path, {"remote": {"defaultEnvironmentId": "env_a"}})
+    (tree / ".claude").mkdir()
+    settings = tree / ".claude" / "settings.local.json"
+    settings.write_text(json.dumps({"permissions": {"allow": ["Bash(ls)"]}, "remote": {"x": 1}}))
+    monkeypatch.chdir(tree)
+    assert start_cloud(og, tree) == 0
+    assert json.loads(settings.read_text()) == {
+        "permissions": {"allow": ["Bash(ls)"]},
+        "remote": {"x": 1, "defaultEnvironmentId": "env_a"},
+    }
+
+
+def test_a_cloud_start_with_no_environment_pin_is_refused_before_a_session_exists(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    main, tree = checkout_with_worktree(tmp_path, None)
+    for workspace in (tree, main):  # a worktree, then a checkout that is no worktree
+        monkeypatch.chdir(workspace)
+        assert start_cloud(og, workspace) == 1
+        err = capsys.readouterr().err
+        assert "default environment" in err and "defaultEnvironmentId" in err
+        assert not (workspace / ".claude" / "settings.local.json").exists()
+    assert og.sessions == {}
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_a_native_start_needs_no_environment_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: str
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    _, tree = checkout_with_worktree(tmp_path, {"remote": {"defaultEnvironmentId": "env_a"}})
+    monkeypatch.chdir(tree)
+    assert start_cloud(og, tree, agent) == 0
+    assert not (tree / ".claude").exists() and len(og.sessions) == 1
 
 
 @pytest.mark.parametrize(
