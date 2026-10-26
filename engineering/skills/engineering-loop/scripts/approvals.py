@@ -6,6 +6,8 @@
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    uv run scripts/approvals.py check queue <pr> --head <sha>  # may that head enter a batching merge queue; exit 0 or 1
+    uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # the queue's proof
     uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
@@ -93,6 +95,24 @@ check that reads them may run a different tier under each. When the record for t
 same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
 check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
+A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
+full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
+when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
+gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
+with CI, the aggregate `check` passed, and the change is not high risk and has no `approved:merge`, since the
+owner's label covers one head landing alone: such a PR lands through `land`. After its gate the queue posts `batch` on
+each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
+exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
+head with no such pass under the current env. `check merge` takes that comment in place of the CI wait (either kind)
+once it holds: the exit is 0, the head has its own green `local-ci --record` pass under the current env and the env
+the comment names, since a batch gate never stands in for the head's, the merge commit's second parent is the head
+(the head landed unchanged), its tree is what
+`git merge-tree` makes of its parents (the queue resolved no conflict and added nothing), and the batch commit
+contains it; a commit the checkout lacks is fetched from `origin` first. Only a comment by the account running this
+or a writer counts, since anyone can comment on a public repo. A red, unproven or missing batch leaves the wait
+exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
+the same head like any other. The proof is the verifier's
+verdict and gate on the PR's own head plus the full gate on the batch that merged it.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -166,6 +186,7 @@ import argparse
 import contextlib
 import fnmatch
 import io
+import itertools
 import json
 import os
 import re
@@ -210,7 +231,7 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
-NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
+NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
@@ -253,6 +274,9 @@ FLAGGED = f"`{RISK_LABEL}` added by the gate"
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
+# the first line of a merge queue's batch proof (batch), which queued() reads, and how much of the gate's log it shows
+BATCHED = "Merge queue batch"
+LOG_TAIL = 30
 CHANGED = {
     "spec": "The spec changed after the last approval, so it was checked again.\n",
     "plan": "The plan changed after the last approval, so it was checked again.\n",
@@ -1305,6 +1329,8 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
     `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
+    if queued(pull) is None:
+        return []
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
         if any(
@@ -1319,6 +1345,140 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     else:
         found = ci(where, pull, required)
     return found
+
+
+def queued(pull: dict[str, Any]) -> list[str] | None:
+    """None when a merge queue's batch proof (batch) on the head, by the account running this or a writer, holds
+    (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
+    ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
+    where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
+    me: list[str | None] = []  # viewer(), asked once and only when a batch proof is found
+    for note in notes(pull):
+        lines = note["body"].strip().splitlines()
+        if not lines or lines[0].strip() != BATCHED:
+            continue
+        header = itertools.takewhile(
+            str.strip, lines[1:]
+        )  # the log's tail after the blank line names no field
+        fields = {
+            key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
+        }
+        if fields.get("Head", "").lower() != head:
+            continue
+        login = (note.get("author") or {}).get("login")
+        if not me:
+            me.append(viewer())
+        if login is None or (login != me[0] and not writer(login)):
+            continue
+        if (why := unproven(head, fields)) is None:
+            return None
+        found.append(f"{where}: {why}")
+    return found
+
+
+def unproven(head: str, fields: dict[str, str]) -> str | None:
+    """Why a batch proof's fields prove nothing about `head`, or None: its gate exited 0, the head has its own green
+    local-ci pass under this environment, the one the proof names, since a batch gate never stands in for the head's,
+    its merge commit's second parent is the head, so the head landed unchanged, its tree is the clean merge of its
+    parents, so the queue resolved no conflict and added nothing, and the batch commit contains it."""
+    merge, batch, code = (fields.get(key, "").lower() for key in ("Merge", "Batch", "Exit"))
+    if code != "0":
+        return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
+    if (record := reusable(head)) is None:
+        return f"the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
+    if (env := env_line(record["env"])[len("Env: ") :].strip()) != fields.get("Env"):
+        return (
+            f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
+        )
+    for kind, sha in (("merge", merge), ("batch", batch)):
+        if not fetched(sha):
+            return f"{kind} {sha} is not a commit origin has"
+    parents = git("rev-list", "--parents", "-n", "1", merge).split()[1:]
+    if len(parents) != 2 or parents[1] != head:
+        return f"merge {merge} does not merge the head {head} as its second parent"
+    clean = subprocess.run(
+        ["git", "merge-tree", "--write-tree", *parents], capture_output=True, text=True, check=False
+    )
+    if clean.returncode or clean.stdout.split()[:1] != [
+        git("rev-parse", f"{merge}^{{tree}}").strip()
+    ]:
+        return f"merge {merge} is not the clean merge of its parents: the queue resolved or added something"
+    if subprocess.run(["git", "merge-base", "--is-ancestor", merge, batch], check=False).returncode:
+        return f"batch {batch} does not contain merge {merge}"
+    return None
+
+
+def fetched(sha: str) -> bool:
+    """Whether `sha` names a commit here, fetching `origin` once when it doesn't yet."""
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        return False
+    have = ["git", "cat-file", "-e", f"{sha}^{{commit}}"]
+    if subprocess.run(have, capture_output=True, check=False).returncode == 0:
+        return True
+    subprocess.run(["git", "fetch", "--quiet", "origin"], capture_output=True, check=False)
+    return subprocess.run(have, capture_output=True, check=False).returncode == 0
+
+
+def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | None) -> int:
+    """check queue: exit 0 when `head` may enter a batching merge queue, else one line per reason and exit 1."""
+    where, found = f"PR #{pull['number']}", []
+    if pull["state"] != "OPEN":
+        found.append(f"{where} is {pull['state'].lower()}: nothing to queue")
+    if pull["headRefOid"].lower() != head.lower():
+        found.append(
+            f"{where}'s head is {pull['headRefOid']}, not {head}: queue the head the verifier reviewed"
+        )
+    if why := outside(pull, loop):
+        found.append(why)
+    missing, issues = gated("merge", pull, tracker, loop)
+    found += missing
+    if not no_ci(loop):
+        found += ran(pull, loop)
+    if reusable(head) is None:  # with CI too: batch refuses a head without one, so it may not enter
+        found.append(
+            f"{where}: no `local-ci --record` pass on {head} under this environment (approvals.py local-ci --record)"
+        )
+    if why := risk(pull, issues, loop):
+        found.append(f"{where} is high risk ({why}): it lands alone through `land`")
+    if MERGE_LABEL in names(pull):
+        found.append(
+            f"{where} has the owner's `{MERGE_LABEL}`, which covers its head alone: it lands through `land`"
+        )
+    for line in found:
+        print(line)
+    if found:
+        return 1
+    print(f"{where} may enter a merge queue at {head}")
+    return 0
+
+
+def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
+    """Post a merge queue's batch proof on PR `pr`, which queued() reads: the head (the merge's second parent), the
+    merge, the batch, the gate's exit, the head's own local-ci pass and its env, the log, and the log's last LOG_TAIL
+    lines. Refused for a head with no green pass of its own under this environment."""
+    if not fetched(merge.lower()):
+        raise Refused(f"merge {merge} is not a commit here or on origin")
+    head = git("rev-parse", f"{merge}^2").strip()
+    if (record := reusable(head)) is None:
+        raise Refused(
+            f"the head {head} has no green `local-ci --record` pass of its own under this environment: no batch proof without it"
+        )
+    try:
+        tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
+    except OSError:
+        tail = []
+    body = (
+        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n{env_line(record['env'])}"
+        f"Gated: {record['time']} on {record['host']}\nLog: {log}\n"
+    )
+    if tail:
+        body += (
+            "\n<details><summary>The gate's last lines</summary>\n\n````\n"
+            + "\n".join(tail)
+            + "\n````\n</details>\n"
+        )
+    comment(pr, body)
+    return 0
 
 
 def owner_waits(
@@ -1894,12 +2054,14 @@ def gated(
     return found + proofs(point, pull, issues, loop, revert), issues
 
 
-def check(point: str, pr: int | None) -> int:
+def check(point: str, pr: int | None, head: str | None = None) -> int:
     tracker, loop = project()
     if pr is None and (pr := current_pr()) is None:
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
+    if point == "queue" and head is not None:
+        return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
         print(why)
         return 0
@@ -2428,8 +2590,15 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge"))
+    checking.add_argument("point", choices=("build", "merge", "queue"))
     checking.add_argument("pr", type=int, nargs="?")
+    checking.add_argument("--head")
+    batching = commands.add_parser("batch")
+    batching.add_argument("pr", type=int)
+    batching.add_argument("--merge", required=True)
+    batching.add_argument("--batch", required=True)
+    batching.add_argument("--exit", type=int, required=True)
+    batching.add_argument("--log", type=Path, required=True)
     approving = commands.add_parser("approve")
     approving.add_argument("point", choices=POINTS)
     approving.add_argument("number", type=int)
@@ -2454,7 +2623,15 @@ def main(argv: list[str]) -> int:
             return report_check(args.report)
         one_repo()
         if args.command == "check":
-            return check(args.point, args.pr)
+            if args.point == "queue" and (args.pr is None or args.head is None):
+                raise Refused(
+                    "check queue takes a PR number and --head <sha>, the head the queue would merge"
+                )
+            if args.point != "queue" and args.head is not None:
+                raise Refused("--head goes with check queue only")
+            return check(args.point, args.pr, args.head)
+        if args.command == "batch":
+            return batch(args.pr, args.merge, args.batch, args.exit, args.log)
         if args.command == "approve":
             return approve(args.point, args.number)
         if args.command == "local-ci":
