@@ -1031,7 +1031,7 @@ def broadcast(
 
 
 def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], bool]:
-    """Resolve each pending approval prompt of ``sid``, never a question (``relay`` answers those):
+    """Resolve each pending approval prompt of ``sid``, never a question (``relay --answer`` answers those):
     a line per prompt, and whether a resolve failed. Fail when none is pending."""
     info, lines, failed = og.info(sid), [], False
     for e, what in zip(info.get("pending_elicitations") or [], prompts_of(info)):
@@ -2040,7 +2040,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if event.get("question"):
             if event.get("direct"):
                 return "rule", "record", "the owner drives it directly: they answer its question"
-            return "rule", "act", "a question: the chief of staff answers it with one relay"
+            return "rule", "act", "a question: the chief of staff answers it with one relay --answer"
         return "rule", "owner", "an approval prompt: only the owner approves"
     if kind == "failed":
         if event.get("revived"):
@@ -2331,7 +2331,7 @@ def supervise_registry(
         for intent in intents:
             sid, action, text = intent["session"], intent["action"], intent["text"]
             try:
-                if prompts_of(og.info(sid)):  # relay would give the text as a question's answer
+                if prompts_of(og.info(sid)):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
                 relay(og, sid, text, ACTION_SECONDS)
             except Queued:

@@ -399,7 +399,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
 | `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
-| a question | rule | act, for one `relay` |
+| a question | rule | act, for one `relay --answer` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
 
 The small model only routes, since its input holds a lead's own words: one `claude -p --model
@@ -419,7 +419,7 @@ on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through 
 revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
 budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
-`relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
+it would wait unread behind the prompt, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there, no older than
 the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
 it done,
