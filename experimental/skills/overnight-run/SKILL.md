@@ -24,10 +24,12 @@ record their answer.
     PR, a gate's exit, a spec on its issue);
   - your recommendation, run or skip, with its reason.
 
-  The owner strikes or edits them. Silence, meaning no reply by the time your message
-  names, runs the recommended ones. The goals that run become the leads' briefs.
+  The owner strikes or edits them. Silence, meaning no reply by the reply-by time your
+  message names (yours to choose, the owner's to change), runs the recommended ones. The
+  goals that run become the leads' briefs. An approval the board already shows waiting (a
+  merge, a spec) is no goal: ask it in its own line, and unanswered it goes on Decide first.
 - **The rest of the frame.** Ask the owner to confirm:
-  - the end time;
+  - the end time, with its date and timezone;
   - the mandate: which kinds of decision they delegate to you for the night;
   - the hard boundaries: each project's own list. A project with none gets the question,
     not a list of yours.
