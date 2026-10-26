@@ -5186,6 +5186,58 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
 
 
+def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    og = FakeOmnigent()
+    og.harnesses["agy"] = "antigravity-native"
+    with pytest.raises(omnigent_agent.Fail, match="blocks unattended"):
+        omnigent_agent.start(og, "agy", "t", "x", tmp_path / "r.md", "verifier.md", 0)
+    with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
+        omnigent_agent.start(
+            og, "agy", "t", "x", tmp_path / "r.md", None, 0, permission_mode="plan"
+        )
+    omnigent_agent.start(
+        og,
+        "agy",
+        "t",
+        "x",
+        tmp_path / "r.md",
+        "verifier.md",
+        0,
+        permission_mode="bypassPermissions",
+    )
+    calls = _agent_server(
+        monkeypatch,
+        {
+            "/v1/agents": {"data": [{"name": "agy", "id": "a", "harness": "antigravity-native"}]},
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        },
+    )
+    omnigent_agent.Omnigent().create("agy", "t", permission_mode="bypassPermissions")
+    assert calls[-1][2]["terminal_launch_args"] == [
+        "--effort",
+        "low",
+        "--dangerously-skip-permissions",
+    ]
+    monkeypatch.setenv("OMNIGENT_EFFORT_ANTIGRAVITY", "high")
+    omnigent_agent.Omnigent().create("agy", "t")
+    assert calls[-1][2]["terminal_launch_args"] == ["--effort", "high"]
+
+
+def test_a_native_agent_outside_the_aliases_reads_its_brief_from_a_file(tmp_path: Path) -> None:
+    og = FakeOmnigent()
+    og.harnesses["antigravity-native-ui"] = "antigravity-native"
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "antigravity-native-ui", "t", "do X", report, None, 0)
+    sent = next(i for i in og.items(sid) if i["type"] == "message")["content"][0]["text"]
+    brief = omnigent_agent.brief_of(report)
+    assert sent == f"Work on t: read {brief} and do what it says."
+    assert brief.read_text().endswith("do X")
+
+
 def test_reloadable_takes_a_replaced_script_once_it_is_stable_and_compiles(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

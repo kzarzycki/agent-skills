@@ -77,9 +77,15 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name starts that agent, found among the server's agents, then the caller's own
-(`scope=user`). Its tools may run on another machine, so its brief goes inline in the first
-message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to the aliases only
-(`--model` works for any). An unknown name fails before a session is created.
+(`scope=user`). A native harness (`*-native`) runs in a pane on this host, so it reads its brief
+from a file as the aliases do; any other may run its tools on another machine, so its brief goes
+inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases only (`--model`
+works for any), and so does permission mode, except Antigravity: it asks for approval of every
+command, and its only other mode skips them all, so `start` refuses it a `--role` unless
+`--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
+`--dangerously-skip-permissions`. Antigravity runs at `--effort low` unless
+`OMNIGENT_EFFORT_ANTIGRAVITY` names another, since its default spends its quota fast. An unknown
+name fails before a session is created.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment

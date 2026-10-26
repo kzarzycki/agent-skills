@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -79,8 +80,33 @@ def _file_manifest(root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in root.rglob("*")
-        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+        if path.is_file() and "__pycache__" not in path.parent.parts and path.suffix != ".pyc"
     }
+
+
+def _no_bytecode(directory: str, names: list[str]) -> set[str]:
+    """Bytecode a local run left in the package; a `__pycache__` file, which stops it, is kept."""
+    return {
+        name
+        for name in names
+        if name.endswith(".pyc") or (name == "__pycache__" and Path(directory, name).is_dir())
+    }
+
+
+def test_every_scripts_folder_with_python_has_a_pycache_file() -> None:
+    """Without the file an importer writes bytecode there, which an installed skill's lock counts (#428)."""
+    folders = {
+        path.parent
+        for path in (PACKAGE / "skills").rglob("*.py")
+        if not {"test", "tests"} & set(path.parts)
+    }
+    assert folders
+    assert (
+        sorted(
+            f.relative_to(PACKAGE).as_posix() for f in folders if not (f / "__pycache__").is_file()
+        )
+        == []
+    )
 
 
 def test_file_manifest_leaves_out_python_bytecode(tmp_path: Path) -> None:
@@ -122,7 +148,7 @@ def _write_manifest(path: Path, dependency: dict[str, str]) -> None:
 def test_local_package_packs_and_installs_for_claude_and_codex(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
     package_copy = tmp_path / "engineering"
-    shutil.copytree(PACKAGE, package_copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(PACKAGE, package_copy, ignore=_no_bytecode)
 
     pack_dir = tmp_path / "packed"
     _run(["apm", "pack", "--output", str(pack_dir)], cwd=package_copy, env=env)
@@ -155,7 +181,7 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
     shutil.copytree(
         PACKAGE,
         source / "engineering",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        ignore=_no_bytecode,
     )
     _run(["git", "init", "-q"], cwd=source, env=env)
     _run(["git", "add", "."], cwd=source, env=env)
@@ -189,11 +215,38 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
 
     _run(["apm", "install"], cwd=consumer, env=env)
     _run(["apm", "compile", "--validate"], cwd=consumer, env=env)
+    lock = (consumer / "apm.lock.yaml").read_text()
+    # A script run, or an agent importing a sibling module, writes no bytecode into the installed skills (#428).
+    scripts = consumer / ".agents" / "skills"
+    _run(
+        [sys.executable, "-c", "import approvals, board, labels, omnigent_agent"],
+        cwd=consumer,
+        env={
+            **env,
+            "PYTHONPATH": os.pathsep.join(
+                str(scripts / name / "scripts")
+                for name in ("engineering-loop", "orchestrating-agents")
+            ),
+        },
+    )
+    assert not [path for path in consumer.rglob("*.pyc")]
     _run(["apm", "audit", "--ci", "--no-policy"], cwd=consumer, env=env)
     _run(["apm", "install", "--frozen"], cwd=consumer, env=env)
+    assert (consumer / "apm.lock.yaml").read_text() == lock
     _assert_deployed_inventory(consumer)
 
     lockfile = yaml.safe_load((consumer / "apm.lock.yaml").read_text())
     serialized_lock = json.dumps(lockfile, sort_keys=True)
     assert f"^{version}" in serialized_lock
     assert tag in serialized_lock
+
+    # The markers reach a fresh clone when the consumer ignores only cache folders, as `__pycache__/` does (#428).
+    gitignore = consumer / ".gitignore"
+    gitignore.write_text((gitignore.read_text() if gitignore.exists() else "") + "__pycache__/\n")
+    _run(["git", "init", "-q"], cwd=consumer, env=env)
+    _run(["git", "add", "."], cwd=consumer, env=env)
+    _run(["git", "commit", "-q", "-m", "consumer"], cwd=consumer, env=env)
+    clone = tmp_path / "git-consumer-clone"
+    _run(["git", "clone", "-q", str(consumer), str(clone)], cwd=tmp_path, env=env)
+    _run(["apm", "install", "--frozen"], cwd=clone, env=env)
+    assert _run(["git", "status", "--porcelain"], cwd=clone, env=env).stdout == ""

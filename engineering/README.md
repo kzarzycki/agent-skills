@@ -12,7 +12,7 @@ APM is the project installer. Add one dependency to the consuming repository:
 dependencies:
   apm:
     - git: kzarzycki/agent-skills/engineering
-      ref: ^0.24.0
+      ref: ^0.24.1
 ```
 
 Then run:
@@ -27,6 +27,10 @@ The Claude adapter writes skills to `.claude/skills/`. The Codex adapter writes
 the same inventory to `.agents/skills/`. Those paths are generated; edit the
 package sources: tuned skills under `engineering/overlays/skills/`, owned skills
 under `engineering/skills/`.
+
+Ignore Python caches as `__pycache__/`, with the slash. Each skill's `scripts/` ships a file
+named `__pycache__` that stops Python writing bytecode there; a bare `__pycache__` line
+ignores that file too, so a fresh clone lacks it and `apm install --frozen` rewrites the lock.
 
 ## Turn on the engineering loop
 
