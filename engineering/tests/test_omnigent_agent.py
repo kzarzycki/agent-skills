@@ -5306,12 +5306,7 @@ def test_a_name_held_by_identical_copies_resolves_to_the_newest_in_any_listing_o
         calls = _agent_server(monkeypatch, _copies({}, listed))
         omnigent_agent.Omnigent().create("claude-cloud", "t")
         assert calls[-1][2]["agent_id"] == "c2"
-    bookkeeping = {
-        "updated_at": 300,
-        "object": "agent",
-        "builtin": True,
-        "mcp_servers_editable": False,
-    }
+    bookkeeping = {"updated_at": 300, "object": "agent"}
     for config_b, record_b in (({"created_at": 200, "updated_at": 300}, {}), ({}, bookkeeping)):
         calls = _agent_server(monkeypatch, _copies(config_b, record_b=record_b))
         omnigent_agent.Omnigent().create("claude-cloud", "t")
@@ -5329,6 +5324,7 @@ def test_a_name_held_by_agents_that_differ_is_refused_with_their_ids(
             {"policies": [{"name": "p"}]},
         ),  # policies, skills and terminals are only on the record
         ({}, {"skills": ["s", "t"]}),
+        ({}, {"mcp_servers_editable": False}),  # a server flag, not bookkeeping
     ):
         calls = _agent_server(monkeypatch, _copies(config_b, record_b=record_b))
         with pytest.raises(omnigent_agent.Fail, match="agents c1, c2 are all called claude-cloud"):
