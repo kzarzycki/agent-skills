@@ -5276,10 +5276,17 @@ def test_an_unknown_agent_fails_naming_it_before_any_session_is_created(
     assert all(path != "/v1/sessions" for _, path, _ in calls)
 
 
-def _copies(config_b: dict, listed: tuple[str, str] = ("c1", "c2")) -> dict[str, object]:
+def _copies(
+    config_b: dict, listed: tuple[str, str] = ("c1", "c2"), record_b: dict | None = None
+) -> dict[str, object]:
     """Pages for agents c1 (older) and c2 (newer), both called claude-cloud, listed in
-    ``listed`` order across the server's and the user's pages, c2's config being ``config_b``."""
-    record = {"c1": {"created_at": 100}, "c2": {"created_at": 200}}
+    ``listed`` order across the server's and the user's pages, c2's config and record carrying
+    ``config_b`` and ``record_b`` on top of c1's."""
+    same = {"policies": [], "skills": ["s"], "terminals": [], "mcp_servers_editable": True}
+    record = {
+        "c1": {"created_at": 100, **same},
+        "c2": {"created_at": 200, **same, **(record_b or {})},
+    }
     first, second = ({"name": "claude-cloud", "id": i, **record[i]} for i in listed)
     config = {"name": "claude-cloud", "harness": "acp:claude-cloud", "instructions": None}
     return {
@@ -5299,13 +5306,31 @@ def test_a_name_held_by_identical_copies_resolves_to_the_newest_in_any_listing_o
         calls = _agent_server(monkeypatch, _copies({}, listed))
         omnigent_agent.Omnigent().create("claude-cloud", "t")
         assert calls[-1][2]["agent_id"] == "c2"
+    bookkeeping = {
+        "updated_at": 300,
+        "object": "agent",
+        "builtin": True,
+        "mcp_servers_editable": False,
+    }
+    for config_b, record_b in (({"created_at": 200, "updated_at": 300}, {}), ({}, bookkeeping)):
+        calls = _agent_server(monkeypatch, _copies(config_b, record_b=record_b))
+        omnigent_agent.Omnigent().create("claude-cloud", "t")
+        assert calls[-1][2]["agent_id"] == "c2"
 
 
-def test_a_name_held_by_agents_whose_configs_differ_is_refused_with_their_ids(
+def test_a_name_held_by_agents_that_differ_is_refused_with_their_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for differs in ({"instructions": "other"}, {"harness": "claude-native"}):
-        calls = _agent_server(monkeypatch, _copies(differs))
+    for config_b, record_b in (
+        ({"instructions": "other"}, {}),
+        ({"harness": "claude-native"}, {}),
+        (
+            {},
+            {"policies": [{"name": "p"}]},
+        ),  # policies, skills and terminals are only on the record
+        ({}, {"skills": ["s", "t"]}),
+    ):
+        calls = _agent_server(monkeypatch, _copies(config_b, record_b=record_b))
         with pytest.raises(omnigent_agent.Fail, match="agents c1, c2 are all called claude-cloud"):
             omnigent_agent.Omnigent().create("claude-cloud", "t")
         assert all(path != "/v1/sessions" for _, path, _ in calls)

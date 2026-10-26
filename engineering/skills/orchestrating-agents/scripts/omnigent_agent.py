@@ -157,6 +157,8 @@ from urllib.request import Request, urlopen
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
+# an agent record and config field that names or dates one agent, not what it does
+IDENTITY = ("id", "version", "created_at", "updated_at", "object", "builtin")
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
 RUNNING = {"running", "launching", "queued", "starting"}
@@ -510,9 +512,11 @@ class Omnigent:
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
         Each upload of one spec registers another agent under its name, and an agent record has
-        no host, so copies whose configs match apart from id and version can't be told apart: the
-        name resolves to the newest by ``created_at``. Agents whose configs differ are refused,
-        listing their ids, rather than picked by order."""
+        no host, so copies whose record and config (``GET /v1/agents/{id}/config``) match apart
+        from identity and bookkeeping (``IDENTITY`` and the ``*_editable`` flags) can't be told
+        apart: the name resolves to the newest by ``created_at``. The record carries policies,
+        skills and terminals, the config instructions and model, so both are compared. Agents
+        that differ are refused, listing their ids, rather than picked by order."""
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
         for path in ("/v1/agents", "/v1/agents?scope=user"):
@@ -534,12 +538,15 @@ class Omnigent:
             raise Fail(f"agent {name} not registered")
         if len(named) > 1:
             specs = [
-                {
-                    k: v
-                    for k, v in self.call("GET", f"/v1/agents/{i}/config").items()
-                    if k not in ("id", "version")
-                }
-                for i in named
+                [
+                    {
+                        k: v
+                        for k, v in d.items()
+                        if k not in IDENTITY and not k.endswith("_editable")
+                    }
+                    for d in (a, self.call("GET", f"/v1/agents/{i}/config"))
+                ]
+                for i, a in named.items()
             ]
             if any(spec != specs[0] for spec in specs):
                 raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
