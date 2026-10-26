@@ -4931,7 +4931,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
     """A bare `origin` whose `main` holds app.py and mise.toml, and the PR's head `feature` (`head`), which changes
     app.py's first line. `merged(files)` commits `files` on a branch off that `main` (`base`) and merges it into the
     head as git would (`merge`, the head its first parent): `resolve` writes what a conflict leaves, `extra` adds a
-    file the merge alone has. The test runs in a clone made before any of them was pushed, so the gate must fetch."""
+    file the merge alone has, `crossed` first has each side merge the other's commit (a criss-cross, so the head is
+    that merge and the two have two merge bases). The test runs in a clone made before any of them was pushed, so
+    the gate must fetch."""
     origin, work, checker = (tmp_path / name for name in ("origin.git", "work", "checker"))
     sh("git", "init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
     sh("git", "clone", "-q", str(origin), str(work), cwd=tmp_path)
@@ -4958,13 +4960,22 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         files: dict[str, str],
         resolve: dict[str, str] | None = None,
         extra: dict[str, str] | None = None,
+        crossed: bool = False,
     ) -> dict[str, str]:
         n = next(cases)
         git("switch", "-qc", f"base{n}", "main")
         write(files)
         git("commit", "-qm", f"main moved {n}")
+        first = head
+        if crossed:
+            moved = git("rev-parse", "HEAD")
+            git("merge", "-q", "--no-ff", "-m", f"main takes the feature {n}", head)
+            git("switch", "-q", "--detach", head)
+            git("merge", "-q", "--no-ff", "-m", f"the feature takes main {n}", moved)
+            first = git("rev-parse", "HEAD")
+            git("switch", "-q", f"base{n}")
         base = git("rev-parse", "HEAD")
-        git("switch", "-q", "--detach", head)
+        git("switch", "-q", "--detach", first)
         subprocess.run(
             ["git", *who, "merge", "-q", "--no-ff", "--no-commit", base],
             cwd=work,
@@ -4982,7 +4993,7 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
             f"{base}:refs/heads/main{n}",
             f"{merge}:refs/heads/pr{n}",
         )
-        return {"head": head, "base": base, "merge": merge, "since": git("rev-parse", "main")}
+        return {"head": first, "base": base, "merge": merge, "since": git("rev-parse", "main")}
 
     monkeypatch.chdir(checker)
     return merged
@@ -5078,6 +5089,12 @@ REFUSED = {
         {},
         add(NO_CI, "carry_over_main", "except:\n  - '*.py'\n"),
         "the PR's changes since {since} touch app.py, a `carry_over_main.except` path",
+    ),
+    "a criss-cross merge": (
+        {"other.txt": "main moved\n"},
+        {"crossed": True},
+        CARRY,
+        "{head} and {base} have 2 merge bases",
     ),
     "a project without the line": ({"other.txt": "main moved\n"}, {}, NO_CI, None),
 }
