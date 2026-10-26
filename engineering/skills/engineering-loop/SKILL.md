@@ -337,14 +337,18 @@ A project may instead land a base through a batching merge queue of its own: it 
 waiting PR's verified head onto the base, runs the full gate once on the result and pushes
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
 `uv run scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
-it: every merge proof but the CI wait, the head's own check passed, and nothing high risk or
+it: every merge proof but the CI wait, the head's own `local-ci --record` pass under the
+current environment and, with CI, its `check`, and nothing high risk or
 owner-approved, since the owner's label covers one head landing alone, through `land`. The
 queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
 place of the CI wait once git shows the head merged unchanged and without conflict
 resolution into a batch whose gate passed, and the head has its own `local-ci --record` pass
 under the environment the proof names (`approvals.py`'s docstring says how). A batch gate
 never stands in for the head's own: `batch` refuses, and `check merge` rejects, a head that
-was never gated. The queue never resolves a conflict: a PR that conflicts goes back to its lead.
+was never gated. Only a proof posted by the running account or a writer counts, and a red or
+unproven one leaves the wait exactly as it was, so a PR evicted through another PR's red batch
+re-queues or lands alone at the same head. The queue never resolves a conflict: a PR that
+conflicts goes back to its lead.
 
 With `opt_out: true` in loop.md, a developer may keep their own PRs out of the
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the

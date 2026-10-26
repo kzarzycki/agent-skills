@@ -104,6 +104,7 @@ def note(body: str, **fields: Any) -> dict[str, Any]:
     """A comment as GitHub returns it, written by the account running approvals.py unless a test says otherwise."""
     return {
         "id": f"IC_{next(IDS)}",
+        "author": {"login": "loop"},
         "body": body,
         "createdAt": WRITTEN,
         "lastEditedAt": None,
@@ -4534,6 +4535,12 @@ def queued_merge(head: str, *comments: str) -> list[str]:
     return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n"))
 
 
+def queued_reasons(head: str, *comments: str) -> list[str] | None:
+    pr = pull(reviews=(verdict_on(head),), comments=comments, checks=())
+    pr["headRefOid"] = head
+    return approvals.queued(pr)
+
+
 def test_a_green_batch_that_merged_the_head_cleanly_is_its_merge_proof(
     batched: dict[str, str],
 ) -> None:
@@ -4568,12 +4575,10 @@ def test_a_red_or_unproven_batch_is_no_merge_proof(
     )
     fields["exit"] = change.get("exit", 0)
     names = {**batched, "fff": "f" * 40}
-    assert queued_merge(
-        head, batch_note(head, fields["merge"], fields["batch"], fields["exit"])
-    ) == [
-        f"PR #7: {said.format(**names)}",
-        NO_LOCAL_CHECK,
-    ]
+    proof = batch_note(head, fields["merge"], fields["batch"], fields["exit"])
+    # it adds no hold of its own: the wait is the one a PR with no batch proof has
+    assert queued_merge(head, proof) == [NO_LOCAL_CHECK]
+    assert queued_reasons(head, proof) == [f"PR #7: {said.format(**names)}"]
 
 
 def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
@@ -4582,13 +4587,15 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
     head, merged, batch = batched["head"], batched["merge"], batched["batch"]
     note = batch_note(head, merged, batch)
     ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    assert queued_merge(head, note) == [ungated, NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_reasons(head, note) == [ungated]
     gated_head(head, {"GATE_UI_TESTS": "smoke"})  # gated, but under another env than this one
-    assert queued_merge(head, note) == [ungated, NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_reasons(head, note) == [ungated]
     monkeypatch.setattr(approvals, "local_ci_env", lambda: {"GATE_UI_TESTS": "smoke"})
-    assert queued_merge(head, note) == [
+    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_reasons(head, note) == [
         f"PR #7: batch {batch} names the head's gate env `default`, its record `GATE_UI_TESTS=smoke`",
-        NO_LOCAL_CHECK,
     ]
     assert queued_merge(head, batch_note(head, merged, batch, env="GATE_UI_TESTS=smoke")) == []
 
@@ -4603,6 +4610,58 @@ def test_no_batch_comment_or_one_for_another_head_leaves_the_wait(batched: dict[
     assert queued_merge(head, "> " + batch_note(head, batched["merge"], batched["batch"])) == [
         NO_LOCAL_CHECK
     ]
+
+
+def test_only_a_batch_proof_by_the_running_account_or_a_writer_counts(
+    batched: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = batched["head"]
+    gated_head(head)
+    proof = note(batch_note(head, batched["merge"], batched["batch"]), author={"login": "stranger"})
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "colleague")
+    pr = pull(reviews=(verdict_on(head),), comments=(proof,), checks=())
+    pr["headRefOid"] = head
+    lines = merge(pr, [approved(1, "area:web")])
+    assert lines and all("batch" not in line for line in lines)  # waits on CI, as with no proof
+    proof["author"] = {"login": "colleague"}
+    assert merge(pr, [approved(1, "area:web")]) == []
+    proof["author"] = None  # a deleted account
+    assert merge(pr, [approved(1, "area:web")]) == lines
+
+
+RED_BATCH = batch_note(HEAD, "c" * 40, "d" * 40, exit=1)
+
+
+def test_a_red_batch_through_another_pr_leaves_check_merge_on_green_ci() -> None:
+    assert merge(pull(reviews=(VERDICT,), comments=(RED_BATCH,)), [approved(1, "area:web")]) == []
+
+
+def test_a_red_batch_through_another_pr_leaves_land_alone(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    landing["pull"]["comments"]["nodes"].append(note(RED_BATCH))
+    code, lines, calls = landed(capsys, landing)
+    assert (code, calls) == (0, [MERGE]), lines
+
+
+def test_a_head_evicted_through_another_pr_may_re_enter_the_queue(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    queueing["pull"]["comments"]["nodes"].append(note(RED_BATCH))
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
+
+
+def test_with_ci_check_queue_still_needs_the_heads_own_record(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """batch refuses a head without one, so a head check queue admitted would never get its proof."""
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    queueing["records"] = set()
+    assert queue_check(capsys) == (
+        1,
+        [f"PR #7: no `local-ci --record` pass on {HEAD} under this environment (approvals.py local-ci --record)"],
+    )
 
 
 def test_the_batch_proof_also_stands_in_for_ci(batched: dict[str, str]) -> None:
@@ -4733,7 +4792,6 @@ def test_with_ci_check_queue_needs_the_heads_check_green(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
-    queueing["records"] = set()
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
     queueing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][0][
         "conclusion"

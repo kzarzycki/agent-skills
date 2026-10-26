@@ -97,8 +97,8 @@ names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
-gate on the batch replaces, the head's own check passed (with `ci: false` a `local-ci --record` pass on it under the
-current env, else the aggregate `check`), and the change is not high risk and has no `approved:merge`, since the
+gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
+with CI, the aggregate `check` passed, and the change is not high risk and has no `approved:merge`, since the
 owner's label covers one head landing alone: such a PR lands through `land`. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
 exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
@@ -107,8 +107,10 @@ once it holds: the exit is 0, the head has its own green `local-ci --record` pas
 the comment names, since a batch gate never stands in for the head's, the merge commit's second parent is the head
 (the head landed unchanged), its tree is what
 `git merge-tree` makes of its parents (the queue resolved no conflict and added nothing), and the batch commit
-contains it; a commit the checkout lacks is fetched from `origin` first. A red, unproven or missing batch leaves the
-wait as it was, with a line saying why for each comment on the head that proves nothing. The proof is the verifier's
+contains it; a commit the checkout lacks is fetched from `origin` first. Only a comment by the account running this
+or a writer counts, since anyone can comment on a public repo. A red, unproven or missing batch leaves the wait
+exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
+the same head like any other. The proof is the verifier's
 verdict and gate on the PR's own head plus the full gate on the batch that merged it.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
@@ -227,7 +229,7 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
-NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
+NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
@@ -1310,8 +1312,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
     `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
-    refused = queued(pull)
-    if refused is None:
+    if queued(pull) is None:
         return []
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
@@ -1326,15 +1327,20 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
             ]
     else:
         found = ci(where, pull, required)
-    return refused + found
+    return found
 
 
 def queued(pull: dict[str, Any]) -> list[str] | None:
-    """None when a merge queue's batch proof (batch) on the head holds (unproven), standing in for the CI wait; else
-    one line per batch proof on the head that holds nothing, none when there is no such proof."""
+    """None when a merge queue's batch proof (batch) on the head, by the account running this or a writer, holds
+    (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
+    ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    for body in bodies(pull):
-        lines = body.strip().splitlines()
+    me = viewer()
+    for note in notes(pull):
+        login = (note.get("author") or {}).get("login")
+        if login is None or (login != me and not writer(login)):
+            continue
+        lines = note["body"].strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
             continue
         header = itertools.takewhile(
@@ -1409,7 +1415,7 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
     found += missing
     if not no_ci(loop):
         found += ran(pull, loop)
-    elif reusable(head) is None:
+    if reusable(head) is None:  # with CI too: batch refuses a head without one, so it may not enter
         found.append(
             f"{where}: no `local-ci --record` pass on {head} under this environment (approvals.py local-ci --record)"
         )
