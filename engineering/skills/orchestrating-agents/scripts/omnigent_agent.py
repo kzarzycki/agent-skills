@@ -2347,6 +2347,34 @@ def status_line(lead: dict) -> str:
     return line if len(line) < 200 else line[:198] + "…"
 
 
+def reloadable(script: Path, seen: dict[str, int]) -> bool:
+    """Whether ``script`` was replaced on disk and is ready to run: changed since ``seen["ran"]``
+    (the version this process runs), unchanged for one look (``seen["last"]``), so a file still
+    being written is not taken, and it compiles. One that does not compile is logged once and
+    becomes the version run, so the running copy carries on until the file changes again. A file
+    missing for a moment (an install replacing it) is no change."""
+    try:
+        now = script.stat().st_mtime_ns
+    except OSError:
+        return False
+    if now != seen["last"]:
+        seen["last"] = now
+        return False
+    if now == seen["ran"]:
+        return False
+    try:
+        compile(script.read_bytes(), str(script), "exec")
+    except (OSError, SyntaxError, ValueError) as e:
+        seen["ran"] = now
+        print(
+            f"{script} changed but does not load ({reason(e)}); keeping the running one",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    return True
+
+
 def supervise_registry(
     og: Omnigent,
     registry: Path,
@@ -2356,9 +2384,12 @@ def supervise_registry(
     console: bool = False,
     fyi: str = "skip",
     decisions: Path | None = None,
+    script: Path | None = None,
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
-    each poll. Every line goes to stdout with the local time and, with ``notify``, into that
+    each poll. When ``script``, this file, is replaced on disk (``reloadable``: a skills sync
+    installed a new one), it re-executes itself in place with the same arguments at the top of a
+    poll with nothing waiting to be posted, its state written first, so nobody restarts it. Every line goes to stdout with the local time and, with ``notify``, into that
     session as ``Supervisor: <line>``. A line marked ``follow`` is a lead followed, not owed a
     report: ``follow`` says when it is news, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
     first, stopping at the first failure. A terminal event drops the session's line once its own
@@ -2414,6 +2445,12 @@ def supervise_registry(
     # event keeps its registry line until posted, and the restarted supervisor finds it again.
     outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
     window = time.monotonic()
+    script = script or Path(os.path.realpath(__file__))
+    try:
+        ran = script.stat().st_mtime_ns
+    except OSError:
+        ran = 0
+    seen = {"ran": ran, "last": ran}
 
     def stamp(line: str) -> str:
         return f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}"
@@ -2935,6 +2972,14 @@ def supervise_registry(
 
     while True:
         flush()
+        if not outbox and not retry and reloadable(script, seen):
+            try:
+                if console:
+                    save()  # an unsaved state would be lost: keep running, try next poll
+                print(stamp(f"restarting: {script} changed"), flush=True)
+                os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
+            except Fail:
+                pass
         if console:
             recover()
             for again in retry[:]:
@@ -3345,6 +3390,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.registry:
                 for s, r in owed.items():
                     arm(args.registry, s, r)
+                # the registry holds them now: a restart that armed them again would repost a dropped one
+                sys.argv = [a for a in sys.argv if a not in args.owed]
                 supervise_registry(
                     og,
                     args.registry,
