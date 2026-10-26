@@ -5143,6 +5143,10 @@ def test_a_helper_started_from_a_followed_leads_child_subscribes_the_lead_not_th
         ("STILL WORKING: the gate waits for the database", "database"),
         ("STILL WORKING: waiting on the verifier", "verifier"),  # a wait word still wins
         ("STILL WORKING: on it", "unknown"),  # a bare "on" names nothing
+        ("STILL WORKING: waiting on ef38cdf6 (s1806-r3)", "ef38cdf6"),  # a child's session id
+        ("STILL WORKING: verifier pass 2 on 188a4278", "verifier"),  # a commit is not the wait
+        ("STILL WORKING: worker fixing R3 on 68cafc1a", "worker"),
+        ("STILL WORKING: rebased on 188a4278 and running the gate", "unknown"),
         ("STILL WORKING: waiting on it", "unknown"),
     ],
 )
@@ -5168,6 +5172,23 @@ def test_a_wait_named_after_waiting_on_or_for_is_that_wait(text: str, wait: str)
             "# R\n\n> DONE: an old pass\n\n`USER NEEDED: quoted`\n\n**PARKED:** no slot\n",
             "PARKED",
             "parked",
+        ),
+        # a quoted ending inside the STILL WORKING tail is not the report's
+        (
+            (
+                "# R\n\nSTILL WORKING: waiting on the verifier. The old route printed:\n\n"
+                "`USER NEEDED: no standing decision`\n\nso the test now pins it.\n"
+            ),
+            "STILL WORKING",
+            "verifier",
+        ),
+        (
+            (
+                "# R\n\nThe old supervisor post read:\n\n> STILL WORKING: checking\n"
+                "> USER NEEDED: pick a base\n\nDONE: merged #12\n"
+            ),
+            "DONE",
+            "unknown",
         ),
         # a wait named after a paragraph break still counts
         ("# R\n\nSTILL WORKING: checking status\n\nWaiting on worker\n", "STILL WORKING", "worker"),

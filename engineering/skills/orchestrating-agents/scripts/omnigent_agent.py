@@ -87,8 +87,8 @@ standing decisions for the small model. Without it, it writes none of these and 
 ``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
-count its report; a ``start --top-level`` run from a lead the registry follows arms nothing and
-subscribes that lead, since its helper is the lead's to hear); ``run``, ``send`` and ``wait`` disarm it when they
+count its report; a ``start --top-level`` run from a lead the registry follows, or from its
+child, arms nothing and subscribes that lead, since its helper is the lead's to hear); ``run``, ``send`` and ``wait`` disarm it when they
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
@@ -226,16 +226,17 @@ FOLLOW_QUIET_SECONDS = 300.0
 DEADLINE_SECONDS = 1200.0
 NUDGED_SECONDS = 600.0
 # What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
-# wait word, or a child's session id (8 or 32 hex), opens it or follows "on"/"for", at most one
-# word between, so "per lead event" is none.
+# wait word, or a child's full session id (32 hex: a commit is 40 or a short 7-12), opens it or
+# follows "on"/"for", at most one word between, so "per lead event" is none.
 # ponytail: one regex over the lead's own words; a wait named any other way reads as unknown, which
 # only adds the nudge step. Upgrade: a structured wait line in the lead's report.
 WAIT = re.compile(
-    r"STILL WORKING\b\W*(?:.*?\b(?:on|for)\s+)?(?:[\w'-]+\s+)?((?i:verifier|worker|lead|merge)|CI|[0-9a-f]{32}|[0-9a-f]{8})s?\b",
+    r"STILL WORKING\b\W*(?:.*?\b(?:on|for)\s+)?(?:[\w'-]+\s+)?((?i:verifier|worker|lead|merge)|CI|[0-9a-f]{32})s?\b",
     re.DOTALL,
 )
-# Else any wait it names after "waiting on"/"waits for" ("waiting on deployment"): that word. Not
-# after a bare "on"/"for", so "STILL WORKING: on it" names none.
+# Else any wait it names after "waiting on"/"waits for" ("waiting on deployment", a child's session
+# id "waiting on ef38cdf6"): that word. Not after a bare "on"/"for", so "STILL WORKING: on it"
+# names none and "verifier pass 2 on 188a4278" (a commit) stays the verifier's.
 NAMED = re.compile(
     r"STILL WORKING\b.*?\b(?i:wait(?:s|ing)?\s+(?:on|for)\s+(?:(?:the|an?|your|my|our|their|its)\s+)?`?)"
     r"(?!(?i:it|this|that|these|those|them|me|you|the|an?|your|my|our|their|its)\b)([\w'-]+)",
@@ -2019,11 +2020,12 @@ def wait_of(text: str, at: float | None = None) -> str:
 def report_head(text: str) -> str:
     """What a report says of its ending, routed in place of a last message that is only its path:
     each line that opens with an ending and the ``REPORT_WAIT_CHARS`` its ``STILL WORKING`` opens
-    (where a wait is named), else its first line, with code fences and ``>`` quotes left out: a
+    (where a wait is named), else its first line, with code fences, ``>`` quotes and lines that open
+    in backticks left out: a
     report quotes old endings as examples. Not just the first line: a report opens with its ``#``
     title, and the ending follows it or closes the report."""
     text = FENCE.sub("", text)
-    lines = [line for line in text.strip().splitlines() if not line.lstrip().startswith(">")]
+    lines = [line for line in text.strip().splitlines() if not line.lstrip().startswith((">", "`"))]
     kept = [line for line in lines if REPORT_ENDING.match(line)]
     body = "\n".join(lines)
     if (start := body.find("STILL WORKING")) >= 0:
