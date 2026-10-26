@@ -2,15 +2,18 @@
 
 import importlib.util
 import inspect
+import io
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
 from email.message import Message
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 import pytest
 
@@ -1230,6 +1233,52 @@ def test_a_post_that_times_out_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(omnigent_agent.Fail, match="POST /x: TimeoutError"):
         og.call("POST", "/x", {})
     assert len(posts) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+        URLError(ConnectionRefusedError(61, "Connection refused")),
+        HTTPError("http://omnigent.test/x", 503, "Service Unavailable", Message(), None),
+    ],
+)
+def test_a_get_retries_a_server_restarting_and_a_post_does_not(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    calls: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        calls.append(req.get_method())
+        if len(calls) == 1:
+            raise error
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    assert og.call("GET", "/x") == {"ok": True}
+    calls.clear()
+    with pytest.raises(omnigent_agent.Fail):
+        og.call("POST", "/x", {})
+    assert calls == ["POST"]
+
+
+def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def urlopen(req: Request, timeout: float) -> None:
+        calls.append(req)
+        raise HTTPError("http://omnigent.test/x", 404, "Not Found", Message(), None)
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    with pytest.raises(omnigent_agent.Fail, match="HTTP 404"):
+        og.call("GET", "/x")
+    assert len(calls) == 1
 
 
 def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_session(
@@ -4837,6 +4886,38 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
     assert not omnigent_agent.brief_of(report).exists()
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
+
+
+def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # the question holds every message behind it
+    sid = og.create("claude", "cos")
+    og.prompts = [QUESTION]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    (tmp_path / "m.md").write_text("ACTION NEEDED: the sync printed a note")
+    argv = ["relay", sid, str(tmp_path / "m.md"), "--from", "skills-sync"]
+    assert omnigent_agent.main(argv) == omnigent_agent.QUEUED
+    assert og.resolved == []
+    assert og.posts == 1
+    header = omnigent_agent.RELAY_FROM.format(source="skills-sync")
+    assert "Which base?" in capsys.readouterr().err  # it names the question that holds it
+    sent = [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]]
+    assert sent == [f"{header}\nACTION NEEDED: the sync printed a note"]
+
+
+def test_relay_from_a_task_to_an_idle_session_is_delivered_with_its_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "cos")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("synced")
+    assert omnigent_agent.main(["relay", sid, str(tmp_path / "m.md"), "--from", "sync"]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == (
+        omnigent_agent.RELAY_FROM.format(source="sync") + "\nsynced"
+    )
 
 
 def deadlines(registry: Path) -> list[dict]:

@@ -145,8 +145,9 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   `<title>-r<n>`, the same sequence the retry above uses, and prints the title it used. A create that fails (a timeout
   on a loaded server) may still have made the session, so the script looks for its title
   among the parent's children made since, and briefs that one instead of a second.
-- A loaded server times out reads while the child works on. Every `GET` is retried on a
-  timeout or reset, with backoff; a `POST` never is, since it may have taken effect.
+- A loaded or restarting server times out reads, drops TLS connections (an SSL EOF), refuses
+  them or answers 502/503/504 while the child works on. Every `GET` is retried on those, with
+  backoff over about two minutes; a `POST` never is, since it may have taken effect.
 - A child that reads its brief as pasted text asks for a go-ahead, so the brief is a file
   and the message is one line. One that runs a command in the background ends its turn
   "waiting" and never reports; the preamble covers that, and the first turn that ends
@@ -196,6 +197,9 @@ prompts) holds every message until the question is answered, so `relay` answers 
 message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
 the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
 message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+`relay --from <name>` is a notice from a task or an agent rather than the owner's words
+(a scheduled job's status line to a chief of staff): its first line says so, and it never
+answers a question, so it waits behind one (exit 5) instead of becoming its answer.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]

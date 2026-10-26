@@ -172,6 +172,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   hold a merge as pending), runs again when CI completes, posts success on a merge-queue
   commit, and removes `approved:merge` on a push;
 - `.github/check-paths.yml`: each part's path filter;
+- the test runner's retry of a failed test, once (Rules for every role, Flaky tests);
 - `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
   merge queue, requiring exactly two checks, `check` and `loop:approvals`. A repo that can't
   have a merge queue (one a user owns) gets the same ruleset with squash merges and no
@@ -421,6 +422,17 @@ or the owner's private network.
   each in one decision-log issue, wait out a usage limit and resume, and leave a handoff
   (`handoff` skill) when finished or stuck. Never idle: schedule a time-gated check and
   keep working.
+- **Owner steps park, they don't block.** A step only the owner can unblock (a GUI
+  dialog, a locked screen, a device, a permission prompt or classifier denial, a
+  credential, an approval link that expires) is stopped at its first sign, so a hang
+  becomes a failure, and whatever it holds (a gate slot, a lock, an instance) is released.
+  Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, add
+  `needs-owner`, add a checklist line to the decision-log issue so the owner clears every
+  step in one sitting, and move to the next item; ask once, since a retry while they are
+  away fails the same way. Before a long or unattended run, try once each owner-only
+  prerequisite the queued items need (loop.md § Proof on a branch, the specs' acceptance)
+  while the owner can still answer, and check such a precondition before a heavy step
+  takes a slot.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
@@ -447,6 +459,19 @@ or the owner's private network.
   even different calls, mean stop and report yourself blocked with the error line. That
   includes a permission classifier that fails closed because its provider is down: every
   retry is a full-context turn.
+- **Flaky tests.** A project's `check` retries a failed test once, with its runner's own
+  retry option, and prints each test that passed only on the retry; the gate is then green.
+  Without one, rerun only the failed tests once, then only the parts of `check` the failure
+  stopped, never the whole gate, whose minutes each flake would otherwise cost again; all
+  green, the gate is green, and the report gives each command with its exit code. A
+  `ci: false` project needs the retry option, since its `local-ci` record runs the whole
+  `check`. Each test that passed on the retry has one open
+  `kind:bug` issue titled `Flaky: <test id>`: search the open issues for the id before
+  filing, and comment each occurrence on it (head SHA, PR, failure line), so two leads find
+  the same issue and its comments count the occurrences. The third occurrence gets a PR
+  from main that skips the test in the blocking gate, citing the issue, which stays open
+  for the fix. A test red on both tries is a real failure: run it on main before blaming
+  the PR.
 - **Land small and soon.** Every PR branches off a freshly fetched `origin/main` and merges
   as soon as its gates pass, because a branch that lives as long as the work behind it goes
   stale against main, and a pile of them cascades on every rebase and breaks main when they
