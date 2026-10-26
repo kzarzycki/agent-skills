@@ -267,6 +267,9 @@ inbox notice, so watch your children as your backend's file in orchestrating-age
 and for a child that still owes its report a detached `supervise --registry` that `run` and
 `send` arm). Supervise with a process the host runs, not an in-session background command or
 session cron, which die with your session and lose every wake they owed.
+Your own long runs (a gate, a land, a live check) start detached the same way, `setsid nohup`
+with the log, pid and exit code in files, then polled: Claude Code's low-memory reaper stops
+in-session background shells.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
 has left no report and will not wake itself: arm one background wait on its process or log
 that ends on every terminal state (success, failure, the process gone), e.g.
