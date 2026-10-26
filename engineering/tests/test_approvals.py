@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 import itertools
 import json
@@ -539,6 +540,10 @@ def test_skill_mds_settings_examples_pass_their_schema() -> None:
         {"login": "renovate", "branch": "renovate/", "paths": ["uv.lock"]},
     ]
     assert approvals.tracker_settings(loop_md(tracker))["renames"] == {"frontend": "area:web"}
+    excepted = approvals.settings(loop_md(loop))["carry_over_main"]["except"]
+    # a glob matches the full path: a nested copy needs a glob of its own
+    for path in ("uv.lock", "engineering/uv.lock"):
+        assert any(fnmatch.fnmatch(path, glob) for glob in excepted), path
 
 
 def test_a_script_run_without_pyyaml_says_in_one_line_how_to_run_it() -> None:

@@ -118,6 +118,7 @@ carry_over_main:
   except:
     - mise.toml
     - uv.lock
+    - '**/uv.lock'
     - pyproject.toml
     - .github/**
 ```
@@ -133,7 +134,7 @@ carry_over_main:
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
-| `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): a clean merge of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict and `local-ci` record (Approvals and proof) | every merge of main needs its own gate and verifier pass |
+| `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): a clean merge of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict and `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own gate and verifier pass |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
 `## Settings`, read by `approvals.py` (`label_names`), `labels.py` and `board.py`, refused the
