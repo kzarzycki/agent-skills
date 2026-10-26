@@ -87,7 +87,11 @@ on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since G
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
 and end its turn with only the comment's URL. `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
-report path, so whatever reads the report reads a file as for any child. A question goes in
+report path, so whatever reads the report reads a file as for any child. The worker pushes
+only to the `claude/…` branch its session started on and names it, with its head SHA, in the
+report; the lead merges that branch into the PR. A worker whose post fails (the session's token
+expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wait` posts that
+body on PR n from this host and writes it to the report path. A question goes in
 that report, since `<report>.question` is a path here too. Only a comment GitHub files on
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another

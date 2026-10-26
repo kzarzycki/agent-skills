@@ -1561,6 +1561,28 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
+def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply=f"{omnigent_agent.UNPOSTED}\nBranch: claude/x at abc\nGates: 0\n")
+    calls = fake_gh(monkeypatch, {"comments": "https://github.com/o/r/pull/7#issuecomment-9"})
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "`claude/…` branch this session started on" in brief and omnigent_agent.UNPOSTED in brief
+    assert omnigent_agent.wait(og, sid, report, pr=7) == str(report)
+    body = "Branch: claude/x at abc\nGates: 0\n"
+    assert report.read_text() == body and og.posts == 1  # no nudge
+    assert calls[-1] == (
+        "api",
+        "repos/o/r/issues/7/comments",
+        "-f",
+        f"body={body}",
+        "--jq",
+        ".html_url",
+    )
+
+
 @pytest.mark.parametrize(
     "link",
     [
