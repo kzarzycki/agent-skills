@@ -373,16 +373,20 @@ has no cloud bridge; anything that needs a device, a simulator, an emulator, a b
 or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
-  triage, the merge of each worker's branch into the PR branch, the full gate (`mise run
+  triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
+  PR branch, the full gate (`mise run
   check`, or `local-ci --record` with `ci: false`), the instance, the verdict's post, thread
   resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
-  Chromium), before each push, and pushes its own branch. Its brief names that branch and
-  the role file by its path in the repo, since the host's worktrees and paths don't exist in
-  the VM. The verifier runs on the host in the lead's worktree, as verifier.md says.
+  Chromium), before each push, and pushes to the `claude/…` branch its session was given,
+  since a cloud session declines any other branch without its own user's permission and a
+  peer's brief is not that; no brief names another push target. Its brief names the role
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in the lead's worktree, as verifier.md says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
-  report is one comment on the PR: the head SHA, each light-gate command with its exit
-  code, what it left out and why. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
+  report is one comment on the PR: its branch and head SHA, each light-gate command with its
+  exit code, what it left out and why. If the post fails, since the session's proxy-injected
+  `GH_TOKEN` can expire 10 to 20 min in, its reply is `UNPOSTED REPORT` and then the body
+  verbatim, and the backend's `wait --pr` posts it from the host. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
   workers) has the worker post it and writes it to the report path on the host, so the lead
   reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
   The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
