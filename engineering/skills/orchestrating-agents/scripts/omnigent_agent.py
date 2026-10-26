@@ -35,10 +35,11 @@ once the runner is online; exit 4 only when that revive fails, naming its reply.
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
 delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
-on questions (``ask_user_question``) gets the message as each question's answer instead, exit 0,
-since its pending inputs wait on the answer; an approval prompt it never answers. ``relay --from
-<name>`` is a notice from a task or an agent: a first line says it is not the owner's words, and it
-never answers a question (exit 5 while one holds it). ``broadcast``
+on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
+--answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
+the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
+or an agent: a first line says it is not the owner's words, and it never answers a question,
+even with ``--answer``. ``broadcast``
 relays one message to every followed lead in the registry (``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``), ``--include``'s sessions and, with ``--active-hours N``, every
 top-level session of the caller's updated within N hours, all at once: never this session, an archived one or
@@ -182,13 +183,20 @@ TRANSIENT = (
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
-NUDGE = "Your turn ended without the report. Run any long command in the foreground, then write the report to {report}."
+# Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
+NO_REPORT = "Your turn ended without the report."
+NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
 COMMENT_URL = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/(\d+)#issuecomment-(\d+)"
 )
+# A cloud worker's reply opening with this line carries its report: its own post failed, so ``wait``
+# posts it on the PR from this host.
+UNPOSTED = "UNPOSTED REPORT"
+# its first line, however formatted: the brief quotes it in backticks, so `x` or **x** too
+UNPOSTED_LINE = re.compile(rf"[\W_]*{UNPOSTED}[\W_]*?(\n|$)")
 PR_NUDGE = (
-    "Your turn ended without the report. Run any long command in the foreground, then post the"
+    NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
 # The line after a revive, which can relaunch a session with its context dropped: it names the
@@ -215,7 +223,7 @@ AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits o
 # routing, since the owner is its follower; its DONE, failures and prompts are still routed.
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
-OWN_LINES = ("Supervisor: ", REVIVED, NUDGE.split(" Run ")[0])
+OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
 # A followed lead's turn end that names one of these is news at once; any other waits for quiet.
 ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end
@@ -298,7 +306,7 @@ MEMINFO = Path("/proc/meminfo")
 
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
@@ -308,17 +316,18 @@ When done, reply with only the report path.
 # so it reports on the PR through REST; the comment is public, so it names nothing of the host.
 PR_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
-When done, reply with only the comment's URL.
+When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
 """
 # A top-level lead talks to the owner directly, so it asks instead of writing a question; and since
 # anyone may have written its brief, it says whose words approve.
 LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
 Write your final report to {report}, then reply with only its path.
 
@@ -627,6 +636,25 @@ class Omnigent:
         missing file is ``Gone``. Each segment is encoded alone, with no leading ``%2F``. An
         absolute path inside the session's workspace is read relative to it, since a host on an
         older Omnigent answers 404 to an absolute file read (``base=host``) it serves relative."""
+        out = self.filesystem(sid, path)
+        if "content" in out:
+            return out["content"]
+        return "\n".join(
+            e["name"] + ("/" if e.get("type") == "directory" else "") for e in out.get("data", [])
+        )
+
+    def modified(self, sid: str, path: str) -> float:
+        """When ``path`` was last written (epoch seconds), from its folder's listing through
+        ``sid``'s file API; 0 when the folder does not list it."""
+        folder, _, name = path.rpartition("/")
+        entries = self.filesystem(sid, folder or "/" * path.startswith("/")).get("data", [])
+        return max(
+            (float(e.get("modified_at") or 0) for e in entries if e.get("name") == name),
+            default=0.0,
+        )
+
+    def filesystem(self, sid: str, path: str) -> dict:
+        """``read_file``'s answer as the server gives it: a file's ``content`` or a folder's ``data``."""
         if path.startswith("/"):
             try:  # no workspace known: the absolute read reports its own error
                 root = str(self.info(sid).get("workspace") or "").rstrip("/") + "/"
@@ -644,11 +672,7 @@ class Omnigent:
             if isinstance(e.__cause__, HTTPError) and e.__cause__.code == 404:
                 raise Gone(f"{path}: not found") from e
             raise
-        if "content" in out:
-            return out["content"]
-        return "\n".join(
-            e["name"] + ("/" if e.get("type") == "directory" else "") for e in out.get("data", [])
-        )
+        return out
 
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
@@ -684,10 +708,24 @@ class Omnigent:
         return [str(c["id"]) for c in page.get("data", [])]
 
     def active(self, sid: str) -> float:
-        """When any live child of ``sid`` was last updated (archived ones are not listed), else 0.
-        Not ``busy``: a child whose turn end was lost stays busy for good."""
+        """When any live child of ``sid`` (archived ones are not listed), or a live session it
+        subscribes to, was last updated, else 0. The subscriptions are its top-level helpers, a
+        cloud worker for one, which are no children. Not ``busy``: a child whose turn end was lost
+        stays busy for good."""
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
-        return max((float(c.get("updated_at") or 0) for c in page.get("data", [])), default=0.0)
+        times = [float(c.get("updated_at") or 0) for c in page.get("data", [])]
+        try:  # ponytail: the first page of subscriptions; a lead holds a handful
+            subscribed = self.call("GET", f"/v1/sessions/{sid}/subscriptions").get("data", [])
+        except Fail:  # an Omnigent without subscriptions: the children alone, as before
+            subscribed = []
+        for helper in subscribed:
+            try:
+                info = self.info(str(helper["session_id"]))
+            except Fail:  # Gone too
+                continue  # deleted, or unreadable this poll: counts for nothing
+            if not info.get("archived"):
+                times.append(float(info.get("updated_at") or 0))
+        return max(times, default=0.0)
 
 
 def project_name() -> str:
@@ -911,25 +949,28 @@ def relay(
     sid: str,
     text: str,
     confirm_seconds: float,
-    answer: bool = True,
+    answer: bool = False,
     source: str = "",
+    skip: bool = False,
 ) -> str:
     """Post ``text`` to ``sid`` and return the line saying it was delivered; raise ``Queued`` while
-    the session holds it, ``Gone`` when it cannot be delivered. A session blocked only on questions
-    gets ``text`` as each one's answer instead: its pending inputs wait on the answer, and an
-    interrupt would drop them and hold input until the question's hook marker goes stale
-    (kzarzycki/omnigent#14). An approval prompt it never answers. With ``answer`` off, a session
-    with any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
+    the session holds it, ``Gone`` when it cannot be delivered. A session waiting on a question
+    holds ``text`` behind it like any message (``Queued``): an unrelated relay arriving while a
+    question is open must not become its answer. With ``answer``, a session blocked only on
+    questions gets ``text`` as each one's answer instead: its pending inputs wait on the answer,
+    and an interrupt would drop them and hold input until the question's hook marker goes stale
+    (kzarzycki/omnigent#14). An approval prompt it never answers. With ``skip``, a session with
+    any prompt pending (a question or an approval) is skipped instead, sent nothing. With a
     ``source`` (a task or an agent, not the owner) ``text`` goes after a ``RELAY_FROM`` line and
-    never answers a question: it is sent as a message, held behind the question like any other."""
+    never answers a question, even with ``answer``."""
     if source:
         text = f"{RELAY_FROM.format(source=source)}\n{text}"
     info = og.info(sid)
     pending = info.get("pending_elicitations") or []
-    if pending and not answer:
+    if pending and skip:
         return f"session {sid}: skipped: waiting on a question"
     asks = questions_of(info)
-    if asks and len(asks) == len(pending) and not source:
+    if answer and asks and len(asks) == len(pending) and not source:
         for e in pending:
             questions = e["params"]["ask_user_question"].get("questions") or []
             answer = text.strip()  # a message file's trailing newline would reach the answer
@@ -1025,12 +1066,12 @@ def broadcast(
     og: Omnigent, targets: list[tuple[str, str]], text: str, confirm_seconds: float
 ) -> bool:
     """``relay`` ``text`` to every target at once, printing one line per target as it settles;
-    whether one failed. A session with a question or approval prompt pending is skipped: ``relay``
-    would give a question the broadcast as its answer, and an approval holds it unread."""
+    whether one failed. A session with a question or approval prompt pending is skipped: the
+    broadcast would wait unread behind either."""
 
     def one(sid: str) -> str:
         try:
-            return relay(og, sid, text, confirm_seconds, False).removeprefix(f"session {sid}: ")
+            return relay(og, sid, text, confirm_seconds, skip=True).removeprefix(f"session {sid}: ")
         except Queued as e:
             return str(e).removeprefix(f"session {sid}: ")
         except Exception as e:  # noqa: BLE001 - one target's failure is its line, never the others'
@@ -1046,7 +1087,7 @@ def broadcast(
 
 
 def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], bool]:
-    """Resolve each pending approval prompt of ``sid``, never a question (``relay`` answers those):
+    """Resolve each pending approval prompt of ``sid``, never a question (``relay --answer`` answers those):
     a line per prompt, and whether a resolve failed. Fail when none is pending."""
     info, lines, failed = og.info(sid), [], False
     for e, what in zip(info.get("pending_elicitations") or [], prompts_of(info)):
@@ -1140,6 +1181,7 @@ def start(
     full = (LEAD_PREAMBLE if top_level else PR_PREAMBLE if pr else PREAMBLE).format(
         report=report,
         pr=pr,
+        unposted=UNPOSTED,
         role=f"Your role file is {role}; read it first.\n" if role else "",
     ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
@@ -1304,6 +1346,27 @@ def wait(
         )
         if turn_ended and not counts():
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
+        # before pr_report: an unposted report may link earlier comments on its PR
+        if turn_ended and pr and (marked := UNPOSTED_LINE.match(said.lstrip())):
+            body = said.lstrip()[marked.end() :].lstrip("\n")
+            # a re-attached wait finds the report it already posted
+            if not (report.exists() and report.read_text() == body):
+                repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+                url = gh(
+                    "api",
+                    f"repos/{repo.strip()}/issues/{pr}/comments",
+                    "-f",
+                    f"body={body}",
+                    "--jq",
+                    ".html_url",
+                )
+                print(
+                    f"session {sid} could not post its report; posted it: {url.strip()}",
+                    file=sys.stderr,
+                )
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(body)
+            break
         if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
@@ -2084,7 +2147,11 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if event.get("question"):
             if event.get("direct"):
                 return "rule", "record", "the owner drives it directly: they answer its question"
-            return "rule", "act", "a question: the chief of staff answers it with one relay"
+            return (
+                "rule",
+                "act",
+                "a question: the chief of staff answers it with one relay --answer",
+            )
         return "rule", "owner", "an approval prompt: only the owner approves"
     if kind == "failed":
         if event.get("revived"):
@@ -2204,6 +2271,34 @@ def status_line(lead: dict) -> str:
     return line if len(line) < 200 else line[:198] + "…"
 
 
+def reloadable(script: Path, seen: dict[str, int]) -> bool:
+    """Whether ``script`` was replaced on disk and is ready to run: changed since ``seen["ran"]``
+    (the version this process runs), unchanged for one look (``seen["last"]``), so a file still
+    being written is not taken, and it compiles. One that does not compile is logged once and
+    becomes the version run, so the running copy carries on until the file changes again. A file
+    missing for a moment (an install replacing it) is no change."""
+    try:
+        now = script.stat().st_mtime_ns
+    except OSError:
+        return False
+    if now != seen["last"]:
+        seen["last"] = now
+        return False
+    if now == seen["ran"]:
+        return False
+    try:
+        compile(script.read_bytes(), str(script), "exec")
+    except (OSError, SyntaxError, ValueError) as e:
+        seen["ran"] = now
+        print(
+            f"{script} changed but does not load ({reason(e)}); keeping the running one",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+    return True
+
+
 def supervise_registry(
     og: Omnigent,
     registry: Path,
@@ -2213,9 +2308,12 @@ def supervise_registry(
     console: bool = False,
     fyi: str = "skip",
     decisions: Path | None = None,
+    script: Path | None = None,
 ) -> NoReturn:
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
-    each poll. Every line goes to stdout with the local time and, with ``notify``, into that
+    each poll. When ``script``, this file, is replaced on disk (``reloadable``: a skills sync
+    installed a new one), it re-executes itself in place with the same arguments at the top of a
+    poll with nothing waiting to be posted, its state written first, so nobody restarts it. Every line goes to stdout with the local time and, with ``notify``, into that
     session as ``Supervisor: <line>``. A line marked ``follow`` is a lead followed, not owed a
     report: ``follow`` says when it is news, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
     first, stopping at the first failure. A terminal event drops the session's line once its own
@@ -2271,6 +2369,12 @@ def supervise_registry(
     # event keeps its registry line until posted, and the restarted supervisor finds it again.
     outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
     window = time.monotonic()
+    script = script or Path(os.path.realpath(__file__))
+    try:
+        ran = script.stat().st_mtime_ns
+    except OSError:
+        ran = 0
+    seen = {"ran": ran, "last": ran}
 
     def stamp(line: str) -> str:
         return f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}"
@@ -2376,7 +2480,7 @@ def supervise_registry(
         for intent in intents:
             sid, action, text = intent["session"], intent["action"], intent["text"]
             try:
-                if prompts_of(og.info(sid)):  # relay would give the text as a question's answer
+                if prompts_of(og.info(sid)):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
                 relay(og, sid, text, ACTION_SECONDS)
             except Queued:
@@ -2727,6 +2831,19 @@ def supervise_registry(
         log(("active", sid), None)
         return at
 
+    def written(sid: str, lead: dict) -> float:
+        """When the lead's report was last written, else 0 (the error logged): a report it writes
+        as it goes (a merge queue, a gate log) is progress while its messages are quiet."""
+        if not lead["report"]:
+            return 0.0
+        try:
+            at = og.modified(sid, lead["report"])
+        except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
+            log(("written", sid), f"{sid}: report not read: {reason(e)}")
+            return 0.0
+        log(("written", sid), None)
+        return at
+
     def label(sid: str, lead: dict) -> None:
         """Write ``sid``'s status labels when the line changed or the last write is
         ``LABEL_SECONDS`` old, so a quiet poll writes nothing."""
@@ -2763,7 +2880,8 @@ def supervise_registry(
             return  # its follower was told and it waits on them
         if time.time() - lead["progress_at"] < DEADLINE_SECONDS:
             return
-        lead["progress_at"] = max(lead["progress_at"], og.active(sid))  # read only once due
+        # read only once due
+        lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
         quiet = time.time() - lead["progress_at"]
         steps = [(DEADLINE_SECONDS, "")]
         # one nudge per progress chain: the chain it was spent on is the one that waits longer
@@ -2778,6 +2896,14 @@ def supervise_registry(
 
     while True:
         flush()
+        if not outbox and not retry and reloadable(script, seen):
+            try:
+                if console:
+                    save()  # an unsaved state would be lost: keep running, try next poll
+                print(stamp(f"restarting: {script} changed"), flush=True)
+                os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
+            except Fail:
+                pass
         if console:
             recover()
             for again in retry[:]:
@@ -2971,6 +3097,12 @@ def main(argv: list[str] | None = None) -> int:
         help="a notice from NAME (a task, an agent), not the owner's words: it says so in its first"
         " line and never answers an open question",
     )
+    p.add_argument(
+        "--answer",
+        action="store_true",
+        help="give the message as the answer to the session's open question; without it, a"
+        " session waiting on a question holds the message behind it (exit 5)",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser("broadcast", description="relay one message file to many sessions at once")
     p.add_argument("message", help="the message, a file or the text itself; it owes no report")
@@ -3129,6 +3261,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.session,
                     text_or_file(args.message)[0],
                     args.confirm_seconds,
+                    answer=args.answer,
                     source=args.source,
                 )
             )
@@ -3169,6 +3302,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.registry:
                 for s, r in owed.items():
                     arm(args.registry, s, r)
+                # the registry holds them now: a restart that armed them again would repost a dropped one
+                sys.argv = [a for a in sys.argv if a not in args.owed]
                 supervise_registry(
                     og,
                     args.registry,

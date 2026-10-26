@@ -89,7 +89,9 @@ design, wireframes included for a UI, and delegate the rest.
    both are yours (worker.md, Gates and push). Its model is the default, or, where the
    issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
    names (SKILL.md, Models).
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker).
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
+   each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
+   brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
@@ -272,6 +274,13 @@ A child that ends its turn saying it waits (for a build, a gate, CI) rather than
 has left no report and will not wake itself: arm one background wait on its process or log
 that ends on every terminal state (success, failure, the process gone), e.g.
 `while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
+Finish a worker or verifier as soon as its report is read or its verdict posted, since an
+idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
+`wait` already finish the child whose report they return; a report you heard any other way
+(`send`, `watch`, a `run` that died, a file you read) leaves the child idle, so `reap <id>` it. At each
+wake and before each new start, finish any child whose report you have read and whose turn
+ended over 15 min ago. Only you know a report is in: an idle child still owing one looks
+finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
 A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your

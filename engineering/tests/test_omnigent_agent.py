@@ -184,7 +184,7 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
     assert sid == "s0" and text.endswith("do X")
     assert (
         "owner authorized" in text
-        and "foreground" in text
+        and "setsid nohup" in text
         and str(tmp_path / "r.md") in text
         and "roles/worker.md" in text
     )
@@ -1299,6 +1299,47 @@ def test_a_failed_create_with_no_session_made_fails_the_start(tmp_path: Path) ->
     assert og.posts == 0
 
 
+@pytest.mark.parametrize(
+    ("helpers", "subscriptions_fail", "expected"),
+    [
+        (
+            {"cloud": (300, False)},
+            False,
+            300.0,
+        ),  # a running cloud worker, no child: its updates count
+        (
+            {"cloud": (50, False)},
+            False,
+            100.0,
+        ),  # an idle helper holds nothing off: the child is newer
+        ({"done": (500, True)}, False, 100.0),  # an archived helper counts for nothing
+        ({"gone": (500, False)}, False, 100.0),  # a deleted one too
+        ({"cloud": (300, False)}, True, 100.0),  # no subscriptions endpoint: the children alone
+    ],
+)
+def test_active_counts_a_subscribed_top_level_helper_like_a_child(
+    monkeypatch: pytest.MonkeyPatch,
+    helpers: dict[str, tuple[int, bool]],
+    subscriptions_fail: bool,
+    expected: float,
+) -> None:
+    def call(self, method: str, path: str, body: object = None) -> object:
+        if path == "/v1/sessions/lead/child_sessions?limit=100":
+            return {"data": [{"id": "kid", "updated_at": 100}]}
+        if path == "/v1/sessions/lead/subscriptions":
+            if subscriptions_fail:
+                raise omnigent_agent.Fail("GET subscriptions: HTTP 404 Not Found")
+            return {"data": [{"subscriber_id": "lead", "session_id": h} for h in helpers]}
+        sid = path.removeprefix("/v1/sessions/")
+        if sid == "gone":
+            raise omnigent_agent.Gone("GET: HTTP 404 Not Found")
+        updated, archived = helpers[sid]
+        return {"id": sid, "updated_at": updated, "archived": archived}
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    assert object.__new__(omnigent_agent.Omnigent).active("lead") == expected  # no login read
+
+
 def test_the_lookup_matches_the_title_under_the_parent_created_after_the_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1350,7 +1391,7 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
 # The default preamble as it was before --top-level existed: a worker's or verifier's brief.
 DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
@@ -1421,7 +1462,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert text == omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="") + "do X"
     assert "owner's own words" in text and "ask them here" in text
     assert "USER NEEDED" not in text and "needs-owner" not in text
-    assert "foreground" in text and f"final report to {tmp_path / 'r.md'}" in text
+    assert "setsid nohup" in text and f"final report to {tmp_path / 'r.md'}" in text
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
 
@@ -1555,7 +1596,45 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
+    assert "setsid nohup" in brief  # long runs start detached
+    for nudge in (omnigent_agent.NUDGE, omnigent_agent.PR_NUDGE):
+        assert "detached" in nudge and "foreground" not in nudge
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
+
+
+@pytest.mark.parametrize(
+    "marker", ["UNPOSTED REPORT", "`UNPOSTED REPORT`", "**UNPOSTED REPORT**", "__UNPOSTED REPORT__"]
+)
+def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
+) -> None:
+    # the report links an earlier comment on its PR, as a pass-2 report does
+    body = "Rerun https://github.com/o/r/pull/7#issuecomment-5\nBranch: claude/x at abc\nGates: 0\n"
+    og = FakeOmnigent(reply=f"{marker}\n{body}")
+    calls = fake_gh(
+        monkeypatch,
+        {
+            "5": on_pr(7, "an old report"),
+            "comments": "https://github.com/o/r/pull/7#issuecomment-9",
+        },
+    )
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "`claude/…` branch this session started on" in brief and omnigent_agent.UNPOSTED in brief
+    assert omnigent_agent.wait(og, sid, report, pr=7) == str(report)
+    assert report.read_text() == body and og.posts == 1  # no nudge
+    assert calls[-1] == (
+        "api",
+        "repos/o/r/issues/7/comments",
+        "-f",
+        f"body={body}",
+        "--jq",
+        ".html_url",
+    )
+    posted = len(calls)
+    assert omnigent_agent.wait(og, sid, report, pr=7) == str(report)  # a re-attached wait
+    assert len(calls) == posted  # posts nothing again
 
 
 @pytest.mark.parametrize(
@@ -2295,12 +2374,21 @@ class Fleet:
         self.labels: list[tuple[str, dict]] = []  # each label write
         self.unlabelled = 0  # the next label writes that fail
         self.files: dict[str, str] = {}  # what read_file finds, by path
+        self.written: dict[str, float | Exception] = {}  # what modified finds (or raises), by path
+        self.stats: list[str] = []  # each modified read
         self.pages = 0  # history pages read back
 
     def read_file(self, sid: str, path: str) -> str:
         if path not in self.files:
             raise omnigent_agent.Gone(f"{path}: not found")
         return self.files[path]
+
+    def modified(self, sid: str, path: str) -> float:
+        self.stats.append(path)
+        at = self.written.get(path, 0.0)
+        if isinstance(at, Exception):
+            raise at
+        return at
 
     def older(self, sid: str, after: str = "") -> dict:
         self.pages += 1
@@ -2824,6 +2912,48 @@ def test_progress_starts_from_the_leads_real_activity_not_from_first_sight(
         assert progress == max(items[-1]["created_at"], og.kids.get("a", 0.0))
     else:
         assert time.time() - 60 < progress <= time.time()
+
+
+@pytest.mark.parametrize(
+    ("written_ago", "deadline"),
+    [
+        (1300.0, "no progress 22m (merge)"),  # written after its last message: counts from then
+        (100.0, None),  # written while its messages were quiet: progress, no deadline
+        (None, "no progress 60m (merge)"),  # not listed
+        (omnigent_agent.Fail("GET: HTTP 409"), "no progress 60m (merge)"),  # its host is offline
+    ],
+)
+def test_a_report_being_written_is_progress_once_the_lead_is_due(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    written_ago: float | Exception | None,
+    deadline: str | None,
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+    og.snap = {"status": "running"}
+    report = str(tmp_path / "a.md")
+    if written_ago is not None:
+        og.written[report] = (
+            written_ago if isinstance(written_ago, Exception) else time.time() - written_ago
+        )
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert [p.split("\n")[0] for p in fyis(og)] == (
+        [f"Supervisor: a t-a: {deadline}"] if deadline else []
+    )
+    assert og.stats == [report]
+    if written_ago == 100.0:
+        assert state_of(registry)["leads"]["a"]["progress_at"] == og.written[report]
+
+
+def test_a_lead_not_yet_due_has_its_report_left_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 120), ending("STILL WORKING: merge queue", 60))
+    og.snap = {"status": "running"}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert og.stats == [] and fyis(og) == []
 
 
 LIVE_TIMED = (
@@ -3460,12 +3590,17 @@ APPROVAL = {"elicitation_id": "e2", "params": {"content_preview": "Bash(rm -rf b
 
 
 def relay(
-    og: FakeOmnigent, sid: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str = "go"
+    og: FakeOmnigent,
+    sid: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str = "go",
+    *flags: str,
 ) -> int:
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
     (tmp_path / "m.md").write_text(text)
-    return omnigent_agent.main(["relay", sid, str(tmp_path / "m.md")])
+    return omnigent_agent.main(["relay", sid, str(tmp_path / "m.md"), *flags])
 
 
 def test_relay_to_an_idle_session_is_delivered(
@@ -3510,13 +3645,24 @@ def test_relay_of_the_same_words_after_the_session_replied_is_a_new_message(
     assert og.posts == 2
 
 
+def test_relay_holds_behind_an_open_question_unless_told_to_answer_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # the question holds every message behind it
+    sid = og.create("claude", "cos")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch, "sync done") == omnigent_agent.QUEUED
+    assert og.resolved == []
+    assert "Which base?" in capsys.readouterr().err
+
+
 def test_relay_answers_a_question_with_the_message_instead_of_posting_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(hold=10**6)  # an interrupt would leave it held (omnigent#14)
     sid = og.create("claude", "lead")
     og.prompts = [QUESTION]
-    assert relay(og, sid, tmp_path, monkeypatch, "use main\n") == 0
+    assert relay(og, sid, tmp_path, monkeypatch, "use main\n", "--answer") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "use main"})]
     assert og.posts == 0
     assert "answered its open question" in capsys.readouterr().out
@@ -3530,7 +3676,7 @@ def test_relay_rerun_answers_a_question_raised_behind_its_own_pending_copy(
     sid = og.create("claude", "lead")
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     og.prompts = [QUESTION]
-    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert relay(og, sid, tmp_path, monkeypatch, "go", "--answer") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "go"})]
     assert og.posts == 1
     assert "answered its open question" in capsys.readouterr().out
@@ -4001,6 +4147,17 @@ def test_report_lists_a_directory_one_entry_per_line(
     serve_files(monkeypatch, {f"{FS}/tmp?limit=1000&base=host": listing})
     assert omnigent_agent.main(["report", "s9", "/tmp"]) == 0
     assert capsys.readouterr().out == "a.md\nsub/\n"
+
+
+def test_modified_reads_the_files_time_from_its_folders_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = [{"name": "r.md.brief", "modified_at": 5}, {"name": "r.md", "modified_at": 7}]
+    seen = serve_files(monkeypatch, {f"{FS}/tmp/loop?limit=1000&base=host": {"data": entries}})
+    og = omnigent_agent.Omnigent()
+    assert og.modified("s9", "/tmp/loop/r.md") == 7.0
+    assert seen[-1] == f"{FS}/tmp/loop?limit=1000&base=host"  # one listing, not the file
+    assert og.modified("s9", "/tmp/loop/gone.md") == 0.0
 
 
 def test_report_exits_4_naming_a_missing_file_and_1_for_other_statuses(
@@ -4894,6 +5051,131 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
 
 
+def test_reloadable_takes_a_replaced_script_once_it_is_stable_and_compiles(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    ran = script.stat().st_mtime_ns
+    seen = {"ran": ran, "last": ran}
+    assert not omnigent_agent.reloadable(script, seen)  # unchanged
+    os.utime(script, ns=(ran + 10**9, ran + 10**9))
+    assert not omnigent_agent.reloadable(script, seen)  # changed: wait one look
+    assert omnigent_agent.reloadable(script, seen)  # stable and compiles
+    script.write_text("def broken(:\n")
+    os.utime(script, ns=(ran + 2 * 10**9, ran + 2 * 10**9))
+    assert not omnigent_agent.reloadable(script, seen)
+    assert not omnigent_agent.reloadable(script, seen)
+    assert "does not load" in capsys.readouterr().err
+    assert not omnigent_agent.reloadable(script, seen)  # logged once, kept running
+    assert capsys.readouterr().err == ""
+    script.unlink()
+    assert not omnigent_agent.reloadable(script, seen)  # an install replacing it
+
+
+def test_the_supervisor_re_executes_itself_when_its_script_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    execs: list[tuple[str, list[str]]] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        execs.append((path, argv))
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    monkeypatch.setattr(omnigent_agent.sys, "argv", ["agent.py", "supervise", "--registry", "r"])
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 5, bump, console=True, script=script)
+    assert execs == [
+        (sys.executable, [sys.executable, str(script), "supervise", "--registry", "r"])
+    ]
+    assert f"restarting: {script} changed" in capsys.readouterr().out
+    assert state_of(registry)["leads"]["a"]  # written before the exec
+
+
+def test_a_failed_state_write_before_the_restart_keeps_the_old_process_until_one_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    real_reload, real_write = omnigent_agent.reloadable, omnigent_agent.write_state
+    ready, seen_order = [False], []  # "fail", "ok" per write once the script changed, "exec"
+
+    def reloadable(path: Path, seen: dict[str, int]) -> bool:
+        ready[0] = real_reload(path, seen)
+        return ready[0]
+
+    def write_state(path: Path, state: dict) -> None:
+        if ready[0] and "fail" not in seen_order:  # the first write at the restart fails
+            seen_order.append("fail")
+            raise OSError("disk full")
+        real_write(path, state)
+        if "fail" in seen_order:
+            seen_order.append("ok")
+
+    def execv(path: str, argv: list[str]) -> None:
+        seen_order.append("exec")
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent, "reloadable", reloadable)
+    monkeypatch.setattr(omnigent_agent, "write_state", write_state)
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 6, bump, console=True, script=script)
+    assert seen_order[0] == "fail"  # the restart's write failed once
+    assert seen_order[-1] == "exec" and seen_order.count("exec") == 1
+    assert seen_order[-2] == "ok"  # no exec after the failure; one right after a write succeeded
+
+
+def test_the_supervisor_restarts_only_once_its_unposted_lines_are_posted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "a.md", 10)
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.refuse = 4  # the notify session refuses the posts of the first polls
+    inbox_at_exec: list[list[tuple[str, str]]] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        inbox_at_exec.append(list(og.inbox))
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 10, bump, notify="cos", script=script)
+    assert og.refuse == 0
+    assert inbox_at_exec == [[("cos", f"Supervisor: a t-a: report written: {report}")]]
+
+
+def test_a_re_exec_drops_the_session_pairs_its_registry_already_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, report = tmp_path / "registry", tmp_path / "a.md"
+    argv = ["agent.py", "supervise", "--registry", str(registry), f"a={report}"]
+    monkeypatch.setattr(omnigent_agent.sys, "argv", argv)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: Fleet())
+    replayed: list[list[str]] = []
+
+    def supervise_registry(*_: object) -> None:  # it never returns
+        replayed.append(sys.argv[1:])
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent, "supervise_registry", supervise_registry)
+    with pytest.raises(Stop):
+        omnigent_agent.main(argv[1:])
+    assert f"a={report.resolve()}" in registry.read_text()  # armed
+    assert replayed == [["supervise", "--registry", str(registry)]]  # a restart re-arms nothing
+
+
 def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4903,7 +5185,7 @@ def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
     (tmp_path / "m.md").write_text("ACTION NEEDED: the sync printed a note")
-    argv = ["relay", sid, str(tmp_path / "m.md"), "--from", "skills-sync"]
+    argv = ["relay", sid, str(tmp_path / "m.md"), "--from", "skills-sync", "--answer"]
     assert omnigent_agent.main(argv) == omnigent_agent.QUEUED
     assert og.resolved == []
     assert og.posts == 1
@@ -5014,6 +5296,8 @@ def test_direct_marks_and_clears_a_registry_line_keeping_its_other_fields(
     [
         ("Owner's answer: free the disk, then carry on.", False),  # a relay: a new chain
         (omnigent_agent.LEAD_NUDGE, True),  # the supervisor's own line: no progress
+        (omnigent_agent.NUDGE.format(report="/r/a.md"), True),  # wait's nudge, the same
+        (omnigent_agent.PR_NUDGE.format(pr=7), True),
     ],
 )
 def test_a_new_instruction_to_an_idle_lead_starts_a_new_progress_chain(
