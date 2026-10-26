@@ -45,22 +45,31 @@ STATUS_FIELD_ID=$(jq -r '.fields[]|select(.name=="Status").id' <<<"$FIELDS")
 FIRST_COLUMN_OPTION_ID=$(jq -r '.fields[]|select(.name=="Status").options[0].id' <<<"$FIELDS")
 ```
 
-No other field is needed. A separate loop-position field (`Phase`) next to `Status` has to be updated in step with it and goes stale the first time one update is missed; a `Kind` field repeats the labels.
-
-The built-in "Assignees" field shows whose a ticket is, and "Parent issue" and "Sub-issues progress" show where it belongs and how far its epic is, but a view shows only the fields in its visible list. Show them on the first view, and add an Epics view filtered to `label:epic`. `visibleFieldIds` replaces the list, in order, so name every field the view should show:
+No other field is needed, except `Priority` where the project ranks work: a view sorts and groups by a single-select field, not by a label.
 
 ```bash
-P=$(gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{fields(first:50){nodes{... on ProjectV2FieldCommon{id name}}} views(first:1){nodes{id}}}}}' -q .data.node)
-SHOW=(); for n in Title Status Assignees Labels "Parent issue" "Sub-issues progress"; do
-  SHOW+=(-f "f[]=$(jq -r --arg n "$n" '.fields.nodes[]|select(.name==$n).id' <<<"$P")"); done
-EPICS=$(gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2View(input:{projectId:$p,name:"Epics",layout:TABLE_LAYOUT}){projectV2View{id}}}' -q .data.createProjectV2View.projectV2View.id)
-gh api graphql -f v="$(jq -r '.views.nodes[0].id' <<<"$P")" "${SHOW[@]}" -f query='mutation($v:ID!,$f:[ID!]){updateProjectV2View(input:{viewId:$v,configuration:{visibleFieldIds:$f}}){projectV2View{name}}}'
-gh api graphql -f v="$EPICS" "${SHOW[@]}" -f query='mutation($v:ID!,$f:[ID!]){updateProjectV2View(input:{viewId:$v,filter:"label:epic",configuration:{visibleFieldIds:$f}}){projectV2View{name filter}}}'
+gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Priority",singleSelectOptions:[
+ {name:"P0",color:RED,description:"Now"},{name:"P1",color:ORANGE,description:"Next"},
+ {name:"P2",color:YELLOW,description:"Planned"},{name:"P3",color:GRAY,description:"Someday"}]}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}'
 ```
 
-A view's name, layout, filter and visible fields are all the API sets (`UpdateProjectV2ViewInput`); grouping and sorting are web-UI only (step 7).
+Views come from REST, which sets a view's layout, filter, visible fields, grouping (`group_by`, swimlanes), board columns (`vertical_group_by`) and sort (`sort_by`) when it creates it. GraphQL's `createProjectV2View` and `updateProjectV2View` set only the first three, and nothing regroups an existing view, so create every view this way, in the order the tabs should show, then delete the default `View 1`. REST takes the fields' numeric REST ids. The built-in "Assignees", "Parent issue" and "Sub-issues progress" fields show only where a view lists them.
 
-A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off (`workflows{nodes{name enabled}}` on the project shows it; only "Auto-add sub-issues to project" is on), and the API cannot switch them on. Until someone enables "Item closed" in the web UI, nothing moves a closed issue to `Done`: the loop sets `Done` itself at the step that closes the issue.
+```bash
+BASE=orgs/OWNER/projectsV2/$NUM   # users/OWNER/projectsV2/$NUM for a user's board
+F=$(gh api "$BASE/fields" --paginate); f() { jq --arg n "$1" '.[]|select(.name==$n).id' <<<"$F"; }
+T=$(f Title) S=$(f Status) A=$(f Assignees) L=$(f Labels) PA=$(f "Parent issue") SP=$(f "Sub-issues progress") P=$(f Priority)
+view() { gh api -X POST "$BASE/views" --input - -q '[.number,.name]|@tsv' <<<"$1"; }
+view '{"name":"Board","layout":"board","vertical_group_by":['$S'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$P,$A,$L,$PA,$SP']}'
+view '{"name":"By epic","layout":"table","filter":"-label:epic","group_by":['$PA'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$S,$P,$A,$L']}'
+view '{"name":"Epics","layout":"table","filter":"label:epic","visible_fields":['$T,$S,$P,$A,$SP']}'
+V1=$(gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{views(first:1){nodes{id}}}}}' -q '.data.node.views.nodes[0].id')
+gh api graphql -f v="$V1" -f query='mutation($v:ID!){deleteProjectV2View(input:{viewId:$v}){clientMutationId}}'
+```
+
+Without a Priority field, drop `$P` and the `sort_by` entries. `Title`, `Reviewers`, `Linked pull requests` and `Sub-issues progress` can't be grouped on.
+
+A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off; only "Auto-add sub-issues to project" is on. Which ones a board keeps on is the project's rule (a loop whose own script moves every ticket keeps them off); `scripts/project_workflows.py` switches on the ones it wants (step 7). Where "Item closed" stays off, nothing moves a closed issue to `Done`: the loop sets `Done` itself at the step that closes the issue.
 
 ### 3. Labels
 
@@ -121,17 +130,33 @@ gh project item-edit --project-id "$PID" --id "$ITEM" --field-id "$STATUS_FIELD_
 
 Re-read `field-list` after any field mutation; option ids change.
 
-### 7. Web-UI-only steps — report these, don't pretend they're done
+### 7. Workflows
 
-`gh` and the API cannot switch on a Projects workflow or set a view's grouping (`createProjectV2View` makes a view, not its grouping):
+No public API switches a workflow on: GraphQL has only `deleteProjectV2Workflow`, and REST has no workflow endpoint. `scripts/project_workflows.py` sends the web UI's own requests from a background tab of a browser signed in to GitHub, from a spec naming each workflow and its field value by name (its docstring has the format):
 
-1. **Workflows → Auto-add to project**, filter `is:issue is:open`. Without it only explicitly-added items appear.
-2. **Group the first view by Parent issue** (the ▾ next to the view name, then Group, then Parent issue) → each epic with its sub-issues under it.
-3. Optional **Roadmap view** with a date field.
+```bash
+cat > /tmp/workflows.json <<'JSON'
+{"owner": "OWNER", "number": 12, "workflows": [
+  {"name": "Auto-add to project", "query": "is:issue is:open", "repository": "OWNER/REPO"},
+  {"name": "Item closed", "set": {"Status": "Done"}}]}
+JSON
+export CDP_URL=http://127.0.0.1:9222   # the signed-in browser's debugging port
+uv run --with playwright python scripts/project_workflows.py /tmp/workflows.json --dry-run   # prints the requests
+uv run --with playwright python scripts/project_workflows.py /tmp/workflows.json
+gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{workflows(first:20){nodes{name enabled}}}}}' -q '.data.node.workflows.nodes[]|[.name,.enabled]|@tsv'
+```
 
-4. **Workflows → Item closed**, set Status to `Done`. It is on for a board created in the web UI and off for one created through the API.
+It exits 1, naming the page it reached, when the browser isn't signed in or an org's SSO asks for a sign-in: the person completes it in that browser and the script runs again. "Auto-add sub-issues to project" is on by default: adding a parent issue pulls in its sub-issues, closed ones included, with no Status. Give them a column in the same pass.
 
-"Auto-add sub-issues to project" is on by default: adding a parent issue pulls in its sub-issues, closed ones included, with no Status. Give them a column in the same pass.
+## A board of pull requests
+
+A view of every PR in flight, merged and closed, kept current by the built-in workflows alone: no token, Actions workflow or sync script.
+
+- **Unlinked.** Create it with `createProjectV2` and no `repositoryId`, owned by the repo's org or user. A board script that takes the repo's first linked project as the issue board would otherwise move tickets on the PR board. `gh repo view --json projectsV2` lists only the issue board; check it after creating the PR board and whenever a board move fails.
+- **Status** `Open`, `Merged`, `Closed`, replacing the default options (step 2).
+- **Workflows** (step 7): "Auto-add to project" with `is:pr is:open` for the repo; "Item added to project" and "Item reopened", content type pull request, set `Open`; "Item closed" sets `Closed`; "Pull request merged" sets `Merged`, which wins over "Item closed" on a merge. "Code review approved" and "Code changes requested" fire only on a GitHub review with that verdict, never on a comment review.
+- **Drafts are a filter, not a column.** No workflow fires on draft or ready for review, but the view filter `is:draft` is always current: a `Ready` view filtered `is:open -is:draft`, a `Drafts` view filtered `is:open is:draft`, and a board of every PR by Status.
+- **Backfill** the existing PRs once: `gh project item-add` each, then set its Status from `gh pr list --state all --json number,state`.
 
 ## Repo-side cleanup
 
