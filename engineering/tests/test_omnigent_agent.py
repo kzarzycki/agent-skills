@@ -978,11 +978,30 @@ def test_a_rerun_after_the_answer_landed_returns_the_report_it_produced(
     question = omnigent_agent.question_of(report)
     question.write_text("which base?")
     os.utime(question, (1, 1))
-    og.send(sid, "use main")  # the first send died before it removed the question
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "cos")
+    og.send(sid, "[relayed by cos]\nuse main")  # the first send died before it removed the question
     report.write_text("done\nSATISFIED: yes\n")  # and the child answered with its report
     (tmp_path / "a.md").write_text("use main")
     assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--verdict"]) == 0
     assert og.posts == 1
+
+
+def test_a_follow_up_is_marked_as_posted_so_owner_said_skips_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid = og.create("claude", "t")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "cos")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.md").write_text("yes, force-push the branch")
+    (tmp_path / "r.md").write_text("")
+    os.utime(tmp_path / "r.md", (1, 1))
+    omnigent_agent.main(["send", sid, "a.md", "r.md", "--timeout", "0"])
+    sent = [omnigent_agent.text_of(i) for i in og.sessions[sid] if i.get("role") == "user"]
+    follow_up = next(t for t in sent if "force-push" in t)
+    assert follow_up == "[relayed by cos]\nyes, force-push the branch"
+    assert follow_up.startswith(omnigent_agent.POSTED)  # owner-said rejects a quote found only here
 
 
 def test_a_follow_up_sent_as_the_turn_before_ends_is_waited_for(tmp_path: Path) -> None:

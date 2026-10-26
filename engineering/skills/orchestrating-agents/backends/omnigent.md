@@ -200,7 +200,7 @@ message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approv
 `relay --from <name>` is a notice from a task or an agent rather than the owner's words
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
 answers a question, so it waits behind one (exit 5) instead of becoming its answer. A plain
-`relay` sent as a message, and every `broadcast` message, opens with `[relayed by <the relaying session>]`.
+`relay` sent as a message, every `broadcast` message and every `send` follow-up open with `[relayed by <the relaying session>]`.
 
 **Checking an owner's words.** `python3 scripts/omnigent_agent.py owner-said <session>
 <quote or quote-file>` pages through the session's whole history for the newest message holding the

@@ -3250,7 +3250,9 @@ def main(argv: list[str] | None = None) -> int:
             if then is None:  # the registry lists a file, for the revive line to name
                 then = report.with_name(report.name + ".followup")
                 then.write_text(text)
-            send(og, args.session, text, report, args.confirm_seconds)
+            # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
+            mark = RELAYED.format(who=own_id() or "an agent")
+            send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds)
             # armed once the message is in the history, as start arms: before it, the report or
             # question of the turn before reads as newer than the last instruction; never for
             # --pr, as start skips it
