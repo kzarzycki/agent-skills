@@ -40,7 +40,7 @@ pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit 
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check `land` reads (below) to be green on the head, less the `loop:approvals`
-status it posts and every run of the workflow it runs in, which would make it wait on itself (with
+status it posts and the job it runs in, which would make it wait on itself (with
 `ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
@@ -228,7 +228,7 @@ PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSI
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
     ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
+    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ databaseId workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
   closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
@@ -1490,9 +1490,9 @@ def head_checks(
     """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
     the aggregate `check`; empty: every check); how many checks GitHub returned when it holds more than that one
     page, else None; and the names whose only run is a draft's skip, which the ready PR's CI has not reached yet.
-    `posting` (check merge) skips the `loop:approvals` status and every run of the workflow it runs in
-    ($GITHUB_WORKFLOW), since the approvals workflow posts the one from inside the other: reading either, it would
-    wait on itself."""
+    `posting` (check merge) skips the `loop:approvals` status and the job it runs in, since the approvals workflow
+    posts the one from inside the other: reading either, it would wait on itself. Every other check counts, its own
+    workflow's completed jobs too."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
     every = contexts["contexts"]["nodes"] if contexts else []
@@ -1502,7 +1502,15 @@ def head_checks(
         else None
     )
     wanted = {"check"} if required is None else required
-    own = os.environ.get("GITHUB_WORKFLOW") if posting else None
+    # ponytail: the job this runs in is the one of its workflow run (GITHUB_RUN_ID) still running, so a sibling job
+    # of that run running alongside it is skipped too; have the approvals job need it, or match the check run's
+    # databaseId against `job.check_run_id` passed in by the workflow if a project runs one in parallel.
+    own = os.environ.get("GITHUB_RUN_ID") if posting else None
+
+    def itself(node: dict[str, Any]) -> bool:
+        run = (node.get("checkSuite") or {}).get("workflowRun") or {}
+        return bool(own) and str(run.get("databaseId")) == own and node.get("status") != "COMPLETED"
+
     # CI skips a draft, and GitHub counts the skipped run as passing: one completed before the newest ready-for-review
     # is the draft's and says nothing about the ready PR. A run that completed on the draft is the head's result.
     ready = max(
@@ -1536,7 +1544,7 @@ def head_checks(
         name = node.get("name") or node.get("context")
         if wanted and name not in wanted:
             continue
-        if posting and (name == APPROVALS or (own and workflow(node) == own)):
+        if posting and name == APPROVALS:
             continue
         if skipped(node):
             drafts.add((workflow(node), name))
@@ -1544,9 +1552,11 @@ def head_checks(
         key = (workflow(node), name)
         if key not in newest or started(node) >= started(newest[key]):
             newest[key] = node
+    # the running job is the newest of its name, so an earlier run of it says nothing either
     checks = [
         (name, node.get("conclusion") or node.get("state") or node.get("status"))
         for (_, name), node in newest.items()
+        if not itself(node)
     ]
     # a draft skip is replaced only by its own workflow's run: a job of that name in another workflow says nothing
     return checks, more, {name for flow, name in drafts - newest.keys() if flow not in finished}

@@ -67,7 +67,7 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
     # the template's ruleset; `landing` reads the stubbed GitHub's instead. A test run in Actions is no approvals run.
-    monkeypatch.delenv("GITHUB_WORKFLOW", raising=False)
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check", approvals.APPROVALS})
 
 
@@ -817,15 +817,17 @@ def test_only_the_aggregate_check_is_read() -> None:
 
 def test_check_merge_reads_the_checks_land_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     """The base's required checks, or with none every check on the head; never the status the approvals workflow
-    posts, nor a run of the workflow it runs in, since either would make it wait on itself."""
+    posts, nor the job it runs in, since either would make it wait on itself."""
 
     def waits(required: set[str], *runs: dict[str, Any]) -> list[str]:
         monkeypatch.setattr(approvals, "required_checks", lambda _base: required)
         return approvals.waits(with_runs(*runs), [approved(1, "area:web")], BARE)
 
-    monkeypatch.setenv("GITHUB_WORKFLOW", "Approvals")
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
     status = {"__typename": "StatusContext", "context": approvals.APPROVALS, "state": "PENDING"}
-    itself = run("approvals", "", "2026-10-03T14:00:00Z", "Approvals") | {"status": "IN_PROGRESS"}
+    itself = in_run(
+        run("approvals", "", "2026-10-03T14:00:00Z", "Approvals") | {"status": "IN_PROGRESS"}, 42
+    )
     qualify = run("qualify", "SUCCESS", "2026-10-03T13:00:00Z")
     assert waits(set(), qualify, status, itself) == []
     assert waits(set(), run("qualify", "FAILURE", "2026-10-03T13:00:00Z"), status) == [
@@ -840,6 +842,35 @@ def test_check_merge_reads_the_checks_land_reads(monkeypatch: pytest.MonkeyPatch
     assert waits({"check", approvals.APPROVALS}, lint, run("check", "SUCCESS", ""), status) == []
     # a base requiring only the status waits for nothing more, as land does
     assert waits({approvals.APPROVALS}, lint, status) == []
+
+
+def in_run(node: dict[str, Any], run_id: int) -> dict[str, Any]:
+    node["checkSuite"]["workflowRun"]["databaseId"] = run_id
+    return node
+
+
+def test_check_merge_reads_the_completed_jobs_of_its_own_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An approvals job after validation in one workflow: the validation it follows counts, only the job is skipped."""
+
+    def waits(required: set[str], *runs: dict[str, Any]) -> list[str]:
+        monkeypatch.setattr(approvals, "required_checks", lambda _base: required)
+        return approvals.waits(with_runs(*runs), [approved(1, "area:web")], BARE)
+
+    monkeypatch.setenv("GITHUB_RUN_ID", "42")
+    itself = in_run(run("approvals", "", "2026-10-03T14:00:00Z") | {"status": "IN_PROGRESS"}, 42)
+    qualify = run("qualify", "SUCCESS", "2026-10-03T13:00:00Z", "Other")
+    lint = in_run(run("lint", "FAILURE", "2026-10-03T13:00:00Z"), 42)
+    assert waits(set(), qualify, lint, itself) == ["PR #7: `lint` is FAILURE on the head commit"]
+    check = in_run(run("check", "SUCCESS", "2026-10-03T13:00:00Z"), 42)
+    assert waits({"check", approvals.APPROVALS}, check, itself) == []
+    # an earlier run of the job that failed is superseded by the one running
+    failed = in_run(run("approvals", "FAILURE", "2026-10-03T12:00:00Z"), 41)
+    assert waits(set(), qualify, failed, itself) == []
+    # outside Actions the running job is a check like any other
+    monkeypatch.delenv("GITHUB_RUN_ID")
+    assert waits(set(), qualify, itself) == ["PR #7: `approvals` is IN_PROGRESS on the head commit"]
 
 
 def test_a_run_cancelled_by_a_newer_green_run_of_the_same_check_is_not_a_problem() -> None:
