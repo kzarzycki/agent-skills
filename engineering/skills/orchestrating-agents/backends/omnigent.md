@@ -555,9 +555,9 @@ half-written file is not taken, and a new file that does not compile is logged o
 running copy carries on.
 
 **Finished sessions.** `run` and `wait` finish the session whose report or verdict they
-return, unless given `--keep` (Cloud workers), which ends its agent process and keeps its transcript; a session that asked a
-question stays, since the answer goes to it. Finishing archives the session, a sub-agent
-too: Omnigent leaves the runner it shares with its parent up, on a build with
+return, unless given `--keep` (Cloud workers); a session that asked a question stays, since
+the answer goes to it. Finishing ends the session's agent process and keeps its transcript.
+It archives the session, a sub-agent too: Omnigent leaves the runner it shares with its parent up, on a build with
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
