@@ -11,6 +11,7 @@ from engineering.tests.test_consumer_e2e import (
     _expected_skills,
     _file_manifest,
     _isolated_env,
+    _no_bytecode,
     _run,
     _write_manifest,
 )
@@ -100,7 +101,7 @@ def assert_catalog_matches(source: dict[str, str], catalog: SkillCatalog) -> Non
 def pack_catalog(tmp_path: Path) -> Path:
     env = _isolated_env(tmp_path)
     package_copy = tmp_path / "engineering"
-    shutil.copytree(PACKAGE, package_copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(PACKAGE, package_copy, ignore=_no_bytecode)
     pack_dir = tmp_path / "packed"
     _run(["apm", "pack", "--output", str(pack_dir)], cwd=package_copy, env=env)
     manifests = list(pack_dir.rglob("plugin.json"))
@@ -112,7 +113,7 @@ def install_fixture(tmp_path: Path) -> InstalledFixture:
     global_catalogs_before = _global_catalogs()
     env = _isolated_env(tmp_path)
     package_copy = tmp_path / "engineering"
-    shutil.copytree(PACKAGE, package_copy, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.copytree(PACKAGE, package_copy, ignore=_no_bytecode)
     consumer = tmp_path / "consumer"
     shutil.copytree(FIXTURE_REPOSITORY, consumer)
     _write_manifest(consumer / "apm.yml", {"path": str(package_copy)})

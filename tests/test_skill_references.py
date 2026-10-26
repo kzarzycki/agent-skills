@@ -14,7 +14,8 @@ SKILLS = sorted(
 )
 # Harness metadata, attribution and the skill's own tests are not read by the model.
 UNREAD_DIRECTORIES = {"agents", "test", "tests"}
-UNREAD_NAMES = {"CREDITS.md", "LICENSE", "LICENSE.md", "LICENSE.txt"}
+# A `__pycache__` file only stops Python writing bytecode into an installed skill (#428).
+UNREAD_NAMES = {"CREDITS.md", "LICENSE", "LICENSE.md", "LICENSE.txt", "__pycache__"}
 
 
 # A name counts only as a whole path token: `data.md` is not named by `metadata.md`,
