@@ -8,13 +8,15 @@ main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
 A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, Cloud worker.
 
-1. **Build**, with the Build skill when loop.md § Practice names one, under these rules.
+1. **Build**, with the Build skill when loop.md's `practice` names one, under these rules.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
 2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
-   before each push (with `CI: none`, `approvals.py local-ci --record` on the committed
-   head, SKILL.md, Adopting the loop). Once it exits 0, commit and push with `git push -u origin <branch>` as
+   before each push (with `ci: false`, `approvals.py local-ci --record` on the committed
+   head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
+   file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report.
+   Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
    leaves its work on the branch. The lead merges your branch and opens the PR: a
@@ -22,11 +24,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
    posts it, since the spec lives on the issue. Your job ends at the push: don't wait for
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
-   the worktree you are given, then `mise run check` and push the same way. A command too
-   long for one turn runs in the foreground with a long timeout, or in the background behind
-   one wait that ends on every outcome (success, failure, the process gone); never end a
-   turn saying you are waiting, since nothing wakes you and the lead reads silence
-   as work.
+   the worktree you are given, then `mise run check` and push the same way. A command that
+   may outlast one tool call (a gate, a held lock, a queue) starts detached, `setsid nohup`,
+   with its log, pid and exit code in files, and is polled, since a foreground call times out
+   and Claude Code's low-memory reaper stops in-session background shells; never end a turn
+   saying you are waiting, since nothing wakes you and the lead reads silence as work.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
@@ -35,7 +37,8 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    of the instance) starts with the output of `git rev-parse HEAD` and the command that
    produced it, since a proof of another commit says nothing about the one under review.
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
-   commit does not already pin.
+   commit does not already pin. A fix that changes code a proof exercises reruns that proof
+   before the report, which lists each proof log with the SHA it names.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
    scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
@@ -53,4 +56,6 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    report to a file and send the lead its path: the branch and head SHA, the gate
    exit codes, the model you ran on, anything left out and why, and what you tried and
    dropped. A follow-up starts fresh from this report, not your transcript. If you're
-   blocked, report that and stop.
+   blocked, report that and stop. Blocked on a step only the owner can unblock (SKILL.md, Owner
+   steps park), first stop that step and release what it holds, then report the exact owner
+   action, since the lead parks it and nothing else frees the slot.
