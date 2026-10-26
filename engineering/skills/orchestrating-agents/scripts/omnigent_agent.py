@@ -56,7 +56,8 @@ question would take as its answer (``skipped: waiting on a question``); ``--proj
 not read); exit 1 when one failed;
 ``--dry-run`` only lists them. ``approve``
 accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
-tool call it answered; exit 1 when none was pending or a resolve failed. Whether an agent may
+tool call it answered; exit 1 when none was pending (naming any pending question and
+``relay --answer``) or a resolve failed. Whether an agent may
 approve is the project's policy, not this script's. ``status`` prints one line per session:
 its state, queued inputs and last assistant message (``(none)`` before its first).
 ``report`` prints a file through the session's file API, from any host: an absolute ``<path>`` is
@@ -1032,12 +1033,25 @@ def relay(
         text = f"{RELAYED.format(who=by)}\n{text}"
     outcome = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":
-        prompts = prompts_of(og.info(sid))
-        if prompts:
-            why = f"behind a prompt (`approve` answers an approval): {'; '.join(prompts)}"
-        else:
-            why = "until the session's current step ends"
-        raise Queued(f"session {sid}: queued {why}; it lands then")
+        info = og.info(sid)
+        asks = questions_of(info)
+        approvals = [p for p in prompts_of(info) if p not in asks]
+        held = []
+        if approvals:
+            held.append(f"an approval prompt (`approve` answers it): {'; '.join(approvals)}")
+        if asks:
+            held.append(f"a question: {'; '.join(asks)}")
+        why = f"behind {' and '.join(held)}" if held else "until the session's current step ends"
+        lands = "it lands then"
+        if asks:  # nothing withdraws a queued input, so a rerun with --answer would land it twice
+            how = (
+                "only the owner's own relay answers a question"
+                if source
+                else "next time, to answer a question, use `relay --answer` instead of a plain"
+                " relay, never after one"
+            )
+            lands = f"this message stays queued and lands once the question is answered ({how})"
+        raise Queued(f"session {sid}: queued {why}; {lands}")
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
 
 
@@ -1215,6 +1229,11 @@ def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], b
         except Fail as x:
             failed = True
             lines.append(f"session {sid}: not answered: {what}: {x}")
+    if not lines and (asks := questions_of(info)):
+        raise Fail(
+            f"session {sid}: no approval prompt pending, only a question"
+            f" (`relay --answer` answers it): {'; '.join(asks)}"
+        )
     if not lines:
         raise Fail(f"session {sid}: no approval prompt pending")
     return lines, failed

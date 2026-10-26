@@ -3949,7 +3949,50 @@ def test_relay_never_answers_an_approval_prompt_and_says_what_holds_it(
     og.prompts = [QUESTION, APPROVAL]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert og.resolved == []
-    assert "queued behind a prompt (`approve` answers an approval): " in capsys.readouterr().err
+    assert capsys.readouterr().err.strip() == (
+        f"session {sid}: queued behind an approval prompt (`approve` answers it): Bash(rm -rf build)"
+        f" and a question: {QUESTION['params']['content_preview']}; {LANDS_AFTER_A_QUESTION}"
+    )
+
+
+# Nothing withdraws a queued input, so the line never invites a rerun of this message with
+# --answer: the queued copy would land after the answer, the same words twice.
+LANDS_AFTER_A_QUESTION = (
+    "this message stays queued and lands once the question is answered (next time, to answer a"
+    " question, use `relay --answer` instead of a plain relay, never after one)"
+)
+
+
+def test_relay_behind_only_a_question_names_relay_answer_for_next_time_not_approve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    assert capsys.readouterr().err.strip() == (
+        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
+        f" {LANDS_AFTER_A_QUESTION}"
+    )
+    assert [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]] == [
+        f"{omnigent_agent.RELAYED.format(who='cos')}\ngo"
+    ]  # the copy that lands once the question is answered
+
+
+def test_relay_from_a_task_behind_a_question_says_only_the_owner_answers_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch, "synced", "--from", "nightly") == (
+        omnigent_agent.QUEUED
+    )
+    assert capsys.readouterr().err.strip() == (
+        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
+        " this message stays queued and lands once the question is answered"
+        " (only the owner's own relay answers a question)"
+    )
 
 
 def test_approve_resolves_each_approval_prompt_never_a_question(
@@ -3971,6 +4014,20 @@ def test_approve_resolves_each_approval_prompt_never_a_question(
     out = capsys.readouterr().out
     assert "not answered: Bash(rm -rf build): POST resolve e2: HTTP 404" in out
     assert f"session {sid}: declined Bash(rm -rf build)" in out
+
+
+def test_approve_with_only_a_question_pending_names_it_and_relay_answer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    og.prompts = [QUESTION]
+    assert omnigent_agent.main(["approve", sid]) == 1
+    assert og.resolved == []
+    err = capsys.readouterr().err
+    assert "only a question (`relay --answer` answers it): " in err
+    assert QUESTION["params"]["content_preview"] in err
 
 
 def test_relay_to_an_archived_session_is_not_deliverable(
