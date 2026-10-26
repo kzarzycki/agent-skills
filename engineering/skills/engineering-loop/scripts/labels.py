@@ -8,7 +8,7 @@
     uv run scripts/labels.py [--dry-run]
 
 Run in the project's checkout, from the installed engineering-loop skill, `--dry-run` first. The project's
-`mise run setup:github` runs it only once project-templates wires it in. One line per change, then one per label it keeps:
+`mise run setup:github` runs it too. One line per change, then one per label it keeps:
 
 - Renames first, in place (`PATCH labels/<old>`), so every open and closed issue and PR keeps its label: the
   tracker's `renames` (`old: new`), then the loop's own (`bug`, `enhancement` and `chore` to their `kind:` names,
