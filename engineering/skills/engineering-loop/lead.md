@@ -49,7 +49,7 @@ design, wireframes included for a UI, and delegate the rest.
    the plan with it next, as a `## Plan` comment on the issue; where loop.md's `plan` rule
    matches, it waits for the owner the same way. At triage, add `risk:high` to an issue
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
-   `priority:`). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
+   the tracker's priority, issues.md, Risk). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
    you may raise it, with `risk:high` on the PR, or dispute a `Risk: high` by answering in
    its thread with your reasoning, which the next pass re-judges; never lower it yourself,
    since the lead is the author's side of the review.

@@ -195,7 +195,7 @@ SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
 POINTS = ("spec", "plan")
 MERGE_LABEL = "approved:merge"
-# a change's consequences, not its urgency (that is `priority:`): set by a person or at triage, or by the gate
+# a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
 # the collaborator permissions that can write; GitHub's `permission` field reads `maintain` as `write`
 WRITE = {"admin", "maintain", "write"}

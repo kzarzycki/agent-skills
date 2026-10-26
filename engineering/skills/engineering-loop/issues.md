@@ -53,7 +53,8 @@ read as approved.
   data, security, another team's contract). A person sets it, or the lead at
   triage, and `approvals.py` adds it to a PR when loop.md's `risk` rule matches or the cap
   was reached with a core finding open. It names consequences, not urgency: how soon a
-  thing matters is a `priority:` label, which the gate never reads.
+  thing matters is the tracker's priority (on GitHub, the board's `Priority` field: github.md,
+  Board), which the gate never reads.
 
 A wayfinder map or ticket carries its `wayfinder:` label instead of a category, and no
 component or size: it resolves a decision, not a change.
