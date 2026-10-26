@@ -1562,6 +1562,41 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
 
 
 @pytest.mark.parametrize(
+    "marker", ["UNPOSTED REPORT", "`UNPOSTED REPORT`", "**UNPOSTED REPORT**", "__UNPOSTED REPORT__"]
+)
+def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
+) -> None:
+    # the report links an earlier comment on its PR, as a pass-2 report does
+    body = "Rerun https://github.com/o/r/pull/7#issuecomment-5\nBranch: claude/x at abc\nGates: 0\n"
+    og = FakeOmnigent(reply=f"{marker}\n{body}")
+    calls = fake_gh(
+        monkeypatch,
+        {
+            "5": on_pr(7, "an old report"),
+            "comments": "https://github.com/o/r/pull/7#issuecomment-9",
+        },
+    )
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "`claude/…` branch this session started on" in brief and omnigent_agent.UNPOSTED in brief
+    assert omnigent_agent.wait(og, sid, report, pr=7) == str(report)
+    assert report.read_text() == body and og.posts == 1  # no nudge
+    assert calls[-1] == (
+        "api",
+        "repos/o/r/issues/7/comments",
+        "-f",
+        f"body={body}",
+        "--jq",
+        ".html_url",
+    )
+    posted = len(calls)
+    assert omnigent_agent.wait(og, sid, report, pr=7) == str(report)  # a re-attached wait
+    assert len(calls) == posted  # posts nothing again
+
+
+@pytest.mark.parametrize(
     "link",
     [
         "https://github.com/o/r/pull/8#issuecomment-1",  # another PR

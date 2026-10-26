@@ -189,6 +189,11 @@ NUDGE = NO_REPORT + " Poll any long run you started detached, then write the rep
 COMMENT_URL = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/(\d+)#issuecomment-(\d+)"
 )
+# A cloud worker's reply opening with this line carries its report: its own post failed, so ``wait``
+# posts it on the PR from this host.
+UNPOSTED = "UNPOSTED REPORT"
+# its first line, however formatted: the brief quotes it in backticks, so `x` or **x** too
+UNPOSTED_LINE = re.compile(rf"[\W_]*{UNPOSTED}[\W_]*?(\n|$)")
 PR_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
@@ -311,9 +316,10 @@ When done, reply with only the report path.
 PR_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
 {role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
-When done, reply with only the comment's URL.
+When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
 """
 # A top-level lead talks to the owner directly, so it asks instead of writing a question; and since
@@ -1157,6 +1163,7 @@ def start(
     full = (LEAD_PREAMBLE if top_level else PR_PREAMBLE if pr else PREAMBLE).format(
         report=report,
         pr=pr,
+        unposted=UNPOSTED,
         role=f"Your role file is {role}; read it first.\n" if role else "",
     ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
@@ -1321,6 +1328,27 @@ def wait(
         )
         if turn_ended and not counts():
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
+        # before pr_report: an unposted report may link earlier comments on its PR
+        if turn_ended and pr and (marked := UNPOSTED_LINE.match(said.lstrip())):
+            body = said.lstrip()[marked.end() :].lstrip("\n")
+            # a re-attached wait finds the report it already posted
+            if not (report.exists() and report.read_text() == body):
+                repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+                url = gh(
+                    "api",
+                    f"repos/{repo.strip()}/issues/{pr}/comments",
+                    "-f",
+                    f"body={body}",
+                    "--jq",
+                    ".html_url",
+                )
+                print(
+                    f"session {sid} could not post its report; posted it: {url.strip()}",
+                    file=sys.stderr,
+                )
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(body)
+            break
         if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
