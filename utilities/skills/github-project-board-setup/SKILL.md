@@ -7,7 +7,7 @@ description: "Work a GitHub Projects v2 board that is the single home for a repo
 
 **Milestone** (M0…Mn) → **epic issue** (`epic` label) → **story/task sub-issues**, never deeper: the board's Parent issue field names only the direct parent, so a grandchild would not show under its epic. Order is real `blocked by` issue dependencies, not prose. Anything with a status lives on the board; repo docs hold only what stays true regardless of which story is in flight.
 
-One board field carries the position: `Status`. Its columns are the stages of the project's own engineering loop, in order, ending in `Done` — the project's docs name them (e.g. Intent→Needs owner→Ready→Build→Verify→Done). A column no ticket ever enters is a lie about the loop, so there is no second `Phase` field to keep in step. What a ticket is (epic, story, bug, enhancement) is a label; the board's built-in Labels field shows it. Where the project ranks work, `Priority` is a single-select field (P0…P3), since it holds one value per item, in its options' order, where an item can carry several labels.
+One board field carries the position: `Status`. Its columns are the stages of the project's own engineering loop, in order, ending in `Closed` — the project's docs name them (e.g. Intent→Needs owner→Ready→Build→Verify→Closed). The last column holds every closed issue, completed, not planned or duplicate, so it is named for the state, not for work done; the card's icon shows the reason, and a loop that calls its last stage `Done` maps it there in its own docs. A column no ticket ever enters is a lie about the loop, so there is no second `Phase` field to keep in step. What a ticket is (epic, story, bug, enhancement) is a label; the board's built-in Labels field shows it. Where the project ranks work, `Priority` is a single-select field (P0…P3), since it holds one value per item, in its options' order, where an item can carry several labels.
 
 **No board yet, or a board of pull requests?** → `references/new-board-setup.md` (its section A board of pull requests). Everything below assumes one exists.
 
@@ -89,7 +89,7 @@ Move the ticket at the same step that changes its state label or opens its PR, s
 
 Park: the project's waiting-for-a-human label + its column for that, and state on the issue which decision you're waiting for.
 
-Close-out: closing the issue moves it to `Done` only where the board's "Item closed" workflow is on (check `workflows{nodes{name enabled}}`; it is off on a board created through the API until `scripts/project_workflows.py` turns it on). Where it is off, set `Done` at the step that closes the issue. Epic sub-issue progress rolls up automatically. Record the outcome on the issue (what shipped, what's still unproven), not in a doc.
+Close-out: closing the issue moves it to `Closed` only where the board's "Item closed" workflow is on (check `workflows{nodes{name enabled}}`; it is off on a board created through the API until `scripts/project_workflows.py` turns it on). Where it is off, set `Closed` at the step that closes the issue. Epic sub-issue progress rolls up automatically. Record the outcome on the issue (what shipped, what's still unproven), not in a doc.
 
 ## Rules
 

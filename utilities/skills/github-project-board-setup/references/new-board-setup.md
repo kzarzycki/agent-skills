@@ -29,7 +29,7 @@ gh api graphql -f query='mutation($p:ID!,$d:String!,$m:String!){updateProjectV2(
 
 ### 2. Fields and views
 
-`Status` already exists with `Todo|In Progress|Done`. Replace the option set with the stages of the project's engineering loop, in order, ending in `Done` (the names below are an example; take the real ones from the project's docs). `updateProjectV2Field` **replaces**, so list every option you want:
+`Status` already exists with `Todo|In Progress|Done`. Replace the option set with the stages of the project's engineering loop, in order, ending in `Closed` (SKILL.md, The shape; the names below are an example; take the real ones from the project's docs). `updateProjectV2Field` **replaces**, so list every option you want:
 
 ```bash
 FID=$(gh project field-list "$NUM" --owner OWNER --format json | jq -r '.fields[]|select(.name=="Status").id')
@@ -37,7 +37,7 @@ cat > /tmp/q.graphql <<EOF
 mutation{updateProjectV2Field(input:{fieldId:"$FID",singleSelectOptions:[
  {name:"Intent",color:GRAY,description:""},{name:"Needs owner",color:RED,description:""},
  {name:"Ready",color:BLUE,description:""},{name:"Build",color:YELLOW,description:""},
- {name:"Verify",color:ORANGE,description:""},{name:"Done",color:GREEN,description:""}]}){projectV2Field{... on ProjectV2SingleSelectField{options{id name}}}}}
+ {name:"Verify",color:ORANGE,description:""},{name:"Closed",color:GREEN,description:""}]}){projectV2Field{... on ProjectV2SingleSelectField{options{id name}}}}}
 EOF
 gh api graphql -F query=@/tmp/q.graphql
 FIELDS=$(gh project field-list "$NUM" --owner OWNER --format json)   # re-read: the replace gave every option a new id
@@ -63,13 +63,14 @@ view() { gh api -X POST "$BASE/views" --input - -q '[.number,.name]|@tsv' <<<"$1
 view '{"name":"Board","layout":"board","vertical_group_by":['$S'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$P,$A,$L,$PA,$SP']}'
 view '{"name":"By epic","layout":"table","filter":"-label:epic","group_by":['$PA'],"sort_by":[['$P',"asc"]],"visible_fields":['$T,$S,$P,$A,$L']}'
 view '{"name":"Epics","layout":"table","filter":"label:epic","visible_fields":['$T,$S,$P,$A,$SP']}'
+view '{"name":"Not planned","layout":"table","filter":"is:closed reason:\"not planned\",duplicate","visible_fields":['$T,$L,$PA']}'
 V1=$(gh api graphql -f p="$PID" -f query='query($p:ID!){node(id:$p){... on ProjectV2{views(first:1){nodes{id}}}}}' -q '.data.node.views.nodes[0].id')
 gh api graphql -f v="$V1" -f query='mutation($v:ID!){deleteProjectV2View(input:{viewId:$v}){clientMutationId}}'
 ```
 
 Without a Priority field, drop `$P` and the `sort_by` entries. `Title`, `Reviewers`, `Linked pull requests` and `Sub-issues progress` can't be grouped on.
 
-A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off; only "Auto-add sub-issues to project" is on. Which ones a board keeps on is the project's rule (a loop whose own script moves every ticket keeps them off); `scripts/project_workflows.py` switches on the ones it wants (step 7). Where "Item closed" stays off, nothing moves a closed issue to `Done`: the loop sets `Done` itself at the step that closes the issue.
+A board created through the API has the built-in "Item closed" and "Item added to project" workflows switched off; only "Auto-add sub-issues to project" is on. Which ones a board keeps on is the project's rule; `scripts/project_workflows.py` switches on the ones it wants (step 7). "Item closed" setting `Closed` is the one almost every board wants, since GitHub closes issues on a PR's `Closes` without anything else moving them. Where it stays off, whatever closes an issue sets `Closed` itself.
 
 ### 3. Labels
 
@@ -138,7 +139,7 @@ No public API switches a workflow on: GraphQL has only `deleteProjectV2Workflow`
 cat > /tmp/workflows.json <<'JSON'
 {"owner": "OWNER", "number": 12, "workflows": [
   {"name": "Auto-add to project", "query": "is:issue is:open", "repository": "OWNER/REPO"},
-  {"name": "Item closed", "set": {"Status": "Done"}}]}
+  {"name": "Item closed", "set": {"Status": "Closed"}}]}
 JSON
 export CDP_URL=http://127.0.0.1:9222   # the signed-in browser's debugging port
 uv run --with playwright python scripts/project_workflows.py /tmp/workflows.json --dry-run   # prints the requests
