@@ -1335,11 +1335,8 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    me = viewer()
+    me: list[str | None] = []  # viewer(), asked once and only when a batch proof is found
     for note in notes(pull):
-        login = (note.get("author") or {}).get("login")
-        if login is None or (login != me and not writer(login)):
-            continue
         lines = note["body"].strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
             continue
@@ -1350,6 +1347,11 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
             key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
         }
         if fields.get("Head", "").lower() != head:
+            continue
+        login = (note.get("author") or {}).get("login")
+        if not me:
+            me.append(viewer())
+        if login is None or (login != me[0] and not writer(login)):
             continue
         if (why := unproven(head, fields)) is None:
             return None

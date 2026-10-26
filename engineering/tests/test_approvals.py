@@ -4629,6 +4629,16 @@ def test_only_a_batch_proof_by_the_running_account_or_a_writer_counts(
     assert merge(pr, [approved(1, "area:web")]) == lines
 
 
+def test_comments_that_are_no_batch_proof_cost_no_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ran() runs on every check merge and land poll: other comments mustn't each cost a GitHub call."""
+    asked: list[str | None] = []
+    monkeypatch.setattr(approvals, "writer", lambda login: asked.append(login) or False)
+    monkeypatch.setattr(approvals, "viewer", lambda: asked.append(None) or "loop")
+    comments = [note(f"review note {n}", author={"login": "some-bot"}) for n in range(20)]
+    approvals.ran(pull(reviews=(VERDICT,), comments=comments), None)
+    assert asked == []
+
+
 RED_BATCH = batch_note(HEAD, "c" * 40, "d" * 40, exit=1)
 
 
