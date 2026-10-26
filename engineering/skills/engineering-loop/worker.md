@@ -24,14 +24,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
    posts it, since the spec lives on the issue. Your job ends at the push: don't wait for
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
-   the worktree you are given, then `mise run check` and push the same way. A command too
-   long for one turn runs in the foreground with a long timeout, or in the background behind
-   one wait that ends on every outcome (success, failure, the process gone); never end a
-   turn saying you are waiting, since nothing wakes you and the lead reads silence
-   as work.
-   A run that may outlast the turn or a low-memory reaper (Claude Code stops background
-   shells when memory runs low) starts detached, `setsid nohup`, with its log, pid and exit
-   code in files, and is polled.
+   the worktree you are given, then `mise run check` and push the same way. A command that
+   may outlast one tool call (a gate, a held lock, a queue) starts detached, `setsid nohup`,
+   with its log, pid and exit code in files, and is polled, since a foreground call times out
+   and Claude Code's low-memory reaper stops in-session background shells; never end a turn
+   saying you are waiting, since nothing wakes you and the lead reads silence as work.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or

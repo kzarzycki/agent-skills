@@ -53,8 +53,8 @@ yourself, keeping standards and spec as separate axes.
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
 - **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
-  or a queue, or outlast one tool call, starts detached with its output and exit code in a
-  log, `setsid nohup flock <lock> sh -c '<cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1 &`,
+  or a queue, or outlast one tool call, starts detached with its pid, output and exit code
+  in files, `setsid nohup sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1 &`,
   and is polled in calls well under the tool's limit, up to a total budget you state: a
   blocker that is only your own call timing out spends the pass on nothing, and Claude
   Code's low-memory reaper stops in-session background shells.
