@@ -1,7 +1,7 @@
 # Loop facts
 
 The engineering loop's values for this repo. `engineering/skills/engineering-loop/SKILL.md`
-(Approvals and proof) defines what each line approves and what still waits for the owner.
+(Approvals and proof) defines what each setting approves and what still waits for the owner.
 
 Orchestration backend: omnigent
 
@@ -15,11 +15,21 @@ approve reversible progress (#245, evidence on #228): a Sonnet worker cost about
 one per item. At its end, telemetry compares verifier passes per PR against the Opus workers of
 2026-10-18..20. Leads and verifiers keep their defaults.
 
-## Approvals
+## Settings
 
-- spec: auto
-- merge: auto unless risk
-- risk: verifier or path .github/** or path CODEOWNERS or path docs/agents/loop.md
+```yaml
+spec:
+  auto: true
+
+risk:
+  verifier: true
+  paths:
+    - .github/**
+    - CODEOWNERS
+    - docs/agents/loop.md
+```
+
+## Approvals
 
 The owner's reason: specs and merges are approved by policy, so work doesn't stop on them,
 and the owner sees only what no automated check can settle (#330). The verifier judges each
