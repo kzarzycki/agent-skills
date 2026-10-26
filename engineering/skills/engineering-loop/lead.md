@@ -97,7 +97,9 @@ design, wireframes included for a UI, and delegate the rest.
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
-7. **Verify** (board: `Verify`). Commit and push. Before each pass, rerun on the head every
+7. **Verify** (board: `Verify`). A worker report naming a test that passed only on its
+   retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
+   the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before each pass, rerun on the head every
    proof the spec's acceptance needs whose log names another commit, since the verifier
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
@@ -267,6 +269,8 @@ A child that ends its turn saying it waits (for a build, a gate, CI) rather than
 has left no report and will not wake itself: arm one background wait on its process or log
 that ends on every terminal state (success, failure, the process gone), e.g.
 `while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
+A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
+process still hung on one is yours to stop and release, since its owner has ended its turn.
 A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
 before then.
