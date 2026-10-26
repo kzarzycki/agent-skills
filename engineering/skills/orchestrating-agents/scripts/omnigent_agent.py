@@ -192,6 +192,8 @@ COMMENT_URL = re.compile(
 # A cloud worker's reply opening with this line carries its report: its own post failed, so ``wait``
 # posts it on the PR from this host.
 UNPOSTED = "UNPOSTED REPORT"
+# its first line, however formatted: the brief quotes it in backticks, so `x` or **x** too
+UNPOSTED_LINE = re.compile(rf"\W*{UNPOSTED}\W*?(\n|$)")
 PR_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
@@ -1327,8 +1329,8 @@ def wait(
         if turn_ended and not counts():
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
         # before pr_report: an unposted report may link earlier comments on its PR
-        if turn_ended and pr and said.lstrip().startswith(UNPOSTED):
-            body = said.lstrip().removeprefix(UNPOSTED).lstrip("\n")
+        if turn_ended and pr and (marked := UNPOSTED_LINE.match(said.lstrip())):
+            body = said.lstrip()[marked.end() :].lstrip("\n")
             # a re-attached wait finds the report it already posted
             if not (report.exists() and report.read_text() == body):
                 repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")

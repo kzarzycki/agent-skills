@@ -1561,12 +1561,13 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
+@pytest.mark.parametrize("marker", ["UNPOSTED REPORT", "`UNPOSTED REPORT`", "**UNPOSTED REPORT**"])
 def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_host(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
 ) -> None:
     # the report links an earlier comment on its PR, as a pass-2 report does
     body = "Rerun https://github.com/o/r/pull/7#issuecomment-5\nBranch: claude/x at abc\nGates: 0\n"
-    og = FakeOmnigent(reply=f"{omnigent_agent.UNPOSTED}\n{body}")
+    og = FakeOmnigent(reply=f"{marker}\n{body}")
     calls = fake_gh(
         monkeypatch,
         {
