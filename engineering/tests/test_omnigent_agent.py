@@ -1337,7 +1337,7 @@ def test_active_counts_a_subscribed_top_level_helper_like_a_child(
         return {"id": sid, "updated_at": updated, "archived": archived}
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
-    assert omnigent_agent.Omnigent().active("lead") == expected
+    assert object.__new__(omnigent_agent.Omnigent).active("lead") == expected  # no login read
 
 
 def test_the_lookup_matches_the_title_under_the_parent_created_after_the_attempt(
