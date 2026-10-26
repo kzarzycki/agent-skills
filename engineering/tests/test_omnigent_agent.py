@@ -3949,7 +3949,23 @@ def test_relay_never_answers_an_approval_prompt_and_says_what_holds_it(
     og.prompts = [QUESTION, APPROVAL]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     assert og.resolved == []
-    assert "queued behind a prompt (`approve` answers an approval): " in capsys.readouterr().err
+    assert capsys.readouterr().err.strip() == (
+        f"session {sid}: queued behind an approval prompt (`approve` answers it): Bash(rm -rf build)"
+        " and a question (`relay --answer` then gives the message as its answer): "
+        f"{QUESTION['params']['content_preview']}; it lands then"
+    )
+
+
+def test_relay_behind_only_a_question_names_relay_answer_not_approve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
+    err = capsys.readouterr().err
+    assert "queued behind a question (`relay --answer` gives the message as its answer): " in err
+    assert "`approve`" not in err
 
 
 def test_approve_resolves_each_approval_prompt_never_a_question(
@@ -3971,6 +3987,20 @@ def test_approve_resolves_each_approval_prompt_never_a_question(
     out = capsys.readouterr().out
     assert "not answered: Bash(rm -rf build): POST resolve e2: HTTP 404" in out
     assert f"session {sid}: declined Bash(rm -rf build)" in out
+
+
+def test_approve_with_only_a_question_pending_names_it_and_relay_answer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    og.prompts = [QUESTION]
+    assert omnigent_agent.main(["approve", sid]) == 1
+    assert og.resolved == []
+    err = capsys.readouterr().err
+    assert "only a question (`relay --answer` answers it): " in err
+    assert QUESTION["params"]["content_preview"] in err
 
 
 def test_relay_to_an_archived_session_is_not_deliverable(
