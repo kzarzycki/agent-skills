@@ -590,21 +590,22 @@ def test_capacity_reads_macos_memory_or_says_it_is_not_measured(
     )
 
 
-def test_cpu_idle_reads_proc_stat_or_tops_second_sample(
+def test_cpu_idle_reads_proc_stat_or_iostats_second_sample(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.undo()  # the real measurement, on a faked host
     stat = tmp_path / "stat"
-    stat.write_text("cpu 100 0 100 700 100 0 0 0\ncpu0 1 2 3 4 5 6 7 8\n")
+    stat.write_text("cpu 100 0 100 700 100 0 0 0 50 0\ncpu0 1 2 3 4 5 6 7 8\n")
     monkeypatch.setattr(omnigent_agent, "PROC_STAT", stat)
-    later = "cpu 160 0 140 760 140 0 0 0\n"  # the second read, a second later
+    later = "cpu 160 0 140 760 140 0 0 0 90 0\n"  # a second later; guest is counted in user
     monkeypatch.setattr(omnigent_agent.time, "sleep", lambda _: stat.write_text(later))
     assert omnigent_agent.cpu_idle() == 50.0  # (60 idle + 40 iowait) of 200 ticks
     monkeypatch.setattr(omnigent_agent, "PROC_STAT", tmp_path / "absent")
-    top = subprocess.CompletedProcess([], 0, stdout="CPU usage: 9% user, 6% sys, 85% idle\n")
-    monkeypatch.setattr(omnigent_agent.subprocess, "run", lambda *a, **k: top)
+    head = "      cpu    load average\n us sy id   1m   5m   15m\n 33 19 48  131.50 100.60 107.07\n"
+    iostat = subprocess.CompletedProcess([], 0, stdout=head)
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", lambda *a, **k: iostat)
     assert omnigent_agent.cpu_idle() is None  # one sample counts since boot: not measured
-    top.stdout += "CPU usage: 40.5% user, 21.5% sys, 38.0% idle\n"
+    iostat.stdout += " 41 21 38  131.50 100.60 107.07\n"
     assert omnigent_agent.cpu_idle() == 38.0
 
 

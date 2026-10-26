@@ -1129,13 +1129,14 @@ def available_mb() -> float | None:
 
 def cpu_idle() -> float | None:
     """This host's idle CPU share in percent over about a second, or None when it cannot tell:
-    Linux's ``/proc/stat`` read twice, else macOS ``top``'s second sample (its first counts
-    since boot)."""
+    Linux's ``/proc/stat`` read twice, else macOS ``iostat``'s second sample (its first counts
+    since boot). Not ``top``, which collects every process each sample and takes 5-15 s on a
+    loaded host."""
     if PROC_STAT.exists():
 
         def sample() -> tuple[int, int]:  # idle and iowait, and all ticks
             ticks = [int(x) for x in PROC_STAT.read_text().split("\n", 1)[0].split()[1:]]
-            return ticks[3] + ticks[4], sum(ticks)
+            return ticks[3] + ticks[4], sum(ticks[:8])  # guest time is already in user and nice
 
         idle, total = sample()
         time.sleep(1)
@@ -1143,13 +1144,15 @@ def cpu_idle() -> float | None:
         return 100 * (idle2 - idle) / max(total2 - total, 1)
     try:
         out = subprocess.run(
-            ["top", "-l", "2", "-n", "0", "-s", "1"],
+            ["iostat", "-c", "2", "-w", "1", "-n", "0"],
             capture_output=True,
             check=False,
             text=True,
             timeout=10,
         ).stdout
-        return float(re.findall(r"([\d.]+)% idle", out)[1])
+        lines = out.splitlines()  # a title, " us sy id ...", then one row per sample
+        rows = [line.split() for line in lines[2:]]
+        return float(rows[1][lines[1].split().index("id")])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return None
 
