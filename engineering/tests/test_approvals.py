@@ -4921,7 +4921,8 @@ APP = "".join(f"line {n}\n" for n in range(1, 11))
 def carries(merge: str, head: str, base: str, since: str, branch: str = "main") -> str:
     return (
         f"{merge} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {branch}'s"
-        f" {base}, whose changes since {since} touch none of the PR's files and no `carry_over_main.except` path"
+        f" {base}, whose changes since {since} touch none of the PR's files, and neither side touches a"
+        " `carry_over_main.except` path"
     )
 
 
@@ -5071,6 +5072,12 @@ REFUSED = {
         {},
         CARRY,
         "main's changes since {since} touch mise.toml, a `carry_over_main.except` path",
+    ),
+    "the PR's own except-path change": (
+        {"other.txt": "main moved\n"},
+        {},
+        add(NO_CI, "carry_over_main", "except:\n  - '*.py'\n"),
+        "the PR's changes since {since} touch app.py, a `carry_over_main.except` path",
     ),
     "a project without the line": ({"other.txt": "main moved\n"}, {}, NO_CI, None),
 }

@@ -1436,8 +1436,9 @@ def merged(
     """The tree `git merge-tree --write-tree` makes of commits `first` and `second`, so a merge with that tree resolved
     no conflict and added nothing, and their merge base; a string names why not. With `guard`, the globs of loop.md's
     `carry_over_main.except`, the proofs on `first` carry over to that merge only when `second`'s changes since the
-    merge base (`base`'s) touch no file `first`'s changes touch and none a glob matches (fnmatch, as a rule's
-    `paths`), and the two have one merge base. Fail-closed: a git error is a why, never a carry."""
+    merge base (`base`'s) touch no file `first`'s changes touch, neither side's changes touch a file a glob matches
+    (fnmatch on the full path, as a rule's `paths`), and the two have one merge base. `first` is the PR's head, so a
+    why names its side as the PR's. Fail-closed: a git error is a why, never a carry."""
     try:
         clean = subprocess.run(
             ["git", "merge-tree", "--write-tree", first, second],
@@ -1464,12 +1465,12 @@ def merged(
         ]
         if both := sorted(changed[0] & changed[1]):
             return f"{both[0]} changed on both sides since {bases[0]}"
-        if hit := sorted(
-            path for path in changed[1] if any(fnmatch.fnmatch(path, glob) for glob in guard)
-        ):
-            return (
-                f"{base}'s changes since {bases[0]} touch {hit[0]}, a `carry_over_main.except` path"
-            )
+        # the PR's own config change was gated only on the PR's code, never on what the base added since
+        for side, paths in ((f"{base}'s", changed[1]), ("the PR's", changed[0])):
+            if hit := sorted(
+                path for path in paths if any(fnmatch.fnmatch(path, glob) for glob in guard)
+            ):
+                return f"{side} changes since {bases[0]} touch {hit[0]}, a `carry_over_main.except` path"
         return tree, bases[0]
     except (subprocess.CalledProcessError, OSError) as exc:
         return f"git failed reading the merge of {first} and {second}: {exc}"
@@ -1479,7 +1480,8 @@ def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
     """The line check merge, land and local-ci print when `what` carries the proofs of `head` (carried, merged)."""
     return (
         f"{what} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {base}'s"
-        f" {second}, whose changes since {since} touch none of the PR's files and no `carry_over_main.except` path"
+        f" {second}, whose changes since {since} touch none of the PR's files, and neither side touches a"
+        " `carry_over_main.except` path"
     )
 
 
@@ -1487,7 +1489,7 @@ def carried(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | N
     """The commit whose verdict and local-ci record the PR's head carries, with carry_line(), where loop.md has
     `carry_over_main`: the head is a merge whose first parent is that commit and whose second is on the base (an
     ancestor of its tip), its tree is git merge-tree's of the two, and merged() finds the base's changes disjoint
-    from the PR's and from every except glob. A string names why it carries nothing; None without the setting, which
+    from the PR's and neither side's touching an except glob. A string names why it carries nothing; None without the setting, which
     then reads no git at all. ponytail: one merge deep; walk first parents when a PR merges main in twice unverified."""
     guard = settings(loop).get("carry_over_main")
     if guard is None:
