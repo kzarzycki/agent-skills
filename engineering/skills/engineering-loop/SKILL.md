@@ -572,8 +572,10 @@ or the owner's private network.
   (on the issue's labels), so the choice and its reason sit in one file the
   owner can change. A `Verifier model:` line does the same for a verifier whose PR
   matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
-  on the PR's files, so a PR that `check merge` rates high never gets a lower tier (the
-  verifier's own `Risk:` line comes after the launch, so it can't count). It applies within the verifier's own family: it lowers the tier, never the family, which
+  on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
+  verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
+  `Risk: high` takes the PR out of the condition, so its next pass runs on the default tier
+  and a risk-high PR never lands on a lower tier's verdict alone. It applies within the verifier's own family: it lowers the tier, never the family, which
   stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
   Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
   and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
