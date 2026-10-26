@@ -9,6 +9,7 @@
     uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
+    uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -2226,9 +2227,9 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
     )
 
 
-def verdict(pr: int, report: Path) -> int:
-    """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
-    line of the diff when its line is outside it, in the review's body when its file is."""
+def parse_report(report: Path) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str]]:
+    """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings and its closing
+    `VERDICT:`, `SATISFIED:` and `Risk:` lines. Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
     verdicts = [line for line in lines if line.startswith("VERDICT:")]
@@ -2263,8 +2264,22 @@ def verdict(pr: int, report: Path) -> int:
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
-    head, (family, number) = heads[-1].lower(), passes[-1].groups()
-    heading = f"Verifier ({family}), pass {number}"
+    family, number = passes[-1].groups()
+    closing = [verdicts[-1], satisfied[-1], judgments[-1]]
+    return f"Verifier ({family}), pass {number}", heads[-1].lower(), found, closing
+
+
+def report_check(report: Path) -> int:
+    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
+    parse_report(report)
+    print(f"{report} reads as a verdict")
+    return 0
+
+
+def verdict(pr: int, report: Path) -> int:
+    """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
+    line of the diff when its line is outside it, in the review's body when its file is."""
+    heading, head, found, closing = parse_report(report)
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
@@ -2283,7 +2298,7 @@ def verdict(pr: int, report: Path) -> int:
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
     summary = "\n\n".join(
-        [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}\n{judgments[-1]}"]
+        [f"{heading} on {head[:7]}.", *outside, "\n".join(closing)]
     )
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
@@ -2423,6 +2438,8 @@ def main(argv: list[str]) -> int:
     posting = commands.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
+    reading = commands.add_parser("report")
+    reading.add_argument("report", type=Path)
     recording = commands.add_parser("local-ci")
     recording.add_argument("pr", type=int, nargs="?")
     recording.add_argument("--record", action="store_true")
@@ -2433,6 +2450,8 @@ def main(argv: list[str]) -> int:
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
     try:
+        if args.command == "report":  # reads a local file only, so no remote needs choosing
+            return report_check(args.report)
         one_repo()
         if args.command == "check":
             return check(args.point, args.pr)
