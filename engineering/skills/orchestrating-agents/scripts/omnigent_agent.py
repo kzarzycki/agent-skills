@@ -299,10 +299,13 @@ QUEUED_SECONDS = 10.0
 BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
 # A host over either limit has no room for another session: they time out and fail there. Knobs,
 # since what a host carries depends on its hardware and what else runs on it.
-MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)
+MIN_CPU_IDLE = float(os.environ.get("OMNIGENT_MIN_CPU_IDLE") or 10)  # percent
+MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)  # idle not measured
 MIN_AVAILABLE_MB = float(os.environ.get("OMNIGENT_MIN_AVAILABLE_MB") or 1536)
-CAPACITY_WAIT_SECONDS = 600.0  # start waits this long for room, then fails
+# start waits this long for room, then fails; a queue runner sets it longer
+CAPACITY_WAIT_SECONDS = float(os.environ.get("OMNIGENT_CAPACITY_WAIT_SECONDS") or 600)
 MEMINFO = Path("/proc/meminfo")
+PROC_STAT = Path("/proc/stat")
 
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -1124,16 +1127,51 @@ def available_mb() -> float | None:
         return None
 
 
+def cpu_idle() -> float | None:
+    """This host's idle CPU share in percent over about a second, or None when it cannot tell:
+    Linux's ``/proc/stat`` read twice, else macOS ``top``'s second sample (its first counts
+    since boot)."""
+    if PROC_STAT.exists():
+
+        def sample() -> tuple[int, int]:  # idle and iowait, and all ticks
+            ticks = [int(x) for x in PROC_STAT.read_text().split("\n", 1)[0].split()[1:]]
+            return ticks[3] + ticks[4], sum(ticks)
+
+        idle, total = sample()
+        time.sleep(1)
+        idle2, total2 = sample()
+        return 100 * (idle2 - idle) / max(total2 - total, 1)
+    try:
+        out = subprocess.run(
+            ["top", "-l", "2", "-n", "0", "-s", "1"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        ).stdout
+        return float(re.findall(r"([\d.]+)% idle", out)[1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
 def capacity() -> tuple[bool, str]:
-    """Whether this host has room for another session, and a line saying what it carries."""
-    load = os.getloadavg()[0] / (os.cpu_count() or 1)
+    """Whether this host has room for another session, and a line saying what it carries. CPU is
+    judged by idle share, not the load average, which on macOS also counts threads waiting on I/O
+    and memory and so overstates CPU use several times over; load decides only when idle cannot
+    be measured."""
     # ponytail: this host only, the one start's config names.
-    mb = available_mb()
+    idle, mb = cpu_idle(), available_mb()
+    if idle is None:
+        load = os.getloadavg()[0] / (os.cpu_count() or 1)
+        cpu, room = (
+            f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g})",
+            load <= MAX_LOAD_PER_CORE,
+        )
+    else:
+        cpu, room = f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})", idle >= MIN_CPU_IDLE
     memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
-    line = (
-        f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g}), {memory} (min {MIN_AVAILABLE_MB:g})"
-    )
-    return load <= MAX_LOAD_PER_CORE and (mb is None or mb >= MIN_AVAILABLE_MB), line
+    line = f"{cpu}, {memory} (min {MIN_AVAILABLE_MB:g})"
+    return room and (mb is None or mb >= MIN_AVAILABLE_MB), line
 
 
 def taken(e: Fail) -> bool:
