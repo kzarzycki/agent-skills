@@ -29,6 +29,9 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    one wait that ends on every outcome (success, failure, the process gone); never end a
    turn saying you are waiting, since nothing wakes you and the lead reads silence
    as work.
+   A run that may outlast the turn or a low-memory reaper (Claude Code stops background
+   shells when memory runs low) starts detached, `setsid nohup`, with its log, pid and exit
+   code in files, and is polled.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
