@@ -2817,11 +2817,14 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, due_in: float, deadline: bool
 ) -> None:
     assert omnigent_agent.wait_of(LIVE_TIMED) == "until 2026-10-21T23:17Z"
-    assert omnigent_agent.wait_of(LIVE_TIMED.split(". A timer")[0]) == "unknown"
+    # its named wait, not "lead" from "per lead event"
+    assert omnigent_agent.wait_of(LIVE_TIMED.split(". A timer")[0]) == "day"
     # the lead's real last message: a bare time, and "lead" in "wakes this lead"
     real = "/r/a.md\n\nSTILL WORKING: waiting on the timer (2026-10-21 23:17 UTC), which wakes this lead"
     assert omnigent_agent.wait_of(real) == "until 2026-10-21T23:17Z"
-    assert omnigent_agent.wait_of(real.replace(" (2026-10-21 23:17 UTC)", "")) == "unknown"
+    assert (
+        omnigent_agent.wait_of(real.replace(" (2026-10-21 23:17 UTC)", "")) == "timer"
+    )  # not "lead"
     assert (
         omnigent_agent.wait_of("STILL WORKING: until 2026-10-21T23:17:59Z")
         == "until 2026-10-21T23:17:59Z"
@@ -5052,7 +5055,7 @@ def test_a_report_s_ending_is_read_past_its_title_and_a_report_without_one_still
     head = omnigent_agent.report_head
     assert head("# Report\n\nDONE: merged #1\n- notes") == "DONE: merged #1"
     assert head("# R\n\nbody\n\nSTILL WORKING: waiting on\nthe worker\n\nlater") == (
-        "STILL WORKING: waiting on\nthe worker"
+        "STILL WORKING: waiting on\nthe worker\n\nlater"
     )
     assert head("# R\n\nbody") == "# R" and head("") == ""
     for report, action in (
@@ -5114,3 +5117,72 @@ def test_a_top_level_start_from_a_followed_lead_subscribes_that_lead_and_arms_no
     args[4] = str(tmp_path / "c.md")
     assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
     assert "s1=" in registry.read_text() and og.subscriptions == [("lead", "s0")]
+
+
+def test_a_helper_started_from_a_followed_leads_child_subscribes_the_lead_not_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "own_id", lambda: "child")
+    monkeypatch.setattr(omnigent_agent, "parent_id", lambda: "lead")
+    monkeypatch.chdir(tmp_path)
+    registry, brief = tmp_path / "registry", tmp_path / "b.md"
+    registry.write_text(f"lead={tmp_path / 'l.md'}\tfollow\n")
+    brief.write_text("do X")
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "a.md"), "--top-level"]
+    assert omnigent_agent.main([*args, "--registry", str(registry)]) == 0
+    assert og.subscriptions == [("lead", "s0")]
+    assert registry.read_text() == f"lead={tmp_path / 'l.md'}\tfollow\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "wait"),
+    [
+        ("STILL WORKING: waiting on deployment", "deployment"),
+        ("STILL WORKING: the gate waits for the database", "database"),
+        ("STILL WORKING: waiting on the verifier", "verifier"),  # a wait word still wins
+        ("STILL WORKING: on it", "unknown"),  # a bare "on" names nothing
+        ("STILL WORKING: waiting on it", "unknown"),
+    ],
+)
+def test_a_wait_named_after_waiting_on_or_for_is_that_wait(text: str, wait: str) -> None:
+    assert omnigent_agent.wait_of(text) == wait
+
+
+@pytest.mark.parametrize(
+    ("report", "ending", "wait"),
+    [
+        # a quoted example ending is not the report's
+        (
+            "# R\n\nThe test uses:\n```text\nDONE: merged\n```\n\nSTILL WORKING: waiting on the verifier\n",
+            "STILL WORKING",
+            "verifier",
+        ),
+        (
+            "# R\n\nThe old route printed:\n~~~\nUSER NEEDED: x\n~~~\n\nDONE: merged\n",
+            "DONE",
+            "unknown",
+        ),
+        (
+            "# R\n\n> DONE: an old pass\n\n`USER NEEDED: quoted`\n\n**PARKED:** no slot\n",
+            "PARKED",
+            "parked",
+        ),
+        # a wait named after a paragraph break still counts
+        ("# R\n\nSTILL WORKING: checking status\n\nWaiting on worker\n", "STILL WORKING", "worker"),
+    ],
+)
+def test_report_head_routes_the_reports_own_ending_and_wait(
+    report: str, ending: str, wait: str
+) -> None:
+    head = omnigent_agent.report_head(report)
+    assert (omnigent_agent.ending_of(head) or "STILL WORKING") == ending
+    assert omnigent_agent.wait_of(head) == wait
+
+
+def test_report_head_keeps_little_of_a_long_report() -> None:
+    report = "# R\n\nSTILL WORKING: waiting on the verifier\n" + "- proof detail\n" * 5000
+    head = omnigent_agent.report_head(report)
+    assert len(head) <= omnigent_agent.REPORT_WAIT_CHARS and head.endswith("- proof detail")
+    assert omnigent_agent.wait_of(head) == "verifier"

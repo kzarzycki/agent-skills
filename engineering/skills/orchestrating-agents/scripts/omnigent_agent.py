@@ -234,6 +234,18 @@ WAIT = re.compile(
     r"STILL WORKING\b\W*(?:.*?\b(?:on|for)\s+)?(?:[\w'-]+\s+)?((?i:verifier|worker|lead|merge)|CI|[0-9a-f]{32}|[0-9a-f]{8})s?\b",
     re.DOTALL,
 )
+# Else any wait it names after "waiting on"/"waits for" ("waiting on deployment"): that word. Not
+# after a bare "on"/"for", so "STILL WORKING: on it" names none.
+NAMED = re.compile(
+    r"STILL WORKING\b.*?\b(?i:wait(?:s|ing)?\s+(?:on|for)\s+(?:(?:the|an?|your|my|our|their|its)\s+)?`?)"
+    r"(?!(?i:it|this|that|these|those|them|me|you|the|an?|your|my|our|their|its)\b)([\w'-]+)",
+    re.DOTALL,
+)
+# What a report keeps for routing (``report_head``): an ending line, not one quoted in a code
+# fence, a ``>`` quote or backticks; and from its ``STILL WORKING`` this many characters, whole lines.
+REPORT_ENDING = re.compile(r"^[\s*_#-]*(DONE|USER NEEDED|PARKED)\b")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[^\n]*$", re.MULTILINE | re.DOTALL)
+REPORT_WAIT_CHARS = 600
 # A ``STILL WORKING`` naming a UTC time ("until 2026-10-21T23:17Z", "(2026-10-21 23:17 UTC)"): a
 # timed wait, which raises no deadline until that time plus ``DEADLINE_SECONDS``; a time already
 # past holds nothing off. Of several times, the one in a sentence or line that says "wait" is the
@@ -1084,10 +1096,12 @@ def start(
     permission_mode: str | None = None,
     host_id: str | None = None,
     subscribe: bool = True,
+    subscriber: str = "",
     pr: int | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
-    lead subscribes its starter unless ``subscribe`` is false: a supervisor follows it instead.
+    lead subscribes its starter (``subscriber`` when given) unless ``subscribe`` is false: a
+    supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``)."""
     if permission_mode and agent != "claude":
         raise Fail(
@@ -1177,7 +1191,7 @@ def start(
             # A top-level lead has no parent to tell: the session starting it hears its turn ends
             # and prompts instead, revived for them if its runner was reaped.
             try:
-                if not (me := own_id()):
+                if not (me := subscriber or own_id()):
                     raise Fail("this shell does not name its Omnigent session")
                 og.subscribe(me, sid)
             except Fail as e:
@@ -1997,18 +2011,26 @@ def wait_of(text: str, at: float | None = None) -> str:
             return f"until {pick[0][2]}"
     if m := WAIT.search(text):
         return m.group(1) if m.group(1) == "CI" else m.group(1).lower()
+    if m := NAMED.search(text):
+        return m.group(1).lower()
     return "unknown"
 
 
 def report_head(text: str) -> str:
     """What a report says of its ending, routed in place of a last message that is only its path:
-    each line that opens with an ending and the paragraph its ``STILL WORKING`` opens, else its
-    first line. Not just the first line: a report opens with its ``#`` title, and the ending
-    follows it or closes the report."""
-    lines = text.strip().splitlines()
-    kept = [line for line in lines if ENDING.match(line)]
-    if (start := text.find("STILL WORKING")) >= 0:
-        kept.append(text[start:].split("\n\n")[0])
+    each line that opens with an ending and the ``REPORT_WAIT_CHARS`` its ``STILL WORKING`` opens
+    (where a wait is named), else its first line, with code fences and ``>`` quotes left out: a
+    report quotes old endings as examples. Not just the first line: a report opens with its ``#``
+    title, and the ending follows it or closes the report."""
+    text = FENCE.sub("", text)
+    lines = [line for line in text.strip().splitlines() if not line.lstrip().startswith(">")]
+    kept = [line for line in lines if REPORT_ENDING.match(line)]
+    body = "\n".join(lines)
+    if (start := body.find("STILL WORKING")) >= 0:
+        tail = body[start : start + REPORT_WAIT_CHARS]
+        kept.append(
+            tail if len(body) - start <= REPORT_WAIT_CHARS else tail.rpartition("\n")[0] or tail
+        )
     return "\n".join(kept) or next(iter(lines), "")
 
 
@@ -3233,7 +3255,8 @@ def main(argv: list[str] | None = None) -> int:
         # A followed lead's own top-level helper (an install or a salvage on another host) is
         # its lead's to hear, not the chief of staff's: subscribe the lead, arm nothing.
         # ponytail: a helper whose lead is gone pages no one; its lead's revive or reap finds it.
-        if registry and args.top_level and (lead := followed_caller(registry)):
+        lead = followed_caller(registry) if registry and args.top_level else ""
+        if lead:
             print(
                 f"started from lead {lead}: it follows {args.title!r}, not {registry}",
                 file=sys.stderr,
@@ -3253,6 +3276,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace=str(workspace),
             host_id=host,
             subscribe=not (registry and args.top_level),  # the supervisor follows it instead
+            subscriber=lead,
             pr=args.pr,
         )
         # a supervisor reads the report file, which for --pr only wait writes: it would revive
