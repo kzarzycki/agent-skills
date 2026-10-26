@@ -76,8 +76,9 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 `start` refuses the flag for Codex and ignores the variable.
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
-agent's name starts that agent, found among the server's agents, then the caller's own
-(`scope=user`). A native harness (`*-native`) runs in a pane on this host, so it reads its brief
+agent's name or id starts that agent, found among the server's agents, then the caller's own
+(`scope=user`). Several agents can share a name, so a name two of them hold fails, listing
+their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
 from a file as the aliases do; any other may run its tools on another machine, so its brief goes
 inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases only (`--model`
 works for any), and so does permission mode, except Antigravity: it asks for approval of every
@@ -106,12 +107,22 @@ that report, since `<report>.question` is a path here too. Only a comment GitHub
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
 repository's counts for nothing. The nudge asks for the comment, and a second turn ending
-without one fails. `send --pr <n>` reaches a worker still open (one whose turn ended without a report, since `run` and `wait` finish a worker once its report is in; a fix pass is a fresh `run --pr`, Follow-ups) and takes only a comment
+without one fails. `run` and `wait` finish a worker once its report is in, unless given
+`--keep`: a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
+past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
+round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). `send --pr <n>`
+reaches a worker still open (kept, or one whose turn ended without a report), wherever its
+workspace is, since the report is the file `wait` writes here, and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
 with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
-the repo, since the VM has the checkout but not this host's paths.
+the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
+worker two facts about the VM: its checkout is the branch checked out in the workspace the
+session started from, not necessarily the PR's, and a foreground command stops at 10 minutes,
+so a long one runs detached and is polled within the same turn. A host without the cloud
+harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
+(Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
 
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
@@ -125,7 +136,8 @@ elsewhere.
 share over about a second and its available memory, and exits 0 when it has room for another
 session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
-cannot be measured. `start` and `run` wait while it has none, printing a line, and fail after
+cannot be measured. `start` and `run` wait while it has none, except for a session `--host` puts
+on another host, whose load lands there, printing a line, and fail after
 `OMNIGENT_CAPACITY_WAIT_SECONDS` (default 600), since sessions on an overloaded host time out and
 fail; a queue that would rather wait sets it longer. The limits are knobs set for the hardware:
 `OMNIGENT_MIN_CPU_IDLE` (percent, default 10), `OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the
@@ -199,7 +211,8 @@ It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a
 than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
 in the first message, because its file would be on this host, so a Claude lead may read it as
 pasted text and ask for a go-ahead; and the report is written there, so follow the lead with
-`watch`, never `wait`.
+`watch`, never `wait`. With `--pr <n>` (a cloud worker) the report is instead the path here
+that `wait --pr <n>` writes the PR comment to.
 
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
 posts a message that owes no report, such as the owner's words for a top-level lead, and
@@ -548,9 +561,9 @@ half-written file is not taken, and a new file that does not compile is logged o
 running copy carries on.
 
 **Finished sessions.** `run` and `wait` finish the session whose report or verdict they
-return, which ends its agent process and keeps its transcript; a session that asked a
-question stays, since the answer goes to it. Finishing archives the session, a sub-agent
-too: Omnigent leaves the runner it shares with its parent up, on a build with
+return, unless given `--keep` (Cloud workers); a session that asked a question stays, since
+the answer goes to it. Finishing ends the session's agent process and keeps its transcript.
+It archives the session, a sub-agent too: Omnigent leaves the runner it shares with its parent up, on a build with
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for

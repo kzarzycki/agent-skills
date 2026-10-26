@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -24,10 +25,11 @@ A report already at the path is a pass before: only one written after the launch
 once final (``settled``): the child's turn has ended and the file is unchanged since, since a child
 can rewrite its report until then. The first turn that ends with neither gets one nudge to write
 it; a second fails. With ``--pr N`` (a worker in a cloud session, which can't write a host
-file) the preamble has the child post its report as a comment on PR N through REST and end its
-turn with the comment's URL; ``wait --pr N`` then writes that comment's body to the report path,
+file) the preamble, top-level or not, has the child post its report as a comment on PR N through
+REST and end its turn with the comment's URL, and tells it that its checkout is the branch of the
+workspace it started from and that a foreground command stops at 10 minutes; ``wait --pr N`` then writes that comment's body to the report path,
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
-the report there. A lead launches it as one background command, so its
+the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
 exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
@@ -98,7 +100,7 @@ child, arms nothing and subscribes that lead, since its helper is the lead's to 
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
-question; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
+question, nor one given ``--keep``, which a fix round then reaches with ``send``; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
 session.
@@ -119,7 +121,9 @@ several repos' checkouts for a change across them; its report must be inside it.
 starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1/hosts``); a
 child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
-its file would be here, and the report is written there, so follow the lead with ``watch``. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
+its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
+writes here. A session on another host waits on no capacity here. ``AGENT`` is a registered
+agent's name or id; a name several agents hold fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
 file or the text itself: one naming no file is the text when it holds whitespace, else exit 2;
 ``send`` given text keeps it in ``<report>.followup`` for its registry line. The server is ``--server``, else the session's ``$RUNNER_SERVER_URL``, else the one login; the host comes
@@ -327,7 +331,8 @@ When done, reply with only the report path.
 # so it reports on the PR through REST; the comment is public, so it names nothing of the host.
 PR_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
-{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled within the same turn, in calls under the tool's limit: a foreground command here stops at 10 minutes, less than a cold gate can take, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
@@ -501,10 +506,13 @@ class Omnigent:
         return str(self.agent(name).get("harness") or "")
 
     def agent(self, name: str) -> dict:
-        """The record of the registered agent called ``name`` (``claude`` and ``codex`` are aliases
-        for the native agents): the server's agents first, then the caller's own (``scope=user``,
-        which ``GET /v1/agents`` leaves out), following each list's pages until the name turns up."""
+        """The record of the registered agent whose id is ``name``, else the one called ``name``
+        (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
+        caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
+        Several agents can share a name, so a name two of them hold fails, listing their ids,
+        rather than pick by order."""
         name = AGENTS.get(name, name)
+        named: dict[str, dict] = {}
         for path in ("/v1/agents", "/v1/agents?scope=user"):
             after = ""
             while True:
@@ -512,13 +520,19 @@ class Omnigent:
                 page = self.call("GET", path + (f"{sep}after={after}" if after else ""))
                 agents = page.get("data", page) if isinstance(page, dict) else page
                 for a in agents:
-                    if a.get("name") == name:
+                    if a.get("id") == name:
                         return a
+                    if a.get("name") == name:
+                        named[str(a.get("id"))] = a
                 last = page.get("last_id") if isinstance(page, dict) else None
                 if not (isinstance(page, dict) and page.get("has_more") and last):
                     break
                 after = str(last)
-        raise Fail(f"agent {name} not registered")
+        if len(named) > 1:
+            raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
+        if not named:
+            raise Fail(f"agent {name} not registered")
+        return next(iter(named.values()))
 
     def project(self, name: str) -> dict | None:
         """The project (a sidebar group) called ``name``, or None when there is none. Case, spaces
@@ -1351,7 +1365,8 @@ def start(
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
-    With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``)."""
+    With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
+    session on another host is not held back by this host's load."""
     agy = agent not in AGENTS and og.harness(agent) == AGY_HARNESS
     if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
         raise Fail(
@@ -1363,8 +1378,9 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
+    elsewhere = bool(host_id) and host_id != og.host_id  # its load lands there, not here
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
-    while not (room := capacity())[0]:
+    while not elsewhere and not (room := capacity())[0]:
         if time.monotonic() >= deadline:
             raise Fail(f"host over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
         print(f"host over capacity, waiting: {room[1]}", file=sys.stderr)
@@ -1374,7 +1390,7 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    full = (LEAD_PREAMBLE if top_level else PR_PREAMBLE if pr else PREAMBLE).format(
+    full = (PR_PREAMBLE if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
         report=report,
         pr=pr,
         unposted=UNPOSTED,
@@ -3230,7 +3246,8 @@ def main(argv: list[str] | None = None) -> int:
             else "start a child, or a lead with --top-level, and return once its brief landed",
         )
         p.add_argument(
-            "agent", help="claude, codex, or the name of any registered agent (your own included)"
+            "agent",
+            help="claude, codex, or the name or id of any registered agent (your own included)",
         )
         p.add_argument("title")
         p.add_argument("brief", help="the task specifics: a file, or the text itself")
@@ -3268,7 +3285,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         p.add_argument(
             "--host",
-            help="with --top-level, the Omnigent host (name or id) to start the lead on",
+            help="with --top-level, the Omnigent host (name or id) to start the lead, or the --pr"
+            " cloud worker, on",
         )
         p.add_argument(
             "--after",
@@ -3394,6 +3412,12 @@ def main(argv: list[str] | None = None) -> int:
                 "--pr",
                 type=int,
                 help="a cloud worker's PR: it reports as a comment there, which wait writes to the report path",
+            )
+        if p.prog.split()[-1] in ("run", "wait"):
+            p.add_argument(
+                "--keep",
+                action="store_true",
+                help="leave the session open once its report is in, for a fix round to reach it",
             )
         if p.prog.split()[-1] in ("send", "wait"):
             p.add_argument(
@@ -3531,11 +3555,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
-            archive_delivered(og, args.session)
+            if not args.keep:
+                archive_delivered(og, args.session)
             return 0
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
         remote = host != og.host_id  # paths on another host: neither resolved nor checked here
-        report = args.report if remote else args.report.resolve()
+        here = not remote or bool(args.pr)  # with --pr the report is the file wait writes here
+        report = args.report.resolve() if here else args.report
         if args.cmd != "send" and args.host and not args.top_level:
             raise Fail("--host needs --top-level: Omnigent runs a child on its parent's runner")
         if remote and not (
@@ -3554,8 +3580,14 @@ def main(argv: list[str] | None = None) -> int:
                 raise Fail(f"--workspace {workspace} is not a directory")
         # A new child's workspace is this directory unless --workspace names one; outside it a Codex
         # sandbox refuses the write and Claude Code prompts for the read (denies it in auto mode),
-        # which nobody answers. The child also saves its repro files beside the report.
-        if not remote and not report.is_relative_to(workspace):
+        # which nobody answers. The child also saves its repro files beside the report. A follow-up
+        # with --pr goes inline and is answered on the PR: the child never touches the report, and
+        # its workspace can be on another host.
+        if (
+            not remote
+            and not (args.cmd == "send" and args.pr)
+            and not report.is_relative_to(workspace)
+        ):
             raise Fail(
                 f"{report} is outside the child's workspace {workspace}; use tmp/loop/ in the worktree"
             )
@@ -3587,8 +3619,6 @@ def main(argv: list[str] | None = None) -> int:
             print(wait(og, args.session, report, args.timeout, args.verdict, since, args.pr))
             arm_quietly(registry, args.session)
             return 0
-        if args.pr and args.top_level:
-            raise Fail("--pr is for a cloud worker; a top-level lead writes its own report")
         if args.cmd == "run" and args.top_level:
             raise Fail(
                 "run --top-level: a lead asks the owner in its own session, so there is no question"
@@ -3602,17 +3632,17 @@ def main(argv: list[str] | None = None) -> int:
             )
         # A report already there is a pass before (a fix pass reuses the path): only a newer one counts.
         # `wait` after a separate `start` has no launch time to compare, so `start` refuses it.
-        if args.cmd == "start" and not remote and report.exists():
+        if args.cmd == "start" and here and report.exists():
             raise Fail(
                 f"{report} already exists; wait would return at once (use run, or a new path)"
             )
         # The file's own mtime, never the clock: the kernel stamps files from a coarse clock that
         # lags time.time_ns() by up to a tick, so a report written that soon would read as older.
-        launched = report.stat().st_mtime_ns if not remote and report.exists() else None
+        launched = report.stat().st_mtime_ns if here and report.exists() else None
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
-        if not remote:  # a remote lead's report is written on its host, never read here
+        if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # A followed lead's own top-level helper (an install or a salvage on another host) is
         # its lead's to hear, not the chief of staff's: subscribe the lead, arm nothing.
@@ -3637,7 +3667,8 @@ def main(argv: list[str] | None = None) -> int:
             top_level=args.top_level,
             workspace=str(workspace),
             host_id=host,
-            subscribe=not (registry and args.top_level),  # the supervisor follows it instead
+            # the supervisor follows it instead, but never a --pr one, which it can't arm
+            subscribe=not (registry and args.top_level and not args.pr),
             subscriber=lead,
             pr=args.pr,
         )
@@ -3657,7 +3688,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "run":
             print(wait(og, sid, report, args.timeout, verifier, launched, args.pr))
             arm_quietly(registry, sid)
-            archive_delivered(og, sid)
+            if not args.keep:
+                archive_delivered(og, sid)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0

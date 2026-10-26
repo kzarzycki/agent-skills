@@ -393,11 +393,12 @@ or the owner's private network.
   lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
   the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
   the host.
-- **Control flow is the lead's own.** It starts the worker with `run --pr`, follows its turn
-  end, and sends a fix list or a failing log as a fresh `run --pr` whose brief names the
-  review or comment to read, since `run` finishes a worker once its report is in (the
-  backend's Follow-ups); `send --pr` reaches a worker still open, one whose turn ended
-  without a report. Nothing in
+- **Control flow is the lead's own.** It starts the worker with `run --pr --keep` (from a
+  host without the worker's harness, `start --top-level --host <host> --pr`, then
+  `wait --pr --keep`), follows its turn end, and sends a fix list or a failing log, naming the
+  review or comment to read, to that kept worker with `send --pr` while it is still there,
+  since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
+  else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
 - **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,
