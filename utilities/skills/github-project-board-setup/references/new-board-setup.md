@@ -45,7 +45,7 @@ STATUS_FIELD_ID=$(jq -r '.fields[]|select(.name=="Status").id' <<<"$FIELDS")
 FIRST_COLUMN_OPTION_ID=$(jq -r '.fields[]|select(.name=="Status").options[0].id' <<<"$FIELDS")
 ```
 
-No other field is needed, except `Priority` where the project ranks work: a view sorts and groups by a single-select field, not by a label.
+No other field is needed, except `Priority` where the project ranks work: a single-select field holds one value per item and sorts in its options' order (P0 first), where an item can carry several labels.
 
 ```bash
 gh api graphql -f p="$PID" -f query='mutation($p:ID!){createProjectV2Field(input:{projectId:$p,dataType:SINGLE_SELECT,name:"Priority",singleSelectOptions:[

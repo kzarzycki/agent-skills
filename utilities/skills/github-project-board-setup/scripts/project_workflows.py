@@ -3,7 +3,7 @@
 
     uv run --with playwright python scripts/project_workflows.py <spec.json> [--dry-run]
 
-GraphQL and REST read workflows and delete them, but cannot switch one on or set what it does. The
+GraphQL reads workflows and deletes them, and REST has no workflow endpoint; neither switches one on or sets what it does. The
 web UI does that with POST (a new workflow) and PUT (an existing one, by its number) to
 https://github.com/memexes/<project REST id>/workflows on the signed-in session, so this script sends
 those same requests with fetch() from a background tab of a browser that is signed in to GitHub,
