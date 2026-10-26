@@ -20,7 +20,8 @@ Verifier model: mid for any PR that matches nothing in the `risk` settings below
 The owner's judgement: Codex's mid tier is the right balance as verifier for low- and mid-risk
 PRs. A generation without a mid tier resolves upward, as for workers above. A PR that
 `check merge` rates high keeps its family's default, the top tier, so the condition reads the
-PR's own labels and files, not only its issue's.
+PR's own labels and files, not only its issue's. A mid-tier verdict that says `Risk: high`
+rates the PR high too (`risk.verifier`), so its next pass runs on the top tier.
 Undo: delete this line.
 
 ## Settings
