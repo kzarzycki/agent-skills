@@ -198,14 +198,16 @@ the foreground and never poll the lead afterwards:
 | 5 | Queued: the lead holds it until its current step ends, or until the approval prompt it names is answered; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
 | 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
 
-A lead blocked only on a question (its own ask of the owner) gets the message as the
-question's answer, because a question holds every message behind it until answered: relay
-the owner's answer to it the same way. `relay` never answers an approval prompt; `approve`
+A lead blocked only on a question (its own ask of the owner) holds every message behind it
+until it is answered, so relay the owner's answer to it with `relay --answer`, which gives the
+message as the question's answer. Without `--answer` the message waits behind the question
+(exit 5): use that for anything that is not the answer. `relay` never answers an approval prompt; `approve`
 does, on the owner's word (the table above).
 
 A scheduled task or an agent that relays to you passes `relay --from <its name>`, so its
-message opens with `[relay from <name>: …]` and never becomes the answer to a question of yours:
-only the owner answers what you asked the owner. Set that flag in each task's prompt you write.
+message opens with `[relay from <name>: …]` and is clearly not the owner's words; no relay
+without `--answer` becomes the answer to a question of yours, so only the owner answers what you
+asked the owner. Set that flag in each task's prompt you write.
 
 ## Authority
 
