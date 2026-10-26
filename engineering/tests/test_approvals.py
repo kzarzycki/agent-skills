@@ -4660,7 +4660,9 @@ def test_with_ci_check_queue_still_needs_the_heads_own_record(
     queueing["records"] = set()
     assert queue_check(capsys) == (
         1,
-        [f"PR #7: no `local-ci --record` pass on {HEAD} under this environment (approvals.py local-ci --record)"],
+        [
+            f"PR #7: no `local-ci --record` pass on {HEAD} under this environment (approvals.py local-ci --record)"
+        ],
     )
 
 
