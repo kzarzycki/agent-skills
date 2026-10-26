@@ -34,10 +34,10 @@ record their answer.
   - the hard boundaries: each project's own list. A project with none gets the question,
     not a list of yours.
 - **Silence chooses work, nothing else.** Silence picks which goals run and approves
-  nothing. An approval a goal's work needs (a spec, a merge) comes only from the mandate
-  in the owner's own words; without it, that approval waits for Decide first. A step that
-  is hard to undo waits for the owner whatever the mandate says (chief-of-staff,
-  Authority).
+  nothing. An approval a goal's work needs (a spec, a merge) comes only from the owner's
+  own words: the mandate, or an approval they give during the night, to you or in a
+  lead's session. Without it, that approval waits for Decide first. A step that is hard
+  to undo waits for the owner whatever the mandate says (chief-of-staff, Authority).
 - **Record it.** The goals that run, the end time, the mandate and the boundaries go on
   the board as the night's standing decisions, each the owner's words quoted with its
   citation (chief-of-staff, Authority, Cite it; Handover, Standing decisions). A goal that
