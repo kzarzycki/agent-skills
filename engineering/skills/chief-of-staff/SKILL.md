@@ -219,8 +219,14 @@ never stand in for the owner's approval of a spec, a merge or anything hard to u
 a lead asks for approval, the owner gives it, to you or in the lead's session, and you relay
 it quoted.
 
+- **Cite it.** When you relay a decision the owner gave you, run `python3 <script> owner-said
+  <your session id> <quote-file>` with their words verbatim and put the line it prints (the
+  session link, item, time and author) under the quote, in the relay and in any comment
+  recording it. A lead can then check the words against your session with the same command
+  instead of taking your word for them; a quote it can't find there is no approval. Exit 1 means
+  the words are not the owner's own message in your session: never relay them as an approval.
 - **What you may record.** For an approval the owner gave you, add its label (such as
-  `approved:spec`) with a comment quoting their words and the session id they said them in.
+  `approved:spec`) with a comment quoting their words and the `owner-said` citation.
   The written approval record a gate checks (the loop's `approve --by owner`) is the owner's
   own to make. When a gate still waits on it, put the exact command or click the owner must
   give on the attention list; never retry a write a tool refused as self-approval.
