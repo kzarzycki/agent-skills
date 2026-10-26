@@ -5,6 +5,15 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.24.3 - 2026-10-26
+
+#473's fix: a session `omnigent_agent.py` starts files under its caller's Omnigent project, so a scheduled run's leads land in the task's project. Also: a loop.md bot section may name an updater by head-branch prefix; urgency is the tracker's Priority field; the board's "Item closed" workflow keeps closed issues in a `Closed` column.
+
+- A loop.md `bot.<name>` section may name an updater by its head-branch prefix (`branch: renovate/`) instead of a bot login, so Renovate run under a person's token lands routine lock and manifest PRs on the gates alone; the head must be the repository's own branch and every commit the PR author's. A PR labelled `verify` is never exempt (#353).
+- engineering-loop: urgency is the tracker's priority, on a GitHub board its `Priority` field, instead of a `priority:` label no label set defined (#465).
+- engineering-loop: the board's "Item closed" workflow stays on and sets the column `Done` maps to, named `Closed` since a closed issue may be completed, not planned or a duplicate; an issue GitHub closes on a PR's `Closes` no longer stays in its last column (#470).
+- orchestrating-agents: a session `omnigent_agent.py` starts files under its caller's Omnigent project when `OMNIGENT_PROJECT` is unset, before the repo-name match, so the leads a scheduled run starts land in the task's project (#473).
+
 ## 0.24.2 - 2026-10-26
 
 #448's fix: Antigravity reads its brief from a file and runs a role only with the `--permission-mode bypassPermissions` opt-in, so an installed launcher starts an Antigravity verifier; its effort comes from the user's agy settings (#459). Also: `omnigent_agent.py` places cloud workers from a host and keeps them for a fix round, resolves a name held by identical agent copies, and names the right command behind a pending question; this repo's own `test` task records pytest's pid in the gate slot.
