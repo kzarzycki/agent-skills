@@ -359,7 +359,8 @@ quiet a second time with the same last message, makes none of those events. Its 
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
 none), once it has any, a message to it that is not the supervisor's own (a relay or the owner
 typing, which starts a new chain), and its live children's activity, read on first sight, then once a minute and again when
-the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
+the deadline falls due, and, once the deadline falls due, its report's last write (from its
+folder's listing), so a lead already stuck when the supervisor starts is overdue at once; a
 lead with neither counts from first sight. With
 no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
 lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
