@@ -173,6 +173,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -218,7 +219,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue mergeQueueEntry {{ state enqueuedAt headCommit {{ checkSuites {{ totalCount }} }} }} body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -265,6 +266,10 @@ POLL, CEILING = 30, 2 * 60 * 60
 # what land --wait polls for: CI on the head, GitHub's auto-merge, or its merge state
 ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge or the merge queue)"
 ON_STATE = "GitHub to compute its merge state"
+# GitHub sometimes builds a merge-group commit and never tells Actions: the entry then waits for the queue's own check
+# timeout. ponytail: a fixed 10 minutes with no check suite; a loop.md setting if a project's CI is slower to start.
+STUCK = 10 * 60
+DEQUEUE = "mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }"
 # GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
 STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
@@ -1917,6 +1922,16 @@ def land(pr: int, wait: bool = False) -> int:
         time.sleep(POLL)
 
 
+def stuck(pull: dict[str, Any]) -> bool:
+    """Whether the PR's merge-queue entry has waited STUCK seconds for checks with no check suite on its commit."""
+    entry = pull.get("mergeQueueEntry") or {}
+    if entry.get("state") != "AWAITING_CHECKS" or not entry.get("enqueuedAt"):
+        return False
+    suites = ((entry.get("headCommit") or {}).get("checkSuites") or {}).get("totalCount") or 0
+    queued = datetime.fromisoformat(entry["enqueuedAt"].replace("Z", "+00:00")).timestamp()
+    return not suites and time.time() - queued >= STUCK
+
+
 def landing(
     pr: int, reran: set[str] | None = None, merging: bool = False
 ) -> tuple[int, str | None]:
@@ -1979,6 +1994,20 @@ def landing(
     # record are no check of GitHub's, so either hold ends the wait below instead.
     if watching and auto and not owner and not (no_ci(loop) and checking):
         if not RED.intersection(state for _, state in red):
+            if stuck(pull):
+                try:
+                    gh("api", "graphql", "-f", f"query={DEQUEUE}", "-f", f"id={pull['id']}")
+                except subprocess.CalledProcessError as error:
+                    print(
+                        f"{where}: dequeueing its stuck merge-queue entry failed: {error.stderr.strip()}"
+                    )
+                    return WAITING, ON_MERGE
+                # the next poll reads it open and unqueued and lands it again, every merge proof with it
+                print(
+                    f"{where}: its merge-queue entry waited {STUCK // 60} minutes for checks GitHub never started:"
+                    " dequeued, to land it again"
+                )
+                return WAITING, ON_STATE
             print(
                 f"{where}: {'in the merge queue' if pull['isInMergeQueue'] else 'auto-merge is on'} at {head}"
             )
