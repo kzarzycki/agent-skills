@@ -40,7 +40,9 @@ verifier's cap reached with a blocker or major open.
 
 ## Cloud worker
 
-Cloud worker: claude-cloud, gate test
+Cloud worker: c03634ba708ed6b23439fc16f2fa6f7a, gate test
+
+The agent is given by id: this server holds several agents called `claude-cloud`, and `omnigent_agent.py` refuses a name more than one agent holds. This one is the `claude-cloud` agent whose tools are served from this host.
 
 Workers code and run `mise run test` in Claude cloud sessions, in an environment that holds no secrets, so their compute leaves the owner's machines. The lead and the Codex verifier stay on the host (`engineering/skills/engineering-loop/SKILL.md`, Cloud worker). Cold, a session runs the gate in about 1–2.5 minutes after a setup of about 25 s. These stay with the host lead: `approvals.py`, because GraphQL answers 403 in the VM; the signed land; the live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`), which need logged-in harnesses and Omnigent; and the full gate.
 
