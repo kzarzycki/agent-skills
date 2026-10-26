@@ -17,8 +17,8 @@ one per item. At its end, telemetry compares verifier passes per PR against the 
 
 Verifier model: mid for any issue not labelled risk:high
 
-The owner's judgement: Codex's mid tier (today `gpt-6.1-terra`) is the right balance as verifier
-for low- and mid-risk PRs. A risk-high PR's verifier keeps its family's default, the top tier.
+The owner's judgement: Codex's mid tier is the right balance as verifier for low- and mid-risk
+PRs. A generation without a mid tier resolves upward, as for workers above. A risk-high PR's verifier keeps its family's default, the top tier.
 Undo: delete this line.
 
 ## Settings
