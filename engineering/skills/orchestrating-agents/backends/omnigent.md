@@ -183,8 +183,8 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   on a loaded server) may still have made the session, so the script looks for its title
   among the parent's children made since, and briefs that one instead of a second.
 - A second `run` or `start` of a brief a live child of the same parent already holds (titled
-  `<title>` or `<title>-r<n>`, the same brief line in its history and the brief file's text
-  unchanged) attaches to that child instead of starting another: one pass is paid for once. A
+  `<title>` or `<title>-r<n>`, and the one the last start for that report briefed with the
+  same text, as `<report>.held` records) attaches to that child instead of starting another: one pass is paid for once. A
   failed or archived child doesn't count; one that already wrote the report since it was made
   is refused with the report's path, to read rather than wait on.
 - A loaded or restarting server times out reads, drops TLS connections (an SSL EOF), refuses

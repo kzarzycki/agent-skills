@@ -466,6 +466,33 @@ def test_a_changed_brief_or_a_gone_child_starts_a_new_one(
     assert second != first
 
 
+@pytest.mark.parametrize("inline", [False, True])
+def test_a_rerun_attaches_to_the_child_briefed_with_that_text_not_an_earlier_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inline: bool
+) -> None:
+    """Brief A, then B, then B again: the file now holds B and both children are live."""
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    monkeypatch.setattr(omnigent_agent, "briefed_by_file", lambda *_: not inline)
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    a, _ = omnigent_agent.start(og, "codex", "t", "review A and check speed", report, None, 0)
+    og.taken = {"t"}
+    b, _ = omnigent_agent.start(og, "codex", "t", "review A", report, None, 0)  # a prefix of A
+    assert b != a
+    assert omnigent_agent.start(og, "codex", "t", "review A", report, None, 0) == (b, [])
+
+
+def test_a_child_whose_brief_left_its_history_page_is_still_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    og = FakeOmnigent()
+    first, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    og.sessions[first] = [{"type": "resource_event"}] * 100  # the newest page, no brief in it
+    og.taken = {"t"}
+    assert omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0) == (first, [])
+
+
 def test_a_child_that_already_wrote_the_report_is_not_waited_on_again(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

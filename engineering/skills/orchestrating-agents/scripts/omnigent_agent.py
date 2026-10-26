@@ -139,6 +139,7 @@ import argparse
 import copy
 import errno
 import fcntl
+import hashlib
 import http.client
 import json
 import os
@@ -389,6 +390,11 @@ def question_of(report: Path) -> Path:
 
 def brief_of(report: Path) -> Path:
     return report.with_name(report.name + ".brief")
+
+
+def held_of(report: Path) -> Path:
+    """Which child the last start for ``report`` briefed, and a hash of that brief's text."""
+    return report.with_name(report.name + ".held")
 
 
 def briefs_for(report: Path, listed: list[Path]) -> list[Path]:
@@ -1461,21 +1467,20 @@ def start(
     ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
-    if not briefed_by_file(og, agent, host_id):
+    by_file = briefed_by_file(og, agent, host_id)
+    if not by_file:
         # A file here is not on that host, nor where a non-native agent runs its tools (a cloud
         # VM); inline, a Claude lead may read it as pasted text and ask its starter for a go-ahead.
         text = f"Work on {title}. Your brief:\n\n{full}"
-        if not top_level and (held := holder(og, title, text, report)):
-            return held, []
     else:
         # The brief goes in a file beside the report and the message only names it: a child can
         # receive an inline brief as pasted text, which it will not take instructions from.
         brief_file = brief_of(report)
         text = f"Work on {title}: read {brief_file} and do what it says."
-        # read before the rewrite: the file is what a child already briefed has read
-        same = brief_file.is_file() and brief_file.read_text() == full
-        if same and not top_level and (held := holder(og, title, text, report)):
-            return held, []
+    digest = hashlib.sha256(text.encode() + b"\0" + full.encode()).hexdigest()
+    if not top_level and (held := holder(og, title, digest, report)):
+        return held, []
+    if by_file:
         brief_file.parent.mkdir(parents=True, exist_ok=True)
         brief_file.write_text(full)
     reasons: list[str] = []
@@ -1541,6 +1546,9 @@ def start(
             if not (found and delivered(og, sid, text, 0)):  # a found one may hold the brief
                 send_to_confirm(og, sid, text)
             if delivered(og, sid, text, confirm_seconds):
+                if not top_level:
+                    held_of(report).parent.mkdir(parents=True, exist_ok=True)
+                    held_of(report).write_text(json.dumps({"sid": sid, "brief": digest}))
                 return sid, survivors
         except Fail as e:
             abandon(sid)
@@ -1550,15 +1558,23 @@ def start(
     raise failed("start failed: " + "; ".join(reasons))
 
 
-def holder(og: Omnigent, title: str, text: str, report: Path) -> str | None:
-    """A live child of the parent already briefed with ``text`` under ``title`` or one of its
-    ``-r<n>`` retries: a second start of the same brief, usually after a ``run`` that failed on its
-    own while the child worked on, would pay for the same work twice. A failed child is no holder.
-    One that already wrote ``report`` since it was made has finished: refused, so the caller reads
-    that report rather than waiting on a turn that has ended."""
+def holder(og: Omnigent, title: str, digest: str, report: Path) -> str | None:
+    """The live child of the parent, titled ``title`` or one of its ``-r<n>`` retries, that the last
+    start for ``report`` briefed with this same text (``digest``): a second start of the same brief,
+    usually after a ``run`` that failed on its own while the child worked on, would pay for the
+    same work twice. The record names the child, since neither its history (a rolling page) nor
+    the brief file (rewritten by the next start) still shows what it was given. A failed child is
+    no holder. One that already wrote ``report`` since it was made has finished: refused, so the
+    caller reads that report rather than waiting on a turn that has ended."""
+    try:
+        held = json.loads(held_of(report).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(held, dict) or held.get("brief") != digest:
+        return None
     for child in og.siblings(title):
         sid = str(child["id"])
-        if og.info(sid).get("status") == "failed" or not delivered(og, sid, text, 0):
+        if sid != held.get("sid") or og.info(sid).get("status") == "failed":
             continue
         if report.is_file() and report.stat().st_mtime > float(child.get("created_at") or 0):
             raise Fail(f"session {sid} already wrote {report} for this brief: read it")
