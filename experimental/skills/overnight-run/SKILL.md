@@ -33,6 +33,15 @@ record their answer.
   - the mandate: which kinds of decision they delegate to you for the night;
   - the hard boundaries: each project's own list. A project with none gets the question,
     not a list of yours.
+
+  A frame item still unanswered at the reply-by time takes its narrowest reading, and
+  that reading goes on Decide first. No mandate delegates nothing: every approval, and
+  every question beyond a reversible one inside a goal, waits for Decide first. A project
+  with no boundaries stated has its goals held, not run, since its boundaries are its own
+  and you can't supply them. An end time without a date or zone is its next occurrence in
+  the timezone the project or the owner already records; with neither, the run stops at
+  the earliest reading. State each reading in the kickoff message and in the morning
+  report.
 - **Silence chooses work, nothing else.** Silence picks which goals run and approves
   nothing. An approval a goal's work needs (a spec, a merge) comes only from the owner's
   own words: the mandate, or an approval they give during the night, to you or in a
