@@ -42,7 +42,8 @@ public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
-status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with
+status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
+of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
@@ -99,7 +100,7 @@ A project may land through a batching merge queue of its own (merge every waitin
 full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
-with CI, the aggregate `check` passed, and the change is not high risk and has no `approved:merge`, since the
+with CI, the checks `check merge` waits for passed, and the change is not high risk and has no `approved:merge`, since the
 owner's label covers one head landing alone: such a PR lands through `land`. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
 exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
@@ -1195,7 +1196,7 @@ def waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: ran()'s aggregate `check`, and the owner's label (owner_waits)."""
+    """One line per thing the merge waits for: ran()'s checks, and the owner's label (owner_waits)."""
     return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
 
 
@@ -1326,8 +1327,8 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
-    """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
-    `ci: false` a local-ci pass."""
+    """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks,
+    or the aggregate `check` when it requires none), or with `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
     if queued(pull) is None:
         return []
@@ -1343,6 +1344,8 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
                 f"{where}: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
             ]
     else:
+        if required is None:
+            required = required_checks(pull["baseRefName"]) or None
         found = ci(where, pull, required)
     return found
 
@@ -1659,8 +1662,8 @@ def head_checks(
     pull: dict[str, Any], required: set[str] | None
 ) -> tuple[list[tuple[str, str]], int | None, set[str]]:
     """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
-    the aggregate `check`, the one check `check merge` reads, since every other check is advisory or the ruleset's;
-    empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
+    the aggregate `check`, the one check `check merge` reads on a base that requires none, since every other check is
+    advisory; empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
     names whose only run is a draft's skip, which the ready PR's CI has not reached yet."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
