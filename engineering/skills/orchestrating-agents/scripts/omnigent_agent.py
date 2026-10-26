@@ -324,9 +324,11 @@ CAPACITY_WAIT_SECONDS = float(os.environ.get("OMNIGENT_CAPACITY_WAIT_SECONDS") o
 MEMINFO = Path("/proc/meminfo")
 PROC_STAT = Path("/proc/stat")
 
+# The detach the preambles prescribe: Perl's setsid, since macOS has no setsid command.
+DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
-{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+{role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
@@ -336,7 +338,7 @@ When done, reply with only the report path.
 # so it reports on the PR through REST; the comment is public, so it names nothing of the host.
 PR_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
-{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled within the same turn, in calls under the tool's limit: a foreground command here stops at 10 minutes, less than a cold gate can take, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+{role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is polled within the same turn, in calls under the tool's limit: a foreground command here stops at 10 minutes, less than a cold gate can take, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
@@ -348,7 +350,7 @@ When done, reply with only the comment's URL. If posting fails (the session's to
 # anyone may have written its brief, it says whose words approve.
 LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
-{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+{role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
 Write your final report to {report}, then reply with only its path.
 
