@@ -1454,13 +1454,14 @@ def merged(
         bases = git("merge-base", "--all", first, second).split()
         if len(bases) != 1:
             return f"{first} and {second} have {len(bases)} merge bases"
-        # a submodule's `ignore = all` would hide its bump from the diff, so the guard would miss it
+        # plumbing: porcelain `git diff` follows config (diff.relative, a submodule's `ignore = all`) that hides paths
         changed = [
             set(
                 filter(
                     None,
                     git(
-                        "diff",
+                        "diff-tree",
+                        "-r",
                         "--name-only",
                         "--no-renames",
                         "--ignore-submodules=none",

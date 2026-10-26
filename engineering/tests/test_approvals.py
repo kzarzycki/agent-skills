@@ -5140,6 +5140,33 @@ def test_a_submodule_bump_main_hides_with_ignore_all_still_meets_the_except_guar
     assert isinstance(why, str) and why.endswith("touch deps/lib, a `carry_over_main.except` path")
 
 
+def test_diff_relative_run_from_a_subdirectory_still_meets_the_except_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`diff.relative` makes a porcelain diff drop what lies outside the current directory."""
+    who = ("-c", "commit.gpgsign=false", "-c", "user.name=Lead", "-c", "user.email=l@example.com")
+    git = lambda *args: sh("git", *who, *args, cwd=tmp_path)
+    git("init", "-q", "-b", "main")
+    git("config", "diff.relative", "true")
+    (tmp_path / "pkg").mkdir()
+
+    def commit(files: dict[str, str]) -> str:
+        for name, text in files.items():
+            (tmp_path / name).write_text(text)
+        git("add", "-A")
+        git("commit", "-qm", "commit")
+        return git("rev-parse", "HEAD")
+
+    commit({"guard.cfg": "a\n", "pkg/feature": "a\n"})
+    git("switch", "-qc", "feature")
+    head = commit({"pkg/feature": "b\n"})
+    git("switch", "-q", "main")
+    tip = commit({"guard.cfg": "b\n"})
+    monkeypatch.chdir(tmp_path / "pkg")
+    why = approvals.merged(head, tip, ["guard.cfg"], "main")
+    assert isinstance(why, str) and why.endswith("touch guard.cfg, a `carry_over_main.except` path")
+
+
 @pytest.mark.parametrize(("files", "merging", "loop", "why"), REFUSED.values(), ids=REFUSED.keys())
 def test_a_merge_that_may_have_changed_the_prs_code_carries_nothing(
     carrying: Callable[..., dict[str, str]],
