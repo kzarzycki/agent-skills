@@ -123,7 +123,8 @@ child always runs on its parent's runner. On a host other than this one ``--work
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
 writes here. A session on another host waits on no capacity here. ``AGENT`` is a registered
-agent's name or id; a name several agents hold fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
+agent's name or id; a name several agents hold starts the newest when their records and configs match
+apart from identity and bookkeeping (copies of one spec), else fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
 file or the text itself: one naming no file is the text when it holds whitespace, else exit 2;
 ``send`` given text keeps it in ``<report>.followup`` for its registry line. The server is ``--server``, else the session's ``$RUNNER_SERVER_URL``, else the one login; the host comes
