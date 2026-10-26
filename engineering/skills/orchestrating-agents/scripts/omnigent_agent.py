@@ -3170,6 +3170,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.registry:
                 for s, r in owed.items():
                     arm(args.registry, s, r)
+                # the registry holds them now: a restart that armed them again would repost a dropped one
+                sys.argv = [a for a in sys.argv if a not in args.owed]
                 supervise_registry(
                     og,
                     args.registry,

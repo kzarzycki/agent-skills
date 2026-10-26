@@ -4970,6 +4970,49 @@ def test_a_failed_state_write_before_the_restart_keeps_the_old_process_until_one
     assert seen_order[-2] == "ok"  # no exec after the failure; one right after a write succeeded
 
 
+def test_the_supervisor_restarts_only_once_its_unposted_lines_are_posted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "a.md", 10)
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.refuse = 4  # the notify session refuses the posts of the first polls
+    inbox_at_exec: list[list[tuple[str, str]]] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        inbox_at_exec.append(list(og.inbox))
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 10, bump, notify="cos", script=script)
+    assert og.refuse == 0
+    assert inbox_at_exec == [[("cos", f"Supervisor: a t-a: report written: {report}")]]
+
+
+def test_a_re_exec_drops_the_session_pairs_its_registry_already_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, report = tmp_path / "registry", tmp_path / "a.md"
+    argv = ["agent.py", "supervise", "--registry", str(registry), f"a={report}"]
+    monkeypatch.setattr(omnigent_agent.sys, "argv", argv)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: Fleet())
+    replayed: list[list[str]] = []
+
+    def supervise_registry(*_: object) -> None:  # it never returns
+        replayed.append(sys.argv[1:])
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent, "supervise_registry", supervise_registry)
+    with pytest.raises(Stop):
+        omnigent_agent.main(argv[1:])
+    assert f"a={report.resolve()}" in registry.read_text()  # armed
+    assert replayed == [["supervise", "--registry", str(registry)]]  # a restart re-arms nothing
+
+
 def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
