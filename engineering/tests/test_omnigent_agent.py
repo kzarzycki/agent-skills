@@ -552,23 +552,25 @@ def test_start_waits_while_the_host_is_over_capacity(
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal: 16000000 kB\nMemAvailable: 1048576 kB\n")
     monkeypatch.setattr(omnigent_agent, "MEMINFO", meminfo)
-    monkeypatch.setattr(omnigent_agent.os, "cpu_count", lambda: 8)
-    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (300.0, 0.0, 0.0))
-    assert omnigent_agent.main(["capacity"]) == 1
-    assert capsys.readouterr().out == "load 37.5 per core (max 4), 1024 MB available (min 1536)\n"
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (300.0, 0.0, 0.0))  # not CPU
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 40.0)
+    assert omnigent_agent.main(["capacity"]) == 1  # short of memory
+    assert capsys.readouterr().out == "cpu 40% idle (min 10), 1024 MB available (min 1536)\n"
+    meminfo.write_text("MemAvailable: 4194304 kB\n")
+    assert omnigent_agent.main(["capacity"]) == 0  # a high load average with idle CPU has room
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 3.0)
     monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
     og = FakeOmnigent()
-    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: load 37.5"):
+    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: cpu 3% idle"):
         omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert og.sessions == {}
 
-    loads = iter([300.0, 8.0])
-    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (next(loads), 0.0, 0.0))
-    meminfo.write_text("MemAvailable: 4194304 kB\n")
+    idles = iter([3.0, 25.0])
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: next(idles))
     monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 60)
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
-    assert "host over capacity, waiting: load 37.5" in capsys.readouterr().err
-    assert og.sessions  # started once the load fell
+    assert "host over capacity, waiting: cpu 3% idle" in capsys.readouterr().err
+    assert og.sessions  # started once the CPU freed up
 
 
 def test_capacity_reads_macos_memory_or_says_it_is_not_measured(
@@ -576,6 +578,7 @@ def test_capacity_reads_macos_memory_or_says_it_is_not_measured(
 ) -> None:
     monkeypatch.undo()  # the real capacity check, on a faked host
     monkeypatch.setattr(omnigent_agent, "MEMINFO", tmp_path / "absent")
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: None)  # load decides
     monkeypatch.setattr(omnigent_agent.os, "cpu_count", lambda: 8)
     monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (8.0, 0.0, 0.0))
     sysctl = subprocess.CompletedProcess([], 0, stdout="4\n34359738368\n")
@@ -589,6 +592,25 @@ def test_capacity_reads_macos_memory_or_says_it_is_not_measured(
         True,
         "load 1.0 per core (max 4), memory not measured (min 1536)",
     )
+
+
+def test_cpu_idle_reads_proc_stat_or_iostats_second_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.undo()  # the real measurement, on a faked host
+    stat = tmp_path / "stat"
+    stat.write_text("cpu 100 0 100 700 100 0 0 0 50 0\ncpu0 1 2 3 4 5 6 7 8\n")
+    monkeypatch.setattr(omnigent_agent, "PROC_STAT", stat)
+    later = "cpu 160 0 140 760 140 0 0 0 90 0\n"  # a second later; guest is counted in user
+    monkeypatch.setattr(omnigent_agent.time, "sleep", lambda _: stat.write_text(later))
+    assert omnigent_agent.cpu_idle() == 50.0  # (60 idle + 40 iowait) of 200 ticks
+    monkeypatch.setattr(omnigent_agent, "PROC_STAT", tmp_path / "absent")
+    head = "      cpu    load average\n us sy id   1m   5m   15m\n 33 19 48  131.50 100.60 107.07\n"
+    iostat = subprocess.CompletedProcess([], 0, stdout=head)
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", lambda *a, **k: iostat)
+    assert omnigent_agent.cpu_idle() is None  # one sample counts since boot: not measured
+    iostat.stdout += " 41 21 38  131.50 100.60 107.07\n"
+    assert omnigent_agent.cpu_idle() == 38.0
 
 
 def test_stalled_error_body_reaches_cleanup(
