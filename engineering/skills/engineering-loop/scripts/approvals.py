@@ -2227,7 +2227,9 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
     )
 
 
-def parse_report(report: Path) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str]]:
+def parse_report(
+    report: Path,
+) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str]]:
     """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings and its closing
     `VERDICT:`, `SATISFIED:` and `Risk:` lines. Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
@@ -2297,9 +2299,7 @@ def verdict(pr: int, report: Path) -> int:
         comments.append(
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
-    summary = "\n\n".join(
-        [f"{heading} on {head[:7]}.", *outside, "\n".join(closing)]
-    )
+    summary = "\n\n".join([f"{heading} on {head[:7]}.", *outside, "\n".join(closing)])
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
     )

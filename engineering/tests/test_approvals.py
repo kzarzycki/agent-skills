@@ -4473,9 +4473,18 @@ def test_the_gates_risk_high_comes_off_when_a_later_pass_judges_it_low_and_a_rai
     ("change", "why"),
     [
         (("", ""), None),
-        (("Risk: low — a test fixture\n", ""), "has no `Risk: low|high — <reason>` line: the report is unfinished"),
-        (("SATISFIED: no\n", ""), "has no `VERDICT:` or `SATISFIED:` line: the report is unfinished"),
-        (("Verifier: claude, same-family, pass 2\n", ""), "has no `Verifier: <family>, pass <n>` line"),
+        (
+            ("Risk: low — a test fixture\n", ""),
+            "has no `Risk: low|high — <reason>` line: the report is unfinished",
+        ),
+        (
+            ("SATISFIED: no\n", ""),
+            "has no `VERDICT:` or `SATISFIED:` line: the report is unfinished",
+        ),
+        (
+            ("Verifier: claude, same-family, pass 2\n", ""),
+            "has no `Verifier: <family>, pass <n>` line",
+        ),
     ],
 )
 def test_report_reads_a_report_as_verdict_would_without_github(
@@ -4495,7 +4504,9 @@ def test_report_reads_a_report_as_verdict_would_without_github(
     report = tmp_path / "report.md"
     report.write_text(REPORT.replace(*change) if change[0] else REPORT)
     assert approvals.main(["report", str(report)]) == (1 if why else 0)
-    assert capsys.readouterr().out == (f"{report} {why}\n" if why else f"{report} reads as a verdict\n")
+    assert capsys.readouterr().out == (
+        f"{report} {why}\n" if why else f"{report} reads as a verdict\n"
+    )
 
 
 def test_a_report_without_a_risk_line_posts_nothing(
