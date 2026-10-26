@@ -1039,14 +1039,17 @@ def relay(
         held = []
         if approvals:
             held.append(f"an approval prompt (`approve` answers it): {'; '.join(approvals)}")
-        if asks:  # relay --answer answers only once no approval is pending
-            then = "then " if approvals else ""
-            held.append(
-                f"a question (`relay --answer` {then}gives the message as its answer):"
-                f" {'; '.join(asks)}"
-            )
+        if asks:
+            held.append(f"a question: {'; '.join(asks)}")
         why = f"behind {' and '.join(held)}" if held else "until the session's current step ends"
-        raise Queued(f"session {sid}: queued {why}; it lands then")
+        lands = "it lands then"
+        if asks:  # nothing withdraws a queued input, so a rerun with --answer would land it twice
+            how = (
+                "next time, to answer a question, use `relay --answer` instead of a plain relay,"
+                " never after one"
+            )
+            lands = f"this message stays queued and lands once the question is answered ({how})"
+        raise Queued(f"session {sid}: queued {why}; {lands}")
     return f"session {sid}: {'already delivered' if outcome == 'already' else 'delivered'}"
 
 

@@ -3951,21 +3951,32 @@ def test_relay_never_answers_an_approval_prompt_and_says_what_holds_it(
     assert og.resolved == []
     assert capsys.readouterr().err.strip() == (
         f"session {sid}: queued behind an approval prompt (`approve` answers it): Bash(rm -rf build)"
-        " and a question (`relay --answer` then gives the message as its answer): "
-        f"{QUESTION['params']['content_preview']}; it lands then"
+        f" and a question: {QUESTION['params']['content_preview']}; {LANDS_AFTER_A_QUESTION}"
     )
 
 
-def test_relay_behind_only_a_question_names_relay_answer_not_approve(
+# Nothing withdraws a queued input, so the line never invites a rerun of this message with
+# --answer: the queued copy would land after the answer, the same words twice.
+LANDS_AFTER_A_QUESTION = (
+    "this message stays queued and lands once the question is answered (next time, to answer a"
+    " question, use `relay --answer` instead of a plain relay, never after one)"
+)
+
+
+def test_relay_behind_only_a_question_names_relay_answer_for_next_time_not_approve(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(hold=10**6)
     sid = og.create("claude", "lead")
     og.prompts = [QUESTION]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
-    err = capsys.readouterr().err
-    assert "queued behind a question (`relay --answer` gives the message as its answer): " in err
-    assert "`approve`" not in err
+    assert capsys.readouterr().err.strip() == (
+        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
+        f" {LANDS_AFTER_A_QUESTION}"
+    )
+    assert [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]] == [
+        f"{omnigent_agent.RELAYED.format(who='cos')}\ngo"
+    ]  # the copy that lands once the question is answered
 
 
 def test_approve_resolves_each_approval_prompt_never_a_question(
