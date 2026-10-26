@@ -576,7 +576,9 @@ class Omnigent:
         for sid in dict.fromkeys(filter(None, (own_id(), parent_id()))):
             if pid := self.info(sid).get("project_id"):
                 projects = self.call("GET", "/v1/projects")
-                projects = projects.get("data", projects) if isinstance(projects, dict) else projects
+                projects = (
+                    projects.get("data", projects) if isinstance(projects, dict) else projects
+                )
                 if found := [p for p in projects if str(p.get("id")) == str(pid)]:
                     return found[0]
         return self.project(name)
