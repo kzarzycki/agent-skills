@@ -661,6 +661,7 @@ def test_create_files_the_session_under_the_project(
         calls.append((method, path, body))
         return {
             "/v1/agents": [{"name": omnigent_agent.AGENTS["claude"], "id": "a1"}],
+            "/v1/agents?scope=user": [],
             "/v1/projects": {"data": [{"name": "other", "id": "p0"}, {"name": "shop", "id": "p1"}]},
             "/v1/sessions": {"id": "s1"},
         }[path]
@@ -705,9 +706,12 @@ def test_create_labels_the_session_with_its_loop_role_from_the_role_file(
     def call(self, method: str, path: str, body: dict | None = None) -> object:
         bodies.append(body or {})
         agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
-        return {"/v1/agents": agents, "/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}}[
-            path
-        ]
+        return {
+            "/v1/agents": agents,
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        }[path]
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     monkeypatch.setattr(
@@ -730,9 +734,12 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
     def call(self, method: str, path: str, body: dict | None = None) -> object:
         bodies.append(body or {})
         agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
-        return {"/v1/agents": agents, "/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}}[
-            path
-        ]
+        return {
+            "/v1/agents": agents,
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        }[path]
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     monkeypatch.setattr(
@@ -791,9 +798,11 @@ def test_the_model_is_the_flag_else_the_agents_environment_variable_else_the_har
     def call(self, method: str, path: str, body: dict | None = None) -> object:
         if body is not None:
             bodies.append(body)
-        return {"/v1/agents": [{"name": "codex-native-ui", "id": "a1"}], "/v1/projects": []}.get(
-            path, {"id": "s1"}
-        )
+        return {
+            "/v1/agents": [{"name": "codex-native-ui", "id": "a1"}],
+            "/v1/agents?scope=user": [],
+            "/v1/projects": [],
+        }.get(path, {"id": "s1"})
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
     monkeypatch.setattr(
@@ -1452,6 +1461,7 @@ def create_bodies(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
             bodies.append(body)
         return {
             "/v1/agents": [{"name": omnigent_agent.AGENTS["claude"], "id": "a1"}],
+            "/v1/agents?scope=user": [],
             "/v1/projects": {"data": [{"name": "shop", "id": "p1"}]},
         }.get(path, {"id": "s1"})
 
@@ -1820,6 +1830,83 @@ def test_a_cloud_worker_s_follow_up_takes_only_a_report_comment_newer_than_its_r
     assert omnigent_agent.main(argv) == code
     assert report.read_text() == ("the fix report" if code == 0 else "the first report")
     assert og.posts == 1 + code  # the follow-up, and a nudge for a turn without a fresh one
+
+
+def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_reports_on_its_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # started from a host without the cloud harness: --host needs --top-level, which kept the lead
+    # preamble and refused --pr
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    og.host = lambda name: "far"  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    fake_gh(monkeypatch, {"42": on_pr(7, "Branch: claude/x at abc\n")})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--top-level", "--host", "box"]
+    argv += ["--workspace", "/there/repo", "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert og.top_level == [True] and og.workspaces == ["/there/repo"]
+    brief = omnigent_agent.text_of(og.sessions["s0"][1])
+    assert brief.startswith("Work on t. Your brief:") and "issues/7/comments" in brief
+    assert "owner's own words" not in brief  # not the lead preamble
+    # the two VM facts: what the clone holds, and the foreground limit
+    assert "checked out in the workspace this session started from" in brief
+    assert "git fetch origin pull/7/head" in brief and "stops at 10 minutes" in brief
+    # its report is the PR comment, written here although the session runs there
+    assert omnigent_agent.main(["wait", "s0", "r.md", "--pr", "7"]) == 0
+    assert (tmp_path / "r.md").read_text() == "Branch: claude/x at abc\n"
+
+
+def test_wait_keep_leaves_a_delivered_worker_open_for_a_relay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    fake_gh(monkeypatch, {"42": on_pr(7, "done")})
+    monkeypatch.chdir(tmp_path)
+    relay = ["relay", "fix the finding", "--confirm-seconds", "0"]
+    for title, keep, archived, code in (
+        ("t0", ["--keep"], [], 0),
+        ("t1", [], ["s1"], omnigent_agent.GONE),
+    ):
+        sid, _ = omnigent_agent.start(
+            og, "claude-cloud", title, "do X", tmp_path / "r", None, 0, pr=7
+        )
+        assert omnigent_agent.main(["wait", sid, f"{title}.md", "--pr", "7", *keep]) == 0
+        assert og.archived == archived
+        assert omnigent_agent.main([relay[0], sid, *relay[1:]]) == code
+    assert "s1 is archived" in capsys.readouterr().err
+
+
+def test_send_pr_delivers_to_a_session_whose_workspace_is_on_another_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-43")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    fake_gh(monkeypatch, {"43": on_pr(7, "the fix report")})
+    monkeypatch.chdir(tmp_path)
+    sid = og.create("claude-cloud", "t", workspace="/home/elsewhere/repo")  # no such path here
+    (tmp_path / "fix.md").write_text("fix ST1")
+    argv = ["send", sid, "fix.md", "tmp/r.md", "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert (tmp_path / "tmp" / "r.md").read_text() == "the fix report"
+
+
+def test_a_start_on_another_host_does_not_wait_on_this_host_s_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda: (False, "cpu 2% idle"))
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
+    og = FakeOmnigent()
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=True, host_id="far"
+    )
+    assert sid in og.sessions
+    with pytest.raises(omnigent_agent.Fail, match="host over capacity"):
+        omnigent_agent.start(
+            og, "claude", "u", "do Y", tmp_path / "u.md", None, 0, top_level=True, host_id="h"
+        )
 
 
 def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
@@ -5173,6 +5260,29 @@ def test_an_unknown_agent_fails_naming_it_before_any_session_is_created(
     with pytest.raises(omnigent_agent.Fail, match="agent nope not registered"):
         omnigent_agent.Omnigent().create("nope", "t")
     assert all(path != "/v1/sessions" for _, path, _ in calls)
+
+
+def test_an_agent_is_taken_by_its_id_and_a_name_two_agents_hold_is_refused_with_their_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _agent_server(
+        monkeypatch,
+        {
+            "/v1/agents": {"data": [{"name": "claude-cloud", "id": "c1"}]},
+            "/v1/agents?scope=user": {
+                "data": [{"name": "claude-cloud", "id": "c2"}, {"name": "solo", "id": "c3"}]
+            },
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        },
+    )
+    omnigent_agent.Omnigent().create("c2", "t")
+    assert calls[-1][2]["agent_id"] == "c2"
+    omnigent_agent.Omnigent().create("solo", "t")
+    assert calls[-1][2]["agent_id"] == "c3"
+    with pytest.raises(omnigent_agent.Fail, match="agents c1, c2 are all called claude-cloud"):
+        omnigent_agent.Omnigent().create("claude-cloud", "t")
+    assert sum(path == "/v1/sessions" for _, path, _ in calls) == 2
 
 
 def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> None:
