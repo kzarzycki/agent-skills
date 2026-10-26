@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import textwrap
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -2060,6 +2061,9 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         if args[0] in ("pr", "run"):
             state["calls"].append(args)
             return ""
+        if args[:2] == ("api", "graphql"):
+            state["calls"].append(args[:2] + args[-1:])
+            return "{}"
         if args[:2] == ("api", "--paginate") and args[2].endswith("/rules/branches/main"):
             if isinstance(state["rulesets"], Exception):
                 raise state["rulesets"]
@@ -2757,6 +2761,71 @@ def test_land_wait_reads_again_a_pr_out_of_the_queue_before_github_says_merged(
     )
 
 
+def queued(minutes: float, suites: int = 0) -> dict[str, Any]:
+    """A merge-queue entry enqueued `minutes` before the clock, waiting for checks, with `suites` on its commit."""
+    at = datetime.fromtimestamp(NOW - minutes * 60, UTC).isoformat().replace("+00:00", "Z")
+    return {
+        "state": "AWAITING_CHECKS",
+        "enqueuedAt": at,
+        "headCommit": {"checkSuites": {"totalCount": suites}},
+    }
+
+
+NOW = 1_800_000_000.0
+DEQUEUED = ("api", "graphql", "id=PR_7")
+
+
+def test_land_wait_dequeues_an_entry_github_never_started_checks_for_and_lands_it_again(
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(approvals.time, "time", lambda: NOW)
+    landing["pull"] = proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=queued(11))
+    later += [
+        proven("SUCCESS", id="PR_7"),  # dequeued: open, out of the queue
+        proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=queued(0)),
+        proven("SUCCESS", id="PR_7", state="MERGED"),
+    ]
+    code, out, calls = waited(capsys, landing)
+    assert code == 0
+    assert out[0] == (
+        "PR #7: its merge-queue entry waited 10 minutes for checks GitHub never started: dequeued, to land it again"
+    )
+    assert out[-1] == "PR #7 is merged"
+    assert calls.count(DEQUEUED) == 1
+    assert calls[0] == DEQUEUED and len(calls) == 2, calls
+
+
+@pytest.mark.parametrize(
+    "entry", [queued(11, suites=1), queued(9)], ids=["checks-started", "young"]
+)
+def test_land_wait_leaves_an_entry_with_a_check_suite_or_a_young_one_in_the_queue(
+    entry: dict[str, Any],
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(approvals.time, "time", lambda: NOW)
+    landing["pull"] = proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=entry)
+    later += [proven("SUCCESS", id="PR_7", state="MERGED")]
+    assert waited(capsys, landing) == (
+        0,
+        [f"PR #7: in the merge queue at {HEAD}", "PR #7 is merged"],
+        [],
+    )
+
+
+def test_land_without_wait_never_dequeues_a_stuck_entry(
+    landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(approvals.time, "time", lambda: NOW)
+    landing["pull"] = proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=queued(60))
+    assert DEQUEUED not in landed(capsys, landing)[2]
+
+
 def test_land_wait_ends_with_exit_3_on_a_red_check_under_auto_merge_already_on(
     landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2945,6 +3014,26 @@ def signing(landing: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
 
 def remote_ref(signing: dict[str, Any], ref: str) -> str:
     return sh("git", "rev-parse", ref, cwd=signing["remote"])
+
+
+def test_a_hosts_global_git_config_cannot_take_over_a_tests_signing(
+    signing: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host whose global config signs with a failing program still signs with the key `signing` made (#400)."""
+    home = tmp_path.parent / f"{tmp_path.name}-home"
+    home.mkdir()
+    (home / ".gitconfig").write_text('[gpg "ssh"]\n\tprogram = false\n[commit]\n\tgpgsign = true\n')
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    signing["git"]("commit", "-q", "-S", "--allow-empty", "-m", "signed")
+    verified = subprocess.run(
+        ["git", "-c", "gpg.ssh.allowedSignersFile=signers", "verify-commit", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert 'Good "git" signature for lander@example.com' in verified.stderr
 
 
 def test_land_with_the_line_squashes_signs_and_pushes_the_pr_branch_then_main(
