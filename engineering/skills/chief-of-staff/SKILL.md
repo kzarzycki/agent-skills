@@ -62,7 +62,10 @@ its landing order.
   deliverables, steps, tests or guardrails the owner never named, since the lead reads
   every sentence as a requirement. An approval the owner gave (a spec, a merge, a standing
   rule) goes in word for word, with who said it, where and when: a lead refuses an approval it
-  is only told about, and stops to ask the owner.
+  is only told about, and stops to ask the owner. A pack script the brief names is the copy
+  installed in the lead's repo (`.claude/skills/…` or `.agents/skills/…`), else your own
+  installed copy, never a developer checkout of the pack: one can sit on any branch, and a
+  stale `approvals.py` there fails every land.
 - **Start.** `python3 <script> start --top-level <claude|codex> <title> <brief-file>
   <report> --role <role-file>`, with the report under your `tmp/loop/` and the
   role the ask needs (an engineering ask: engineering-loop's `lead.md`, by absolute path),
