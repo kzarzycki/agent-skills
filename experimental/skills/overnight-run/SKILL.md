@@ -25,7 +25,7 @@ record their answer.
   - your recommendation, run or skip, with its reason.
 
   The owner strikes or edits them. Silence, meaning no reply by the reply-by time your
-  message names (yours to choose, the owner's to change), runs the recommended ones. The
+  message names (yours to choose, in a timezone it states; the owner's to change), runs the recommended ones. The
   goals that run become the leads' briefs. An approval the board already shows waiting (a
   merge, a spec) is no goal: ask it in its own line, and unanswered it goes on Decide first.
 - **The rest of the frame.** Ask the owner to confirm:
@@ -39,9 +39,9 @@ record their answer.
   every question beyond a reversible one inside a goal, waits for Decide first. A project
   with no boundaries stated has its goals held, not run, since its boundaries are its own
   and you can't supply them. An end time without a date or zone is its next occurrence in
-  the timezone the project or the owner already records; with neither, the run stops at
-  the earliest reading. State each reading in the kickoff message and in the morning
-  report.
+  the timezone the project or the owner already records; with neither, no lead starts,
+  since a guessed zone can end the night before it begins. State each reading in the
+  kickoff message and in the morning report.
 - **Silence chooses work, nothing else.** Silence picks which goals run and approves
   nothing. An approval a goal's work needs (a spec, a merge) comes only from the owner's
   own words: the mandate, or an approval they give during the night, to you or in a
