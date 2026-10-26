@@ -1879,6 +1879,20 @@ def test_wait_keep_leaves_a_delivered_worker_open_for_a_relay(
     assert "s1 is archived" in capsys.readouterr().err
 
 
+def test_run_keep_leaves_a_delivered_worker_open_for_a_relay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    fake_gh(monkeypatch, {"42": on_pr(7, "done")})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    for title, keep, archived in (("t0", ["--keep"], []), ("t1", [], ["s1"])):
+        argv = ["run", "claude-cloud", title, "b.md", f"{title}.md", "--pr", "7", *keep]
+        assert omnigent_agent.main([*argv, "--confirm-seconds", "0"]) == 0
+        assert og.archived == archived
+
+
 def test_send_pr_delivers_to_a_session_whose_workspace_is_on_another_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
