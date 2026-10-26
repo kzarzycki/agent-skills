@@ -1592,7 +1592,7 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
 # The default preamble as it was before --top-level existed: a worker's or verifier's brief.
 DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
-{role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
+{role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is waited on up to a total budget you state, in as few calls as you can, each blocking close to the tool's limit (the longest yield the harness allows on a running command, or a sleep loop that checks the log for its exit line), never short polls, since each call re-reads the whole context: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
@@ -6175,6 +6175,8 @@ def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path
         omnigent_agent.LEAD_PREAMBLE,
     ):
         assert f"`{omnigent_agent.DETACH} <cmd>`" in preamble
+        assert "never short polls, since each call re-reads the whole context" in preamble
+        assert "up to a total budget you state" in preamble
     pid, log = tmp_path / "pid", tmp_path / "log"
     script = f'echo $$ > {pid}; sleep 1; (exit 3); echo "exit $?" > {log}'
     began = time.monotonic()

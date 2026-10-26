@@ -45,9 +45,10 @@ yourself, keeping standards and spec as separate axes.
   formatting and code-review's smell baseline are notes, not findings.
 - **Work the given priorities first.**
 - **Every pass after the first:** the lead gives you the previous report. Review
-  the diff since its head yourself, both axes in your own session with no axis
-  subagents (code-review, step 4), rerun each of its repros and mark it FIXED, NOT FIXED
-  or ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
+  the diff since its head and the files it touches yourself, both axes in your own session
+  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
+  repros from one script that prints each one's command, result and exit code, rather than
+  one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
@@ -56,9 +57,12 @@ yourself, keeping standards and spec as separate axes.
   or a queue, or outlast one tool call, starts detached with its pid, output and exit code
   in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1`
   (Perl's `setsid`, since macOS has no `setsid` command),
-  and is polled in calls well under the tool's limit, up to a total budget you state: a
-  blocker that is only your own call timing out spends the pass on nothing, and Claude
-  Code's low-memory reaper stops in-session background shells. A gate the machine allows
+  and is waited on up to a total budget you state, in as few calls as you can: each call
+  blocks close to the tool's limit (the longest yield your harness allows on a running
+  command, or a sleep loop that checks the log for its exit line), never short polls, since
+  every call re-reads the whole context. A blocker that is only your own call timing out
+  spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
+  background shells. A gate the machine allows
   by rule is the exception: run it as the bare command (Gates and repros).
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
@@ -99,7 +103,7 @@ yourself, keeping standards and spec as separate axes.
   the lead's.
 - **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
   (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
-  your harness's own long-command or background support: an allow rule matches only a plain
+  your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
   command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
   model call. Then write its proof log from what it printed: the head's SHA, the command, its
   output and its exit code. Leave every repro as a runnable file
