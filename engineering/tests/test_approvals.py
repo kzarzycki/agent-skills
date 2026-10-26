@@ -533,7 +533,8 @@ def test_skill_mds_settings_examples_pass_their_schema() -> None:
         r"^```yaml\n(.*?)^```$", skill[skill.index("### Settings") :], re.DOTALL | re.MULTILINE
     )[:2]
     assert approvals.settings(loop_md(loop))["bot"] == [
-        {"login": "dependabot[bot]", "paths": ["uv.lock", "**/package.json"]}
+        {"login": "dependabot[bot]", "paths": ["uv.lock", "**/package.json"]},
+        {"login": "renovate", "branch": "renovate/", "paths": ["uv.lock"]},
     ]
     assert approvals.tracker_settings(loop_md(tracker))["renames"] == {"frontend": "area:web"}
 
