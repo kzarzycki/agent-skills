@@ -1327,8 +1327,8 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
-    """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks,
-    or the aggregate `check` when it requires none), or with `ci: false` a local-ci pass."""
+    """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
+    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
     if queued(pull) is None:
         return []
@@ -1345,7 +1345,8 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
             ]
     else:
         if required is None:
-            required = required_checks(pull["baseRefName"]) or None
+            # the approvals status is check merge's own output: waiting for it never ends
+            required = required_checks(pull["baseRefName"]) - {APPROVALS} or None
         found = ci(where, pull, required)
     return found
 

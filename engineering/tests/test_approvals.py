@@ -835,6 +835,14 @@ def test_only_the_aggregate_check_is_read() -> None:
         # a base that requires nothing: the aggregate `check` alone, not land's every check
         (set(), (("check", "SUCCESS"), ("lint", "FAILURE")), []),
         (set(), (("lint", "SUCCESS"),), ["PR #7: no `check` on the head commit yet"]),
+        # the shipped ruleset: `loop:approvals` is check merge's own output, never something it waits for
+        ({"check", approvals.APPROVALS}, (("check", "SUCCESS"),), []),
+        ({approvals.APPROVALS}, (("check", "SUCCESS"),), []),
+        (
+            {approvals.APPROVALS},
+            (("lint", "SUCCESS"),),
+            ["PR #7: no `check` on the head commit yet"],
+        ),
     ],
 )
 def test_check_merge_waits_for_the_checks_the_base_branch_requires(
@@ -4862,6 +4870,16 @@ def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[s
 def queue_check(capsys: pytest.CaptureFixture[str], head: str = HEAD) -> tuple[int, list[str]]:
     code = approvals.main(["check", "queue", "7", "--head", head])
     return code, capsys.readouterr().out.splitlines()
+
+
+def test_check_queue_waits_for_the_checks_the_base_branch_requires(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    monkeypatch.setattr(
+        approvals, "required_checks", lambda _base: {"qualify", approvals.APPROVALS}
+    )
+    assert queue_check(capsys) == (1, ["PR #7: no `qualify` on the head commit yet"])
 
 
 def test_a_verified_head_with_its_recorded_pass_may_enter_the_queue(
