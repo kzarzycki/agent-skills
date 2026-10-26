@@ -48,8 +48,10 @@ record their answer.
 
 - Start one lead per goal through the project's start wrapper, on the host the host
   routing table names, within that host's capacity (chief-of-staff, Starting a lead,
-  including Host load). Its brief is the goal and its test, with the mandate, the
-  boundaries and the end time quoted and cited.
+  including Host load). Its brief is the goal and its test, saying who set them: an
+  owner-edited goal quoted with its citation, a goal that ran by silence marked as your
+  own, citing the kickoff message (Starting a lead, Brief). The mandate, the boundaries
+  and the end time go in quoted and cited.
 - Act on supervisor posts (chief-of-staff, Relaying; What a lead's turn ending means). A
   question the mandate delegates and whose answer is reversible you decide (Authority,
   Delegated decisions). Every other question, approval or step goes on the morning's
