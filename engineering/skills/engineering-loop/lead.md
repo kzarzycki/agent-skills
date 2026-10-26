@@ -90,7 +90,8 @@ design, wireframes included for a UI, and delegate the rest.
    issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
    names (SKILL.md, Models).
    With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
-   each pushes its own `claude/…` branch, which you fetch from its report and merge.
+   each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
+   brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
