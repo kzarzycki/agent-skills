@@ -197,13 +197,15 @@ with no further call. Exit 4: not deliverable, and why (archived, a revive that 
 neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
 revived in place first, as `send` does. A lead blocked only on questions (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
-prompts) holds every message until the question is answered, so `relay` answers each with the
-message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
-the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
-message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+prompts) holds every message until the question is answered, so a plain `relay` waits behind
+it (exit 5) and lands once the question is answered: a relay that arrives while a question is
+open must not become its answer. `relay --answer` answers each question with the message
+instead (exit 0), through Omnigent's resolve route: the turn carries on with it as the
+answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the message up
+to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 `relay --from <name>` is a notice from a task or an agent rather than the owner's words
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
-answers a question, so it waits behind one (exit 5) instead of becoming its answer.
+answers a question, even with `--answer`.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
@@ -212,8 +214,9 @@ answers a question, so it waits behind one (exit 5) instead of becoming its answ
 top-level session of yours (not one shared with you) updated within N hours, all at once rather than one `relay` after another,
 each waiting on its own delivery. It never sends to its own session, an archived one or one in a
 project whose name contains "automations", nor to one with a question or approval prompt
-pending (`skipped: waiting on a question`), since `relay` would give a question the message as
-its answer; answer that one with its own `relay`. `--project` (matched as `start` matches a
+pending (`skipped: waiting on a question`): the message would wait unread behind it. Answer
+that question with `relay --answer`, or send the message with a plain `relay`, which waits behind
+it (exit 5) and lands once it is answered. `--project` (matched as `start` matches a
 project: exact, else ignoring case and punctuation, two loose matches an error), `--host` and `--exclude` narrow the set. One
 line per target: `delivered`, `queued …`, `skipped: <why>` or `failed: <why>` (also a session it could
 not read); exit 1 when one failed, `--dry-run` included, which lists the targets and sends
@@ -288,8 +291,9 @@ report written for the brief still counts after it. One with no history item for
 `--silent-seconds` (default 1800, three times the 10-minute limit of one tool call)
 it sends the `wait` nudge once as its resume line, whatever its status says
 (`resume line sent`). A session waiting on its own worker or verifier writes nothing meanwhile,
-so a child of it updated within that window (`child_sessions`' `updated_at`) keeps it live:
-silence means the whole subtree is quiet. It prints each of those at once and goes on. It exits 0 with one line
+so a child of it updated within that window (`child_sessions`' `updated_at`), or a live session it
+subscribes to (a top-level helper such as a cloud worker), keeps it live: silence means the whole
+subtree and its helpers are quiet. It prints each of those at once and goes on. It exits 0 with one line
 as soon as a session wrote its report (`report written: <path>`) or a question
 (`asked: <path>`), blocks on a prompt, fails, or is given up on (`gave up`: silent again after
 its resume line, which may sit undelivered behind a stuck step; silent with an input already
@@ -340,8 +344,8 @@ never given up on, nor revived or sent the resume line as a session owing a repo
 when they are news, so the notified session is not woken for a turn that changed nothing:
 a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED` (a `USER NEEDED`
 line wins over an earlier `DONE` or `PARKED` one, since an ask after a `DONE` still needs its answer), once it holds
-as `watch` counts an end; any other turn end only once the lead and its live children wrote
-nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
+as `watch` counts an end; any other turn end only once the lead, its live children and the live sessions it
+subscribes to wrote nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
 time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
 child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
@@ -362,7 +366,8 @@ A followed lead also has a progress deadline, since a lead that reads running fo
 quiet a second time with the same last message, makes none of those events. Its progress,
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
 none), once it has any, a message to it that is not the supervisor's own (a relay or the owner
-typing, which starts a new chain), and its live children's activity, read on first sight, then once a minute and again when
+typing, which starts a new chain), and the activity of its live children and of the live sessions it subscribes to (its
+top-level helpers, a cloud worker for one, which are no children), read on first sight, then once a minute and again when
 the deadline falls due, and, once the deadline falls due, its report's last write (from its
 folder's listing), so a lead already stuck when the supervisor starts is overdue at once; a
 lead with neither counts from first sight. With
@@ -401,7 +406,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
 | `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
-| a question | rule | act, for one `relay` |
+| a question | rule | act, for one `relay --answer` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
 
 The small model only routes, since its input holds a lead's own words: one `claude -p --model
@@ -421,7 +426,7 @@ on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through 
 revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
 budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
-`relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
+it would wait unread behind the prompt, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there, no older than
 the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
 it done,

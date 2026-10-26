@@ -1299,6 +1299,47 @@ def test_a_failed_create_with_no_session_made_fails_the_start(tmp_path: Path) ->
     assert og.posts == 0
 
 
+@pytest.mark.parametrize(
+    ("helpers", "subscriptions_fail", "expected"),
+    [
+        (
+            {"cloud": (300, False)},
+            False,
+            300.0,
+        ),  # a running cloud worker, no child: its updates count
+        (
+            {"cloud": (50, False)},
+            False,
+            100.0,
+        ),  # an idle helper holds nothing off: the child is newer
+        ({"done": (500, True)}, False, 100.0),  # an archived helper counts for nothing
+        ({"gone": (500, False)}, False, 100.0),  # a deleted one too
+        ({"cloud": (300, False)}, True, 100.0),  # no subscriptions endpoint: the children alone
+    ],
+)
+def test_active_counts_a_subscribed_top_level_helper_like_a_child(
+    monkeypatch: pytest.MonkeyPatch,
+    helpers: dict[str, tuple[int, bool]],
+    subscriptions_fail: bool,
+    expected: float,
+) -> None:
+    def call(self, method: str, path: str, body: object = None) -> object:
+        if path == "/v1/sessions/lead/child_sessions?limit=100":
+            return {"data": [{"id": "kid", "updated_at": 100}]}
+        if path == "/v1/sessions/lead/subscriptions":
+            if subscriptions_fail:
+                raise omnigent_agent.Fail("GET subscriptions: HTTP 404 Not Found")
+            return {"data": [{"subscriber_id": "lead", "session_id": h} for h in helpers]}
+        sid = path.removeprefix("/v1/sessions/")
+        if sid == "gone":
+            raise omnigent_agent.Gone("GET: HTTP 404 Not Found")
+        updated, archived = helpers[sid]
+        return {"id": sid, "updated_at": updated, "archived": archived}
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    assert object.__new__(omnigent_agent.Omnigent).active("lead") == expected  # no login read
+
+
 def test_the_lookup_matches_the_title_under_the_parent_created_after_the_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3549,12 +3590,17 @@ APPROVAL = {"elicitation_id": "e2", "params": {"content_preview": "Bash(rm -rf b
 
 
 def relay(
-    og: FakeOmnigent, sid: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str = "go"
+    og: FakeOmnigent,
+    sid: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    text: str = "go",
+    *flags: str,
 ) -> int:
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
     (tmp_path / "m.md").write_text(text)
-    return omnigent_agent.main(["relay", sid, str(tmp_path / "m.md")])
+    return omnigent_agent.main(["relay", sid, str(tmp_path / "m.md"), *flags])
 
 
 def test_relay_to_an_idle_session_is_delivered(
@@ -3599,13 +3645,24 @@ def test_relay_of_the_same_words_after_the_session_replied_is_a_new_message(
     assert og.posts == 2
 
 
+def test_relay_holds_behind_an_open_question_unless_told_to_answer_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # the question holds every message behind it
+    sid = og.create("claude", "cos")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch, "sync done") == omnigent_agent.QUEUED
+    assert og.resolved == []
+    assert "Which base?" in capsys.readouterr().err
+
+
 def test_relay_answers_a_question_with_the_message_instead_of_posting_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(hold=10**6)  # an interrupt would leave it held (omnigent#14)
     sid = og.create("claude", "lead")
     og.prompts = [QUESTION]
-    assert relay(og, sid, tmp_path, monkeypatch, "use main\n") == 0
+    assert relay(og, sid, tmp_path, monkeypatch, "use main\n", "--answer") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "use main"})]
     assert og.posts == 0
     assert "answered its open question" in capsys.readouterr().out
@@ -3619,7 +3676,7 @@ def test_relay_rerun_answers_a_question_raised_behind_its_own_pending_copy(
     sid = og.create("claude", "lead")
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.QUEUED
     og.prompts = [QUESTION]
-    assert relay(og, sid, tmp_path, monkeypatch) == 0
+    assert relay(og, sid, tmp_path, monkeypatch, "go", "--answer") == 0
     assert og.resolved == [(sid, "e1", "accept", {"Which base?": "go"})]
     assert og.posts == 1
     assert "answered its open question" in capsys.readouterr().out
@@ -5128,7 +5185,7 @@ def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
     (tmp_path / "m.md").write_text("ACTION NEEDED: the sync printed a note")
-    argv = ["relay", sid, str(tmp_path / "m.md"), "--from", "skills-sync"]
+    argv = ["relay", sid, str(tmp_path / "m.md"), "--from", "skills-sync", "--answer"]
     assert omnigent_agent.main(argv) == omnigent_agent.QUEUED
     assert og.resolved == []
     assert og.posts == 1
