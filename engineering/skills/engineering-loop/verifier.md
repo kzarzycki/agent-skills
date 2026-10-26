@@ -54,10 +54,12 @@ yourself, keeping standards and spec as separate axes.
   report's head.
 - **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached with its pid, output and exit code
-  in files, `setsid nohup sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1 &`,
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1`
+  (Perl's `setsid`, since macOS has no `setsid` command),
   and is polled in calls well under the tool's limit, up to a total budget you state: a
   blocker that is only your own call timing out spends the pass on nothing, and Claude
-  Code's low-memory reaper stops in-session background shells.
+  Code's low-memory reaper stops in-session background shells. A gate the machine allows
+  by rule is the exception: run it as the bare command (Gates and repros).
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
@@ -95,7 +97,12 @@ yourself, keeping standards and spec as separate axes.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run with the exact owner action, since parking it is
   the lead's.
-- **Gates and repros:** you may run `mise run check`. Leave every repro as a runnable file
+- **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
+  (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
+  your harness's own long-command or background support: an allow rule matches only a plain
+  command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
+  model call. Then write its proof log from what it printed: the head's SHA, the command, its
+  output and its exit code. Leave every repro as a runnable file
   beside the report (the gitignored `tmp/loop/`), never in a tracked path, and name it in
   the report.
 

@@ -25,7 +25,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    posts it, since the spec lives on the issue. Your job ends at the push: don't wait for
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
    the worktree you are given, then `mise run check` and push the same way. A command that
-   may outlast one tool call (a gate, a held lock, a queue) starts detached, `setsid nohup`,
+   may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
    with its log, pid and exit code in files, and is polled, since a foreground call times out
    and Claude Code's low-memory reaper stops in-session background shells; never end a turn
    saying you are waiting, since nothing wakes you and the lead reads silence as work.
