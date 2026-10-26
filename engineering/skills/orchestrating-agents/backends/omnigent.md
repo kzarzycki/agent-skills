@@ -197,13 +197,15 @@ with no further call. Exit 4: not deliverable, and why (archived, a revive that 
 neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
 revived in place first, as `send` does. A lead blocked only on questions (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
-prompts) holds every message until the question is answered, so `relay` answers each with the
-message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
-the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
-message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+prompts) holds every message until the question is answered, so a plain `relay` waits behind
+it (exit 5) and lands once the question is answered: a relay that arrives while a question is
+open must not become its answer. `relay --answer` answers each question with the message
+instead (exit 0), through Omnigent's resolve route: the turn carries on with it as the
+answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the message up
+to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 `relay --from <name>` is a notice from a task or an agent rather than the owner's words
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
-answers a question, so it waits behind one (exit 5) instead of becoming its answer.
+answers a question, even with `--answer`.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
@@ -212,8 +214,9 @@ answers a question, so it waits behind one (exit 5) instead of becoming its answ
 top-level session of yours (not one shared with you) updated within N hours, all at once rather than one `relay` after another,
 each waiting on its own delivery. It never sends to its own session, an archived one or one in a
 project whose name contains "automations", nor to one with a question or approval prompt
-pending (`skipped: waiting on a question`), since `relay` would give a question the message as
-its answer; answer that one with its own `relay`. `--project` (matched as `start` matches a
+pending (`skipped: waiting on a question`): the message would wait unread behind it. Answer
+that question with `relay --answer`, or send the message with a plain `relay`, which waits behind
+it (exit 5) and lands once it is answered. `--project` (matched as `start` matches a
 project: exact, else ignoring case and punctuation, two loose matches an error), `--host` and `--exclude` narrow the set. One
 line per target: `delivered`, `queued …`, `skipped: <why>` or `failed: <why>` (also a session it could
 not read); exit 1 when one failed, `--dry-run` included, which lists the targets and sends
@@ -403,7 +406,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
 | `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
-| a question | rule | act, for one `relay` |
+| a question | rule | act, for one `relay --answer` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
 
 The small model only routes, since its input holds a lead's own words: one `claude -p --model
@@ -423,7 +426,7 @@ on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through 
 revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
 budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
-`relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
+it would wait unread behind the prompt, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there, no older than
 the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
 it done,
