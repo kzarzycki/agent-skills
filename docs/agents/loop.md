@@ -15,10 +15,12 @@ approve reversible progress (#245, evidence on #228): a Sonnet worker cost about
 one per item. At its end, telemetry compares verifier passes per PR against the Opus workers of
 2026-10-18..20. Leads keep their defaults.
 
-Verifier model: mid for any issue not labelled risk:high
+Verifier model: mid for any PR that matches nothing in the `risk` settings below: no `risk:high` on it or its issue, no file in `risk.paths`
 
 The owner's judgement: Codex's mid tier is the right balance as verifier for low- and mid-risk
-PRs. A generation without a mid tier resolves upward, as for workers above. A risk-high PR's verifier keeps its family's default, the top tier.
+PRs. A generation without a mid tier resolves upward, as for workers above. A PR that
+`check merge` rates high keeps its family's default, the top tier, so the condition reads the
+PR's own labels and files, not only its issue's.
 Undo: delete this line.
 
 ## Settings
