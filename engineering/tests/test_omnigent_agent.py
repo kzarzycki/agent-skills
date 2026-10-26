@@ -4873,20 +4873,22 @@ def test_a_failed_state_write_before_the_restart_keeps_the_old_process_until_one
     registry = following(tmp_path)
     og = Lead(told("brief", 60))
     real_reload, real_write = omnigent_agent.reloadable, omnigent_agent.write_state
-    ready, failed, execs = [False], [], []
+    ready, seen_order = [False], []  # "fail", "ok" per write once the script changed, "exec"
 
     def reloadable(path: Path, seen: dict[str, int]) -> bool:
         ready[0] = real_reload(path, seen)
         return ready[0]
 
     def write_state(path: Path, state: dict) -> None:
-        if ready[0] and not failed:  # the first write at the restart fails, a later one not
-            failed.append(path)
+        if ready[0] and "fail" not in seen_order:  # the first write at the restart fails
+            seen_order.append("fail")
             raise OSError("disk full")
         real_write(path, state)
+        if "fail" in seen_order:
+            seen_order.append("ok")
 
     def execv(path: str, argv: list[str]) -> None:
-        execs.append(len(failed))
+        seen_order.append("exec")
         raise Stop
 
     monkeypatch.setattr(omnigent_agent, "reloadable", reloadable)
@@ -4894,8 +4896,9 @@ def test_a_failed_state_write_before_the_restart_keeps_the_old_process_until_one
     monkeypatch.setattr(omnigent_agent.os, "execv", execv)
     bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
     supervised(og, registry, monkeypatch, 6, bump, console=True, script=script)
-    assert failed  # the restart's write failed once
-    assert execs == [1]  # no exec then; one once a write succeeded
+    assert seen_order[0] == "fail"  # the restart's write failed once
+    assert seen_order[-1] == "exec" and seen_order.count("exec") == 1
+    assert seen_order[-2] == "ok"  # no exec after the failure; one right after a write succeeded
 
 
 def deadlines(registry: Path) -> list[dict]:
