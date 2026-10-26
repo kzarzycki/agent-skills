@@ -516,6 +516,13 @@ and `RunAtLoad` true, `StandardOutPath` and `StandardErrorPath`, and `PATH` unde
 `systemctl --user enable --now <name>`; `loginctl enable-linger $USER` keeps it running while
 the user is logged out, and `journalctl --user -u <name>` shows its log.
 
+An update needs no restart: when `omnigent_agent.py` is replaced on disk (a skills sync
+installing a new one), `supervise --registry` re-executes itself in place with the same
+arguments, at the top of a poll with nothing waiting to be posted and its state written first,
+logging `restarting: <script> changed`. It waits until the file is unchanged for one poll, so a
+half-written file is not taken, and a new file that does not compile is logged once while the
+running copy carries on.
+
 **Finished sessions.** `run` and `wait` finish the session whose report or verdict they
 return, which ends its agent process and keeps its transcript; a session that asked a
 question stays, since the answer goes to it. Finishing archives the session, a sub-agent
