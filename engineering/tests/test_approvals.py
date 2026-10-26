@@ -2947,6 +2947,26 @@ def remote_ref(signing: dict[str, Any], ref: str) -> str:
     return sh("git", "rev-parse", ref, cwd=signing["remote"])
 
 
+def test_a_hosts_global_git_config_cannot_take_over_a_tests_signing(
+    signing: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A host whose global config signs with a failing program still signs with the key `signing` made (#400)."""
+    home = tmp_path.parent / f"{tmp_path.name}-home"
+    home.mkdir()
+    (home / ".gitconfig").write_text('[gpg "ssh"]\n\tprogram = false\n[commit]\n\tgpgsign = true\n')
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    signing["git"]("commit", "-q", "-S", "--allow-empty", "-m", "signed")
+    verified = subprocess.run(
+        ["git", "-c", "gpg.ssh.allowedSignersFile=signers", "verify-commit", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert 'Good "git" signature for lander@example.com' in verified.stderr
+
+
 def test_land_with_the_line_squashes_signs_and_pushes_the_pr_branch_then_main(
     landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
