@@ -1366,15 +1366,36 @@ def inexact(
     original: list[dict[str, Any]],
     revert: list[dict[str, Any]],
     number: int,
-    undone: tuple[dict[str, str] | None, dict[str, str] | None],
-    undoing: tuple[dict[str, str] | None, dict[str, str] | None],
+    undone: tuple[dict[str, tuple[str, str]] | None, dict[str, tuple[str, str]] | None],
+    undoing: tuple[dict[str, tuple[str, str]] | None, dict[str, tuple[str, str]] | None],
 ) -> list[str]:
     """Why `revert` does not undo #number, both as GitHub's REST API lists a PR's files; empty when it does. Each file
     must have the inverse status and the inverse runs of changed lines in order, while line numbers and context move
     with main. Every path either touches must have, in `undoing` (the revert's merge base and head trees), the modes
     it had in `undone` (#number's base and merge commit trees) the other way round, absence included. A tree GitHub
-    truncated is None."""
+    truncated is None. Trees map a path to its (mode, blob): a revert that touches only #number's paths and whose
+    trees hold #number's blobs the other way round is exact whatever its diff looks like, since a diff can pair the
+    same change's lines another way (#351)."""
     why: list[str] = []
+    before, after = undone
+    base, head = undoing
+    trees = None not in (before, after, base, head)
+
+    def paths(entries: list[dict[str, Any]]) -> set[str]:
+        return {
+            entry[name]
+            for entry in entries
+            for name in ("filename", "previous_filename")
+            if entry.get(name)
+        }
+
+    touched = paths(original) | paths(revert)
+    if (
+        trees
+        and touched == paths(original)
+        and all(base.get(p) == after.get(p) and head.get(p) == before.get(p) for p in touched)
+    ):
+        return why
 
     def changes(entries: list[dict[str, Any]], inverted: bool) -> dict[tuple[str, str], Any]:
         found = {}
@@ -1419,27 +1440,17 @@ def inexact(
                 if extra or missing
                 else f"`{shown(*key)}` changes the lines #{number} changed in another order"
             )
-    before, after = undone
-    base, head = undoing
-    if None in (before, after, base, head):
+    if not trees:
         why.append("GitHub truncates a tree it would compare file modes in")
     else:
-        touched = {
-            entry[name]
-            for entry in original + revert
-            for name in ("filename", "previous_filename")
-            if entry.get(name)
-        }
         for path in sorted(touched):
             for theirs, ours, where, when in (
                 (after, base, "at the merge base", "after"),
                 (before, head, "at the head", "before"),
             ):
-                if ours.get(path) != theirs.get(path):
-                    why.append(
-                        f"`{path}` has mode {ours.get(path, 'absent')} {where}, and"
-                        f" {theirs.get(path, 'absent')} {when} #{number}"
-                    )
+                mode, wanted = (ours.get(path, ("absent",))[0], theirs.get(path, ("absent",))[0])
+                if mode != wanted:
+                    why.append(f"`{path}` has mode {mode} {where}, and {wanted} {when} #{number}")
     return why
 
 
@@ -1666,13 +1677,17 @@ def auto_merge_allowed() -> bool:
     return gh("api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge").strip() == "true"
 
 
-def tree(sha: str) -> dict[str, str] | None:
-    """The mode of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
+def tree(sha: str) -> dict[str, tuple[str, str]] | None:
+    """The (mode, blob SHA) of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
     ponytail: one recursive read, up to GitHub's 100,000 entries; read each touched directory when a repo outgrows it."""
     found = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/git/trees/{sha}?recursive=1"))
     if found["truncated"]:
         return None
-    return {entry["path"]: entry["mode"] for entry in found["tree"] if entry["type"] != "tree"}
+    return {
+        entry["path"]: (entry["mode"], entry["sha"])
+        for entry in found["tree"]
+        if entry["type"] != "tree"
+    }
 
 
 def head_pushed(pull: dict[str, Any]) -> str | None:
