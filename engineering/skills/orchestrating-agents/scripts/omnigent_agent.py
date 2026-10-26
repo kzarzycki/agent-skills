@@ -1326,28 +1326,31 @@ def wait(
         )
         if turn_ended and not counts():
             time.sleep(POLL_SECONDS)  # a report written just before the turn ended
+        # before pr_report: an unposted report may link earlier comments on its PR
+        if turn_ended and pr and said.lstrip().startswith(UNPOSTED):
+            body = said.lstrip().removeprefix(UNPOSTED).lstrip("\n")
+            # a re-attached wait finds the report it already posted
+            if not (report.exists() and report.read_text() == body):
+                repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
+                url = gh(
+                    "api",
+                    f"repos/{repo.strip()}/issues/{pr}/comments",
+                    "-f",
+                    f"body={body}",
+                    "--jq",
+                    ".html_url",
+                )
+                print(
+                    f"session {sid} could not post its report; posted it: {url.strip()}",
+                    file=sys.stderr,
+                )
+                report.parent.mkdir(parents=True, exist_ok=True)
+                report.write_text(body)
+            break
         if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
-        if turn_ended and pr and said.lstrip().startswith(UNPOSTED):
-            body = said.lstrip().removeprefix(UNPOSTED).lstrip("\n")
-            repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner").strip()
-            url = gh(
-                "api",
-                f"repos/{repo}/issues/{pr}/comments",
-                "-f",
-                f"body={body}",
-                "--jq",
-                ".html_url",
-            )
-            print(
-                f"session {sid} could not post its report; posted it: {url.strip()}",
-                file=sys.stderr,
-            )
-            report.parent.mkdir(parents=True, exist_ok=True)
-            report.write_text(body)
-            break
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
             if question.exists():
