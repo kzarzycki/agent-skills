@@ -132,6 +132,7 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -167,8 +168,17 @@ TURN_END_SECONDS = 30.0
 PROMPT_CONFIRM_SECONDS = 120.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
-RETRY_SECONDS = (2.0, 5.0, 15.0)
-TRANSIENT = (TimeoutError, socket.timeout, ConnectionResetError)  # socket.timeout: Python 3.9
+RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
+# socket.timeout: Python 3.9; an SSL EOF, a refusal or an abort: a server restarting or overloaded
+TRANSIENT = (
+    TimeoutError,
+    socket.timeout,
+    ConnectionResetError,
+    ConnectionRefusedError,
+    ConnectionAbortedError,
+    ssl.SSLEOFError,
+)
+TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 NUDGE = "Your turn ended without the report. Run any long command in the foreground, then write the report to {report}."
@@ -406,8 +416,8 @@ class Omnigent:
         return out.stdout.strip()
 
     def call(self, method: str, path: str, body: object = None) -> dict:
-        """One request; a ``GET`` is retried on a timeout or reset. A ``POST`` never is: it may
-        have taken effect."""
+        """One request; a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
+        status. A ``POST`` never is: it may have taken effect."""
         retries = list(RETRY_SECONDS) if method == "GET" else []
         refreshed = False
         while True:
@@ -427,6 +437,10 @@ class Omnigent:
             except HTTPError as e:
                 if e.code == 401 and not refreshed:
                     self._token, refreshed = "", True  # expired mid-run: refresh once
+                    continue
+                if retries and e.code in TRANSIENT_HTTP:
+                    print(f"{method} {path}: HTTP {e.code}; retrying", file=sys.stderr)
+                    time.sleep(retries.pop(0))
                     continue
                 raise Fail(
                     f"{method} {path}: HTTP {e.code} {e.reason}"
