@@ -509,8 +509,10 @@ class Omnigent:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
-        Several agents can share a name, so a name two of them hold fails, listing their ids,
-        rather than pick by order."""
+        Each upload of one spec registers another agent under its name, and an agent record has
+        no host, so copies whose configs match apart from id and version can't be told apart: the
+        name resolves to the newest by ``created_at``. Agents whose configs differ are refused,
+        listing their ids, rather than picked by order."""
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
         for path in ("/v1/agents", "/v1/agents?scope=user"):
@@ -528,11 +530,17 @@ class Omnigent:
                 if not (isinstance(page, dict) and page.get("has_more") and last):
                     break
                 after = str(last)
-        if len(named) > 1:
-            raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
         if not named:
             raise Fail(f"agent {name} not registered")
-        return next(iter(named.values()))
+        if len(named) > 1:
+            specs = [
+                {k: v for k, v in self.call("GET", f"/v1/agents/{i}/config").items()
+                 if k not in ("id", "version")}
+                for i in named
+            ]
+            if any(spec != specs[0] for spec in specs):
+                raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
+        return max(named.values(), key=lambda a: (a.get("created_at") or 0, str(a.get("id"))))
 
     def project(self, name: str) -> dict | None:
         """The project (a sidebar group) called ``name``, or None when there is none. Case, spaces
