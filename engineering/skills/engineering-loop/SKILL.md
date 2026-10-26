@@ -19,7 +19,7 @@ it (Approvals and proof); no step runs for their changes.
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
+| **Gates.** `mise run check` before every push, its test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -436,6 +436,14 @@ or the owner's private network.
   prerequisite the queued items need (loop.md § Proof on a branch, the specs' acceptance)
   while the owner can still answer, and check such a precondition before a heavy step
   takes a slot.
+- **One heavy gate per host slot.** Leads on one host share its cores, and gates run at
+  once slow every one of them several times over and starve new sessions of the capacity
+  to start. So the project's test part runs behind a host-wide slot that every worktree
+  shares: the template's `scripts/gate-slot` (`GATE_SLOTS` slots, default 1; a lock frees
+  itself however the run exits), or, in a project without it, a lock on the same file,
+  `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`, around its heavy check. A parallel runner takes the
+  `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
+  `test:changed` while iterating and the lint parts stay outside the slot.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
