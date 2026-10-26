@@ -943,24 +943,31 @@ def relay(
 
 
 # The first words of every message an agent or Omnigent posts into a session, never the owner's:
-# a brief's line, the supervisor's posts and lines, the relay headers, the revive and nudge lines,
-# Omnigent's subscription notices. A new message this script posts adds its opening here.
+# the supervisor's posts and lines, the relay headers, the revive and nudge lines, Omnigent's
+# subscription notices, and a brief's first line (BRIEF). A new message this script posts adds its
+# opening here: an exact one, since the owner may type "Work on #35 next" themselves.
 POSTED = (
-    "Work on ",
-    "Supervisor",
+    "Supervisor: ",
+    "Supervisor [",
     RELAY_FROM.split("{")[0],
     RELAYED.split("{")[0],
     "[System:",
     REVIVED,
     NUDGE.split(" Run ")[0],
 )
+BRIEF = re.compile(r"Work on .+(\. Your brief:|: read .+ and do what it says\.)")
+
+
+def agent_posted(text: str) -> bool:
+    text = text.strip()
+    return text.startswith(POSTED) or bool(BRIEF.fullmatch(text.split("\n", 1)[0]))
 
 
 def owner_said(og: Omnigent, sid: str, quote: str) -> tuple[bool, str]:
     """Whether the owner said ``quote`` in ``sid``, and the citation or why not. Their message is
     the newest one in the whole history (paged back) holding the quote, whitespace collapsed, as
     a ``role: user`` message with a ``created_by``, not ``is_meta`` (a harness notice) and opening
-    with none of ``POSTED``. The server stamps an API post with the same ``created_by`` as a typed
+    as no agent's post (``agent_posted``). The server stamps an API post with the same ``created_by`` as a typed
     message, so this stops a quote copied from a relay or a post, not an agent posting an unmarked
     message on purpose (#369)."""
     want = " ".join(quote.split())
@@ -974,13 +981,15 @@ def owner_said(og: Omnigent, sid: str, quote: str) -> tuple[bool, str]:
         for i in data:
             if not (from_user(i) and want in " ".join(text_of(i).split())):
                 continue
-            if i.get("is_meta") or not i.get("created_by") or text_of(i).strip().startswith(POSTED):
+            if i.get("is_meta") or not i.get("created_by") or agent_posted(text_of(i)):
                 posted.append(i)
                 continue
             at = datetime.fromtimestamp(float(i.get("created_at") or 0), timezone.utc)
             return True, (
                 f"owner said it: {og.base}/c/{sid} item {i.get('id')} at"
-                f" {at:%Y-%m-%dT%H:%MZ} by {i['created_by']}"
+                f" {at:%Y-%m-%dT%H:%MZ} by {i['created_by']}\n"
+                # the whole message, so the lead judges the quote in its words, not as a fragment
+                f"> {' '.join(text_of(i).split())}"
             )
         if not data or not page.get("has_more"):
             break

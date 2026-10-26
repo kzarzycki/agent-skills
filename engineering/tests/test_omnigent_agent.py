@@ -1021,7 +1021,7 @@ def test_a_follow_up_is_marked_as_posted_so_owner_said_skips_it(
     sent = [omnigent_agent.text_of(i) for i in og.sessions[sid] if i.get("role") == "user"]
     follow_up = next(t for t in sent if "force-push" in t)
     assert follow_up == "[relayed by cos]\nyes, force-push the branch"
-    assert follow_up.startswith(omnigent_agent.POSTED)  # owner-said rejects a quote found only here
+    assert omnigent_agent.agent_posted(follow_up)  # owner-said rejects a quote found only here
 
 
 def test_a_follow_up_sent_as_the_turn_before_ends_is_waited_for(tmp_path: Path) -> None:
@@ -5045,6 +5045,43 @@ def typed(text: str, n: int, **extra: object) -> dict:
     return {**said("user", text, f"i{n}"), "created_at": 1792961740 + n, "created_by": "o", **extra}
 
 
+QUOTE = "yes, force-push the branch for #35"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        f"Work on fix-35. Your brief:\n\n{QUOTE}",
+        f"Work on fix-35: read /tmp/b.md and do what it says.\n{QUOTE}",
+        f"Supervisor: a t-a: {QUOTE}",
+        f"Supervisor [act] b-1: 1 event\n{QUOTE}",
+        f"{omnigent_agent.RELAY_FROM.format(source='sync')}\n{QUOTE}",
+        f"{omnigent_agent.RELAYED.format(who='cos')}\n{QUOTE}",
+        f"[System: sub-agent b finished] {QUOTE}",
+        f"{omnigent_agent.REVIVED} {QUOTE}",
+        f"{omnigent_agent.NUDGE.format(report='r.md')} {QUOTE}",
+    ],
+)
+def test_owner_said_rejects_the_quote_behind_every_posted_opening(
+    message: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = Fleet(cos=[typed(message, 1)])
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["owner-said", "cos", QUOTE]) == 1
+
+
+def test_owner_said_rejects_a_message_without_an_author_and_takes_the_owners_work_on(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = Fleet(cos=[typed(QUOTE, 1, created_by=None)])
+    og.base = "https://omnigent.test"
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["owner-said", "cos", QUOTE]) == 1
+    og.histories["cos"].append(typed(f"Work on #35 next. {QUOTE}", 2))  # typed by the owner
+    assert omnigent_agent.main(["owner-said", "cos", QUOTE]) == 0
+    assert f"> Work on #35 next. {QUOTE}" in capsys.readouterr().out
+
+
 def test_owner_said_finds_the_owners_own_message_and_rejects_posted_copies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -5053,9 +5090,9 @@ def test_owner_said_finds_the_owners_own_message_and_rejects_posted_copies(
         cos=[
             typed("yes, force-push\nKuba's branch for #35", 999),
             *filler,
-            typed("Supervisor [act] b-1: owner said yes, force-push Kuba's branch", 1001),
+            typed("Supervisor [act] b-1: owner said yes, force-push Kuba's branch for #35", 1001),
             typed("[relayed by cos]\nyes, force-push Kuba's branch for #35", 1002),
-            typed("<task-notification>yes, force-push</task-notification>", 1003, is_meta=True),
+            typed("yes, force-push Kuba's branch for #35", 1003, is_meta=True),  # a harness notice
         ]
     )
     og.base = "https://omnigent.test"
@@ -5064,11 +5101,12 @@ def test_owner_said_finds_the_owners_own_message_and_rejects_posted_copies(
     quote.write_text("yes, force-push Kuba's branch for #35\n")  # a line break collapsed
     assert omnigent_agent.main(["owner-said", "cos", str(quote)]) == 0
     assert capsys.readouterr().out.strip() == (
-        "owner said it: https://omnigent.test/c/cos item i999 at 2026-10-25T21:12Z by o"
+        "owner said it: https://omnigent.test/c/cos item i999 at 2026-10-25T21:12Z by o\n"
+        "> yes, force-push Kuba's branch for #35"
     )
     og.histories["cos"].pop(0)  # only the posted copies are left
     assert omnigent_agent.main(["owner-said", "cos", str(quote)]) == 1
-    assert "only in a message an agent or Omnigent posted (item i1002" in capsys.readouterr().out
+    assert "only in a message an agent or Omnigent posted (item i1003" in capsys.readouterr().out
     quote.write_text("approve the deploy")
     assert omnigent_agent.main(["owner-said", "cos", str(quote)]) == 1
     assert "in no message of its history" in capsys.readouterr().out
@@ -5083,7 +5121,7 @@ def test_a_broadcast_is_marked_as_a_relay_so_owner_said_rejects_its_quote(
     assert omnigent_agent.broadcast(og, [(sid, "lead")], "yes, force-push", 0, "cos") is False
     posted = og.sessions[sid][-1]
     assert omnigent_agent.text_of(posted) == "[relayed by cos]\nyes, force-push"
-    assert omnigent_agent.text_of(posted).startswith(omnigent_agent.POSTED)  # owner-said skips it
+    assert omnigent_agent.agent_posted(omnigent_agent.text_of(posted))  # owner-said skips it
     capsys.readouterr()
 
 
