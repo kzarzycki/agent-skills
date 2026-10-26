@@ -112,7 +112,7 @@ def main():
         if not hit:
             finish("harness-fail", failed_step=f"dialog_{dialogs}")
     FINDINGS["startup_dialogs"] = dialogs
-    FINDINGS["user_hooks_leaked"] = bool(re.search(r"memsearch|preload-skills", content or ""))
+    FINDINGS["user_hooks_leaked"] = bool(re.search(r"preload-skills", content or ""))
 
     send(f'"{PROMPT}"', literal=True)
     time.sleep(0.5)

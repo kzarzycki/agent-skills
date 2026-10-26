@@ -19,7 +19,7 @@ it (Approvals and proof); no step runs for their changes.
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
+| **Gates.** `mise run check` before every push, its test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -104,6 +104,10 @@ bot:
     paths:
       - uv.lock
       - "**/package.json"   # quoted: a leading * is a YAML alias
+  renovate:                 # an updater under a person's token: named by its branch
+    branch: renovate/
+    paths:
+      - uv.lock
 
 land:
   signed_squash_to: main
@@ -119,7 +123,7 @@ land:
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
-| `bot.<login>` | `paths` | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
+| `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
@@ -287,7 +291,12 @@ loop.md's settings hold the policy (Settings):
   `pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
   bot's (its authors, and its committer unless that is no account) and every file it
   changes, none renamed or copied, matches one of its `paths`, since no verifier runs on a
-  bot's PR; anything else needs the review as usual. Without the section, every PR needs
+  bot's PR; anything else needs the review as usual. A section with `branch`, such as
+  `bot.renovate` with `branch` `renovate/`, names an updater that opens its PRs under a
+  person's token instead: the PR's head is this repository's branch starting with the
+  prefix (a fork's PR may name any branch), and every commit is that person's, so the
+  updater commits as that person (Renovate's `gitAuthor`), not as its default author. A PR labelled
+  `verify` (a major update) needs the review either way. Without the section, every PR needs
   one.
 - `signoff`, such as `labels` `area:ios` and `area:watch`: the owner signs off a
   matching change in use after it lands, which no gate can do for them. The rule reads as
@@ -390,27 +399,32 @@ has no cloud bridge; anything that needs a device, a simulator, an emulator, a b
 or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
-  triage, the merge of each worker's branch into the PR branch, the full gate (`mise run
+  triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
+  PR branch, the full gate (`mise run
   check`, or `local-ci --record` with `ci: false`), the instance, the verdict's post, thread
   resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
-  Chromium), before each push, and pushes its own branch. Its brief names that branch and
-  the role file by its path in the repo, since the host's worktrees and paths don't exist in
-  the VM. The verifier runs on the host in the lead's worktree, as verifier.md says.
+  Chromium), before each push, and pushes to the `claude/…` branch its session was given,
+  since a cloud session declines any other branch without its own user's permission and a
+  peer's brief is not that; no brief names another push target. Its brief names the role
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in the lead's worktree, as verifier.md says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
-  report is one comment on the PR: the head SHA, each light-gate command with its exit
-  code, what it left out and why. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
+  report is one comment on the PR: its branch and head SHA, each light-gate command with its
+  exit code, what it left out and why. If the post fails, since the session's proxy-injected
+  `GH_TOKEN` can expire 10 to 20 min in, its reply is `UNPOSTED REPORT` and then the body
+  verbatim, and the backend's `wait --pr` posts it from the host. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
   workers) has the worker post it and writes it to the report path on the host, so the lead
   reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
   The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
   lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
   the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
   the host.
-- **Control flow is the lead's own.** It starts the worker with `run --pr`, follows its turn
-  end, and sends a fix list or a failing log as a fresh `run --pr` whose brief names the
-  review or comment to read, since `run` finishes a worker once its report is in (the
-  backend's Follow-ups); `send --pr` reaches a worker still open, one whose turn ended
-  without a report. Nothing in
+- **Control flow is the lead's own.** It starts the worker with `run --pr --keep` (from a
+  host without the worker's harness, `start --top-level --host <host> --pr`, then
+  `wait --pr --keep`), follows its turn end, and sends a fix list or a failing log, naming the
+  review or comment to read, to that kept worker with `send --pr` while it is still there,
+  since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
+  else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
 - **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,
@@ -449,6 +463,14 @@ or the owner's private network.
   prerequisite the queued items need (loop.md § Proof on a branch, the specs' acceptance)
   while the owner can still answer, and check such a precondition before a heavy step
   takes a slot.
+- **One heavy gate per host slot.** Leads on one host share its cores, and gates run at
+  once slow every one of them several times over and starve new sessions of the capacity
+  to start. So the project's test part runs behind a host-wide slot that every worktree
+  shares: the template's `scripts/gate-slot` (`GATE_SLOTS` slots, default 1; a lock frees
+  itself however the run exits), or, in a project without it, a lock on the same file,
+  `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`, around its heavy check. A parallel runner takes the
+  `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
+  `test:changed` while iterating and the lint parts stay outside the slot.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts

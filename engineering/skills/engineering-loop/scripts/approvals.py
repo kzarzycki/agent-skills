@@ -162,7 +162,8 @@ label can never read as a term. Paths it can't judge, past the one page of files
 for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `bot.<login>` section,
 such as `bot.dependabot[bot]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
 review when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it changes, none renamed or copied,
-matches one of its paths (exempt); without one, every PR needs the review. The `signoff` rule says whose change the
+matches one of its paths (exempt); with `branch: renovate/` it names an updater opening PRs under a person's token by
+its head branch instead, and a `verify` label refuses either; without one, every PR needs the review. The `signoff` rule says whose change the
 owner signs off in use after it lands: `check merge` needs the PR to link each issue it matches, or whose spec has a
 line `Sign-off: owner`, with `Implements #<n>`, which leaves it open for the sign-off, and every other issue with a
 closing keyword (`Part of` suits both); without a `signoff` section no keyword is checked and `Implements` is a link like
@@ -216,7 +217,7 @@ SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
 POINTS = ("spec", "plan")
 MERGE_LABEL = "approved:merge"
-# a change's consequences, not its urgency (that is `priority:`): set by a person or at triage, or by the gate
+# a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
 # the collaborator permissions that can write; GitHub's `permission` field reads `maintain` as `write`
 WRITE = {"admin", "maintain", "write"}
@@ -365,7 +366,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool},
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
-    "bot": Table(paths=list),
+    "bot": {"paths": list, "branch": str},
     "land": Table(signed_squash_to=str, allowed_signers=str),
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
@@ -476,6 +477,8 @@ def settings(loop: str | None) -> dict[str, Any]:
                     bot = {}
                 if not isinstance(bot, dict):
                     raise Refused(f"loop.md's `{where}` must be a section holding `paths`")
+                if "paths" not in bot:
+                    raise Refused(f"loop.md's `{where}` lacks `paths`")
                 data.setdefault("bot", []).append(
                     {"login": login, **typed(bot, SCHEMA["bot"], where)}
                 )
@@ -529,24 +532,28 @@ def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) ->
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR needs no verifier review: its author is a bot a `bot.<login>` section of loop.md names, and every
-    file it changes matches one of that section's `paths` (lock and manifest files). GitHub's
-    GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare without it; a person
-    can't hold a bot's login, so the author's type is checked too. Every commit's authors must be the bot, and its
-    committer the bot or no account (GitHub's web-flow committer on the bot's own commits), since a person's push
-    or rebase of its branch is a change no verifier saw. A renamed or copied file refuses it, since GraphQL
-    gives only the new path, which may hide code moved onto a lock file's name. No entry, or more files or commits
-    than the gate reads: no exemption."""
+    """Whether the PR needs no verifier review: a `bot.<name>` section of loop.md names it, and every file it changes
+    matches one of that section's `paths` (lock and manifest files). A section names a bot by its login, or, with
+    `branch`, a head-branch prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the
+    head must be this repository's own branch, since a fork's PR may name any branch and only a writer pushes one
+    here. GitHub's GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare
+    without it; a person can't hold a bot's login, so for a login the author's type is checked too. Every commit's
+    authors must be the PR's author, and its committer the author or no account (GitHub's web-flow committer on a
+    bot's or an API's commits), since another person's push or rebase of its branch is a change no verifier saw. A
+    renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
+    file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
+    or commits than the gate reads: no exemption."""
     author, files = pull.get("author") or {}, paths(pull)
     renamed = any(
         file.get("changeType") in ("RENAMED", "COPIED") for file in pull["files"]["nodes"]
     )
-    if author.get("__typename") != "Bot" or not files or renamed:
+    labels = {label["name"] for label in pull["labels"]["nodes"]}
+    if not files or renamed or "verify" in labels:
         return False
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}
     nodes = commits.get("nodes") or []
-    if not nodes or (commits.get("totalCount") or 0) > len(nodes):
+    if not login or not nodes or (commits.get("totalCount") or 0) > len(nodes):
         return False
     for node in nodes:
         authors = node["commit"]["authors"]
@@ -558,8 +565,17 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
             logins.append(committer)
         if any(name.removesuffix("[bot]").lower() != login for name in logins):
             return False
+
+    def names(bot: dict[str, Any]) -> bool:
+        if "branch" in bot:
+            return not pull["isCrossRepository"] and pull["headRefName"].startswith(bot["branch"])
+        return (
+            author.get("__typename") == "Bot"
+            and bot["login"].removesuffix("[bot]").lower() == login
+        )
+
     return any(
-        bot["login"].removesuffix("[bot]").lower() == login
+        names(bot)
         and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
         for bot in settings(loop).get("bot", [])
     )

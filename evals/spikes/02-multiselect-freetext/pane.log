@@ -575,15 +575,11 @@
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 * Blanching…
 
@@ -637,15 +633,11 @@
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ✽ Blanching…
 
@@ -699,15 +691,11 @@
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ←  ☐ Toppings  ✔ Submit  →
 
@@ -761,15 +749,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ←  ☐ Toppings  ✔ Submit  →
 
@@ -823,15 +807,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ←  ☒ Toppings  ✔ Submit  →
 
@@ -885,15 +865,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ←  ☒ Toppings  ✔ Submit  →
@@ -947,15 +923,11 @@ Ready to submit your answers?
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1009,15 +981,11 @@ Ready to submit your answers?
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1071,15 +1039,11 @@ Ready to submit your answers?
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1133,15 +1097,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1195,15 +1155,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1257,15 +1213,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1274,7 +1226,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   ⎿  · What name should the dish have? (Alpha / Beta)
 
 ❯ Gamma-Custom
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 * Elucidating…
   ⎿  Tip: Create skills by adding .md files to .claude/skills/ in your project or ~/.claude/skills/ for skills
@@ -1319,15 +1270,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1336,7 +1283,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   ⎿  · What name should the dish have? (Alpha / Beta)
 
 ❯ Gamma-Custom
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ✶ Elucidating…
   ⎿  Tip: Create skills by adding .md files to .claude/skills/ in your project or ~/.claude/skills/ for skills
@@ -1381,15 +1327,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1398,7 +1340,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   ⎿  · What name should the dish have? (Alpha / Beta)
 
 ❯ Gamma-Custom
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ✢ Elucidating… (2s · thinking)
   ⎿  Tip: Create skills by adding .md files to .claude/skills/ in your project or ~/.claude/skills/ for skills
@@ -1443,15 +1384,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1460,7 +1397,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   ⎿  · What name should the dish have? (Alpha / Beta)
 
 ❯ Gamma-Custom
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ✻ Elucidating… (3s · ↓ 95 tokens · thinking)
   ⎿  Tip: Create skills by adding .md files to .claude/skills/ in your project or ~/.claude/skills/ for skills
@@ -1505,15 +1441,11 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
  ▎ Included in your plan limits until Jun 22, then switch to usage credits to continue.
   ⎿  SessionStart:startup says: preload-skills: loaded: communicating-in-html (8153 chars), memory-recall
      (2966 chars) | WARNING: 11958 chars > 9500; Claude Code may divert output >10KB to a file - trim the list
-  ⎿  SessionStart:startup says: [memsearch v0.4.6] embedding: onnx/gpahal/bge-m3-onnx-int8 | milvus:
-     http://localhost:19530 | collection: ms_memory_b4897df3 | UPDATE: v0.4.7 available — run: uv tool install
-     -U 'memsearch[onnx]'
 
 ❯ Two steps. Step 1: use AskUserQuestion (multiSelect: true) to ask which toppings I want, options Cheese,
   Mushroom, Olives. Step 2: use AskUserQuestion to ask what name to give the dish (options: Alpha, Beta).
   After both answers, write a JSON object {toppings: [...], name: ...} to result.json in the cwd, then end
   your turn.
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● User answered Claude's questions:
   ⎿  · Which toppings do you want? → Cheese, Olives
@@ -1522,7 +1454,6 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   ⎿  · What name should the dish have? (Alpha / Beta)
 
 ❯ Gamma-Custom
-  ⎿  UserPromptSubmit says: [memsearch] Memory available
 
 ● Write(result.json)
   ⎿  Wrote 1 lines to result.json

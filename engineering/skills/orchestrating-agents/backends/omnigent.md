@@ -15,7 +15,7 @@ child is prompted for a read (denied in auto mode), which nobody answers, so the
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
 every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
-role file, long commands in the foreground, write the report to the path, reply with only
+role file, long runs started detached and polled, write the report to the path, reply with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
 that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc
@@ -31,11 +31,13 @@ verifier revising its verdict). Omnigent can lose a turn end and leave the sessi
 `running` (kzarzycki/omnigent#4), so a report that is quiet, with its session's history,
 for 10 minutes counts too. The report path is the final report, written once at the end:
 a child keeps progress in another file, since the first report the waiter takes is its
-answer. Sessions are filed under the Omnigent project named like the repo, when one exists;
-case, spaces and punctuation don't count, so `voice_note` files under "Voice note". An
-exact name wins, and two loose matches with no exact one fail until `OMNIGENT_PROJECT`,
-which overrides the name, names one. A top-level session that matches no project is left unfiled, with a stderr
-line saying so.
+answer. A session is filed under the Omnigent project `OMNIGENT_PROJECT` names, else the
+calling session's (its own, then its primary's), since a scheduled run is filed in its task's
+project whatever its repo is called, else the project named like the repo, when one exists.
+Names match loosely: case, spaces and punctuation don't count, so `voice_note` files under
+"Voice note". An exact name wins, and two loose matches with no exact one fail until
+`OMNIGENT_PROJECT` names one. A top-level session none of these finds is left unfiled, with a
+stderr line saying so.
 
 **Questions.** A child never asks the owner. It writes `<report>.question` and stops;
 exit 3 prints that path. Answer from the spec and the owner's stated intent, or ask the
@@ -76,28 +78,58 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 `start` refuses the flag for Codex and ignores the variable.
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
-agent's name starts that agent, found among the server's agents, then the caller's own
-(`scope=user`). Its tools may run on another machine, so its brief goes inline in the first
-message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to the aliases only
-(`--model` works for any). An unknown name fails before a session is created.
+agent's name or id starts that agent, found among the server's agents, then the caller's own
+(`scope=user`). Several agents can share a name, since each upload of one spec registers another
+agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
+identity and bookkeeping (`id`, `version`, `created_at`, `updated_at`, `object`), the name starts the newest by `created_at`: copies of one spec can't be told
+apart, and an agent record has no host (`--host` picks that per session), so an id in project
+config would only be wrong on another server. Both are compared since each holds fields the other
+lacks: the record policies, skills and terminals, the config instructions and model. When they
+differ, the name fails, listing their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
+from a file as the aliases do; any other may run its tools on another machine, so its brief goes
+inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases only (`--model`
+works for any), and so does permission mode, except Antigravity: it asks for approval of every
+command, and its only other mode skips them all, so `start` refuses it a `--role` unless
+`--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
+`--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
+in the model of its own settings (`Gemini 3.8 Flash (Low)`), which Omnigent copies into each
+session, so the launcher passes none. An unknown name fails before a session is created.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
 on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
-and end its turn with only the comment's URL. `wait` (and so `run`) with `--pr <n>` fetches
+and end its turn with only the comment's URL. A cloud session (harness `acp:claude-cloud`)
+runs in the environment its workspace's untracked `.claude/settings.local.json` names in
+`remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` copy a
+worktree's missing pin from its main checkout (keeping the file's other settings) and refuse
+when neither has one. `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
-report path, so whatever reads the report reads a file as for any child. A question goes in
+report path, so whatever reads the report reads a file as for any child. The worker pushes
+only to the `claude/…` branch its session started on and names it, with its head SHA, in the
+report; the lead merges that branch into the PR. A worker whose post fails (the session's token
+expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wait` posts that
+body on PR n from this host and writes it to the report path. A question goes in
 that report, since `<report>.question` is a path here too. Only a comment GitHub files on
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
 repository's counts for nothing. The nudge asks for the comment, and a second turn ending
-without one fails. `send --pr <n>` reaches a worker still open (one whose turn ended without a report, since `run` and `wait` finish a worker once its report is in; a fix pass is a fresh `run --pr`, Follow-ups) and takes only a comment
+without one fails. `run` and `wait` finish a worker once its report is in, unless given
+`--keep`: a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
+past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
+round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). `send --pr <n>`
+reaches a worker still open (kept, or one whose turn ended without a report), wherever its
+workspace is, since the report is the file `wait` writes here, and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
 with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
-the repo, since the VM has the checkout but not this host's paths.
+the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
+worker two facts about the VM: its checkout is the branch checked out in the workspace the
+session started from, not necessarily the PR's, and a foreground command stops at 10 minutes,
+so a long one runs detached and is polled within the same turn. A host without the cloud
+harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
+(Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
 
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
@@ -107,11 +139,16 @@ reviewer must be of the other family is the caller's policy.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
-**Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's load per
-core and available memory, and exits 0 when it has room for another session, 1 when not.
-`start` and `run` wait while it has none, printing a line, and fail after 10 minutes, since
-sessions on an overloaded host time out and fail. The limits are knobs set for the hardware:
-`OMNIGENT_MAX_LOAD_PER_CORE` (default 4) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
+**Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
+share over about a second and its available memory, and exits 0 when it has room for another
+session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads
+waiting on I/O and memory and reads several times too high; load per core decides only when idle
+cannot be measured. `start` and `run` wait while it has none, except for a session `--host` puts
+on another host, whose load lands there, printing a line, and fail after
+`OMNIGENT_CAPACITY_WAIT_SECONDS` (default 600), since sessions on an overloaded host time out and
+fail; a queue that would rather wait sets it longer. The limits are knobs set for the hardware:
+`OMNIGENT_MIN_CPU_IDLE` (percent, default 10), `OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the
+fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
 message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
 server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
 own posts, which read no history, still count a timeout as a failure and try again.
@@ -151,7 +188,7 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A child that reads its brief as pasted text asks for a go-ahead, so the brief is a file
   and the message is one line. One that runs a command in the background ends its turn
   "waiting" and never reports; the preamble covers that, and the first turn that ends
-  without a report or a question gets one nudge to finish in the foreground and write the
+  without a report or a question gets one nudge to poll its detached runs and write the
   report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
   prompt), or after `--timeout` (default 3h), so the lead still wakes.
 
@@ -181,7 +218,8 @@ It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a
 than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
 in the first message, because its file would be on this host, so a Claude lead may read it as
 pasted text and ask for a go-ahead; and the report is written there, so follow the lead with
-`watch`, never `wait`.
+`watch`, never `wait`. With `--pr <n>` (a cloud worker) the report is instead the path here
+that `wait --pr <n>` writes the PR comment to.
 
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
 posts a message that owes no report, such as the owner's words for a top-level lead, and
@@ -193,13 +231,29 @@ with no further call. Exit 4: not deliverable, and why (archived, a revive that 
 neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
 revived in place first, as `send` does. A lead blocked only on questions (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
-prompts) holds every message until the question is answered, so `relay` answers each with the
-message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
-the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
-message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+prompts) holds every message until the question is answered, so a plain `relay` waits behind
+it (exit 5) and lands once the question is answered: a relay that arrives while a question is
+open must not become its answer. `relay --answer` answers each question with the message
+instead (exit 0), through Omnigent's resolve route: the turn carries on with it as the
+answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the message up
+to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
 `relay --from <name>` is a notice from a task or an agent rather than the owner's words
 (a scheduled job's status line to a chief of staff): its first line says so, and it never
-answers a question, so it waits behind one (exit 5) instead of becoming its answer.
+answers a question, even with `--answer`. A plain
+`relay` sent as a message, every `broadcast` message and every `send` follow-up open with `[relayed by <the relaying session>]`.
+
+**Checking an owner's words.** `python3 scripts/omnigent_agent.py owner-said <session>
+<quote or quote-file>` pages through the session's whole history for the newest message holding the
+quote (whitespace collapsed) that the owner typed: `role: user` with a `created_by`, not
+`is_meta`, and opening with none of the markers an agent or Omnigent posts with (a brief's exact
+first line, `Supervisor: ` and `Supervisor [`, the two relay headers, `[System:`, the revive and
+nudge lines). Exit 0 prints `owner said it: <server>/c/<session> item <id> at <UTC time> by
+<author>` and, on a `> ` line, the whole message, so a fragment of "no, don't …" reads as what it
+is; exit 1 says the quote
+is only in a posted message, or nowhere. The server stamps an API post with the same
+`created_by` as a typed message, so this catches a quote taken from a relay or a post, not an
+agent that posts an unmarked message into the session on purpose; that needs the server to stamp
+each item's origin.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
@@ -208,8 +262,9 @@ answers a question, so it waits behind one (exit 5) instead of becoming its answ
 top-level session of yours (not one shared with you) updated within N hours, all at once rather than one `relay` after another,
 each waiting on its own delivery. It never sends to its own session, an archived one or one in a
 project whose name contains "automations", nor to one with a question or approval prompt
-pending (`skipped: waiting on a question`), since `relay` would give a question the message as
-its answer; answer that one with its own `relay`. `--project` (matched as `start` matches a
+pending (`skipped: waiting on a question`): the message would wait unread behind it. Answer
+that question with `relay --answer`, or send the message with a plain `relay`, which waits behind
+it (exit 5) and lands once it is answered. `--project` (matched as `start` matches a
 project: exact, else ignoring case and punctuation, two loose matches an error), `--host` and `--exclude` narrow the set. One
 line per target: `delivered`, `queued …`, `skipped: <why>` or `failed: <why>` (also a session it could
 not read); exit 1 when one failed, `--dry-run` included, which lists the targets and sends
@@ -281,11 +336,12 @@ registry's brief files in order, else `<report>.brief` when it exists (what `sta
 with neither, the line names only the report. A send of it that fails is tried again at the
 session's next look. Like the resume line, it is no instruction, so a
 report written for the brief still counts after it. One with no history item for
-`--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
+`--silent-seconds` (default 1800, three times the 10-minute limit of one tool call)
 it sends the `wait` nudge once as its resume line, whatever its status says
 (`resume line sent`). A session waiting on its own worker or verifier writes nothing meanwhile,
-so a child of it updated within that window (`child_sessions`' `updated_at`) keeps it live:
-silence means the whole subtree is quiet. It prints each of those at once and goes on. It exits 0 with one line
+so a child of it updated within that window (`child_sessions`' `updated_at`), or a live session it
+subscribes to (a top-level helper such as a cloud worker), keeps it live: silence means the whole
+subtree and its helpers are quiet. It prints each of those at once and goes on. It exits 0 with one line
 as soon as a session wrote its report (`report written: <path>`) or a question
 (`asked: <path>`), blocks on a prompt, fails, or is given up on (`gave up`: silent again after
 its resume line, which may sit undelivered behind a stuck step; silent with an input already
@@ -336,8 +392,8 @@ never given up on, nor revived or sent the resume line as a session owing a repo
 when they are news, so the notified session is not woken for a turn that changed nothing:
 a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED` (a `USER NEEDED`
 line wins over an earlier `DONE` or `PARKED` one, since an ask after a `DONE` still needs its answer), once it holds
-as `watch` counts an end; any other turn end only once the lead and its live children wrote
-nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
+as `watch` counts an end; any other turn end only once the lead, its live children and the live sessions it
+subscribes to wrote nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
 time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
 child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
@@ -358,8 +414,10 @@ A followed lead also has a progress deadline, since a lead that reads running fo
 quiet a second time with the same last message, makes none of those events. Its progress,
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
 none), once it has any, a message to it that is not the supervisor's own (a relay or the owner
-typing, which starts a new chain), and its live children's activity, read on first sight, then once a minute and again when
-the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
+typing, which starts a new chain), and the activity of its live children and of the live sessions it subscribes to (its
+top-level helpers, a cloud worker for one, which are no children), read on first sight, then once a minute and again when
+the deadline falls due, and, once the deadline falls due, its report's last write (from its
+folder's listing), so a lead already stuck when the supervisor starts is overdue at once; a
 lead with neither counts from first sight. With
 no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
 lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
@@ -396,7 +454,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
 | `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
-| a question | rule | act, for one `relay` |
+| a question | rule | act, for one `relay --answer` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
 
 The small model only routes, since its input holds a lead's own words: one `claude -p --model
@@ -416,7 +474,7 @@ on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through 
 revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
 budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since
-`relay` would answer a question with it, and a failed send goes to the chief of staff as act. On
+it would wait unread behind the prompt, and a failed send goes to the chief of staff as act. On
 a restart an intent still open is looked up in the lead's history: its text there, no older than
 the intent less a minute's margin for clock skew, or still pending in its `pending_inputs`, marks
 it done,
@@ -502,10 +560,17 @@ and `RunAtLoad` true, `StandardOutPath` and `StandardErrorPath`, and `PATH` unde
 `systemctl --user enable --now <name>`; `loginctl enable-linger $USER` keeps it running while
 the user is logged out, and `journalctl --user -u <name>` shows its log.
 
+An update needs no restart: when `omnigent_agent.py` is replaced on disk (a skills sync
+installing a new one), `supervise --registry` re-executes itself in place with the same
+arguments, at the top of a poll with nothing waiting to be posted and its state written first,
+logging `restarting: <script> changed`. It waits until the file is unchanged for one poll, so a
+half-written file is not taken, and a new file that does not compile is logged once while the
+running copy carries on.
+
 **Finished sessions.** `run` and `wait` finish the session whose report or verdict they
-return, which ends its agent process and keeps its transcript; a session that asked a
-question stays, since the answer goes to it. Finishing archives the session, a sub-agent
-too: Omnigent leaves the runner it shares with its parent up, on a build with
+return, unless given `--keep` (Cloud workers); a session that asked a question stays, since
+the answer goes to it. Finishing ends the session's agent process and keeps its transcript.
+It archives the session, a sub-agent too: Omnigent leaves the runner it shares with its parent up, on a build with
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for

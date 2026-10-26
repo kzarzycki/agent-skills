@@ -10,7 +10,12 @@ import pytest
 @pytest.fixture(autouse=True)
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
-    monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", raising=False)
+    for var in (
+        "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
+        "OMNIGENT_SESSION_ID",
+        "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
+    ):
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture(autouse=True)

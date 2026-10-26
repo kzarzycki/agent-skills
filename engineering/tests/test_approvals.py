@@ -534,7 +534,8 @@ def test_skill_mds_settings_examples_pass_their_schema() -> None:
         r"^```yaml\n(.*?)^```$", skill[skill.index("### Settings") :], re.DOTALL | re.MULTILINE
     )[:2]
     assert approvals.settings(loop_md(loop))["bot"] == [
-        {"login": "dependabot[bot]", "paths": ["uv.lock", "**/package.json"]}
+        {"login": "dependabot[bot]", "paths": ["uv.lock", "**/package.json"]},
+        {"login": "renovate", "branch": "renovate/", "paths": ["uv.lock"]},
     ]
     assert approvals.tracker_settings(loop_md(tracker))["renames"] == {"frontend": "area:web"}
 
@@ -1990,6 +1991,50 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
     assert (
         approvals.settings(BOTS)["risk"] == approvals.settings(LOOP)["risk"]
     )  # a bot entry is no risk rule
+
+
+RENOVATE = add(LOOP, "bot", "renovate:\n  branch: renovate/\n  paths:\n    - uv.lock\n")
+
+
+def test_a_branch_section_exempts_an_updaters_pr_opened_under_a_persons_token() -> None:
+    def made(
+        branch: str = "renovate/foo",
+        commits: tuple[str | None, ...] = ("writer",),
+        labels: tuple[str, ...] = (),
+        fork: bool = False,
+        files: tuple[str, ...] = ("uv.lock",),
+        author: str | None = "writer",
+    ) -> dict[str, Any]:
+        pr = {
+            **pull(files=files, labels=labels),
+            "author": author and {"__typename": "User", "login": author},
+            "headRefName": branch,
+            "isCrossRepository": fork,
+        }
+        pr["authored"] = {"nodes": [authored(by) for by in commits]}
+        return pr
+
+    def gate(loop: str = RENOVATE, **fields: Any) -> list[str]:
+        return approvals.proofs("merge", made(**fields), [], loop)
+
+    assert gate() == []  # the writer's own renovate/ branch, lock file only
+    assert gate(commits=("writer", "other")) == UNREVIEWED  # a second person's commit
+    assert gate(labels=("verify",)) == UNREVIEWED  # a major update asks for its review
+    assert gate(branch="feature/foo") == UNREVIEWED  # another branch
+    assert gate(fork=True) == UNREVIEWED  # a fork may name any branch
+    assert gate(files=("uv.lock", "app.py")) == UNREVIEWED  # code needs a review as usual
+    assert gate(loop=BOTS) == UNREVIEWED  # a login section never matches a person
+    # a deleted author and commits mapped to no account would compare "" with "": refused
+    assert gate(author=None, commits=(None,)) == UNREVIEWED
+
+
+def test_the_verify_label_refuses_a_login_sections_exemption_too() -> None:
+    pr = {
+        **pull(files=("uv.lock",), labels=("verify",)),
+        "author": {"__typename": "Bot", "login": "dependabot"},
+    }
+    pr["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    assert approvals.proofs("merge", pr, [], BOTS) == UNREVIEWED
 
 
 def test_more_reviews_or_threads_than_one_page_is_refused() -> None:
