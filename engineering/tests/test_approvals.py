@@ -2002,11 +2002,11 @@ def test_a_branch_section_exempts_an_updaters_pr_opened_under_a_persons_token() 
         labels: tuple[str, ...] = (),
         fork: bool = False,
         files: tuple[str, ...] = ("uv.lock",),
-        author: dict[str, str] | None = {"__typename": "User", "login": "writer"},
+        author: str | None = "writer",
     ) -> dict[str, Any]:
         pr = {
             **pull(files=files, labels=labels),
-            "author": author,
+            "author": author and {"__typename": "User", "login": author},
             "headRefName": branch,
             "isCrossRepository": fork,
         }
