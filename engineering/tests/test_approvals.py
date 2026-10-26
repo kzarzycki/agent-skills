@@ -885,7 +885,7 @@ def test_check_merge_skips_only_its_own_check_run(monkeypatch: pytest.MonkeyPatc
     assert waits(set(), qualify, itself) == [
         (
             f"PR #7: check merge runs in Actions without {approvals.CHECK_RUN}, so it can't tell its own job from"
-            f" another; set `{approvals.CHECK_RUN}: ${{{{ job.check_run_id }}}}` in the approvals job's env"
+            f" another; set `{approvals.CHECK_RUN}: ${{{{ job.check_run_id }}}}` in the env of the step that runs it (the template's `ci:approvals` step)"
         )
     ]
     # outside Actions the running job is a check like any other

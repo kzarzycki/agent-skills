@@ -41,7 +41,8 @@ commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check `land` reads (below) to be green on the head, less the `loop:approvals`
 status it posts and the job it runs in, which would make it wait on itself: the approvals job passes its own check
-run as `APPROVALS_CHECK_RUN_ID: ${{ job.check_run_id }}`, and in Actions without it `check merge` holds (with
+run as `APPROVALS_CHECK_RUN_ID: ${{ job.check_run_id }}` in the env of the step that runs `check merge` (the
+`job` context is allowed in a step's env, not the job's), and in Actions without it `check merge` holds (with
 `ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
@@ -1313,7 +1314,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
         found = [
             (
                 f"{where}: check merge runs in Actions without {CHECK_RUN}, so it can't tell its own job from "
-                f"another; set `{CHECK_RUN}: ${{{{ job.check_run_id }}}}` in the approvals job's env"
+                f"another; set `{CHECK_RUN}: ${{{{ job.check_run_id }}}}` in the env of the step that runs it (the template's `ci:approvals` step)"
             )
         ]
     else:

@@ -169,7 +169,15 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals`
   workflow, which turns `mise run loop:approvals merge`'s exit into the `loop:approvals`
   commit status on the head (0 success, 1 failure, 3 pending, since a job's own result can't
-  hold a merge as pending), passes its job's `APPROVALS_CHECK_RUN_ID: ${{ job.check_run_id }}`
+  hold a merge as pending), passes its job's check run id in the env of the step that runs the check
+  (`job` is allowed in a step's env, not the job's):
+
+  ```yaml
+  - env:
+      APPROVALS_CHECK_RUN_ID: ${{ job.check_run_id }}
+    run: mise run ci:approvals
+  ```
+
   so the check skips that job and no other (without it, in Actions, the check holds), runs again when CI completes, posts success on a merge-queue
   commit, and removes `approved:merge` on a push;
 - `.github/check-paths.yml`: each part's path filter;
