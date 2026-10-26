@@ -772,6 +772,19 @@ class Omnigent:
             None,
         )
 
+    def siblings(self, title: str) -> list[dict]:
+        """The parent's live children titled ``title`` or ``<title>-r<n>``, the titles ``start``
+        gives one brief; none without a parent."""
+        if not (parent := parent_id()):
+            return []
+        page = self.call("GET", f"/v1/sessions/{parent}/child_sessions?limit=100")
+        named = re.compile(re.escape(title) + r"(-r\d+)?")
+        return [
+            c
+            for c in page.get("data", [])
+            if named.fullmatch(str(c.get("title") or "")) and not c.get("archived")
+        ]
+
     def children(self, sid: str) -> list[str]:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
         return [str(c["id"]) for c in page.get("data", [])]
@@ -1452,13 +1465,19 @@ def start(
         # A file here is not on that host, nor where a non-native agent runs its tools (a cloud
         # VM); inline, a Claude lead may read it as pasted text and ask its starter for a go-ahead.
         text = f"Work on {title}. Your brief:\n\n{full}"
+        if not top_level and (held := holder(og, title, text, report)):
+            return held, []
     else:
         # The brief goes in a file beside the report and the message only names it: a child can
         # receive an inline brief as pasted text, which it will not take instructions from.
         brief_file = brief_of(report)
+        text = f"Work on {title}: read {brief_file} and do what it says."
+        # read before the rewrite: the file is what a child already briefed has read
+        same = brief_file.is_file() and brief_file.read_text() == full
+        if same and not top_level and (held := holder(og, title, text, report)):
+            return held, []
         brief_file.parent.mkdir(parents=True, exist_ok=True)
         brief_file.write_text(full)
-        text = f"Work on {title}: read {brief_file} and do what it says."
     reasons: list[str] = []
     survivors: list[str] = []
 
@@ -1529,6 +1548,23 @@ def start(
         reasons.append(f"{sid}: brief not in history after {confirm_seconds:.0f}s")
         abandon(sid)
     raise failed("start failed: " + "; ".join(reasons))
+
+
+def holder(og: Omnigent, title: str, text: str, report: Path) -> str | None:
+    """A live child of the parent already briefed with ``text`` under ``title`` or one of its
+    ``-r<n>`` retries: a second start of the same brief, usually after a ``run`` that failed on its
+    own while the child worked on, would pay for the same work twice. A failed child is no holder.
+    One that already wrote ``report`` since it was made has finished: refused, so the caller reads
+    that report rather than waiting on a turn that has ended."""
+    for child in og.siblings(title):
+        sid = str(child["id"])
+        if og.info(sid).get("status") == "failed" or not delivered(og, sid, text, 0):
+            continue
+        if report.is_file() and report.stat().st_mtime > float(child.get("created_at") or 0):
+            raise Fail(f"session {sid} already wrote {report} for this brief: read it")
+        print(f"session {sid} already holds this brief: attaching to it", file=sys.stderr)
+        return sid
+    return None
 
 
 def wait(
