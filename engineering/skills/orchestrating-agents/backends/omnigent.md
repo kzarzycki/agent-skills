@@ -210,8 +210,9 @@ answers a question, even with `--answer`.
 top-level session of yours (not one shared with you) updated within N hours, all at once rather than one `relay` after another,
 each waiting on its own delivery. It never sends to its own session, an archived one or one in a
 project whose name contains "automations", nor to one with a question or approval prompt
-pending (`skipped: waiting on a question`), since `relay` would give a question the message as
-its answer; answer that one with its own `relay`. `--project` (matched as `start` matches a
+pending (`skipped: waiting on a question`): the message would wait unread behind it. Answer
+that question with `relay --answer`, or send the message with a plain `relay`, which waits behind
+it (exit 5) and lands once it is answered. `--project` (matched as `start` matches a
 project: exact, else ignoring case and punctuation, two loose matches an error), `--host` and `--exclude` narrow the set. One
 line per target: `delivered`, `queued …`, `skipped: <why>` or `failed: <why>` (also a session it could
 not read); exit 1 when one failed, `--dry-run` included, which lists the targets and sends

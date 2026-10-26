@@ -1010,8 +1010,8 @@ def broadcast(
     og: Omnigent, targets: list[tuple[str, str]], text: str, confirm_seconds: float
 ) -> bool:
     """``relay`` ``text`` to every target at once, printing one line per target as it settles;
-    whether one failed. A session with a question or approval prompt pending is skipped: ``relay``
-    would give a question the broadcast as its answer, and an approval holds it unread."""
+    whether one failed. A session with a question or approval prompt pending is skipped: the
+    broadcast would wait unread behind either."""
 
     def one(sid: str) -> str:
         try:
