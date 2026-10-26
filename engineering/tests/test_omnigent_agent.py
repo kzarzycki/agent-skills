@@ -567,6 +567,26 @@ def test_start_waits_while_the_host_is_over_capacity(
     assert og.sessions  # started once the load fell
 
 
+def test_capacity_reads_macos_memory_or_says_it_is_not_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.undo()  # the real capacity check, on a faked host
+    monkeypatch.setattr(omnigent_agent, "MEMINFO", tmp_path / "absent")
+    monkeypatch.setattr(omnigent_agent.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (8.0, 0.0, 0.0))
+    sysctl = subprocess.CompletedProcess([], 0, stdout="4\n34359738368\n")
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", lambda *a, **k: sysctl)
+    assert omnigent_agent.capacity() == (
+        False,
+        "load 1.0 per core (max 4), 1311 MB available (min 1536)",
+    )
+    sysctl.stdout = ""
+    assert omnigent_agent.capacity() == (
+        True,
+        "load 1.0 per core (max 4), memory not measured (min 1536)",
+    )
+
+
 def test_stalled_error_body_reaches_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
