@@ -320,8 +320,8 @@ until they approve. A spec the owner approved and then edited for wording needs 
 `approve` again, since `approvals.py` can't tell wording from scope; one covered by policy
 needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
-them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
-is missing. An agent merges only with `uv run scripts/approvals.py land <pr>` (the
+them); `merge` exits 3 while it waits for the checks `land` reads or the owner's label, and 1 when
+a proof is missing. An agent merges only with `uv run scripts/approvals.py land <pr>` (the
 project's `loop:land` task): it runs every merge proof, refuses a head behind or in
 conflict with its base, marks a draft ready and waits for the CI that starts, and on a ready
 PR merges it pinned to its head, or turns on auto-merge while only required checks are

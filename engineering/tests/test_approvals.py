@@ -56,6 +56,7 @@ WAITED = (
 )
 TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
+REQUIRED = approvals.required_checks
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +66,9 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: PUSHED)
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
+    # the template's ruleset; `landing` reads the stubbed GitHub's instead. A test run in Actions is no approvals run.
+    monkeypatch.delenv("GITHUB_WORKFLOW", raising=False)
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check", approvals.APPROVALS})
 
 
 @pytest.fixture(autouse=True)
@@ -809,6 +813,33 @@ def test_only_the_aggregate_check_is_read() -> None:
     assert approvals.ci("PR #7", pr) == ["PR #7: no `check` on the head commit yet"]
     pr = with_runs(run("lint", "FAILURE", "2026-10-03T13:00:00Z"), run("check", "SUCCESS", ""))
     assert approvals.ci("PR #7", pr) == []
+
+
+def test_check_merge_reads_the_checks_land_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The base's required checks, or with none every check on the head; never the status the approvals workflow
+    posts, nor a run of the workflow it runs in, since either would make it wait on itself."""
+
+    def waits(required: set[str], *runs: dict[str, Any]) -> list[str]:
+        monkeypatch.setattr(approvals, "required_checks", lambda _base: required)
+        return approvals.waits(with_runs(*runs), [approved(1, "area:web")], BARE)
+
+    monkeypatch.setenv("GITHUB_WORKFLOW", "Approvals")
+    status = {"__typename": "StatusContext", "context": approvals.APPROVALS, "state": "PENDING"}
+    itself = run("approvals", "", "2026-10-03T14:00:00Z", "Approvals") | {"status": "IN_PROGRESS"}
+    qualify = run("qualify", "SUCCESS", "2026-10-03T13:00:00Z")
+    assert waits(set(), qualify, status, itself) == []
+    assert waits(set(), run("qualify", "FAILURE", "2026-10-03T13:00:00Z"), status) == [
+        "PR #7: `qualify` is FAILURE on the head commit"
+    ]
+    assert waits(set(), status, itself) == ["PR #7: no check on the head commit yet"]
+    # a base requiring `check` and the status: `check` alone, as before
+    assert waits({"check", approvals.APPROVALS}, qualify, status) == [
+        "PR #7: no `check` on the head commit yet"
+    ]
+    lint = run("lint", "FAILURE", "2026-10-03T13:00:00Z")
+    assert waits({"check", approvals.APPROVALS}, lint, run("check", "SUCCESS", ""), status) == []
+    # a base requiring only the status waits for nothing more, as land does
+    assert waits({approvals.APPROVALS}, lint, status) == []
 
 
 def test_a_run_cancelled_by_a_newer_green_run_of_the_same_check_is_not_a_problem() -> None:
@@ -2075,6 +2106,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         raise AssertionError(args)
 
     monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "required_checks", REQUIRED)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
     monkeypatch.chdir(tmp_path)
     return state

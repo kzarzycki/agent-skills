@@ -39,7 +39,8 @@ public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
-status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with
+status) for the newest run of each check `land` reads (below) to be green on the head, less the `loop:approvals`
+status it posts and every run of the workflow it runs in, which would make it wait on itself (with
 `ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
@@ -105,7 +106,7 @@ removes what #n added and adds what #n removed (files, and each run of lines in 
 differ), and every path either touches has at the PR's merge base the mode it had after #n and at its head the mode
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
-only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
+only for Evidence (what went wrong), no unresolved thread or review requesting changes, green checks and the
 label where the change is high risk.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
@@ -1154,7 +1155,7 @@ def waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: ran()'s aggregate `check`, and the owner's label (owner_waits)."""
+    """One line per thing the merge waits for: ran()'s checks, and the owner's label (owner_waits)."""
     return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
 
 
@@ -1285,8 +1286,8 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
-    """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
-    `ci: false` a local-ci pass."""
+    """One line per check the merge waits for on the head: ci()'s `required` (None: check merge's, the checks land
+    reads less the `loop:approvals` status it posts, see head_checks), or with `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
@@ -1299,8 +1300,13 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
             found = [
                 f"{where}: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
             ]
-    else:
+    elif required is not None:
         found = ci(where, pull, required)
+    # land's checks, so the two never disagree on one head; a base requiring only the status requires nothing more
+    elif (base := required_checks(pull["baseRefName"])) == {APPROVALS}:
+        found = []
+    else:
+        found = ci(where, pull, base - {APPROVALS}, posting=True)
     return found
 
 
@@ -1479,12 +1485,14 @@ def reverts(pull: dict[str, Any]) -> tuple[int | None, list[str]]:
 
 
 def head_checks(
-    pull: dict[str, Any], required: set[str] | None
+    pull: dict[str, Any], required: set[str] | None, posting: bool = False
 ) -> tuple[list[tuple[str, str]], int | None, set[str]]:
     """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
-    the aggregate `check`, the one check `check merge` reads, since every other check is advisory or the ruleset's;
-    empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
-    names whose only run is a draft's skip, which the ready PR's CI has not reached yet."""
+    the aggregate `check`; empty: every check); how many checks GitHub returned when it holds more than that one
+    page, else None; and the names whose only run is a draft's skip, which the ready PR's CI has not reached yet.
+    `posting` (check merge) skips the `loop:approvals` status and every run of the workflow it runs in
+    ($GITHUB_WORKFLOW), since the approvals workflow posts the one from inside the other: reading either, it would
+    wait on itself."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
     every = contexts["contexts"]["nodes"] if contexts else []
@@ -1494,6 +1502,7 @@ def head_checks(
         else None
     )
     wanted = {"check"} if required is None else required
+    own = os.environ.get("GITHUB_WORKFLOW") if posting else None
     # CI skips a draft, and GitHub counts the skipped run as passing: one completed before the newest ready-for-review
     # is the draft's and says nothing about the ready PR. A run that completed on the draft is the head's result.
     ready = max(
@@ -1527,6 +1536,8 @@ def head_checks(
         name = node.get("name") or node.get("context")
         if wanted and name not in wanted:
             continue
+        if posting and (name == APPROVALS or (own and workflow(node) == own)):
+            continue
         if skipped(node):
             drafts.add((workflow(node), name))
             continue
@@ -1541,9 +1552,11 @@ def head_checks(
     return checks, more, {name for flow, name in drafts - newest.keys() if flow not in finished}
 
 
-def ci(where: str, pull: dict[str, Any], required: set[str] | None = None) -> list[str]:
+def ci(
+    where: str, pull: dict[str, Any], required: set[str] | None = None, posting: bool = False
+) -> list[str]:
     """A line per check head_checks() reads that is not green on the head, or not there yet."""
-    checks, more, drafts = head_checks(pull, required)
+    checks, more, drafts = head_checks(pull, required, posting)
     wanted = {"check"} if required is None else required
     if wanted:
         missing = [f"`{name}`" for name in sorted(wanted - {name for name, _ in checks})]
