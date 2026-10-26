@@ -1991,6 +1991,47 @@ def test_an_allow_listed_bots_lock_or_manifest_only_pr_needs_no_verifier_review(
     )  # a bot entry is no risk rule
 
 
+RENOVATE = add(LOOP, "bot", "renovate:\n  branch: renovate/\n  paths:\n    - uv.lock\n")
+
+
+def test_a_branch_section_exempts_an_updaters_pr_opened_under_a_persons_token() -> None:
+    def made(
+        branch: str = "renovate/foo",
+        commits: tuple[str | None, ...] = ("writer",),
+        labels: tuple[str, ...] = (),
+        fork: bool = False,
+        files: tuple[str, ...] = ("uv.lock",),
+    ) -> dict[str, Any]:
+        pr = {
+            **pull(files=files, labels=labels),
+            "author": {"__typename": "User", "login": "writer"},
+            "headRefName": branch,
+            "isCrossRepository": fork,
+        }
+        pr["authored"] = {"nodes": [authored(by) for by in commits]}
+        return pr
+
+    def gate(loop: str = RENOVATE, **fields: Any) -> list[str]:
+        return approvals.proofs("merge", made(**fields), [], loop)
+
+    assert gate() == []  # the writer's own renovate/ branch, lock file only
+    assert gate(commits=("writer", "other")) == UNREVIEWED  # a second person's commit
+    assert gate(labels=("verify",)) == UNREVIEWED  # a major update asks for its review
+    assert gate(branch="feature/foo") == UNREVIEWED  # another branch
+    assert gate(fork=True) == UNREVIEWED  # a fork may name any branch
+    assert gate(files=("uv.lock", "app.py")) == UNREVIEWED  # code needs a review as usual
+    assert gate(loop=BOTS) == UNREVIEWED  # a login section never matches a person
+
+
+def test_the_verify_label_refuses_a_login_sections_exemption_too() -> None:
+    pr = {
+        **pull(files=("uv.lock",), labels=("verify",)),
+        "author": {"__typename": "Bot", "login": "dependabot"},
+    }
+    pr["authored"] = {"nodes": [authored("dependabot[bot]")]}
+    assert approvals.proofs("merge", pr, [], BOTS) == UNREVIEWED
+
+
 def test_more_reviews_or_threads_than_one_page_is_refused() -> None:
     crowded = pull(reviews=(VERDICT,), threads=(True,))
     crowded["reviews"]["totalCount"] = 101

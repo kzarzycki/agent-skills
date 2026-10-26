@@ -104,6 +104,10 @@ bot:
     paths:
       - uv.lock
       - "**/package.json"   # quoted: a leading * is a YAML alias
+  renovate:                 # an updater under a person's token: named by its branch
+    branch: renovate/
+    paths:
+      - uv.lock
 
 land:
   signed_squash_to: main
@@ -119,7 +123,7 @@ land:
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
-| `bot.<login>` | `paths` | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
+| `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
@@ -287,7 +291,11 @@ loop.md's settings hold the policy (Settings):
   `pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
   bot's (its authors, and its committer unless that is no account) and every file it
   changes, none renamed or copied, matches one of its `paths`, since no verifier runs on a
-  bot's PR; anything else needs the review as usual. Without the section, every PR needs
+  bot's PR; anything else needs the review as usual. A section with `branch`, such as
+  `bot.renovate` with `branch` `renovate/`, names an updater that opens its PRs under a
+  person's token instead: the PR's head is this repository's branch starting with the
+  prefix (a fork's PR may name any branch), and every commit is that person's. A PR labelled
+  `verify` (a major update) needs the review either way. Without the section, every PR needs
   one.
 - `signoff`, such as `labels` `area:ios` and `area:watch`: the owner signs off a
   matching change in use after it lands, which no gate can do for them. The rule reads as
