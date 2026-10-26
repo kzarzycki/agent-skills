@@ -711,7 +711,10 @@ def test_create_files_the_session_under_its_caller_s_project(
             bodies.append(body or {})
             return {"id": "s1"}
         if path.startswith("/v1/sessions/"):
-            return sessions[path.removeprefix("/v1/sessions/")]
+            sid = path.removeprefix("/v1/sessions/")
+            if sid not in sessions:
+                raise omnigent_agent.Fail(f"GET {path}: HTTP 404 Not Found")
+            return sessions[sid]
         return {
             "/v1/agents": [{"name": omnigent_agent.AGENTS["claude"], "id": "a1"}],
             "/v1/agents?scope=user": [],
@@ -733,6 +736,11 @@ def test_create_files_the_session_under_its_caller_s_project(
     omnigent_agent.Omnigent().create("claude", "t")
     assert bodies[-1]["project_id"] == "p1"
 
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "gone")  # unreadable: falls through to its lead
+    omnigent_agent.Omnigent().create("claude", "t")
+    assert bodies[-1]["project_id"] == "p1"
+
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "child")
     sessions["child"] = {"project_id": "p0"}  # its own project comes first
     omnigent_agent.Omnigent().create("claude", "t")
     assert bodies[-1]["project_id"] == "p0"

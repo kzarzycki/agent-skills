@@ -574,7 +574,11 @@ class Omnigent:
         if os.environ.get("OMNIGENT_PROJECT"):
             return self.project(name)
         for sid in dict.fromkeys(filter(None, (own_id(), parent_id()))):
-            if pid := self.info(sid).get("project_id"):
+            try:
+                pid = self.info(sid).get("project_id")
+            except Fail:  # a stale or unreadable caller only loses its project, not the spawn
+                continue
+            if pid:
                 projects = self.call("GET", "/v1/projects")
                 projects = (
                     projects.get("data", projects) if isinstance(projects, dict) else projects
