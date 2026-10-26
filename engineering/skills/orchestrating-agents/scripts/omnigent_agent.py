@@ -576,10 +576,16 @@ class Omnigent:
             body["model_override"] = model
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
         # starts its terminal (the session fails "Codex native bridge state is missing").
-        if agent == "claude" and (
-            mode := permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-        ):
+        mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
+        if agent == "claude" and mode:
             body["terminal_launch_args"] = ["--permission-mode", mode]
+        elif agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
+            # agy's default reasoning burns its quota fast, so a child runs low unless the variable
+            # says otherwise. ponytail: one variable for agy only; a per-run --effort when needed.
+            effort = os.environ.get("OMNIGENT_EFFORT_ANTIGRAVITY") or "low"
+            body["terminal_launch_args"] = ["--effort", effort] + (
+                [AGY_BYPASS] if mode == BYPASS else []  # agy's only permission flag
+            )
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name.
         if role and (name := Path(role).stem) in ROLES:
             body["labels"] = {"omni.role": name}
@@ -1265,6 +1271,8 @@ def taken(e: Fail) -> bool:
 
 
 CLOUD_HARNESS = "acp:claude-cloud"
+AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
+BYPASS = "bypassPermissions"
 SETTINGS = Path(".claude") / "settings.local.json"
 
 
@@ -1313,6 +1321,15 @@ def pin_environment(workspace: Path) -> None:
     )
 
 
+def briefed_by_file(og: Omnigent, agent: str, host_id: str | None) -> bool:
+    """Whether the child reads its brief from a file on this host: a native harness (a TUI in a
+    pane here, the two aliases included) can. Inline, a TUI takes the brief as one long paste, and
+    agy's check that the paste rendered reads its first line, which a long paste scrolls away."""
+    if host_id and host_id != og.host_id:
+        return False
+    return agent in AGENTS or og.harness(agent).endswith("-native")
+
+
 def start(
     og: Omnigent,
     agent: str,
@@ -1335,9 +1352,16 @@ def start(
     lead subscribes its starter (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``)."""
-    if permission_mode and agent != "claude":
+    agy = agent not in AGENTS and og.harness(agent) == AGY_HARNESS
+    if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
         raise Fail(
-            f"--permission-mode is for claude sessions; a {agent} session fails to launch with it"
+            f"--permission-mode is for claude sessions (and {BYPASS} for antigravity);"
+            f" a {agent} session fails to launch with it"
+        )
+    if agy and role and (permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")) != BYPASS:
+        raise Fail(
+            f"{agent} asks for approval of every command, and its only other mode skips them all,"
+            f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
     while not (room := capacity())[0]:
@@ -1358,10 +1382,9 @@ def start(
     ) + brief
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
-    if (host_id and host_id != og.host_id) or agent not in AGENTS:
-        # A file here is not on that host, nor where an agent outside the two aliases runs its
-        # tools (a cloud VM); inline, a Claude lead may read it as pasted text and ask its starter
-        # for a go-ahead.
+    if not briefed_by_file(og, agent, host_id):
+        # A file here is not on that host, nor where a non-native agent runs its tools (a cloud
+        # VM); inline, a Claude lead may read it as pasted text and ask its starter for a go-ahead.
         text = f"Work on {title}. Your brief:\n\n{full}"
     else:
         # The brief goes in a file beside the report and the message only names it: a child can
@@ -3625,7 +3648,7 @@ def main(argv: list[str] | None = None) -> int:
                 registry,
                 sid,
                 report,
-                [brief_of(report)] if not remote and args.agent in AGENTS else None,
+                [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
                 verdict=verifier,
                 followed=args.top_level,
                 after=args.after or "",
