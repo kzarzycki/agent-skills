@@ -1561,7 +1561,9 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
-@pytest.mark.parametrize("marker", ["UNPOSTED REPORT", "`UNPOSTED REPORT`", "**UNPOSTED REPORT**"])
+@pytest.mark.parametrize(
+    "marker", ["UNPOSTED REPORT", "`UNPOSTED REPORT`", "**UNPOSTED REPORT**", "__UNPOSTED REPORT__"]
+)
 def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str
 ) -> None:

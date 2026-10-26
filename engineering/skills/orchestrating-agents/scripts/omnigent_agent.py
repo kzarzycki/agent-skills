@@ -193,7 +193,7 @@ COMMENT_URL = re.compile(
 # posts it on the PR from this host.
 UNPOSTED = "UNPOSTED REPORT"
 # its first line, however formatted: the brief quotes it in backticks, so `x` or **x** too
-UNPOSTED_LINE = re.compile(rf"\W*{UNPOSTED}\W*?(\n|$)")
+UNPOSTED_LINE = re.compile(rf"[\W_]*{UNPOSTED}[\W_]*?(\n|$)")
 PR_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
