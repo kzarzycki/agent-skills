@@ -9,6 +9,7 @@ lead's own or a detached one at the same head, so you see the tree the author
 tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
+With loop.md's `Cloud worker:` line, name your evidence files for the PR (SKILL.md, Cloud worker).
 
 Check the tree first:
 
@@ -67,6 +68,21 @@ yourself, keeping standards and spec as separate axes.
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
   commit proves nothing about this one.
+- **Risky but checkable is a finding.** When the change is risky in a way evidence can
+  settle (test selection, a build task, a migration, a performance-sensitive path), ask for
+  that evidence as a finding: run this tier on the head, show the selection is unchanged,
+  show the timings. The worker supplies it and the next pass confirms it, so the owner is
+  asked only about what no check can settle.
+- **Judge the risk on every pass.** After that evidence, the change is high risk when it
+  does something a machine should not sign off alone: it weakens or removes a gate (a
+  check, test selection, threshold, required status) and the weakening is the change
+  itself; it changes CI permissions, secrets, branch protection or the loop's own approval
+  rules; or it changes what users see in a significant way the spec did not ask for, or
+  asked for only vaguely, so the owner would be surprised. Each loop.md line `- risk-criteria:
+  <text>` adds a criterion of the project's. Anything else is low. A `risk: verifier` rule
+  in loop.md lets a low change merge without the owner, so judge it on the diff, not on
+  how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
+  again on its reasoning in this pass, and say why the risk stands or falls.
 - **Gates and repros:** you may run `mise run check`. Leave every repro as a runnable file
   beside the report (the gitignored `tmp/loop/`), never in a tracked path, and name it in
   the report.
@@ -88,7 +104,9 @@ keep these lines exact:
   it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
   than leave a finding off the review.
 - End with `Head: <sha>`, the full commit you reviewed (`git rev-parse HEAD` in your
-  worktree), then `VERDICT: <n> blocker, <n> major, <n> minor` and `SATISFIED: yes|no`.
+  worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
+  `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
+  reads any word but `low`, or no line, as high, and `verdict` refuses a report without one.
   The merge reads the review as covering that commit only, so a push after your review
   needs its own.
 

@@ -43,7 +43,7 @@ def loop_sections() -> list[str]:
 
 def test_every_cited_loop_section_is_listed() -> None:
     sections = loop_sections()
-    assert "Approvals" in sections and "Practice" in sections
+    assert "Approvals" in sections and "Settings" in sections
     unlisted = [
         f"{path.relative_to(LOOP)}: § {cited}"
         for path in sorted(LOOP.rglob("*.md"))
@@ -81,3 +81,18 @@ def test_the_bare_child_check_catches_a_start_but_not_a_mention(tmp_path: Path) 
     mentions = ["never start it with `claude -p` or `codex exec`", "one `claude -p --model"]
     (tmp_path / "f.md").write_text("\n".join(starts + mentions))
     assert [hit.split(": ", 1)[1] for hit in bare_children(tmp_path)] == starts
+
+
+def test_the_cloud_split_is_reached_only_through_its_loop_md_line() -> None:
+    """Without the line every role file reads as before: each adds one pointer line, no more."""
+    skill = (LOOP / "SKILL.md").read_text()
+    section = skill.split("\n## Cloud worker\n", 1)[1].split("\n## ", 1)[0]
+    assert section.strip().startswith("With the loop.md line `Cloud worker: <agent>, gate <task>`")
+    assert "Without the line nothing" in section
+    assert "`Cloud worker: <agent>, gate <task>`" in next(
+        line for line in skill.splitlines() if line.startswith("| `docs/agents/loop.md` |")
+    )
+    for role in ("lead.md", "worker.md", "verifier.md"):
+        cloud = [line for line in (LOOP / role).read_text().splitlines() if "cloud" in line.lower()]
+        assert len(cloud) == 1, (role, cloud)
+        assert "`Cloud worker:`" in cloud[0] and "SKILL.md, Cloud worker" in cloud[0]

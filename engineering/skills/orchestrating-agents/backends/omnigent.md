@@ -13,8 +13,8 @@ several repos for a lead whose change spans them. The report path goes in a giti
 workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
-`pr182-verifier-p1`: the issue or PR, then the role. The brief file holds only the task
-specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
+`pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
+every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
 role file, long commands in the foreground, write the report to the path, reply with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
@@ -81,6 +81,24 @@ agent's name starts that agent, found among the server's agents, then the caller
 message, not as a file. Permission mode and `OMNIGENT_MODEL_<AGENT>` apply to the aliases only
 (`--model` works for any). An unknown name fails before a session is created.
 
+**Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
+so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
+on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
+GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
+and end its turn with only the comment's URL. `wait` (and so `run`) with `--pr <n>` fetches
+the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
+report path, so whatever reads the report reads a file as for any child. A question goes in
+that report, since `<report>.question` is a path here too. Only a comment GitHub files on
+PR n of this checkout's repository (`gh repo view`, checked against the comment's
+`issue_url`) counts, since the link is only what the worker typed: another PR's or another
+repository's counts for nothing. The nudge asks for the comment, and a second turn ending
+without one fails. `send --pr <n>` reaches a worker still open (one whose turn ended without a report, since `run` and `wait` finish a worker once its report is in; a fix pass is a fresh `run --pr`, Follow-ups) and takes only a comment
+created after the report already there, so a turn that ends on the old comment's link, or on
+none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
+would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
+with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
+the repo, since the VM has the checkout but not this host's paths.
+
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
 is given, so a reviewer of the author's family is always a deliberate choice. Whether a
@@ -127,8 +145,9 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
   `<title>-r<n>`, the same sequence the retry above uses, and prints the title it used. A create that fails (a timeout
   on a loaded server) may still have made the session, so the script looks for its title
   among the parent's children made since, and briefs that one instead of a second.
-- A loaded server times out reads while the child works on. Every `GET` is retried on a
-  timeout or reset, with backoff; a `POST` never is, since it may have taken effect.
+- A loaded or restarting server times out reads, drops TLS connections (an SSL EOF), refuses
+  them or answers 502/503/504 while the child works on. Every `GET` is retried on those, with
+  backoff over about two minutes; a `POST` never is, since it may have taken effect.
 - A child that reads its brief as pasted text asks for a go-ahead, so the brief is a file
   and the message is one line. One that runs a command in the background ends its turn
   "waiting" and never reports; the preamble covers that, and the first turn that ends
@@ -178,6 +197,9 @@ prompts) holds every message until the question is answered, so `relay` answers 
 message instead (exit 0), through Omnigent's resolve route: the turn carries on with it as
 the answer. An interrupt would drop the inputs pending and, on a Claude lead, hold the
 message up to 7 minutes more (kzarzycki/omnigent#14). It never answers an approval prompt.
+`relay --from <name>` is a notice from a task or an agent rather than the owner's words
+(a scheduled job's status line to a chief of staff): its first line says so, and it never
+answers a question, so it waits behind one (exit 5) instead of becoming its answer.
 
 **Broadcasting.** `python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE]
 [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...]
@@ -335,7 +357,8 @@ error again after a recovery is news and the one a restart finds again is not.
 A followed lead also has a progress deadline, since a lead that reads running for good, or goes
 quiet a second time with the same last message, makes none of those events. Its progress,
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
-none) and its live children's activity, read on first sight, then once a minute and again when
+none), once it has any, a message to it that is not the supervisor's own (a relay or the owner
+typing, which starts a new chain), and its live children's activity, read on first sight, then once a minute and again when
 the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
 lead with neither counts from first sight. With
 no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
@@ -352,7 +375,11 @@ last message (a failed read is logged once and leaves them as the message gave t
 parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
 none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
 then waits on its follower, who was told. Each deadline is one event per
-lead and `progress_at`, so new progress starts a new chain.
+lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
+`direct` field (`omnigent_agent.py direct <session>`, `--off` clears it), one the owner drives in
+its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
+routed, since the owner reads them there, and the `no event in <n>s` log line leaves it out; its
+`DONE`, failures and prompts route as any lead's.
 
 **Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
 `route`'s table (the design's § Routing an event), and settles what needs no decision itself.

@@ -6,6 +6,7 @@
     python3 scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     python3 scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
+    python3 scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     python3 scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
@@ -79,9 +80,16 @@ label or a local-ci record holds it, which GitHub never supplies; auto-merge tur
 without a merge is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
+A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
+exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
+`env` holds the value, or null for unset, of each variable loop.md's `Local CI env: NAME NAME…` line names, since a
+check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
+same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
+check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
+names left out, or `Env: default`).
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
-`Verifier: <family>, pass <n>` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
+`Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
 headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
 inline comment per finding, moved to the nearest line of the diff when its
 line is outside it and saying so, and in the review's body when its file is outside the diff.
@@ -129,9 +137,15 @@ review. A `signoff: <condition>` line says whose change the owner signs off in u
 the PR to link each issue such a rule matches, or whose spec has a line `Sign-off: owner`, with `Implements #<n>`,
 which leaves it open for the sign-off, and every other issue with a closing keyword (`Part of` suits both); without
 a `signoff:` line no keyword is checked and `Implements` is a link like `Part of`. A condition the gate can read is `always`, `size:L`
-(`size:L or larger`, `size:L+`), `component <name>`, `category <name>` or `path <glob>` (bare, or in backticks for a
-glob with a space or comma), joined by `or`, judged on the labels of the PR and its issues and the PR's files; a risk
-condition the gate can't read matches, since nothing else would enforce it. A `plan:` rule never reads a path, and
+(`size:L or larger`, `size:L+`), `component <name>`, `category <name>`, `path <glob>` (bare, or in backticks for a
+glob with a space or comma) or `verifier`, joined by `or`, judged on the labels of the PR and its issues and the PR's
+files; a risk condition the gate can't read matches, since nothing else would enforce it. `verifier` holds in a risk
+rule at the merge (under `spec: auto` too, since the verdict comes after the build) when the verifier judges the
+change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any word but `low`, or
+has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a PR that needs
+none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that line comes with a comment
+saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again after that
+comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says. A `plan:` rule never reads a path, and
 any other words make it the loop's alone, since a plan comes before the change. The spec is the issue
 body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the first backticked name of each
@@ -145,7 +159,9 @@ import contextlib
 import fnmatch
 import io
 import json
+import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -222,9 +238,12 @@ SIGNOFF = re.compile(
 QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
 CONDITION = re.compile(
     r"\balways\b|\b(size:(?:XS|S|M|L|XL))(\+|[ \t]+or[ \t]+larger\b)?"
-    r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*(?:`([^`]+)`|([^\s`,;]+))",
+    r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*(?:`([^`]+)`|([^\s`,;]+))|\b(verifier)\b",
     re.IGNORECASE,
 )
+# the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
+# label is the gate's to take off again when a later pass judges the risk low
+FLAGGED = f"`{RISK_LABEL}` added by the gate"
 # loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
 NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
 # loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
@@ -237,6 +256,11 @@ SIGNED = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 LANDING = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?Land:", re.MULTILINE | re.IGNORECASE)
+# loop.md's `Local CI env: NAME NAME…`, the environment variables the merge check reads, written as `CI: none` is.
+LOCAL_CI_ENV = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?`?Local CI env:(.*?)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
@@ -373,15 +397,17 @@ def practice_plans(loop: str) -> bool:
 
 
 def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool | None:
-    """Whether a rule's condition holds; None when it has words the gate can't read, or a path and no paths yet
-    (the loop judges it)."""
+    """Whether a rule's condition holds on labels and paths; None when it has words the gate can't read, or a path and
+    no paths yet (the loop judges it). The `verifier` term never holds here: ruled() adds the verifier's judgment."""
     if re.sub(r"[,;]|\bor\b|\s", "", CONDITION.sub("", condition), flags=re.IGNORECASE):
         return None
     unread = False
     for found in CONDITION.finditer(condition):
-        size, larger, kind, name, quoted, bare = found.groups()
+        size, larger, kind, name, quoted, bare, verifier = found.groups()
         glob = quoted or bare
-        if size:
+        if verifier:
+            hit = False  # the verifier's judgment, which ruled() reads where a verdict exists
+        elif size:
             index = SIZE_ORDER.index("size:" + size[5:].upper())
             hit = bool(
                 labels & set(SIZE_ORDER[index:] if larger else SIZE_ORDER[index : index + 1])
@@ -396,6 +422,12 @@ def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool |
         if hit:
             return True
     return None if unread else False
+
+
+def has_verifier(condition: str) -> bool:
+    """Whether a rule's condition has the `verifier` term: CONDITION's own match, so the word inside a path or a
+    label's name is no term."""
+    return any(found.group(7) for found in CONDITION.finditer(condition))
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
@@ -447,23 +479,49 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
     return None if (files.get("totalCount") or 0) > len(found) else found
 
 
-def ruled(labels: set[str], files: list[str] | None, loop: str | None) -> str | None:
+def ruled(
+    labels: set[str], files: list[str] | None, loop: str | None, judged: str | None = None
+) -> str | None:
     """Why a risk rule (risk_rules) holds on these labels and files, or None; a condition the gate can't read
-    matches, since nothing else would enforce it."""
+    matches, since nothing else would enforce it. `judged` is why the verifier holds the change high (judged()), which
+    its `verifier` term reads; None where no verdict is read, such as a spec before the build."""
     for condition in risk_rules(loop):
         hit = matches(condition, labels, files)
         if hit:
             return f"it matches a risk rule ({condition})"
         if hit is None:
             return f"a risk rule the gate can't judge holds until a person does ({condition})"
+        if judged and has_verifier(condition):
+            return f"it matches a risk rule ({condition}): {judged}"
+    return None
+
+
+def judged(pull: dict[str, Any]) -> str | None:
+    """Why the verifier holds the change high, or None: the highest pass on the head (passes) says `Risk: high`, any
+    other word than `low`, or has no `Risk:` line; a mixed PR's two verifiers both must say `low`. A head no review
+    covers is None, since reviewed() then refuses the merge, or the PR needs no review (exempt, an exact revert)."""
+    found = passes(pull)
+    if isinstance(found, str):
+        return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
+    head = pull["headRefOid"].lower()
+    on_head = [(number, lines) for commit, number, lines in found if commit == head]
+    if not on_head:
+        return None
+    last = max(number for number, _ in on_head)
+    for number, lines in on_head:
+        said = lines.get("Risk")
+        if number == last and not re.match(r"low\b", said or "", re.IGNORECASE):
+            line = "has no `Risk:` line" if said is None else f"says `Risk: {said}`"
+            return f"the verifier's pass {last} on {head[:7]} {line}"
     return None
 
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
     """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
-    labels of the PR and its issues and the PR's files, except under `spec: auto`, where the rule holds the spec
-    instead (spec_hold) and the owner approved the change before it was built; or a review at the cap was not
-    satisfied or left a blocker or major open (capped)."""
+    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under `spec:
+    auto`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
+    was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
+    blocker or major open (capped)."""
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
@@ -471,8 +529,12 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
-        if why := ruled(labels, paths(pull), loop):
+        if why := ruled(labels, paths(pull), loop, judged(pull)):
             return why
+    elif any(has_verifier(condition) for condition in risk_rules(loop)):
+        # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
+        if why := judged(pull):
+            return f"it matches a risk rule's `verifier` term: {why}"
     limit = cap(loop)
     if capped(pull, limit):
         return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
@@ -534,16 +596,56 @@ def linked(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
 
 def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """Add `risk:high` to a high-risk PR that lacks it, so the board shows why it waits; a line when GitHub refuses,
-    never a failure, since the merge already waits for the owner either way."""
-    if RISK_LABEL in names(pull) or risk(pull, issues, loop) is None:
+    never a failure, since the merge already waits for the owner either way. Added for the verifier's `Risk:` line,
+    it comes with a FLAGGED comment, and comes off once a later pass judges the risk low (unflag)."""
+    if RISK_LABEL in names(pull):
+        return unflag(pull, issues, loop)
+    if (why := risk(pull, issues, loop)) is None:
         return []
+    where = f"PR #{pull['number']}"
     try:
         label(pull["number"], RISK_LABEL, add=True)
     except subprocess.CalledProcessError as exc:
         return [
-            f"PR #{pull['number']}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
+            f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
         ]
+    if (verdict := judged(pull)) and verdict in why:
+        try:
+            comment(
+                pull["number"],
+                f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n",
+            )
+        except subprocess.CalledProcessError as exc:
+            return [
+                f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it ({exc})"
+            ]
     return []
+
+
+def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """Take off a `risk:high` the gate added for the verifier's `Risk:` line (FLAGGED) once nothing holds the change
+    high without it, since the verifier re-judges a disputed risk. A label added after the gate's comment is a
+    person's or the lead's raise, which only the owner lowers."""
+    flagged = [note["createdAt"] for note in notes(pull) if note["body"].startswith(FLAGGED)]
+    added = [
+        event["createdAt"]
+        for event in pull["timelineItems"]["nodes"]
+        if (event.get("label") or {}).get("name") == RISK_LABEL
+    ]
+    if not flagged or max(added, default="") > max(flagged):
+        return []
+    unlabelled = {**pull, "labels": {"nodes": [{"name": n} for n in names(pull) - {RISK_LABEL}]}}
+    if risk(unlabelled, issues, loop) is not None:
+        return []
+    where = f"PR #{pull['number']}"
+    try:
+        label(pull["number"], RISK_LABEL, add=False)
+    except subprocess.CalledProcessError as exc:
+        return [f"{where}: could not remove `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc})"]
+    pull["labels"] = unlabelled["labels"]
+    return [
+        f"{where}: removed the `{RISK_LABEL}` the gate added, since the verifier now judges the risk low"
+    ]
 
 
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
@@ -879,7 +981,7 @@ def proofs(
 
 
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
-    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:` lines: a body
+    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:` lines: a body
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
     A string names why none can be read."""
@@ -897,7 +999,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
             {
                 key.strip(): value.strip()
                 for key, _, value in (line.partition(":") for line in review["body"].splitlines())
-                if key.strip() in ("VERDICT", "SATISFIED")
+                if key.strip() in ("VERDICT", "SATISFIED", "Risk")
             },
         )
         for review in found
@@ -1720,8 +1822,9 @@ def check(point: str, pr: int | None) -> int:
         print(why)
         return 0
     found, issues = gated(point, pull, tracker, loop)
-    waiting = waits(pull, issues, loop) if point == "merge" else []
+    # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
+    waiting = waits(pull, issues, loop) if point == "merge" else []
     for line in holds(pull, issues, loop) + found + waiting + after:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -2020,6 +2123,9 @@ def verdict(pr: int, report: Path) -> int:
     satisfied = [line for line in lines if line.startswith("SATISFIED:")]
     if not satisfied or not verdicts:
         raise Refused(f"{report} has no `VERDICT:` or `SATISFIED:` line: the report is unfinished")
+    judgments = [line for line in lines if re.match(r"Risk:[ \t]*\S", line)]
+    if not judgments:
+        raise Refused(f"{report} has no `Risk: low|high — <reason>` line: the report is unfinished")
     # the head the verifier reviewed, which a push since the review may have moved the PR's head past
     heads = [
         found[1] for line in lines if (found := re.fullmatch(r"Head:[ \t]*([0-9a-fA-F]{40})", line))
@@ -2065,7 +2171,7 @@ def verdict(pr: int, report: Path) -> int:
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
     summary = "\n\n".join(
-        [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}"]
+        [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}\n{judgments[-1]}"]
     )
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
@@ -2080,9 +2186,16 @@ def git(*args: str) -> str:
 LOCAL_CI = ["mise", "run", "check:all"]
 
 
-def local_ci(pr: int) -> int:
-    """Run `mise run check:all` on a clean checkout at the PR head; post a record only when it passes untouched."""
-    head = pull_request(pr)["headRefOid"]
+def recorded(head: str) -> Path:
+    """Where a local-ci pass on `head` is recorded: the git common dir, which every worktree of the clone shares and no
+    commit carries."""
+    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    return common / "approvals" / "local-ci" / f"{head}.json"
+
+
+def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
+    """Run `mise run check:all` on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
+    check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
 
     def state() -> tuple[str, str]:
         # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
@@ -2096,13 +2209,13 @@ def local_ci(pr: int) -> int:
         return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
     before = state()
-    if before[0] != head:
+    if head and before[0] != head:
         raise Refused(
             f"the checkout is at {before[0]}, PR #{pr}'s head is {head}: push, or check out the head"
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command = " ".join(LOCAL_CI)
+    command, env = " ".join(LOCAL_CI), local_ci_env()
     code = subprocess.run(LOCAL_CI, check=False).returncode
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
@@ -2110,7 +2223,76 @@ def local_ci(pr: int) -> int:
         raise Refused(
             f"{command} changed the checkout, so it did not run on the head as pushed:\n{state()[1]}"
         )
-    comment(pr, f"{CHECKED}\nHead: {head}\nCommand: {command}\n")
+    record = {
+        "head": before[0],
+        "command": command,
+        "exit": code,
+        "env": env,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "host": socket.gethostname(),
+    }
+    where = recorded(before[0])
+    where.parent.mkdir(parents=True, exist_ok=True)
+    where.write_text(json.dumps(record, indent=2) + "\n")
+    return record
+
+
+def local_ci_env() -> dict[str, str | None]:
+    """The value of each variable loop.md's `Local CI env:` line names, None for one unset; {} without the line."""
+    found = LOCAL_CI_ENV.search(project()[1] or "")
+    names = found[1].replace("`", " ").split() if found else []
+    if found and (not names or not all(re.fullmatch(r"[A-Za-z_]\w*", name) for name in names)):
+        raise Refused(
+            f"loop.md's `{found[0].strip()}` is not a list of variable names: write `Local CI env: NAME NAME`"
+        )
+    return {name: os.environ.get(name) for name in sorted(names)}
+
+
+def env_line(env: dict[str, str | None]) -> str:
+    """The comment's line naming the environment the check ran under; unset names are left out."""
+    named = [f"{name}={value}" for name, value in env.items() if value is not None]
+    return f"Env: {' '.join(named) or 'default'}\n"
+
+
+def reusable(head: str) -> dict[str, Any] | None:
+    """A recorded pass on exactly `head` with today's command and environment, or None. A record without `env` (0.23.1
+    wrote none) never matches, since nothing says what tier it ran."""
+    try:
+        record = json.loads(recorded(head).read_text())
+    except (OSError, ValueError):
+        return None
+    # the posting path reads time and host too: a record without them is a miss, not a crash
+    if not isinstance(record, dict) or not all(
+        isinstance(record.get(key), str) for key in ("time", "host")
+    ):
+        return None
+    same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
+        head,
+        " ".join(LOCAL_CI),
+        0,
+        local_ci_env(),
+    )
+    return record if same else None
+
+
+def local_ci(pr: int | None) -> int:
+    """With a PR: post a pass on its head, from a recorded run on that head and command or from a run now. Without
+    one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
+    if pr is None:
+        record = run_local_ci(None, None)
+        print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
+        return 0
+    head = pull_request(pr)["headRefOid"]
+    record = reusable(head)
+    if record:
+        source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+    else:
+        record = run_local_ci(pr, head)
+        source = ""
+    comment(
+        pr,
+        f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
+    )
     return 0
 
 
@@ -2131,7 +2313,8 @@ def main(argv: list[str]) -> int:
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
     recording = commands.add_parser("local-ci")
-    recording.add_argument("pr", type=int)
+    recording.add_argument("pr", type=int, nargs="?")
+    recording.add_argument("--record", action="store_true")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
@@ -2145,6 +2328,10 @@ def main(argv: list[str]) -> int:
         if args.command == "approve":
             return approve(args.point, args.number)
         if args.command == "local-ci":
+            if (args.pr is None) != args.record:
+                raise Refused(
+                    "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
+                )
             return local_ci(args.pr)
         if args.command == "land":
             return land(args.pr, args.wait)

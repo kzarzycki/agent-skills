@@ -2,15 +2,18 @@
 
 import importlib.util
 import inspect
+import io
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
 from email.message import Message
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 import pytest
 
@@ -1212,6 +1215,52 @@ def test_a_post_that_times_out_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
     assert len(posts) == 1
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+        URLError(ConnectionRefusedError(61, "Connection refused")),
+        HTTPError("http://omnigent.test/x", 503, "Service Unavailable", Message(), None),
+    ],
+)
+def test_a_get_retries_a_server_restarting_and_a_post_does_not(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    calls: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        calls.append(req.get_method())
+        if len(calls) == 1:
+            raise error
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    assert og.call("GET", "/x") == {"ok": True}
+    calls.clear()
+    with pytest.raises(omnigent_agent.Fail):
+        og.call("POST", "/x", {})
+    assert calls == ["POST"]
+
+
+def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def urlopen(req: Request, timeout: float) -> None:
+        calls.append(req)
+        raise HTTPError("http://omnigent.test/x", 404, "Not Found", Message(), None)
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    with pytest.raises(omnigent_agent.Fail, match="HTTP 404"):
+        og.call("GET", "/x")
+    assert len(calls) == 1
+
+
 def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_session(
     tmp_path: Path,
 ) -> None:
@@ -1450,6 +1499,94 @@ def test_a_second_turn_that_ends_without_the_report_fails(tmp_path: Path) -> Non
     with pytest.raises(omnigent_agent.Fail, match="(?s)ended \\(idle\\) without .*background"):
         omnigent_agent.wait(og, sid, report)
     assert og.posts == 2  # the brief and one nudge
+
+
+def fake_gh(monkeypatch: pytest.MonkeyPatch, comments: dict[str, dict]) -> list[tuple[str, ...]]:
+    """``gh`` faked for a checkout of ``o/r``: ``repo view`` names it, ``api`` answers a comment
+    of ``comments`` by its id. Returns the calls."""
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str) -> str:
+        calls.append(args)
+        if args[:2] == ("repo", "view"):
+            return "o/r\n"
+        return json.dumps(comments[args[1].rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    return calls
+
+
+def on_pr(n: int, body: str = "", repo: str = "o/r") -> dict:
+    return {"issue_url": f"https://api.github.com/repos/{repo}/issues/{n}", "body": body}
+
+
+def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    calls = fake_gh(monkeypatch, {"42": on_pr(7, "Head: abc\nGates: 0\n")})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    argv = ["run", "claude-cloud", "t", "b.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == str(tmp_path / "r.md")
+    assert (tmp_path / "r.md").read_text() == "Head: abc\nGates: 0\n"
+    assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
+    brief = omnigent_agent.text_of(og.sessions["s0"][1])
+    assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
+    assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.com/o/r/pull/8#issuecomment-1",  # another PR
+        "https://github.com/another/repo/pull/7#issuecomment-2",  # another repo, the same number
+        "https://github.com/o/r/pull/7#issuecomment-3",  # a comment GitHub files on PR 8
+    ],
+)
+def test_a_cloud_worker_s_second_turn_without_a_comment_on_its_pr_fails(
+    link: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply=f"pushed; see {link}")
+    fake_gh(monkeypatch, {"1": on_pr(8), "2": on_pr(7, repo="another/repo"), "3": on_pr(8)})
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    with pytest.raises(omnigent_agent.Fail, match="without a report comment on PR #7"):
+        omnigent_agent.wait(og, sid, report, pr=7)
+    assert og.posts == 2 and not report.exists()
+    assert omnigent_agent.PR_NUDGE.format(pr=7) in [
+        omnigent_agent.text_of(i) for i in og.sessions[sid]
+    ]
+
+
+@pytest.mark.parametrize(
+    "reply, code",
+    [
+        ("fixed; https://github.com/o/r/pull/7#issuecomment-42", 1),  # the turn before's comment
+        ("fixed, pushed", 1),  # no comment
+        ("https://github.com/o/r/pull/7#issuecomment-43", 0),  # a fresh one
+    ],
+)
+def test_a_cloud_worker_s_follow_up_takes_only_a_report_comment_newer_than_its_report(
+    reply: str, code: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply=reply)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    old, fresh = on_pr(7, "the first report"), on_pr(7, "the fix report")
+    old["created_at"], fresh["created_at"] = "2001-01-01T00:00:00Z", "2001-09-09T02:00:00Z"
+    fake_gh(monkeypatch, {"42": old, "43": fresh})
+    monkeypatch.chdir(tmp_path)
+    sid = og.create("claude-cloud", "t")
+    report = tmp_path / "r.md"
+    report.write_text("the first report")
+    os.utime(report, (1e9, 1e9))  # 2001-09-09T01:46:40Z, written by the first turn's wait
+    (tmp_path / "fix.md").write_text("fix ST1, read the review on PR #7")
+    argv = ["send", sid, "fix.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == code
+    assert report.read_text() == ("the fix report" if code == 0 else "the first report")
+    assert og.posts == 1 + code  # the follow-up, and a nudge for a turn without a fresh one
 
 
 def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
@@ -4396,7 +4533,7 @@ def test_a_top_level_start_after_another_lead_writes_the_after_field(
     assert omnigent_agent.main([*args, "--registry", str(registry), "--after", "s9"]) == 0
     line = registry.read_text().strip()
     assert line.endswith("\tfollow\tafter=s9")
-    assert omnigent_agent.entry(line)[2:] == ([tmp_path / "a.md.brief"], False, True, "s9")
+    assert omnigent_agent.entry(line)[2:] == ([tmp_path / "a.md.brief"], False, True, "s9", False)
 
 
 def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer(
@@ -4729,3 +4866,178 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
     assert not omnigent_agent.brief_of(report).exists()
     with pytest.raises(omnigent_agent.Fail, match="for claude sessions"):
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
+
+
+def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)  # the question holds every message behind it
+    sid = og.create("claude", "cos")
+    og.prompts = [QUESTION]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    (tmp_path / "m.md").write_text("ACTION NEEDED: the sync printed a note")
+    argv = ["relay", sid, str(tmp_path / "m.md"), "--from", "skills-sync"]
+    assert omnigent_agent.main(argv) == omnigent_agent.QUEUED
+    assert og.resolved == []
+    assert og.posts == 1
+    header = omnigent_agent.RELAY_FROM.format(source="skills-sync")
+    assert "Which base?" in capsys.readouterr().err  # it names the question that holds it
+    sent = [omnigent_agent.text_of(p) for p in og.info(sid)["pending_inputs"]]
+    assert sent == [f"{header}\nACTION NEEDED: the sync printed a note"]
+
+
+def test_relay_from_a_task_to_an_idle_session_is_delivered_with_its_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "cos")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / "m.md").write_text("synced")
+    assert omnigent_agent.main(["relay", sid, str(tmp_path / "m.md"), "--from", "sync"]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == (
+        omnigent_agent.RELAY_FROM.format(source="sync") + "\nsynced"
+    )
+
+
+def deadlines(registry: Path) -> list[dict]:
+    log = registry.with_suffix(".events.jsonl")
+    return [e for e in events_of(registry) if e["kind"] == "deadline"] if log.exists() else []
+
+
+def direct_lead(tmp_path: Path) -> Path:
+    registry = following(tmp_path)
+    assert omnigent_agent.mark_direct(registry, "a")
+    return registry
+
+
+def test_a_lead_the_owner_drives_directly_gets_no_deadline_and_no_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = direct_lead(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: building", 3600))
+    og.snap = {"status": "running"}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post", timeout=0)
+    assert fyis(og) == []
+    assert deadlines(registry) == []
+    assert "no event in" not in capsys.readouterr().err  # only a direct lead is registered
+    assert state_of(registry)["leads"]["a"]["direct"] is True
+
+
+def test_a_direct_lead_still_reports_done_and_records_a_quiet_end() -> None:
+    def route(last: str) -> tuple[str, str, str]:
+        event = {"kind": "ended", "last": last, "direct": True, "decisions": True}
+        return omnigent_agent.route(event, lambda: pytest.fail("no small model for it"))
+
+    assert route("DONE: merged #5")[1] == "done"
+    assert route("Here is what I found.")[:2] == ("rule", "record")
+    assert route("Which one?\n\nUSER NEEDED")[:2] == ("rule", "record")
+    deadline = {"kind": "deadline", "last": "", "direct": True}
+    assert omnigent_agent.route(deadline, lambda: ("act", ""))[1] == "record"
+
+
+def test_a_direct_lead_s_question_and_quiet_report_stay_with_the_owner() -> None:
+    no_model = lambda: pytest.fail("no model call")
+    question = {"kind": "blocked", "question": True, "direct": True}
+    assert omnigent_agent.route(question, no_model)[1] == "record"
+    prompt = {"kind": "blocked", "direct": True}
+    assert omnigent_agent.route(prompt, no_model)[1] == "owner"
+    quiet = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "Here is what I found."}
+    assert omnigent_agent.route(quiet, no_model)[1] == "record"
+    done = {"kind": "ended", "direct": True, "last": "/tmp/f.md", "head": "DONE: shipped"}
+    assert omnigent_agent.route(done, no_model)[1] == "done"
+
+
+def test_a_later_instruction_to_a_lead_with_no_output_starts_a_new_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    og = Lead(told("brief", 4000))
+    og.snap = {"status": "running"}
+
+    def later(poll: int) -> None:
+        offset[0] = {1: 1140.0, 2: 1201.0}[poll]
+        if poll == 1:
+            og.histories["a"].append(told("carry on with the revised task", 0))
+
+    supervised(og, registry, monkeypatch, 3, later, notify="cos", console=True, fyi="post")
+    assert deadlines(registry) == []
+
+
+def test_direct_marks_and_clears_a_registry_line_keeping_its_other_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = following(tmp_path)
+    before = registry.read_text()
+    argv = ["direct", "a", "--registry", str(registry)]
+    assert omnigent_agent.main(argv) == 0
+    assert registry.read_text() == before.rstrip("\n") + "\tdirect\n"
+    assert omnigent_agent.entry(registry.read_text().strip())[6] is True
+    omnigent_agent.arm(registry, "a", tmp_path / "a.md", followed=True)  # a re-arm keeps it
+    assert omnigent_agent.entry(registry.read_text().strip())[6] is True
+    assert omnigent_agent.main([*argv, "--off"]) == 0
+    assert omnigent_agent.entry(registry.read_text().strip())[6] is False
+    capsys.readouterr()
+    assert omnigent_agent.main(["direct", "zz", "--registry", str(registry)]) == 1
+    assert "no line for zz" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("message", "deadline"),
+    [
+        ("Owner's answer: free the disk, then carry on.", False),  # a relay: a new chain
+        (omnigent_agent.LEAD_NUDGE, True),  # the supervisor's own line: no progress
+    ],
+)
+def test_a_new_instruction_to_an_idle_lead_starts_a_new_progress_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str, deadline: bool
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 40000), ending("Disk full.\n\nUSER NEEDED", 34000), told(message, 5))
+    og.snap = {"status": "running"}  # the relay woke it
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert bool(deadlines(registry)) is deadline
+
+
+def test_a_message_argument_is_a_file_or_the_text_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    assert omnigent_agent.main(["relay", sid, "carry on with step 3"]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "carry on with step 3"
+    long = "Do X.\n" + "word " * 100  # past NAME_MAX: OSError File name too long before
+    assert omnigent_agent.main(["relay", sid, long]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == long
+    (tmp_path / "m.md").write_text("from a file")
+    assert omnigent_agent.main(["relay", sid, "m.md"]) == 0
+    assert omnigent_agent.text_of(og.sessions[sid][-1]) == "from a file"
+    capsys.readouterr()
+    assert omnigent_agent.main(["relay", sid, "missing.md"]) == 2
+    assert capsys.readouterr().err.strip() == (
+        "missing.md: no such file; pass a file or the text itself"
+    )
+
+
+def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    report, registry = tmp_path / "r.md", tmp_path / "leads.registry"
+    seen: list[str] = []
+    monkeypatch.setattr(
+        omnigent_agent,
+        "wait",
+        lambda *a, **k: seen.append(registry.read_text()) or str(report),
+    )
+    argv = ["send", sid, "use main as the base", str(report), "--registry", str(registry)]
+    assert omnigent_agent.main(argv) == 0
+    followup = tmp_path / "r.md.followup"
+    assert followup.read_text() == "use main as the base"
+    assert str(followup) in seen[0]

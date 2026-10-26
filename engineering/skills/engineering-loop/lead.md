@@ -5,7 +5,8 @@ request itself when it has none), each on its own branch in a worktree of your o
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
 design, wireframes included for a UI, and delegate the rest.
 
-1. **Intent.** File a request from the owner in their words, with its category and
+1. **Intent.** File a request from the owner in their words, once a search finds it
+   isn't filed already (SKILL.md, One concern per PR), with its category and
    component labels and no state label: that is its intent issue. Act on an issue you are
    given by its state ([issues.md](issues.md)): `needs-owner` waits until the owner
    answers what it asks, or approves (the `approved:<point>` label, their word in the
@@ -21,7 +22,7 @@ design, wireframes included for a UI, and delegate the rest.
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in loop.md. An issue
    assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
-   you park an issue (`needs-owner`) or drop it, run `python3 scripts/approvals.py release
+   you park an issue (`needs-owner`) or drop it, run `uv run scripts/approvals.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
@@ -30,12 +31,12 @@ design, wireframes included for a UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Where loop.md has `signoff:` rules, end the spec with a line `Sign-off:
+   references. Where loop.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
-   proof). A spec loop.md's `spec: auto unless risk` covers (a bug, a `Found while #n`
-   follow-up, a sub-issue of an approved epic opened by a writer), or `spec: auto` covers
-   (any spec a writer opened that no risk rule matches, SKILL.md, Approvals and proof, judged on the issue's labels
+   proof). A spec loop.md's `spec.auto` list covers (`bug`, a `Found while #n`
+   `follow-up`, a `sub-issue` of an approved epic opened by a writer), or `auto: true` covers
+   (any spec a writer opened that the risk rule doesn't match, SKILL.md, Approvals and proof, judged on the issue's labels
    and the paths the spec says it changes), is approved by that policy: it gets no label
    and no record, since the gate reads the policy and an `approved:spec` an agent added
    would read as the owner's; move it to `Ready` on the board and carry on; the owner
@@ -44,8 +45,8 @@ design, wireframes included for a UI, and delegate the rest.
    the ready state (board: `Ready`). An epic's stories are filed as its sub-issues, each
    with its spec, before you ask for the epic's approval, and the request lists them: under
    the policy the owner's approval of the epic covers the stories filed by a writer, and
-   without it each story needs its own. When loop.md § Practice names a plan skill, write
-   the plan with it next, as a `## Plan` comment on the issue; where a loop.md `plan:` rule
+   without it each story needs its own. When loop.md's `practice` names a `plan` skill, write
+   the plan with it next, as a `## Plan` comment on the issue; where loop.md's `plan` rule
    matches, it waits for the owner the same way. At triage, add `risk:high` to an issue
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
    `priority:`). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
@@ -59,8 +60,9 @@ design, wireframes included for a UI, and delegate the rest.
    deep, off a PR already in Land (SKILL.md, Stacks are one deep); an epic's sub-issues each
    get their own branch and PR this way ([issues.md](issues.md), Epics). Open a draft PR
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
-   proof) with the branch's first push (github.md, Review trail; board:
-   `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
+   proof) with the branch's first push, made when you cut it (an empty commit when nothing
+   is written yet), since the open PR is the claim another lead's search finds
+   (github.md, Review trail; board: `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
@@ -87,6 +89,7 @@ design, wireframes included for a UI, and delegate the rest.
    both are yours (worker.md, Gates and push). Its model is the default, or, where the
    issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
    names (SKILL.md, Models).
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker).
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
    abort), push it, start what the merge unblocked, and tell the live workers the new
    head, plus any step loop.md § Proof on a branch says a schema or build change needs.
@@ -94,7 +97,13 @@ design, wireframes included for a UI, and delegate the rest.
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
-7. **Verify** (board: `Verify`). Commit and push, then start the verifier on that pushed
+7. **Verify** (board: `Verify`). A worker report naming a test that passed only on its
+   retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
+   the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before each pass, rerun on the head every
+   proof the spec's acceptance needs whose log names another commit, since the verifier
+   counts it as missing and the pass is spent on it:
+   `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
+   prints the ones to rerun. Then start the verifier on that pushed
    head (SKILL.md, Independent verification) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
@@ -106,7 +115,7 @@ design, wireframes included for a UI, and delegate the rest.
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report with
-   `python3 scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
+   `uv run scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. Only a mixed PR's second
@@ -145,7 +154,7 @@ design, wireframes included for a UI, and delegate the rest.
      name it), enqueue the PR there instead of running `land`, once `approvals.py check queue
      <pr> --head <sha>` exits 0, and go on with the next item: the queue tells you the outcome.
      A PR it evicts comes back with the gate log or the conflict; fix it like any finding.
-   - Run `python3 scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
+   - Run `uv run scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: `mise run check` passed on the head, the
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as the one background
@@ -159,12 +168,12 @@ design, wireframes included for a UI, and delegate the rest.
      (`--match-head-commit`) once the base's required checks are green, or turns on auto-merge
      pinned to the head while they are pending, and waits for GitHub's merge, through the merge
      queue where the base requires one: exit 0, merged.
-     With loop.md's `Land: local signed squash` line it squashes, signs and pushes the PR from your
+     With loop.md's `land` section it squashes, signs and pushes the PR from your
      checkout instead, so run it where the signing key is (`approvals.py`'s docstring).
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
-     merge queue, without a merge is exit 1. Exit 3 is what CI won't clear, once no required check is still pending: a red
-     check, the owner's label, `CI: none` without a `local-ci` record, a repository without
+     merge queue, without a merge (still so on a second reading one poll later, since GitHub takes a PR out of the queue a moment before it reports the merge) is exit 1. An entry still waiting for checks 10 minutes after it was queued, with no check suite on its merge-group commit, is one GitHub never told CI about: the wait dequeues it and lands the PR again. Exit 3 is what CI won't clear, once no required check is still pending: a red
+     check, the owner's label, `ci: false` without a `local-ci` record, a repository without
      auto-merge or a base with no required checks whose CI has finished, or 2 hours of waiting;
      run it again once that clears. When every proof holds and only `loop:approvals` is red
      (resolving a review thread starts no workflow), it reruns the Actions run that posted it
@@ -177,7 +186,7 @@ design, wireframes included for a UI, and delegate the rest.
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's label, `land` exits 3 with only that left
-     once CI has passed the head (with `CI: none`, once `python3 scripts/approvals.py local-ci
+     once CI has passed the head (with `ci: false`, once `uv run scripts/approvals.py local-ci
      <pr>` has recorded a pass on it, reusing a `local-ci --record` pass on the same head), so the owner never approves a head CI could still
      reject: give them the PR link, ask for `approved:merge`, and run `land` again once it is on.
      The PR has landed only once `land` exits 0, or `gh pr view <pr> --json state,mergeCommit`
@@ -208,7 +217,7 @@ design, wireframes included for a UI, and delegate the rest.
      way names with `Closes` (never `Part of` or `Implements`) that is still open
      (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
      When that was an epic's last open sub-issue, close and move the epic the same way. Where
-     loop.md has a `signoff:` line, each issue it names with `Implements` stays open for the
+     loop.md has a `signoff` section, each issue it names with `Implements` stays open for the
      owner's sign-off: move it to
      `Sign-off` and comment `Landed in #<pr> (<merge sha>); waits for your sign-off in use:`
      followed by the spec's acceptance examples to try ([issues.md](issues.md), Sign-off).
@@ -224,7 +233,7 @@ design, wireframes included for a UI, and delegate the rest.
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
-   with `CI: none` there is none). When it ends red, revert before anything else
+   with `ci: false` there is none). When it ends red, revert before anything else
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
    `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue
@@ -264,6 +273,8 @@ A child that ends its turn saying it waits (for a build, a gate, CI) rather than
 has left no report and will not wake itself: arm one background wait on its process or log
 that ends on every terminal state (success, failure, the process gone), e.g.
 `while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
+A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
+process still hung on one is yours to stop and release, since its owner has ended its turn.
 A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
 before then.

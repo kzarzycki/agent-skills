@@ -9,6 +9,7 @@ lead's own or a detached one at the same head, so you see the tree the author
 tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
+With loop.md's `Cloud worker:` line, name your evidence files for the PR (SKILL.md, Cloud worker).
 
 Check the tree first:
 
@@ -36,6 +37,9 @@ yourself, keeping standards and spec as separate axes.
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
+- **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
+  has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
+  quarantines a test weakens a gate (Judge the risk).
 - **Out of scope:** an input the system never produces, an interleaving nobody can
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
   formatting and code-review's smell baseline are notes, not findings.
@@ -77,11 +81,14 @@ yourself, keeping standards and spec as separate axes.
   check, test selection, threshold, required status) and the weakening is the change
   itself; it changes CI permissions, secrets, branch protection or the loop's own approval
   rules; or it changes what users see in a significant way the spec did not ask for, or
-  asked for only vaguely, so the owner would be surprised. Each loop.md line `- risk-criteria:
-  <text>` adds a criterion of the project's. Anything else is low. A `risk: verifier` rule
-  in loop.md lets a low change merge without the owner, so judge it on the diff, not on
+  asked for only vaguely, so the owner would be surprised. loop.md § Risk criteria, where it
+  has one, adds the project's own. Anything else is low. `verifier: true` in loop.md's
+  `risk` lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
+- **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
+  what it holds, and report it as not run with the exact owner action, since parking it is
+  the lead's.
 - **Gates and repros:** you may run `mise run check`. Leave every repro as a runnable file
   beside the report (the gitignored `tmp/loop/`), never in a tracked path, and name it in
   the report.
