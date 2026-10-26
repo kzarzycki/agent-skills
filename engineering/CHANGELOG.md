@@ -5,6 +5,20 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.24.2 - 2026-10-26
+
+#448's fix: Antigravity reads its brief from a file and runs a role only with the `--permission-mode bypassPermissions` opt-in, so an installed launcher starts an Antigravity verifier; its effort comes from the user's agy settings (#459). Also: `omnigent_agent.py` places cloud workers from a host and keeps them for a fix round, resolves a name held by identical agent copies, and names the right command behind a pending question; this repo's own `test` task records pytest's pid in the gate slot.
+
+- orchestrating-agents: a native agent outside the aliases reads its brief from a file, since agy dropped a long pasted brief; Antigravity refuses a `--role` unless `--permission-mode bypassPermissions` opts into skipping its approvals (#424).
+- This repo's own `test` task runs its gate-slot lock inside `uv run` and writes its pid into `gate.1.lock`, as the template's `gate-slot` does, so a waiting `gate-slot` names the running pytest, not an exited process (#442).
+- `omnigent_agent.py start|run --pr` sends the PR preamble whether or not the session is top-level, so `start --top-level --host <host> --pr <n>` starts a cloud worker from a host without the cloud harness and it reports on PR n; an agent is given by name or id, and a name several agents hold fails, listing their ids, instead of taking the first match (#447).
+- `omnigent_agent.py send --pr` delivers to a session whose workspace is on another host: with `--pr` the report is the file `wait` writes here, so the check that it lies inside the session's workspace is skipped (#447).
+- `omnigent_agent.py run|wait --keep` leaves the session open once its report is in; engineering-loop's Cloud worker sends a fix round to the kept worker with `send --pr` while it is still there, since a fresh session is a fresh VM, clone and build (#447).
+- `omnigent_agent.py start` waits on this host's capacity only for a session on this host; one `--host` puts on another host starts at once (#447).
+- The `--pr` preamble tells a cloud worker that its checkout is the branch checked out in the workspace it started from, not necessarily the PR's (`git fetch origin pull/<n>/head` gets that), and that a foreground command stops at 10 minutes, so a long run starts detached and is polled within the same turn (#447).
+- `omnigent_agent.py` resolves a name several agents hold to the newest of them by `created_at` when their records and configs match apart from identity and bookkeeping (`id`, `version`, `created_at`, `updated_at`, `object`), since each upload of one spec registers another copy and a record has no host to tell them apart; the record carries policies, skills and terminals and the config instructions and model, so both are compared. Agents that differ are still refused, listing their ids (#454).
+- `omnigent_agent.py relay`'s queued line names `approve` only for an approval prompt, each with what it holds; behind a question it says the message stays queued and lands once the question is answered, and names `relay --answer` only as what to use instead of a plain relay next time (with `--from`, it says only the owner's own relay answers it), since nothing withdraws a queued input and a rerun with `--answer` would deliver the same words twice; `approve` with only a question pending fails naming it and `relay --answer`, since both lines sent a caller blocked on AskUserQuestion to the wrong command (#457).
+
 ## 0.24.1 - 2026-10-26
 
 #428's fix: an installed skill gets no Python bytecode, so a consumer's `apm install --frozen` leaves the lock clean (ignore `__pycache__/` with the slash). Also: long gates, repros and live runs start detached and are polled; cloud workers push to their assigned `claude/` branch; leads finish children whose reports are in; and `omnigent_agent.py` gets `owner-said`, a safer `relay`, and better capacity and supervisor reads.
