@@ -2002,10 +2002,11 @@ def test_a_branch_section_exempts_an_updaters_pr_opened_under_a_persons_token() 
         labels: tuple[str, ...] = (),
         fork: bool = False,
         files: tuple[str, ...] = ("uv.lock",),
+        author: dict[str, str] | None = {"__typename": "User", "login": "writer"},
     ) -> dict[str, Any]:
         pr = {
             **pull(files=files, labels=labels),
-            "author": {"__typename": "User", "login": "writer"},
+            "author": author,
             "headRefName": branch,
             "isCrossRepository": fork,
         }
@@ -2022,6 +2023,8 @@ def test_a_branch_section_exempts_an_updaters_pr_opened_under_a_persons_token() 
     assert gate(fork=True) == UNREVIEWED  # a fork may name any branch
     assert gate(files=("uv.lock", "app.py")) == UNREVIEWED  # code needs a review as usual
     assert gate(loop=BOTS) == UNREVIEWED  # a login section never matches a person
+    # a deleted author and commits mapped to no account would compare "" with "": refused
+    assert gate(author=None, commits=(None,)) == UNREVIEWED
 
 
 def test_the_verify_label_refuses_a_login_sections_exemption_too() -> None:

@@ -294,7 +294,8 @@ loop.md's settings hold the policy (Settings):
   bot's PR; anything else needs the review as usual. A section with `branch`, such as
   `bot.renovate` with `branch` `renovate/`, names an updater that opens its PRs under a
   person's token instead: the PR's head is this repository's branch starting with the
-  prefix (a fork's PR may name any branch), and every commit is that person's. A PR labelled
+  prefix (a fork's PR may name any branch), and every commit is that person's, so the
+  updater commits as that person (Renovate's `gitAuthor`), not as its default author. A PR labelled
   `verify` (a major update) needs the review either way. Without the section, every PR needs
   one.
 - `signoff`, such as `labels` `area:ios` and `area:watch`: the owner signs off a
