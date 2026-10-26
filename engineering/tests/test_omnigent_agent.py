@@ -3979,6 +3979,22 @@ def test_relay_behind_only_a_question_names_relay_answer_for_next_time_not_appro
     ]  # the copy that lands once the question is answered
 
 
+def test_relay_from_a_task_behind_a_question_says_only_the_owner_answers_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.prompts = [QUESTION]
+    assert relay(og, sid, tmp_path, monkeypatch, "synced", "--from", "nightly") == (
+        omnigent_agent.QUEUED
+    )
+    assert capsys.readouterr().err.strip() == (
+        f"session {sid}: queued behind a question: {QUESTION['params']['content_preview']};"
+        " this message stays queued and lands once the question is answered"
+        " (only the owner's own relay answers a question)"
+    )
+
+
 def test_approve_resolves_each_approval_prompt_never_a_question(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

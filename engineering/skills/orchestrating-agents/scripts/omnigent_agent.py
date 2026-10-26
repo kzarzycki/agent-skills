@@ -1045,8 +1045,10 @@ def relay(
         lands = "it lands then"
         if asks:  # nothing withdraws a queued input, so a rerun with --answer would land it twice
             how = (
-                "next time, to answer a question, use `relay --answer` instead of a plain relay,"
-                " never after one"
+                "only the owner's own relay answers a question"
+                if source
+                else "next time, to answer a question, use `relay --answer` instead of a plain"
+                " relay, never after one"
             )
             lands = f"this message stays queued and lands once the question is answered ({how})"
         raise Queued(f"session {sid}: queued {why}; {lands}")
