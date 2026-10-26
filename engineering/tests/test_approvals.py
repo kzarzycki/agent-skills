@@ -5170,3 +5170,18 @@ def test_land_refuses_a_head_behind_the_tip_whose_merge_touches_an_except_path(
         ),
     ]
     assert remote_ref(signing, "main") == tip
+
+
+def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Another branch merged in is no merge of main, however disjoint: main's tip here never reached it."""
+    case = carrying({"other.txt": "not on main\n"})
+    pr = carried_pull(case)
+    pr["baseRefOid"] = case["since"]
+    assert merge(pr, [approved(1, "area:web")], CARRY)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
+    ]
