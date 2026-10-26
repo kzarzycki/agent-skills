@@ -2445,18 +2445,13 @@ def supervise_registry(
 
         by, action, why = route(event, ask)
         if action == "read-report":
-            read = lead.get("report_read") or {}
-            try:
-                if read.get("id") == str(said[-1].get("id")):
-                    # track's read of this message stands, a failure too: a second read could
-                    # route on a report the state never saw
-                    if read["head"] is None:
-                        raise Fail(read["error"])
-                    head = [read["head"]]
-                else:
-                    head = [report_head(og.read_file(sid, last))]
-            except Exception as e:  # noqa: BLE001 - an unread report routes act
-                head, why = [], f"report {last} not read: {reason(e)}"
+            # track's one read of this message, a failure too: a second read could route on a
+            # report the state never saw
+            from_report(sid, lead, items)
+            read = lead.get("report_read") or {"head": None, "error": "not read"}
+            head = [] if read["head"] is None else [read["head"]]
+            if not head:  # an unread report routes act
+                why = f"report {last} not read: {read['error']}"
             event["head"] = head[0] if head else ""
             by, action, routed = route(event, ask)
             why = f"{routed}; {why}" if not head else routed
