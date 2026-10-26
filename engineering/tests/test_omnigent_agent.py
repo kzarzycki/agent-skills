@@ -184,7 +184,7 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
     assert sid == "s0" and text.endswith("do X")
     assert (
         "owner authorized" in text
-        and "foreground" in text
+        and "setsid nohup" in text
         and str(tmp_path / "r.md") in text
         and "roles/worker.md" in text
     )
@@ -1350,7 +1350,7 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
 # The default preamble as it was before --top-level existed: a worker's or verifier's brief.
 DEFAULT_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
@@ -1421,7 +1421,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert text == omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="") + "do X"
     assert "owner's own words" in text and "ask them here" in text
     assert "USER NEEDED" not in text and "needs-owner" not in text
-    assert "foreground" in text and f"final report to {tmp_path / 'r.md'}" in text
+    assert "setsid nohup" in text and f"final report to {tmp_path / 'r.md'}" in text
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
 

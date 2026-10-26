@@ -15,7 +15,7 @@ child is prompted for a read (denied in auto mode), which nobody answers, so the
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
 every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
-role file, long commands in the foreground, write the report to the path, reply with only
+role file, long runs started detached and polled, write the report to the path, reply with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
 that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc
@@ -151,7 +151,7 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A child that reads its brief as pasted text asks for a go-ahead, so the brief is a file
   and the message is one line. One that runs a command in the background ends its turn
   "waiting" and never reports; the preamble covers that, and the first turn that ends
-  without a report or a question gets one nudge to finish in the foreground and write the
+  without a report or a question gets one nudge to poll its detached runs and write the
   report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
   prompt), or after `--timeout` (default 3h), so the lead still wakes.
 
