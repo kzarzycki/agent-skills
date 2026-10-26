@@ -122,6 +122,6 @@ keep these lines exact:
   The merge reads the review as covering that commit only, so a push after your review
   needs its own.
 
-Before replying, run `python3 <this skill's folder>/scripts/approvals.py report <report path>` and fix the
+Before replying, run `uv run <this skill's folder>/scripts/approvals.py report <report path>` and fix the
 report until it exits 0: it reads the report as `verdict` does, without GitHub, so a report
 the lead can't post never costs another turn. Then reply with only the path.
