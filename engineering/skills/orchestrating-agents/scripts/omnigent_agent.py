@@ -995,7 +995,7 @@ POSTED = (
     RELAYED.split("{")[0],
     "[System:",
     REVIVED,
-    NUDGE.split(" Run ")[0],
+    NO_REPORT,
 )
 BRIEF = re.compile(r"Work on .+(\. Your brief:|: read .+ and do what it says\.)")
 
