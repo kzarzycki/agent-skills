@@ -664,6 +664,7 @@ def test_create_files_the_session_under_the_project(
             "/v1/agents?scope=user": [],
             "/v1/projects": {"data": [{"name": "other", "id": "p0"}, {"name": "shop", "id": "p1"}]},
             "/v1/sessions": {"id": "s1"},
+            "/v1/sessions/coord": {},  # a lead filed nowhere
         }[path]
 
     monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
@@ -696,6 +697,49 @@ def test_create_files_the_session_under_the_project(
     monkeypatch.setenv("OMNIGENT_PROJECT", "S_hop")
     omnigent_agent.Omnigent().create("claude", "t")
     assert calls[-1][2] and calls[-1][2]["project_id"] == "p1"
+
+
+def test_create_files_the_session_under_its_caller_s_project(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A scheduled run is filed in its task's project, whose name its repo's need not match."""
+    bodies: list[dict] = []
+    sessions = {"lead": {"project_id": "p1"}, "child": {}}
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        if method == "POST":
+            bodies.append(body or {})
+            return {"id": "s1"}
+        if path.startswith("/v1/sessions/"):
+            return sessions[path.removeprefix("/v1/sessions/")]
+        return {
+            "/v1/agents": [{"name": omnigent_agent.AGENTS["claude"], "id": "a1"}],
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": [{"name": "other", "id": "p0"}, {"name": "eng", "id": "p1"}]},
+        }[path]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.setattr(omnigent_agent, "repo_name", lambda: "eng-repo")  # matches no project
+    monkeypatch.delenv("OMNIGENT_PROJECT", raising=False)
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    omnigent_agent.Omnigent().create("claude", "t", top_level=True)
+    assert bodies[-1]["project_id"] == "p1"
+    assert capsys.readouterr().err == ""
+
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "child")  # filed nowhere itself: its lead's
+    omnigent_agent.Omnigent().create("claude", "t")
+    assert bodies[-1]["project_id"] == "p1"
+
+    sessions["child"] = {"project_id": "p0"}  # its own project comes first
+    omnigent_agent.Omnigent().create("claude", "t")
+    assert bodies[-1]["project_id"] == "p0"
+
+    monkeypatch.setenv("OMNIGENT_PROJECT", "eng")  # the override wins over both
+    omnigent_agent.Omnigent().create("claude", "t")
+    assert bodies[-1]["project_id"] == "p1"
 
 
 def test_create_labels_the_session_with_its_loop_role_from_the_role_file(
