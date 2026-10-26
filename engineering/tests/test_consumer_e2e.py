@@ -93,6 +93,22 @@ def _no_bytecode(directory: str, names: list[str]) -> set[str]:
     }
 
 
+def test_every_scripts_folder_with_python_has_a_pycache_file() -> None:
+    """Without the file an importer writes bytecode there, which an installed skill's lock counts (#428)."""
+    folders = {
+        path.parent
+        for path in (PACKAGE / "skills").rglob("*.py")
+        if not {"test", "tests"} & set(path.parts)
+    }
+    assert folders
+    assert (
+        sorted(
+            f.relative_to(PACKAGE).as_posix() for f in folders if not (f / "__pycache__").is_file()
+        )
+        == []
+    )
+
+
 def test_file_manifest_leaves_out_python_bytecode(tmp_path: Path) -> None:
     (tmp_path / "s" / "__pycache__").mkdir(parents=True)
     (tmp_path / "s" / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"x")
@@ -223,3 +239,14 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
     serialized_lock = json.dumps(lockfile, sort_keys=True)
     assert f"^{version}" in serialized_lock
     assert tag in serialized_lock
+
+    # The markers reach a fresh clone when the consumer ignores only cache folders, as `__pycache__/` does (#428).
+    gitignore = consumer / ".gitignore"
+    gitignore.write_text((gitignore.read_text() if gitignore.exists() else "") + "__pycache__/\n")
+    _run(["git", "init", "-q"], cwd=consumer, env=env)
+    _run(["git", "add", "."], cwd=consumer, env=env)
+    _run(["git", "commit", "-q", "-m", "consumer"], cwd=consumer, env=env)
+    clone = tmp_path / "git-consumer-clone"
+    _run(["git", "clone", "-q", str(consumer), str(clone)], cwd=tmp_path, env=env)
+    _run(["apm", "install", "--frozen"], cwd=clone, env=env)
+    assert _run(["git", "status", "--porcelain"], cwd=clone, env=env).stdout == ""
