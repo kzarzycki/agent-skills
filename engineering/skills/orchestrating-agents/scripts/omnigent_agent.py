@@ -1112,18 +1112,36 @@ def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], b
     return lines, failed
 
 
+def available_mb() -> float | None:
+    """This host's available memory in MB, or None when it cannot tell: Linux's ``MemAvailable``,
+    else macOS's free share of memory (``kern.memorystatus_level``, what ``memory_pressure``
+    prints), which counts what the kernel can reclaim, unlike ``vm_stat``'s free pages."""
+    if MEMINFO.exists():
+        found = re.search(r"^MemAvailable:\s+(\d+) kB", MEMINFO.read_text(), re.MULTILINE)
+        return int(found.group(1)) / 1024 if found else None
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "kern.memorystatus_level", "hw.memsize"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        ).stdout.split()
+        return int(out[0]) / 100 * int(out[1]) / 2**20
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
 def capacity() -> tuple[bool, str]:
     """Whether this host has room for another session, and a line saying what it carries."""
     load = os.getloadavg()[0] / (os.cpu_count() or 1)
-    # ponytail: this host only, the one start's config names; no /proc (macOS) leaves load alone.
-    found = (
-        re.search(r"^MemAvailable:\s+(\d+) kB", MEMINFO.read_text(), re.MULTILINE)
-        if MEMINFO.exists()
-        else None
+    # ponytail: this host only, the one start's config names.
+    mb = available_mb()
+    memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
+    line = (
+        f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g}), {memory} (min {MIN_AVAILABLE_MB:g})"
     )
-    mb = int(found.group(1)) / 1024 if found else float("inf")
-    line = f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g}), {mb:.0f} MB available (min {MIN_AVAILABLE_MB:g})"
-    return load <= MAX_LOAD_PER_CORE and mb >= MIN_AVAILABLE_MB, line
+    return load <= MAX_LOAD_PER_CORE and (mb is None or mb >= MIN_AVAILABLE_MB), line
 
 
 def taken(e: Fail) -> bool:
