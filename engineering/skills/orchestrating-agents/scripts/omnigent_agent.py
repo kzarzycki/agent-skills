@@ -707,10 +707,24 @@ class Omnigent:
         return [str(c["id"]) for c in page.get("data", [])]
 
     def active(self, sid: str) -> float:
-        """When any live child of ``sid`` was last updated (archived ones are not listed), else 0.
-        Not ``busy``: a child whose turn end was lost stays busy for good."""
+        """When any live child of ``sid`` (archived ones are not listed), or a live session it
+        subscribes to, was last updated, else 0. The subscriptions are its top-level helpers, a
+        cloud worker for one, which are no children. Not ``busy``: a child whose turn end was lost
+        stays busy for good."""
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
-        return max((float(c.get("updated_at") or 0) for c in page.get("data", [])), default=0.0)
+        times = [float(c.get("updated_at") or 0) for c in page.get("data", [])]
+        try:  # ponytail: the first page of subscriptions; a lead holds a handful
+            subscribed = self.call("GET", f"/v1/sessions/{sid}/subscriptions").get("data", [])
+        except Fail:  # an Omnigent without subscriptions: the children alone, as before
+            subscribed = []
+        for helper in subscribed:
+            try:
+                info = self.info(str(helper["session_id"]))
+            except Fail:  # Gone too
+                continue  # deleted, or unreadable this poll: counts for nothing
+            if not info.get("archived"):
+                times.append(float(info.get("updated_at") or 0))
+        return max(times, default=0.0)
 
 
 def project_name() -> str:

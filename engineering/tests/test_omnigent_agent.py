@@ -1299,6 +1299,47 @@ def test_a_failed_create_with_no_session_made_fails_the_start(tmp_path: Path) ->
     assert og.posts == 0
 
 
+@pytest.mark.parametrize(
+    ("helpers", "subscriptions_fail", "expected"),
+    [
+        (
+            {"cloud": (300, False)},
+            False,
+            300.0,
+        ),  # a running cloud worker, no child: its updates count
+        (
+            {"cloud": (50, False)},
+            False,
+            100.0,
+        ),  # an idle helper holds nothing off: the child is newer
+        ({"done": (500, True)}, False, 100.0),  # an archived helper counts for nothing
+        ({"gone": (500, False)}, False, 100.0),  # a deleted one too
+        ({"cloud": (300, False)}, True, 100.0),  # no subscriptions endpoint: the children alone
+    ],
+)
+def test_active_counts_a_subscribed_top_level_helper_like_a_child(
+    monkeypatch: pytest.MonkeyPatch,
+    helpers: dict[str, tuple[int, bool]],
+    subscriptions_fail: bool,
+    expected: float,
+) -> None:
+    def call(self, method: str, path: str, body: object = None) -> object:
+        if path == "/v1/sessions/lead/child_sessions?limit=100":
+            return {"data": [{"id": "kid", "updated_at": 100}]}
+        if path == "/v1/sessions/lead/subscriptions":
+            if subscriptions_fail:
+                raise omnigent_agent.Fail("GET subscriptions: HTTP 404 Not Found")
+            return {"data": [{"subscriber_id": "lead", "session_id": h} for h in helpers]}
+        sid = path.removeprefix("/v1/sessions/")
+        if sid == "gone":
+            raise omnigent_agent.Gone("GET: HTTP 404 Not Found")
+        updated, archived = helpers[sid]
+        return {"id": sid, "updated_at": updated, "archived": archived}
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    assert omnigent_agent.Omnigent().active("lead") == expected
+
+
 def test_the_lookup_matches_the_title_under_the_parent_created_after_the_attempt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
