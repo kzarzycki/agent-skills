@@ -15,7 +15,7 @@ child is prompted for a read (denied in auto mode), which nobody answers, so the
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
 every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
-role file, long commands in the foreground, write the report to the path, reply with only
+role file, long runs started detached and polled, write the report to the path, reply with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
 that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc
@@ -87,7 +87,11 @@ on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since G
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
 and end its turn with only the comment's URL. `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
-report path, so whatever reads the report reads a file as for any child. A question goes in
+report path, so whatever reads the report reads a file as for any child. The worker pushes
+only to the `claude/…` branch its session started on and names it, with its head SHA, in the
+report; the lead merges that branch into the PR. A worker whose post fails (the session's token
+expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wait` posts that
+body on PR n from this host and writes it to the report path. A question goes in
 that report, since `<report>.question` is a path here too. Only a comment GitHub files on
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
@@ -151,7 +155,7 @@ What the script guards against, so do not hand-roll it with `sys_session_*`:
 - A child that reads its brief as pasted text asks for a go-ahead, so the brief is a file
   and the message is one line. One that runs a command in the background ends its turn
   "waiting" and never reports; the preamble covers that, and the first turn that ends
-  without a report or a question gets one nudge to finish in the foreground and write the
+  without a report or a question gets one nudge to poll its detached runs and write the
   report. `wait` fails when a second turn ends without a report, when the child is blocked on an approval prompt (it prints the
   prompt), or after `--timeout` (default 3h), so the lead still wakes.
 
@@ -281,7 +285,7 @@ registry's brief files in order, else `<report>.brief` when it exists (what `sta
 with neither, the line names only the report. A send of it that fails is tried again at the
 session's next look. Like the resume line, it is no instruction, so a
 report written for the brief still counts after it. One with no history item for
-`--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
+`--silent-seconds` (default 1800, three times the 10-minute limit of one tool call)
 it sends the `wait` nudge once as its resume line, whatever its status says
 (`resume line sent`). A session waiting on its own worker or verifier writes nothing meanwhile,
 so a child of it updated within that window (`child_sessions`' `updated_at`) keeps it live:
@@ -359,7 +363,8 @@ quiet a second time with the same last message, makes none of those events. Its 
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
 none), once it has any, a message to it that is not the supervisor's own (a relay or the owner
 typing, which starts a new chain), and its live children's activity, read on first sight, then once a minute and again when
-the deadline falls due, so a lead already stuck when the supervisor starts is overdue at once; a
+the deadline falls due, and, once the deadline falls due, its report's last write (from its
+folder's listing), so a lead already stuck when the supervisor starts is overdue at once; a
 lead with neither counts from first sight. With
 no progress for 20 minutes it posts `<session> <title>: no progress <n>m (<wait>)` and the
 lead's first line, whatever its status reads; a lead whose wait is unknown and that was nudged
