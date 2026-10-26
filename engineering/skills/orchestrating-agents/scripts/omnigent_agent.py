@@ -182,13 +182,15 @@ TRANSIENT = (
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
-NUDGE = "Your turn ended without the report. Run any long command in the foreground, then write the report to {report}."
+# Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
+NO_REPORT = "Your turn ended without the report."
+NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
 COMMENT_URL = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/(\d+)#issuecomment-(\d+)"
 )
 PR_NUDGE = (
-    "Your turn ended without the report. Run any long command in the foreground, then post the"
+    NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
 # The line after a revive, which can relaunch a session with its context dropped: it names the
@@ -215,7 +217,7 @@ AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits o
 # routing, since the owner is its follower; its DONE, failures and prompts are still routed.
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
-OWN_LINES = ("Supervisor: ", REVIVED, NUDGE.split(" Run ")[0])
+OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
 # A followed lead's turn end that names one of these is news at once; any other waits for quiet.
 ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end
@@ -298,7 +300,7 @@ MEMINFO = Path("/proc/meminfo")
 
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Write your final report to {report}, once, when done: keep any progress notes in another file, since the report path is read as your answer.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, write the question to {report}.question, reply with only that path, and stop: the answer comes as your next message.
 When done, reply with only the report path.
@@ -308,7 +310,7 @@ When done, reply with only the report path.
 # so it reports on the PR through REST; the comment is public, so it names nothing of the host.
 PR_PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This is your brief.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 When done, reply with only the comment's URL.
@@ -318,7 +320,7 @@ When done, reply with only the comment's URL.
 # anyone may have written its brief, it says whose words approve.
 LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
-{role}Run every long command in the foreground (timeout up to 600000): a background command's completion never wakes you, so a turn that ends "waiting" never reports.
+{role}A long run starts detached (`setsid nohup`, log, pid and exit code in files) and is polled in calls under the tool's limit: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
 Write your final report to {report}, then reply with only its path.
 
