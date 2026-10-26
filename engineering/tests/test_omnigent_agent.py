@@ -2,15 +2,18 @@
 
 import importlib.util
 import inspect
+import io
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
 from email.message import Message
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
 
 import pytest
 
@@ -1210,6 +1213,52 @@ def test_a_post_that_times_out_is_not_retried(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(omnigent_agent.Fail, match="POST /x: TimeoutError"):
         og.call("POST", "/x", {})
     assert len(posts) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+        URLError(ConnectionRefusedError(61, "Connection refused")),
+        HTTPError("http://omnigent.test/x", 503, "Service Unavailable", Message(), None),
+    ],
+)
+def test_a_get_retries_a_server_restarting_and_a_post_does_not(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    calls: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        calls.append(req.get_method())
+        if len(calls) == 1:
+            raise error
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    assert og.call("GET", "/x") == {"ok": True}
+    calls.clear()
+    with pytest.raises(omnigent_agent.Fail):
+        og.call("POST", "/x", {})
+    assert calls == ["POST"]
+
+
+def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def urlopen(req: Request, timeout: float) -> None:
+        calls.append(req)
+        raise HTTPError("http://omnigent.test/x", 404, "Not Found", Message(), None)
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    with pytest.raises(omnigent_agent.Fail, match="HTTP 404"):
+        og.call("GET", "/x")
+    assert len(calls) == 1
 
 
 def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_session(
