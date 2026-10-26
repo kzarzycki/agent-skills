@@ -277,7 +277,7 @@ that ends on every terminal state (success, failure, the process gone), e.g.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return; a report you heard any other way
-(`watch`, a `run` that died, a file you read) leaves the child idle, so `reap <id>` it. At each
+(`send`, `watch`, a `run` that died, a file you read) leaves the child idle, so `reap <id>` it. At each
 wake and before each new start, finish any child whose report you have read and whose turn
 ended over 15 min ago. Only you know a report is in: an idle child still owing one looks
 finished to the backend.
