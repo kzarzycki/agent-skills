@@ -13,7 +13,13 @@ tier model of its newest generation, 6.1). A one-week trial to 2026-10-27,
 decided under the owner's standing decision of 2026-10-20 (chief-of-staff session 13cd3ad1) to
 approve reversible progress (#245, evidence on #228): a Sonnet worker cost about half an Opus
 one per item. At its end, telemetry compares verifier passes per PR against the Opus workers of
-2026-10-18..20. Leads and verifiers keep their defaults.
+2026-10-18..20. Leads keep their defaults.
+
+Verifier model: mid for any issue not labelled risk:high
+
+The owner's judgement: Codex's mid tier (today `gpt-6.1-terra`) is the right balance as verifier
+for low- and mid-risk PRs. A risk-high PR's verifier keeps its family's default, the top tier.
+Undo: delete this line.
 
 ## Settings
 
