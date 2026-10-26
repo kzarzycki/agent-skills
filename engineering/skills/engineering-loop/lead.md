@@ -274,10 +274,12 @@ A child that ends its turn saying it waits (for a build, a gate, CI) rather than
 has left no report and will not wake itself: arm one background wait on its process or log
 that ends on every terminal state (success, failure, the process gone), e.g.
 `while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
-Finish a worker or verifier as soon as its report is read or its verdict posted (Omnigent:
-`reap <id>`), since an idle child keeps its agent process, MCP servers and runner alive; at
-each wake and before each new start, finish any child whose report you have read and whose
-turn ended over 15 min ago. Only you know a report is in: an idle child still owing one looks
+Finish a worker or verifier as soon as its report is read or its verdict posted, since an
+idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
+`wait` already finish the child whose report they return; a report you heard any other way
+(`watch`, a `run` that died, a file you read) leaves the child idle, so `reap <id>` it. At each
+wake and before each new start, finish any child whose report you have read and whose turn
+ended over 15 min ago. Only you know a report is in: an idle child still owing one looks
 finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
