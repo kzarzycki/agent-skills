@@ -1555,6 +1555,9 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert ("api", "repos/o/r/issues/comments/42") in calls and og.posts == 1  # no nudge
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert "PR #7" in brief and "gh api repos/{owner}/{repo}/issues/7/comments" in brief
+    assert "setsid nohup" in brief  # long runs start detached
+    for nudge in (omnigent_agent.NUDGE, omnigent_agent.PR_NUDGE):
+        assert "detached" in nudge and "foreground" not in nudge
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
@@ -5014,6 +5017,8 @@ def test_direct_marks_and_clears_a_registry_line_keeping_its_other_fields(
     [
         ("Owner's answer: free the disk, then carry on.", False),  # a relay: a new chain
         (omnigent_agent.LEAD_NUDGE, True),  # the supervisor's own line: no progress
+        (omnigent_agent.NUDGE.format(report="/r/a.md"), True),  # wait's nudge, the same
+        (omnigent_agent.PR_NUDGE.format(pr=7), True),
     ],
 )
 def test_a_new_instruction_to_an_idle_lead_starts_a_new_progress_chain(

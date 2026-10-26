@@ -182,13 +182,15 @@ TRANSIENT = (
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
-NUDGE = "Your turn ended without the report. Poll any long run you started detached, then write the report to {report}."
+# Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
+NO_REPORT = "Your turn ended without the report."
+NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
 COMMENT_URL = re.compile(
     r"https://github\.com/([\w.-]+/[\w.-]+)/(?:pull|issues)/(\d+)#issuecomment-(\d+)"
 )
 PR_NUDGE = (
-    "Your turn ended without the report. Poll any long run you started detached, then post the"
+    NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
 # The line after a revive, which can relaunch a session with its context dropped: it names the
@@ -215,7 +217,7 @@ AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits o
 # routing, since the owner is its follower; its DONE, failures and prompts are still routed.
 DIRECT_FIELD = "direct"
 # The supervisor's own lines to a followed lead, which start no new progress chain.
-OWN_LINES = ("Supervisor: ", REVIVED, NUDGE.split(" Run ")[0])
+OWN_LINES = ("Supervisor: ", REVIVED, NO_REPORT)
 # A followed lead's turn end that names one of these is news at once; any other waits for quiet.
 ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED)\b", re.MULTILINE)
 # A followed lead and its live children writing nothing for this long since a turn end: the end

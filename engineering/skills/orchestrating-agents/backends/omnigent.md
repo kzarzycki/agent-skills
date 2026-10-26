@@ -281,7 +281,7 @@ registry's brief files in order, else `<report>.brief` when it exists (what `sta
 with neither, the line names only the report. A send of it that fails is tried again at the
 session's next look. Like the resume line, it is no instruction, so a
 report written for the brief still counts after it. One with no history item for
-`--silent-seconds` (default 1800, three times the longest foreground command a brief allows)
+`--silent-seconds` (default 1800, three times the 10-minute limit of one tool call)
 it sends the `wait` nudge once as its resume line, whatever its status says
 (`resume line sent`). A session waiting on its own worker or verifier writes nothing meanwhile,
 so a child of it updated within that window (`child_sessions`' `updated_at`) keeps it live:
