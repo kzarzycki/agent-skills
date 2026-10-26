@@ -46,6 +46,7 @@ class FakeOmnigent:
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
+        self.created: dict[str, float] = {}  # when each session was made, as child_sessions says
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
         self.roles: list[str | None] = []  # per create
         self.workspaces: list[str | None] = []
@@ -78,9 +79,19 @@ class FakeOmnigent:
         self.workspaces.append(workspace)
         self.sessions[sid] = [{"type": "resource_event"}]
         self.titles[sid] = title
+        self.created[sid] = time.time()
         if "create" in self.fail:  # the server made it; the answer timed out
             raise omnigent_agent.Fail("POST /v1/sessions: TimeoutError: timed out")
         return sid
+
+    def siblings(self, title: str) -> list[dict]:
+        if not omnigent_agent.parent_id():
+            return []
+        return [
+            {"id": sid, "title": t, "created_at": self.created.get(sid, 0)}
+            for sid, t in self.titles.items()
+            if sid not in self.archived and (t == title or t.startswith(f"{title}-r"))
+        ]
 
     def subscribe(self, subscriber: str, sid: str) -> None:
         if "subscribe" in self.fail:
@@ -409,6 +420,90 @@ def test_a_taken_title_and_a_deaf_session_share_one_suffix_sequence(tmp_path: Pa
     sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     assert [og.titles[s] for s in og.sessions] == ["t", "t-r3"]
     assert og.titles[sid] == "t-r3"
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_a_second_start_of_the_same_brief_attaches_to_the_live_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    inline: bool,
+) -> None:
+    """A rerun after a `run` that failed on its own while the child worked on: one pass, paid once."""
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    monkeypatch.setattr(omnigent_agent, "briefed_by_file", lambda *_: not inline)
+    og = FakeOmnigent()
+    first, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    og.taken = {"t"}  # Omnigent's 409 would retitle a second create t-r2
+    assert omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0) == (first, [])
+    assert list(og.sessions) == [first]
+    assert f"session {first} already holds this brief" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "change", ["brief", "archived", "failed", "report path", "top level", "no parent"]
+)
+def test_a_changed_brief_or_a_gone_child_starts_a_new_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    og = FakeOmnigent()
+    first, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    brief, report, top = "do X", tmp_path / "r.md", False
+    if change == "brief":
+        brief = "do X on the new head"
+    elif change == "archived":
+        og.archived.append(first)
+    elif change == "failed":
+        monkeypatch.setattr(og, "final", "failed")
+    elif change == "report path":
+        report = tmp_path / "r2.md"
+    elif change == "top level":
+        top = True
+    else:
+        monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID")
+    second, _ = omnigent_agent.start(og, "codex", "t", brief, report, None, 0, top_level=top)
+    assert second != first
+
+
+@pytest.mark.parametrize("inline", [False, True])
+def test_a_rerun_attaches_to_the_child_briefed_with_that_text_not_an_earlier_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inline: bool
+) -> None:
+    """Brief A, then B, then B again: the file now holds B and both children are live."""
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    monkeypatch.setattr(omnigent_agent, "briefed_by_file", lambda *_: not inline)
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    a, _ = omnigent_agent.start(og, "codex", "t", "review A and check speed", report, None, 0)
+    og.taken = {"t"}
+    b, _ = omnigent_agent.start(og, "codex", "t", "review A", report, None, 0)  # a prefix of A
+    assert b != a
+    assert omnigent_agent.start(og, "codex", "t", "review A", report, None, 0) == (b, [])
+
+
+def test_a_child_whose_brief_left_its_history_page_is_still_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    og = FakeOmnigent()
+    first, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    og.sessions[first] = [{"type": "resource_event"}] * 100  # the newest page, no brief in it
+    og.taken = {"t"}
+    assert omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0) == (first, [])
+
+
+def test_a_child_that_already_wrote_the_report_is_not_waited_on_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
+    og = FakeOmnigent()
+    first, _ = omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    og.created[first] -= 10
+    (tmp_path / "r.md").write_text("done")
+    with pytest.raises(omnigent_agent.Fail, match=f"session {first} already wrote .*: read it"):
+        omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0)
+    assert list(og.sessions) == [first]
 
 
 def test_start_gives_up_when_every_title_is_taken(tmp_path: Path) -> None:
