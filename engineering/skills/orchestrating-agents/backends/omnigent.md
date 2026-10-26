@@ -84,9 +84,9 @@ inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases onl
 works for any), and so does permission mode, except Antigravity: it asks for approval of every
 command, and its only other mode skips them all, so `start` refuses it a `--role` unless
 `--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
-`--dangerously-skip-permissions`. Antigravity runs at `--effort low` unless
-`OMNIGENT_EFFORT_ANTIGRAVITY` names another, since its default spends its quota fast. An unknown
-name fails before a session is created.
+`--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
+in the model of its own settings (`Gemini 3.8 Flash (Low)`), which Omnigent copies into each
+session, so the launcher passes none. An unknown name fails before a session is created.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment

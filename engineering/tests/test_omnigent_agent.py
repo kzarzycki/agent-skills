@@ -5342,14 +5342,11 @@ def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
         },
     )
     omnigent_agent.Omnigent().create("agy", "t", permission_mode="bypassPermissions")
-    assert calls[-1][2]["terminal_launch_args"] == [
-        "--effort",
-        "low",
-        "--dangerously-skip-permissions",
-    ]
+    assert calls[-1][2]["terminal_launch_args"] == ["--dangerously-skip-permissions"]
+    # Effort is the user's agy settings; the launcher passes none, whatever the environment says.
     monkeypatch.setenv("OMNIGENT_EFFORT_ANTIGRAVITY", "high")
     omnigent_agent.Omnigent().create("agy", "t")
-    assert calls[-1][2]["terminal_launch_args"] == ["--effort", "high"]
+    assert "terminal_launch_args" not in calls[-1][2]
 
 
 def test_a_native_agent_outside_the_aliases_reads_its_brief_from_a_file(tmp_path: Path) -> None:

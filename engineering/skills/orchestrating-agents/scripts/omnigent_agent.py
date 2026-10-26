@@ -593,13 +593,9 @@ class Omnigent:
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
         if agent == "claude" and mode:
             body["terminal_launch_args"] = ["--permission-mode", mode]
-        elif agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
-            # agy's default reasoning burns its quota fast, so a child runs low unless the variable
-            # says otherwise. ponytail: one variable for agy only; a per-run --effort when needed.
-            effort = os.environ.get("OMNIGENT_EFFORT_ANTIGRAVITY") or "low"
-            body["terminal_launch_args"] = ["--effort", effort] + (
-                [AGY_BYPASS] if mode == BYPASS else []  # agy's only permission flag
-            )
+        elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
+            # agy's only permission flag; its effort is the user's, part of the model in its settings.
+            body["terminal_launch_args"] = [AGY_BYPASS]
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name.
         if role and (name := Path(role).stem) in ROLES:
             body["labels"] = {"omni.role": name}
