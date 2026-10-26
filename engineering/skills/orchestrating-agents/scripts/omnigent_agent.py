@@ -1068,15 +1068,18 @@ def broadcast_targets(
 
 
 def broadcast(
-    og: Omnigent, targets: list[tuple[str, str]], text: str, confirm_seconds: float
+    og: Omnigent, targets: list[tuple[str, str]], text: str, confirm_seconds: float, by: str
 ) -> bool:
     """``relay`` ``text`` to every target at once, printing one line per target as it settles;
     whether one failed. A session with a question or approval prompt pending is skipped: ``relay``
-    would give a question the broadcast as its answer, and an approval holds it unread."""
+    would give a question the broadcast as its answer, and an approval holds it unread. Each
+    message opens with the ``RELAYED`` line for ``by``, so ``owner-said`` never takes it as typed."""
 
     def one(sid: str) -> str:
         try:
-            return relay(og, sid, text, confirm_seconds, False).removeprefix(f"session {sid}: ")
+            return relay(og, sid, text, confirm_seconds, False, by=by).removeprefix(
+                f"session {sid}: "
+            )
         except Queued as e:
             return str(e).removeprefix(f"session {sid}: ")
         except Exception as e:  # noqa: BLE001 - one target's failure is its line, never the others'
@@ -3155,7 +3158,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("no session to send to", file=sys.stderr)
             failed = any(": failed: " in line for line in unsent)
             if not args.dry_run:
-                failed |= broadcast(og, targets, text, args.confirm_seconds)
+                failed |= broadcast(og, targets, text, args.confirm_seconds, own_id() or "an agent")
             return 1 if failed else 0
         if args.cmd == "owner-said":
             said, line = owner_said(og, args.session, text_or_file(args.quote)[0])

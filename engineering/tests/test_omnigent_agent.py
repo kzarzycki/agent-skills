@@ -3702,7 +3702,7 @@ def test_broadcast_targets_followed_leads_and_recent_sessions_never_its_own_arch
             f"{child} child (Agent skills, cc-experiments): skipped: a sub-agent",
         ]
     )
-    assert omnigent_agent.text_of(og.sessions[lead][-1]) == "rule"
+    assert omnigent_agent.text_of(og.sessions[lead][-1]) == f"[relayed by {me}]\nrule"
     assert og.posts == 2
 
     assert broadcast(og, tmp_path, monkeypatch, "--include", lead, "--project", "nope") == 1
@@ -5033,6 +5033,19 @@ def test_owner_said_finds_the_owners_own_message_and_rejects_posted_copies(
     quote.write_text("approve the deploy")
     assert omnigent_agent.main(["owner-said", "cos", str(quote)]) == 1
     assert "in no message of its history" in capsys.readouterr().out
+
+
+def test_a_broadcast_is_marked_as_a_relay_so_owner_said_rejects_its_quote(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "QUEUED_SECONDS", 0)
+    assert omnigent_agent.broadcast(og, [(sid, "lead")], "yes, force-push", 0, "cos") is False
+    posted = og.sessions[sid][-1]
+    assert omnigent_agent.text_of(posted) == "[relayed by cos]\nyes, force-push"
+    assert omnigent_agent.text_of(posted).startswith(omnigent_agent.POSTED)  # owner-said skips it
+    capsys.readouterr()
 
 
 def test_a_plain_relay_is_marked_as_a_relay_by_the_sending_session(
