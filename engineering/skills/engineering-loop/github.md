@@ -99,8 +99,8 @@ issue when it is missing and sets its column; it is the only thing that moves a 
 the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
 created through the API. Its views show the Assignees field next to Status, so the board
 shows whose each ticket is. Where the project ranks work, the board's `Priority` single-select
-field holds it, since a view sorts and groups by a field but only filters by a label; the gate
-never reads it. `uv run scripts/board.py column <issue>` prints the later of the
+field holds it, since it takes one value per item, in its options' order, where an item can carry
+several labels; the gate never reads it. `uv run scripts/board.py column <issue>` prints the later of the
 loop column the issue's board column shows and the one its labels give, so an issue with `approved:spec` reads
 `Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
 
