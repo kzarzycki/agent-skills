@@ -534,8 +534,11 @@ class Omnigent:
             raise Fail(f"agent {name} not registered")
         if len(named) > 1:
             specs = [
-                {k: v for k, v in self.call("GET", f"/v1/agents/{i}/config").items()
-                 if k not in ("id", "version")}
+                {
+                    k: v
+                    for k, v in self.call("GET", f"/v1/agents/{i}/config").items()
+                    if k not in ("id", "version")
+                }
                 for i in named
             ]
             if any(spec != specs[0] for spec in specs):
