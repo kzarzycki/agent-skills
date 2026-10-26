@@ -96,3 +96,12 @@ def test_the_cloud_split_is_reached_only_through_its_loop_md_line() -> None:
         cloud = [line for line in (LOOP / role).read_text().splitlines() if "cloud" in line.lower()]
         assert len(cloud) == 1, (role, cloud)
         assert "`Cloud worker:`" in cloud[0] and "SKILL.md, Cloud worker" in cloud[0]
+
+
+def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> None:
+    """A wait or a repro per short call re-reads the whole context each time."""
+    verifier = " ".join((LOOP / "verifier.md").read_text().split())
+    assert "never short polls, since every call re-reads the whole context" in verifier
+    assert "waited on as a detached run is" in verifier  # the bare gate too
+    assert "Rerun all of its repros from one script" in verifier
+    assert "the diff since its head and the files it touches" in verifier
