@@ -2133,7 +2133,11 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if event.get("question"):
             if event.get("direct"):
                 return "rule", "record", "the owner drives it directly: they answer its question"
-            return "rule", "act", "a question: the chief of staff answers it with one relay --answer"
+            return (
+                "rule",
+                "act",
+                "a question: the chief of staff answers it with one relay --answer",
+            )
         return "rule", "owner", "an approval prompt: only the owner approves"
     if kind == "failed":
         if event.get("revived"):
