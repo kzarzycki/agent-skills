@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -4908,3 +4909,264 @@ def test_queue_and_head_go_together(
         "check queue takes a PR number and --head <sha>, the head the queue would merge",
         "--head goes with check queue only",
     ]
+
+
+# --- a clean merge of main carries the head's verdict and record, where loop.md's carry_over_main says so ---
+
+NO_CI = add(LOOP, "loop", "ci: false\n")
+CARRY = add(NO_CI, "carry_over_main", "except:\n  - mise.toml\n")
+APP = "".join(f"line {n}\n" for n in range(1, 11))
+
+
+def carries(merge: str, head: str, base: str, since: str, branch: str = "main") -> str:
+    return (
+        f"{merge} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {branch}'s"
+        f" {base}, whose changes since {since} touch none of the PR's files and no `carry_over_main.except` path"
+    )
+
+
+@pytest.fixture
+def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., dict[str, str]]:
+    """A bare `origin` whose `main` holds app.py and mise.toml, and the PR's head `feature` (`head`), which changes
+    app.py's first line. `merged(files)` commits `files` on a branch off that `main` (`base`) and merges it into the
+    head as git would (`merge`, the head its first parent): `resolve` writes what a conflict leaves, `extra` adds a
+    file the merge alone has. The test runs in a clone made before any of them was pushed, so the gate must fetch."""
+    origin, work, checker = (tmp_path / name for name in ("origin.git", "work", "checker"))
+    sh("git", "init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
+    sh("git", "clone", "-q", str(origin), str(work), cwd=tmp_path)
+    who = ("-c", "commit.gpgsign=false", "-c", "user.name=Lead", "-c", "user.email=l@example.com")
+    git = lambda *args: sh("git", *who, *args, cwd=work)
+
+    def write(files: dict[str, str]) -> None:
+        for name, text in files.items():
+            (work / name).write_text(text)
+        git("add", "-A")
+
+    write({"app.py": APP, "mise.toml": "[tools]\n"})
+    git("commit", "-qm", "base")
+    git("branch", "-M", "main")
+    git("push", "-q", "origin", "HEAD:main")
+    sh("git", "clone", "-q", str(origin), str(checker), cwd=tmp_path)
+    git("switch", "-qc", "feature")
+    write({"app.py": APP.replace("line 1\n", "line 1, the feature\n")})
+    git("commit", "-qm", "feature")
+    head = git("rev-parse", "HEAD")
+    cases = itertools.count()
+
+    def merged(
+        files: dict[str, str],
+        resolve: dict[str, str] | None = None,
+        extra: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        n = next(cases)
+        git("switch", "-qc", f"base{n}", "main")
+        write(files)
+        git("commit", "-qm", f"main moved {n}")
+        base = git("rev-parse", "HEAD")
+        git("switch", "-q", "--detach", head)
+        subprocess.run(
+            ["git", *who, "merge", "-q", "--no-ff", "--no-commit", base],
+            cwd=work,
+            capture_output=True,
+            check=False,
+        )
+        write({**(resolve or {}), **(extra or {})})
+        git("commit", "-qm", f"Merge main {n}")
+        merge = git("rev-parse", "HEAD")
+        git(
+            "push",
+            "-q",
+            "origin",
+            f"{head}:refs/heads/feature",
+            f"{base}:refs/heads/main{n}",
+            f"{merge}:refs/heads/pr{n}",
+        )
+        return {"head": head, "base": base, "merge": merge, "since": git("rev-parse", "main")}
+
+    monkeypatch.chdir(checker)
+    return merged
+
+
+def carried_pull(case: dict[str, str], *comments: str, risk: str = "") -> dict[str, Any]:
+    """The PR whose head is the merge, with a satisfied verdict on the head it merged main into."""
+    review = verdict_on(case["head"])
+    review["body"] += risk
+    pr = pull(reviews=(review,), comments=comments, checks=(), files=("app.py",))
+    pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
+    return pr
+
+
+@pytest.fixture
+def posting(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """`local-ci <pr>` against a stubbed GitHub: `pull` is the PR, `loop` loop.md; `posted` holds each comment and
+    `ran` each head the check would run on, which it never does here."""
+    state: dict[str, Any] = {"posted": [], "ran": [], "loop": CARRY}
+
+    def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
+        state["ran"].append(head)
+        raise approvals.Refused("the check would run")
+
+    monkeypatch.setattr(approvals, "comment", lambda _number, body: state["posted"].append(body))
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
+    monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "run_local_ci", run_local_ci)
+    return state
+
+
+def test_a_clean_merge_of_main_touching_none_of_the_prs_files_carries_its_verdict_and_record(
+    carrying: Callable[..., dict[str, str]],
+    posting: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    case = carrying({"other.txt": "main moved\n"})
+    head, merge_sha = case["head"], case["merge"]
+    gated_head(head)
+    posting["pull"] = carried_pull(case)
+    line = carries(merge_sha, head, case["base"], case["since"])
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert posting["ran"] == []
+    [body] = posting["posted"]
+    assert body.startswith(
+        f"{approvals.CHECKED}\nHead: {merge_sha}\nCommand: mise run check:all\nEnv: default\nCarried: {line}\n"
+    )
+    capsys.readouterr()
+    assert merge(carried_pull(case, body), [approved(1, "area:web")], CARRY) == []
+    assert capsys.readouterr().out.splitlines() == [f"PR #7: {line}"]
+
+
+def test_a_carried_verdicts_risk_line_still_holds_the_merge(
+    carrying: Callable[..., dict[str, str]],
+) -> None:
+    case = carrying({"other.txt": "main moved\n"})
+    pr = carried_pull(case, risk="Risk: high — a test fixture\n")
+    assert approvals.risk(pr, [], add(CARRY, "risk", "verifier: true\n")) == (
+        f"it matches a risk rule (verifier): the verifier's pass 1 on {case['head'][:7]} says"
+        " `Risk: high — a test fixture`"
+    )
+
+
+CONFLICTED = APP.replace("line 1\n", "line 1, on main\n")
+REFUSED = {
+    "a resolved conflict": (
+        {"app.py": CONFLICTED},
+        {"resolve": {"app.py": APP.replace("line 1\n", "line 1, both\n")}},
+        CARRY,
+        "{head} and {base} conflict",
+    ),
+    "an evil merge": (
+        {"other.txt": "main moved\n"},
+        {"extra": {"extra.txt": "in neither parent\n"}},
+        CARRY,
+        "{merge}'s tree is not git merge-tree's of its parents: the merge resolved or added something",
+    ),
+    "an overlapping file": (
+        {"app.py": APP.replace("line 10\n", "line 10, on main\n")},
+        {},
+        CARRY,
+        "app.py changed on both sides since {since}",
+    ),
+    "a touched except-path": (
+        {"mise.toml": "[tools]\nuv = 'latest'\n"},
+        {},
+        CARRY,
+        "main's changes since {since} touch mise.toml, a `carry_over_main.except` path",
+    ),
+    "a project without the line": ({"other.txt": "main moved\n"}, {}, NO_CI, None),
+}
+
+
+@pytest.mark.parametrize(("files", "merging", "loop", "why"), REFUSED.values(), ids=REFUSED.keys())
+def test_a_merge_that_may_have_changed_the_prs_code_carries_nothing(
+    carrying: Callable[..., dict[str, str]],
+    posting: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    files: dict[str, str],
+    merging: dict[str, Any],
+    loop: str,
+    why: str | None,
+) -> None:
+    """Each falls back to today's proofs: a gate and a verifier pass on the merge."""
+    case = carrying(files, **merging)
+    head, merge_sha = case["head"], case["merge"]
+    gated_head(head)
+    posting.update(pull=carried_pull(case), loop=loop)
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (posting["ran"], posting["posted"]) == ([merge_sha], [])
+    capsys.readouterr()
+    assert merge(carried_pull(case), [approved(1, "area:web")], loop) == [
+        (
+            f"PR #7: the newest verifier review is on {head}, not on the head {merge_sha}:"
+            " every commit after a verdict needs a verdict of its own"
+        ),
+        NO_LOCAL_CHECK,
+    ]
+    said = (
+        []
+        if why is None
+        else [f"PR #7: {merge_sha} carries nothing from {head}: {why.format(**case)}"]
+    )
+    assert capsys.readouterr().out.splitlines() == said
+
+
+def test_without_the_line_check_merge_and_land_read_no_git(
+    carrying: Callable[..., dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A project without carry_over_main gates exactly as before: nothing runs git to look for a carry."""
+    case = carrying({"other.txt": "main moved\n"})
+    monkeypatch.setattr(approvals, "git", lambda *args: pytest.fail(f"git {args}"))
+    monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
+    pr = carried_pull(case)
+    assert approvals.judged(pr, NO_CI) is None
+    assert merge(pr, [approved(1, "area:web")], NO_CI)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out == ""
+
+
+def test_land_squashes_the_clean_merge_of_a_head_behind_the_bases_tip(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    git, head = signing["git"], signing["head"]
+    loop = Path("docs/agents/loop.md")
+    loop.write_text(add(loop.read_text(), "carry_over_main", "except:\n  - mise.toml\n"))
+    git("add", "docs")
+    git("commit", "-qm", "landed meanwhile")
+    git("push", "-q", "origin", "main")
+    tip = git("rev-parse", "main")
+    tree = git("merge-tree", "--write-tree", head, tip)
+    code, out, calls = landed(capsys, landing)
+    commit = remote_ref(signing, "main")
+    assert (code, calls) == (0, [])
+    assert out == [
+        "PR #7: " + carries(f"the squash's tree {tree}", head, tip, signing["base"]),
+        f"PR #7 landed in main as {commit}, signed by a key in signers",
+    ]
+    assert git("rev-parse", f"{commit}^") == tip
+    assert git("rev-parse", f"{commit}^{{tree}}") == tree
+    git("-c", "gpg.ssh.allowedSignersFile=signers", "verify-commit", commit)
+
+
+def test_land_refuses_a_head_behind_the_tip_whose_merge_touches_an_except_path(
+    landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    git, head = signing["git"], signing["head"]
+    loop = Path("docs/agents/loop.md")
+    loop.write_text(add(loop.read_text(), "carry_over_main", "except:\n  - docs/**\n"))
+    git("add", "docs")
+    git("commit", "-qm", "landed meanwhile")
+    git("push", "-q", "origin", "main")
+    tip = git("rev-parse", "main")
+    assert refused_untouched(landing, signing, capsys) == [
+        (
+            f"PR #7: {head} carries nothing over main's head {tip}: main's changes since {signing['base']} touch"
+            " docs/agents/loop.md, a `carry_over_main.except` path"
+        ),
+        (
+            f"PR #7 does not contain main's head {tip}: merge origin/main in, rerun the gates, get a verdict on the"
+            " merge (lead.md step 8), then land again"
+        ),
+    ]
+    assert remote_ref(signing, "main") == tip
