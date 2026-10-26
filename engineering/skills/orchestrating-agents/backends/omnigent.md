@@ -288,8 +288,9 @@ report written for the brief still counts after it. One with no history item for
 `--silent-seconds` (default 1800, three times the 10-minute limit of one tool call)
 it sends the `wait` nudge once as its resume line, whatever its status says
 (`resume line sent`). A session waiting on its own worker or verifier writes nothing meanwhile,
-so a child of it updated within that window (`child_sessions`' `updated_at`) keeps it live:
-silence means the whole subtree is quiet. It prints each of those at once and goes on. It exits 0 with one line
+so a child of it updated within that window (`child_sessions`' `updated_at`), or a live session it
+subscribes to (a top-level helper such as a cloud worker), keeps it live: silence means the whole
+subtree and its helpers are quiet. It prints each of those at once and goes on. It exits 0 with one line
 as soon as a session wrote its report (`report written: <path>`) or a question
 (`asked: <path>`), blocks on a prompt, fails, or is given up on (`gave up`: silent again after
 its resume line, which may sit undelivered behind a stuck step; silent with an input already
@@ -340,8 +341,8 @@ never given up on, nor revived or sent the resume line as a session owing a repo
 when they are news, so the notified session is not woken for a turn that changed nothing:
 a turn end whose last message starts a line with `DONE`, `USER NEEDED` or `PARKED` (a `USER NEEDED`
 line wins over an earlier `DONE` or `PARKED` one, since an ask after a `DONE` still needs its answer), once it holds
-as `watch` counts an end; any other turn end only once the lead and its live children wrote
-nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
+as `watch` counts an end; any other turn end only once the lead, its live children and the live sessions it
+subscribes to wrote nothing for 300 s since it (`turn ended, quiet <n>s`, which covers a stall, a lead waiting on
 another's merge and a question with no ending), since a lead briefed or active again within that
 time was not stuck; a prompt once it has been pending 120 s across looks, since Omnigent shows each
 child's prompt on its parent too and the lead answers it itself, usually within a minute; a failure
@@ -362,7 +363,8 @@ A followed lead also has a progress deadline, since a lead that reads running fo
 quiet a second time with the same last message, makes none of those events. Its progress,
 `progress_at`, is the latest of its own history (any item but a message to it, so a nudge is
 none), once it has any, a message to it that is not the supervisor's own (a relay or the owner
-typing, which starts a new chain), and its live children's activity, read on first sight, then once a minute and again when
+typing, which starts a new chain), and the activity of its live children and of the live sessions it subscribes to (its
+top-level helpers, a cloud worker for one, which are no children), read on first sight, then once a minute and again when
 the deadline falls due, and, once the deadline falls due, its report's last write (from its
 folder's listing), so a lead already stuck when the supervisor starts is overdue at once; a
 lead with neither counts from first sight. With
