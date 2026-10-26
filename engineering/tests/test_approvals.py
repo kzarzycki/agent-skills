@@ -5105,6 +5105,41 @@ REFUSED = {
 }
 
 
+def test_a_submodule_bump_main_hides_with_ignore_all_still_meets_the_except_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ignore = all` in .gitmodules hides a submodule's bump from a plain git diff."""
+    who = ("-c", "commit.gpgsign=false", "-c", "user.name=Lead", "-c", "user.email=l@example.com")
+    git = lambda *args: sh("git", *who, *args, cwd=tmp_path)
+    git("init", "-q", "-b", "main")
+
+    def commit(text: str) -> None:
+        (tmp_path / "app").write_text(text)
+        git("add", "-A")
+        git("commit", "-qm", text)
+
+    commit("lib 1\n")
+    lib1 = git("rev-parse", "HEAD")
+    commit("lib 2\n")
+    lib2 = git("rev-parse", "HEAD")
+    (tmp_path / ".gitmodules").write_text(
+        '[submodule "deps/lib"]\n\tpath = deps/lib\n\turl = ./lib\n\tignore = all\n'
+    )
+    (tmp_path / "deps" / "lib").mkdir(parents=True)
+    git("update-index", "--add", "--cacheinfo", f"160000,{lib1},deps/lib")
+    commit("base\n")
+    git("switch", "-qc", "feature")
+    commit("feature\n")
+    head = git("rev-parse", "HEAD")
+    git("switch", "-q", "main")
+    git("update-index", "--cacheinfo", f"160000,{lib2},deps/lib")
+    git("commit", "-qm", "main bumps the dependency")
+    tip = git("rev-parse", "HEAD")
+    monkeypatch.chdir(tmp_path)
+    why = approvals.merged(head, tip, ["deps/**"], "main")
+    assert isinstance(why, str) and why.endswith("touch deps/lib, a `carry_over_main.except` path")
+
+
 @pytest.mark.parametrize(("files", "merging", "loop", "why"), REFUSED.values(), ids=REFUSED.keys())
 def test_a_merge_that_may_have_changed_the_prs_code_carries_nothing(
     carrying: Callable[..., dict[str, str]],

@@ -1454,11 +1454,20 @@ def merged(
         bases = git("merge-base", "--all", first, second).split()
         if len(bases) != 1:
             return f"{first} and {second} have {len(bases)} merge bases"
+        # a submodule's `ignore = all` would hide its bump from the diff, so the guard would miss it
         changed = [
             set(
                 filter(
                     None,
-                    git("diff", "--name-only", "--no-renames", "-z", bases[0], side).split("\0"),
+                    git(
+                        "diff",
+                        "--name-only",
+                        "--no-renames",
+                        "--ignore-submodules=none",
+                        "-z",
+                        bases[0],
+                        side,
+                    ).split("\0"),
                 )
             )
             for side in (first, second)
