@@ -5051,6 +5051,131 @@ def test_an_agent_outside_the_aliases_gets_its_brief_inline(tmp_path: Path) -> N
         omnigent_agent.start(og, "claude-cloud", "t", "x", report, None, 0, permission_mode="plan")
 
 
+def test_reloadable_takes_a_replaced_script_once_it_is_stable_and_compiles(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    ran = script.stat().st_mtime_ns
+    seen = {"ran": ran, "last": ran}
+    assert not omnigent_agent.reloadable(script, seen)  # unchanged
+    os.utime(script, ns=(ran + 10**9, ran + 10**9))
+    assert not omnigent_agent.reloadable(script, seen)  # changed: wait one look
+    assert omnigent_agent.reloadable(script, seen)  # stable and compiles
+    script.write_text("def broken(:\n")
+    os.utime(script, ns=(ran + 2 * 10**9, ran + 2 * 10**9))
+    assert not omnigent_agent.reloadable(script, seen)
+    assert not omnigent_agent.reloadable(script, seen)
+    assert "does not load" in capsys.readouterr().err
+    assert not omnigent_agent.reloadable(script, seen)  # logged once, kept running
+    assert capsys.readouterr().err == ""
+    script.unlink()
+    assert not omnigent_agent.reloadable(script, seen)  # an install replacing it
+
+
+def test_the_supervisor_re_executes_itself_when_its_script_is_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    execs: list[tuple[str, list[str]]] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        execs.append((path, argv))
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    monkeypatch.setattr(omnigent_agent.sys, "argv", ["agent.py", "supervise", "--registry", "r"])
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 5, bump, console=True, script=script)
+    assert execs == [
+        (sys.executable, [sys.executable, str(script), "supervise", "--registry", "r"])
+    ]
+    assert f"restarting: {script} changed" in capsys.readouterr().out
+    assert state_of(registry)["leads"]["a"]  # written before the exec
+
+
+def test_a_failed_state_write_before_the_restart_keeps_the_old_process_until_one_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    real_reload, real_write = omnigent_agent.reloadable, omnigent_agent.write_state
+    ready, seen_order = [False], []  # "fail", "ok" per write once the script changed, "exec"
+
+    def reloadable(path: Path, seen: dict[str, int]) -> bool:
+        ready[0] = real_reload(path, seen)
+        return ready[0]
+
+    def write_state(path: Path, state: dict) -> None:
+        if ready[0] and "fail" not in seen_order:  # the first write at the restart fails
+            seen_order.append("fail")
+            raise OSError("disk full")
+        real_write(path, state)
+        if "fail" in seen_order:
+            seen_order.append("ok")
+
+    def execv(path: str, argv: list[str]) -> None:
+        seen_order.append("exec")
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent, "reloadable", reloadable)
+    monkeypatch.setattr(omnigent_agent, "write_state", write_state)
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 6, bump, console=True, script=script)
+    assert seen_order[0] == "fail"  # the restart's write failed once
+    assert seen_order[-1] == "exec" and seen_order.count("exec") == 1
+    assert seen_order[-2] == "ok"  # no exec after the failure; one right after a write succeeded
+
+
+def test_the_supervisor_restarts_only_once_its_unposted_lines_are_posted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = tmp_path / "registry"
+    report = aged(tmp_path / "a.md", 10)
+    registry.write_text(f"a={report}\n")
+    og = Fleet(a=[told("brief", 60)])
+    og.refuse = 4  # the notify session refuses the posts of the first polls
+    inbox_at_exec: list[list[tuple[str, str]]] = []
+
+    def execv(path: str, argv: list[str]) -> None:
+        inbox_at_exec.append(list(og.inbox))
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 10, bump, notify="cos", script=script)
+    assert og.refuse == 0
+    assert inbox_at_exec == [[("cos", f"Supervisor: a t-a: report written: {report}")]]
+
+
+def test_a_re_exec_drops_the_session_pairs_its_registry_already_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, report = tmp_path / "registry", tmp_path / "a.md"
+    argv = ["agent.py", "supervise", "--registry", str(registry), f"a={report}"]
+    monkeypatch.setattr(omnigent_agent.sys, "argv", argv)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: Fleet())
+    replayed: list[list[str]] = []
+
+    def supervise_registry(*_: object) -> None:  # it never returns
+        replayed.append(sys.argv[1:])
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent, "supervise_registry", supervise_registry)
+    with pytest.raises(Stop):
+        omnigent_agent.main(argv[1:])
+    assert f"a={report.resolve()}" in registry.read_text()  # armed
+    assert replayed == [["supervise", "--registry", str(registry)]]  # a restart re-arms nothing
+
+
 def test_relay_from_a_task_never_answers_an_open_question_and_says_whose_it_is(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
