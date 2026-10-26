@@ -1179,7 +1179,7 @@ def pin_environment(workspace: Path) -> None:
         capture_output=True,
         text=True,
         check=False,  # no checkout: no main to copy from
-    ).stdout.split()
+    ).stdout.splitlines()
     main = Path(dirs[1]).parent if len(dirs) == 2 and dirs[0] != dirs[1] else None
     if main and (env := pin(settings(main))):
         remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}

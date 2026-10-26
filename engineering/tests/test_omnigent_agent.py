@@ -1608,7 +1608,10 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
 
 def checkout_with_worktree(tmp_path: Path, pin: dict | None) -> tuple[Path, Path]:
     """A main checkout, with ``pin`` as its settings.local.json when given, and a worktree of it."""
-    main, tree = tmp_path / "main", tmp_path / "tree"
+    main, tree = (
+        tmp_path / "main checkout",
+        tmp_path / "the tree",
+    )  # spaces: paths split on lines only
     git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(main)]
     subprocess.run(["git", "init", "-q", str(main)], check=True)
     subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "i"], check=True)
