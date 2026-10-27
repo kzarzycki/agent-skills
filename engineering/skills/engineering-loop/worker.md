@@ -51,7 +51,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    before the report, which lists each proof log with the SHA it names.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
-   scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
+   <this skill's folder>/scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
    `--omnigent` to sign in to an Omnigent server; its docstring says what a sandbox needs).
    Every host with Playwright's Chromium in `~/.cache/ms-playwright` can render headless;
    hand over the PNG paths.
