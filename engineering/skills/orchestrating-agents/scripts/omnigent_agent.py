@@ -149,6 +149,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -168,6 +169,10 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
+    2048,
+    2.0,
+)  # of an HTTP error's body: its reason, never a stall
 # Idle with the brief last for this long: a turn that ended with no output. Shorter is not proof:
 # claude-native was seen idle for 15 s mid-turn, with the brief last, before its reply came.
 IDLE_GRACE_SECONDS = 30.0
@@ -213,17 +218,31 @@ PR_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
+# The claude-cloud bridge's two failures that are no fault of the child (#510): its bootstrap
+# failed before the brief reached the cloud (retried in a fresh session), or the cloud session
+# made no progress past its stall limit and is left as it is (continued with one message).
+SETUP_FAILED = "cloud session setup failed"
+STALLED = ("made no progress", "next message continues it")
+CONTINUE = (
+    "Your session made no progress for a while and was stopped. Continue from where you left off."
+)
+# A continued session can still read failed, the stall's own end, until its new turn starts.
+CONTINUE_SECONDS = 120.0
 # The line after a revive, which can relaunch a session with its context dropped: it names the
 # brief files and the report. Like the resume line, no instruction; found by this fixed start.
 REVIVED = "Your session was restarted and may have lost its context."
 # The console's own messages to a followed lead; fixed text, so a restart finds each in its history.
+# Each ends on an accepted wait, since a lead whose line was not read would guess again. A restarted
+# supervisor knows them as its own by the "Supervisor: " prefix (OWN_LINES), not their text.
 LEAD_NUDGE = (
     "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
     " end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
 )
 LEAD_REVIVE = (
     "Supervisor: your session failed and was resumed. Carry on from your last step, and end your"
     " turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
 )
 LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
 # ``relay --from``'s first line: a notice from a task or an agent, which a reader must not take for
@@ -430,6 +449,38 @@ def _omnigent_python() -> str:
     return str(Path.home() / ".local/share/uv/tools/omnigent/bin/python")
 
 
+def error_body(e: HTTPError) -> str:
+    """``: <reason>`` from at most ``ERROR_BODY_BYTES`` of an HTTP error's body: its JSON
+    ``detail``, or ``error`` (Omnigent's ``{"error": {"message": ...}}``), else its text; ``""``
+    for none. A body can stall past the call's timeout, so it is read in a thread given
+    ``ERROR_BODY_SECONDS``, and one not read by then is named as such."""
+    got: list[bytes] = []
+
+    def read() -> None:
+        try:
+            got.append(e.read(ERROR_BODY_BYTES))
+        except (OSError, ValueError, http.client.HTTPException):
+            pass  # the reason is in the status line already
+
+    # ponytail: a stalled reader thread lingers until its socket times out; daemon, so exit ends it
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(ERROR_BODY_SECONDS)
+    if reader.is_alive():
+        return f" (body not read within {ERROR_BODY_SECONDS:g}s)"
+    text = (got[0] if got else b"").decode(errors="replace").strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and (data.get("detail") or data.get("error")):
+        reason = data.get("detail") or data.get("error")
+        if isinstance(reason, dict):
+            reason = reason.get("message") or reason
+        text = reason if isinstance(reason, str) else json.dumps(reason)
+    return f": {' '.join(text.split())}" if text else ""
+
+
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
@@ -496,9 +547,7 @@ class Omnigent:
                     print(f"{method} {path}: HTTP {e.code}; retrying", file=sys.stderr)
                     time.sleep(retries.pop(0))
                     continue
-                raise Fail(
-                    f"{method} {path}: HTTP {e.code} {e.reason}"
-                ) from e  # never read the body: it can stall past the timeout
+                raise Fail(f"{method} {path}: HTTP {e.code} {e.reason}{error_body(e)}") from e
             except (
                 OSError,
                 http.client.HTTPException,
@@ -522,15 +571,25 @@ class Omnigent:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
-        Each upload of one spec registers another agent under its name, and an agent record has
-        no host, so copies whose record and config (``GET /v1/agents/{id}/config``) match apart
-        from identity and bookkeeping (``IDENTITY``) can't be told
+        An alias names the server's native agent, though the UI registers user copies of it.
+        Each upload of one spec registers another agent under
+        its name, and an agent record has no host, so copies whose record and config
+        (``GET /v1/agents/{id}/config``) match apart from identity and bookkeeping (``IDENTITY``)
+        can't be told
         apart: the name resolves to the newest by ``created_at``. The record carries policies,
         skills and terminals, the config instructions and model, so both are compared. Agents
-        that differ are refused, listing their ids, rather than picked by order."""
+        that differ are refused, listing their ids, rather than picked by order, and so is a
+        server agent sharing its name with a user agent, since only a user agent has a config
+        (the server's answers 404)."""
+        alias = name in AGENTS
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
+        on_server: set[str] = set()
         for path in ("/v1/agents", "/v1/agents?scope=user"):
+            if path.endswith("scope=user"):
+                if named and alias:
+                    break
+                on_server = set(named)
             after = ""
             while True:
                 sep = "&" if "?" in path else "?"
@@ -547,6 +606,8 @@ class Omnigent:
                 after = str(last)
         if not named:
             raise Fail(f"agent {name} not registered")
+        if len(named) > 1 and on_server:
+            raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
         if len(named) > 1:
             specs = [
                 [
@@ -702,6 +763,30 @@ class Omnigent:
         item id) the 100 before that item; ``data``, ``last_id`` and ``has_more``."""
         cursor = f"&after={quote(after, safe='')}" if after else ""
         return self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc{cursor}")
+
+    def session_id(self, sid: str) -> str:
+        """The session ``sid`` names: a hex string shorter than a whole id is a prefix, resolved
+        among every session the caller sees (archived ones, sub-agents and side chats included,
+        since a lead relays to its children and to other leads); anything else is taken as it
+        is. A prefix no session or several sessions share fails, naming the matches."""
+        if not re.fullmatch(r"[0-9a-f]{1,31}", sid):
+            return sid
+        path = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
+        matches, after = [], ""
+        while True:
+            page = self.call("GET", path + (f"&after={after}" if after else ""))
+            matches += [x for x in page.get("data", []) if str(x.get("id")).startswith(sid)]
+            if not (page.get("has_more") and page.get("last_id")):
+                break
+            after = str(page["last_id"])
+        if len(matches) == 1:
+            return str(matches[0]["id"])
+        if not matches:
+            raise Fail(f"{sid}: no session matches")
+        named = "".join(f"\n  {x['id']} {x.get('title') or ''}".rstrip() for x in matches)
+        raise Fail(
+            f"{sid}: {len(matches)} sessions match:{named}"
+        )  # a line each, as there may be hundreds
 
     def info(self, sid: str) -> dict:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
@@ -1655,6 +1740,7 @@ def wait(
     verdict: bool = False,
     since: int | None = None,
     pr: int | None = None,
+    relaunch: Callable[[], str] | None = None,
 ) -> str:
     """Return the report path, or raise with the child's last message once it cannot deliver one.
 
@@ -1667,10 +1753,15 @@ def wait(
     ``settled``, read again first, since the child can rewrite it until its turn ends. With ``pr``
     (a cloud worker), a turn whose last message links a comment on that PR (created after ``since``)
     has that comment's body written to ``report`` as the report; a file already there never counts,
-    since only this wait writes it.
+    since only this wait writes it. A cloud child recovers once from each failure that is no fault
+    of its own (``recovery``): one that failed in setup goes to ``relaunch``, which briefs a fresh
+    session the same way (``run``'s; without it, it fails), and one that stalled gets one continue
+    message; a second of either fails, naming the first.
     """
     deadline = time.monotonic() + timeout
     idle_since, nudged = None, False
+    recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
+    continued: float | None = None  # when the stalled session was told to continue
     ended: dict[str, float] = {}
     question = question_of(report)
     missing = (
@@ -1697,6 +1788,17 @@ def wait(
             raise Asked(str(question))
         info = og.info(sid)
         status = str(info.get("status"))
+        error = (info.get("last_task_error") or {}).get("message") or ""
+        if status in RUNNING or continued and time.monotonic() - continued >= CONTINUE_SECONDS:
+            continued = None
+        elif (
+            continued
+            and status == "failed"
+            and recovery(error, []) == "stall"  # another error is a new failure
+            and time.monotonic() < deadline
+        ):  # the stall's own end: its new turn is to come
+            time.sleep(POLL_SECONDS)
+            continue
         items = og.items(sid)
         last = last_message(items)
         said = last_said(items)
@@ -1754,9 +1856,30 @@ def wait(
                 raise Asked(str(question))
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
-                raise Fail(
-                    f"session {sid} ended (failed): {error}\nrunner log: {runner_log(info)}\nlast message: {said}"
-                )
+                kind = recovery(error, items)
+                if kind == "setup" and kind not in recovered and relaunch:
+                    old, sid = sid, relaunch()
+                    recovered[kind] = (
+                        f"session {old} failed in setup before its first turn ({error});"
+                        f" its brief went once to a fresh session {sid}"
+                    )
+                    ended, nudged = {}, False
+                    print(recovered[kind], file=sys.stderr)
+                elif kind == "stall" and kind not in recovered:
+                    send_to_confirm(og, sid, CONTINUE)
+                    delivered(og, sid, CONTINUE, 60.0)
+                    recovered[kind] = (
+                        f"session {sid} stalled ({error}); sent it one continue message"
+                    )
+                    continued = time.monotonic()
+                    print(recovered[kind], file=sys.stderr)
+                else:
+                    raise Fail(
+                        "".join(f"{r}\n" for r in recovered.values())
+                        + f"session {sid} ended (failed): {error}\nrunner log: {runner_log(info)}\nlast message: {said}"
+                    )
+                idle_since = None
+                continue
             if not nudged:  # often a turn ended on a background command: one reminder
                 nudge = PR_NUDGE.format(pr=pr) if pr else NUDGE.format(report=report)
                 print(
@@ -1774,6 +1897,17 @@ def wait(
             )
         time.sleep(POLL_SECONDS)
     return str(report)
+
+
+def recovery(error: str, items: list[dict]) -> str | None:
+    """Which failure of a cloud child's ``last_task_error`` is no fault of its own: ``setup``, its
+    bridge's bootstrap failing before the brief reached the cloud (no assistant message yet; one
+    after it may have written, so it is no setup failure), or ``stall``, the cloud session left
+    as it is past the bridge's stall limit, which the next message continues; else None."""
+    said = any(i.get("type") == "message" and i.get("role") == "assistant" for i in items)
+    if SETUP_FAILED in error and not said:
+        return "setup"
+    return "stall" if all(s in error for s in STALLED) else None
 
 
 def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
@@ -1815,7 +1949,8 @@ def reap(
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
-    saying which: ``archived``, or kept and why, and whether any finish failed. Each session it
+    saying which: ``archived``, ``already archived``, or kept and why, and whether any finish
+    failed. Each session it
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
@@ -1825,6 +1960,7 @@ def reap(
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
+            lines.append(f"{sid} {info.get('title') or ''}: already archived")
             continue
         if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
             busy = (
@@ -3367,20 +3503,20 @@ def reason(e: Exception) -> str:
 def text_or_file(arg: str) -> tuple[str, Path | None]:
     """A brief or message argument: the file it names, read, and that file; else the text itself
     and None, when it reads as text (it holds whitespace, or is too long for a file name). One word
-    naming no file is a usage error (exit 2), since it is most likely a mistyped path."""
+    naming no file (nothing there, a directory, a path through a file) is a usage error (exit 2),
+    since it is most likely a mistyped path; a file that exists but can't be read exits 1."""
     try:
         return Path(arg).read_text(), Path(arg)
     except OSError as e:
-        if e.errno == errno.ENAMETOOLONG or (
-            isinstance(e, FileNotFoundError) and re.search(r"\s", arg)
-        ):
+        no_file = isinstance(e, (FileNotFoundError, IsADirectoryError, NotADirectoryError))
+        if e.errno == errno.ENAMETOOLONG or (no_file and re.search(r"\s", arg)):
             return arg, None
         error = Fail(
             f"{arg}: no such file; pass a file or the text itself"
-            if isinstance(e, FileNotFoundError)
+            if no_file
             else f"{arg}: {reason(e)}"
         )
-        error.code = 2 if isinstance(e, FileNotFoundError) else 1
+        error.code = 2 if no_file else 1
         raise error from e
 
 
@@ -3639,6 +3775,11 @@ def main(argv: list[str] | None = None) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
+        og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd in ("relay", "send", "report"):
+            sid = args.session = og.session_id(args.session)
+        if args.cmd == "status":
+            args.sessions = [og.session_id(s) for s in args.sessions]
         if args.cmd == "report" and not args.path:
             line = registry and registered(registry)[0].get(sid)
             if not line:
@@ -3648,7 +3789,6 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2  # argparse's usage exit
                 raise usage
             args.path = str(line[0])
-        og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "report":
             print(og.read_file(sid, args.path))
             return 0
@@ -3826,39 +3966,50 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             registry = None
-        sid, survivors = start(
-            og,
-            args.agent,
-            args.title,
-            brief,
-            report,
-            args.role,
-            args.confirm_seconds,
-            model=args.model,
-            permission_mode=args.permission_mode,
-            top_level=args.top_level,
-            workspace=str(workspace),
-            host_id=host,
-            # the supervisor follows it instead, but never a --pr one, which it can't arm
-            subscribe=not (registry and args.top_level and not args.pr),
-            subscriber=lead,
-            pr=args.pr,
-        )
-        # a supervisor reads the report file, which for --pr only wait writes: it would revive
-        # and nudge a cloud worker toward a host path it can't write
-        if (not remote or (registry and args.top_level)) and not args.pr:
-            arm_quietly(
-                registry,
-                sid,
+        survivors: list[str] = []
+
+        def launch() -> str:
+            """Start the child and arm it; again (``wait``'s ``relaunch``) for a setup failure."""
+            nonlocal sid
+            if sid:  # the failed one's line goes: the fresh one owes the report now
+                arm_quietly(registry, sid)
+            sid, abandoned = start(
+                og,
+                args.agent,
+                args.title,
+                brief,
                 report,
-                [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
-                verdict=verifier,
-                followed=args.top_level,
-                after=args.after or "",
+                args.role,
+                args.confirm_seconds,
+                model=args.model,
+                permission_mode=args.permission_mode,
+                top_level=args.top_level,
+                workspace=str(workspace),
+                host_id=host,
+                # the supervisor follows it instead, but never a --pr one, which it can't arm
+                subscribe=not (registry and args.top_level and not args.pr),
+                subscriber=lead,
+                pr=args.pr,
             )
-        print(sid, flush=True)
+            survivors.extend(abandoned)
+            # a supervisor reads the report file, which for --pr only wait writes: it would revive
+            # and nudge a cloud worker toward a host path it can't write
+            if (not remote or (registry and args.top_level)) and not args.pr:
+                arm_quietly(
+                    registry,
+                    sid,
+                    report,
+                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
+                    verdict=verifier,
+                    followed=args.top_level,
+                    after=args.after or "",
+                )
+            print(sid, flush=True)
+            return sid
+
+        sid = launch()
         if args.cmd == "run":
-            print(wait(og, sid, report, args.timeout, verifier, launched, args.pr))
+            print(wait(og, sid, report, args.timeout, verifier, launched, args.pr, launch))
             arm_quietly(registry, sid)
             if not args.keep:
                 archive_delivered(og, sid)

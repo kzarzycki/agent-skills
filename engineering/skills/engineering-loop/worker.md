@@ -52,7 +52,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    open the browser in the background without taking focus and say in the report which
    test needed it and why. A project whose e2e opens a headed browser by default names the
    headless switch in its `docs/agents/` files.
-   Clean up what you started (servers, temporary files), then write your
+   Clean up what you started (servers, temporary files), and only that: stop a process by
+   the pid or process group you saved at its launch, or by a pattern holding your own
+   worktree path once `lsof -a -p <pid> -d cwd` shows each match runs there, never with
+   `pkill -f` or `killall` on a pattern other agents share, since on a shared host it kills
+   their runs too. Then write your
    report to a file and send the lead its path: the branch and head SHA, the gate
    exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
    the `AGENT_SIGNATURE=` line atop your brief), anything left out and why, and what you tried and
