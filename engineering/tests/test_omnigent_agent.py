@@ -3423,6 +3423,16 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
     )
 
 
+def test_a_background_task_id_is_a_named_wait() -> None:
+    """`b` and 8 lowercase letters and digits, one a digit at least, opening the wait or after "on"/"for"."""
+    assert omnigent_agent.wait_of("STILL WORKING bz3jp5aod") == "bz3jp5aod"
+    assert omnigent_agent.wait_of("STILL WORKING bz3jp5aod: the queue runs for #12") == "bz3jp5aod"
+    assert omnigent_agent.wait_of("STILL WORKING: waiting on bz3jp5aod") == "bz3jp5aod"
+    assert omnigent_agent.wait_of("STILL WORKING: on it") == "unknown"
+    assert omnigent_agent.wait_of("STILL WORKING backports") == "unknown"
+    assert omnigent_agent.wait_of("STILL WORKING on bz3jp5aodx") == "unknown"  # ten characters: no task id
+
+
 def test_a_childs_activity_reaches_the_state_once_a_minute_before_any_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
