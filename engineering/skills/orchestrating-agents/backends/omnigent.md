@@ -119,7 +119,11 @@ repository's counts for nothing. The nudge asks for the comment, and a second tu
 without one fails. `run` and `wait` finish a worker once its report is in, unless given
 `--keep`: a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
-round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). `send --pr <n>`
+round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
+child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
+message), `run` starts once more in a fresh session with the same brief, and one that stalls
+(`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
+message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
 workspace is, since the report is the file `wait` writes here, and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
