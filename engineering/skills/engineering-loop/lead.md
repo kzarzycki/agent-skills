@@ -147,9 +147,9 @@ design, wireframes included for a UI, and delegate the rest.
      branch). A merge queue, where the repo has one, tests the PR on top of main anyway, so a
      merge there only costs a CI run. When you do merge it in, rerun the gates and get a verifier pass on the
      merge (step 7), since `land` merges only a head with a verdict of its own. Where loop.md
-     has `carry_over_main`, no gate and no pass is needed when `check merge` prints that the
-     merge carries the head's proofs (SKILL.md, Approvals and proof): run `local-ci <pr>` under
-     `ci: false`, which posts the carried record, and land. Otherwise, when main's
+     has `carry_over_main`, no verifier pass is needed when `check merge` prints that the
+     merge carries the head's verdict (SKILL.md, Approvals and proof); the gates still rerun
+     on the merge (`local-ci <pr>` under `ci: false`). Otherwise, when main's
      changes touch no file the PR changes and no merge check (a `check:` task, a tool it
      runs, or the lint, type or test configuration), that pass is the short delta pass.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under

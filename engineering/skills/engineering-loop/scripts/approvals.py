@@ -78,8 +78,8 @@ refused (the base moved meanwhile) puts the PR's branch back on its head, exit 1
 auto-merge on, since GitHub would sign that squash, and waits (exit 3) while checks are pending. It refuses (exit 1),
 before touching the PR, a PR from another repository (its branch isn't ours to push), a base other than the section's,
 auto-merge or the merge queue on, an `origin` that isn't the PR's repo, a checkout that signs nothing, or a missing
-signers file; and at the merge a head that moved, a head that doesn't contain the base's tip (merge it in) unless
-its merge with the tip carries (below), and a signature the file doesn't allow. Without the section nothing changes.
+signers file; and at the merge a head that moved, a head that doesn't contain the base's tip (merge it in) and a
+signature the file doesn't allow. Without the section nothing changes.
 `land --wait` runs it again every 30 seconds, printing each new state, while what waits is GitHub's merge state or CI
 on the head: a draft it marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
 once. With auto-merge on or the PR in a merge queue, whoever put it there, and after its own merge, which a base
@@ -118,12 +118,10 @@ head H' whose first parent is H, whose second is on the base (an ancestor of its
 merge-tree --write-tree` makes of the two (no conflict resolved, nothing added), and where the base's changes since
 the merge base touch no file H's side changes and no path an `except` glob matches (fnmatch, as a rule's `paths`:
 the project's merge-check configuration, such as lint, type, test and gate config and lockfiles). Then H's newest
-verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included), and `local-ci <pr>` posts H's
-recorded pass for H', with a `Carried:` line naming both. `check merge` and `land` print one line naming H, H' and
-the predicate, or why the head carries nothing; with `land`'s section, a head behind the base's tip lands as a
-signed squash of the clean merge's tree when the same predicate holds for H and the tip, printing the same line. A
-git error, a second merge base or any failed condition carries nothing: the head needs its own gate and verdict, as
-without the section, where `check merge` and `land` read no git for it.
+verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included). It never carries a `local-ci`
+record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line naming H, H' and the
+predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
+nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -1258,12 +1256,10 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     return None
 
 
-def signed_squash(pull: dict[str, Any], signers: Path, loop: str | None) -> str:
+def signed_squash(pull: dict[str, Any], signers: Path) -> str:
     """Squash the PR's head onto its base here, signed with this checkout's key and checked against `signers`, then
     push it to the PR's branch and fast-forward the base to it: GitHub marks a PR merged once its head is in the
-    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing, or,
-    where loop.md has `carry_over_main`, the clean merge of the two must carry the head's proofs (merged): the squash
-    then takes that merge's tree."""
+    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing."""
     pr, base, branch, head = (
         pull["number"],
         pull["baseRefName"],
@@ -1277,19 +1273,12 @@ def signed_squash(pull: dict[str, Any], signers: Path, loop: str | None) -> str:
     if git("rev-parse", "FETCH_HEAD").strip() != head:
         raise Refused(f"PR #{pr}'s head moved past {head}: run land again")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
-    tree = git("rev-parse", f"{head}^{{tree}}").strip()
     if subprocess.run(["git", "merge-base", "--is-ancestor", tip, head], check=False).returncode:
-        guard = settings(loop).get("carry_over_main")
-        found = None if guard is None else merged(head, tip, guard["except"], base)
-        if isinstance(found, str):
-            print(f"PR #{pr}: {head} carries nothing over {base}'s head {tip}: {found}")
-        if not isinstance(found, tuple):
-            raise Refused(
-                f"PR #{pr} does not contain {base}'s head {tip}: merge origin/{base} in, rerun the gates, get a"
-                " verdict on the merge (lead.md step 8), then land again"
-            )
-        tree = found[0]
-        print(f"PR #{pr}: " + carry_line(f"the squash's tree {tree}", head, tip, found[1], base))
+        raise Refused(
+            f"PR #{pr} does not contain {base}'s head {tip}: merge origin/{base} in, rerun the gates, get a"
+            " verdict on the merge (lead.md step 8), then land again"
+        )
+    tree = git("rev-parse", f"{head}^{{tree}}").strip()
     try:
         commit = git("commit-tree", "-S", "-p", tip, "-m", f"{pull['title']} (#{pr})", tree).strip()
         git("-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", commit)
@@ -1487,7 +1476,7 @@ def merged(
 
 
 def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
-    """The line check merge, land and local-ci print when `what` carries the proofs of `head` (carried, merged)."""
+    """The line check merge and land print when `what` carries the proofs of `head` (carried, merged)."""
     return (
         f"{what} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {base}'s"
         f" {second}, whose changes since {since} touch none of the PR's files, and neither side touches a"
@@ -1496,7 +1485,7 @@ def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
 
 
 def carried(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
-    """The commit whose verdict and local-ci record the PR's head carries, with carry_line(), where loop.md has
+    """The commit whose verdict the PR's head carries, with carry_line(), where loop.md has
     `carry_over_main`: the head is a merge whose first parent is that commit and whose second is on the base (an
     ancestor of its tip), its tree is git merge-tree's of the two, and merged() finds the base's changes disjoint
     from the PR's and neither side's touching an except glob. A string names why it carries nothing; None without the setting, which
@@ -2337,7 +2326,7 @@ def landing(
         print(f"{where} is ready now: CI starts on ready, run land again")
         return WAITING, ON_CI
     if not checking + owner and local:
-        commit = signed_squash(pull, local[1], loop)
+        commit = signed_squash(pull, local[1])
         print(f"{where} landed in {pull['baseRefName']} as {commit}, signed by a key in {local[1]}")
         return 0, None
     if not checking + owner:
@@ -2702,16 +2691,13 @@ def local_ci(pr: int | None) -> int:
         record = run_local_ci(None, None)
         print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
         return 0
-    pull = pull_request(pr)
-    head, source = pull["headRefOid"], ""
+    head = pull_request(pr)["headRefOid"]
     record = reusable(head)
-    carry = None if record else carried(pull, project()[1])
-    if isinstance(carry, tuple) and (record := reusable(carry[0])):
-        source = f"Carried: {carry[1]}\n"
     if record:
-        source += f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+        source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
     else:
         record = run_local_ci(pr, head)
+        source = ""
     comment(
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
