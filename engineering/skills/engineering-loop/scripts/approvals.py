@@ -129,6 +129,8 @@ verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line include
 record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line naming H, H' and the
 predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
 nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
+Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
+variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -1938,7 +1940,35 @@ def started(node: dict[str, Any]) -> str:
     return node.get("startedAt") or node.get("createdAt") or ""
 
 
+# the environment variable naming the local deny list (denied), a file kept outside the repo
+DENY_LIST = "LOOP_DENY_LIST"
+
+
+def denied(text: str) -> None:
+    """Refuse to post `text` when it names a term of the local deny list: the file `LOOP_DENY_LIST` names, one term per
+    line (a name, a repo slug, a hostname; `#` starts a comment), matched ignoring case at word boundaries, since a
+    public repo's comment keeps its first text in GitHub's edit history for good. Without the variable nothing is
+    checked; a list it names that can't be read refuses, since an unread list would let every post through."""
+    if not (where := os.environ.get(DENY_LIST)):
+        return
+    try:
+        listed = Path(where).expanduser().read_text().splitlines()
+    except OSError as exc:
+        raise Refused(
+            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
+        ) from exc
+    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
+    for number, line in enumerate(text.splitlines(), 1):
+        for term in terms:
+            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
+                raise Refused(
+                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
+                )
+
+
 def gh(*args: str, data: str | None = None) -> str:
+    if data is not None:  # every comment and review approvals.py posts goes as `data`
+        denied(data)
     return subprocess.run(
         ["gh", *args], input=data, check=True, capture_output=True, text=True
     ).stdout

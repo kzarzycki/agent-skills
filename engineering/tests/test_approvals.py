@@ -1452,6 +1452,47 @@ def test_the_owners_approval_is_recorded_labelled_and_clears_needs_owner(
     ]
 
 
+def test_a_post_naming_a_term_of_the_local_deny_list_is_refused_before_any_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The list names private terms; a body that names one, in any case and as a whole word, is refused naming the
+    term and the line, and nothing reaches gh. Without the variable, nothing changes."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        approvals.subprocess,
+        "run",
+        lambda command, **_kw: calls.append(command) or subprocess.CompletedProcess(command, 0, ""),
+    )
+    deny = tmp_path / "deny.txt"
+    deny.write_text(
+        "# private names\nAcme-Widgets\nacme/secret-repo  # its repo\nbuild-host.local\n"
+    )
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    for body, term, line in [
+        ("Fixed.\nSeen in ACME-WIDGETS's run.\n", "Acme-Widgets", 2),
+        ("See acme/secret-repo#12.\n", "acme/secret-repo", 1),
+        ("Ran on build-host.local\n", "build-host.local", 1),
+    ]:
+        with pytest.raises(approvals.Refused) as refused:
+            approvals.comment(7, body)
+        assert str(refused.value) == (
+            f"refused to post: line {line} names `{term}` from the deny list (LOOP_DENY_LIST); nothing posted"
+        )
+    with pytest.raises(approvals.Refused, match="names `Acme-Widgets`"):
+        approvals.post_review(7, {"body": "pass 1 on acme-widgets"})
+    assert calls == []
+    # a term inside a longer word is no match
+    approvals.comment(7, "Acme-Widgetsmith and xacme/secret-repo are fine.\n")
+    assert len(calls) == 1
+    monkeypatch.delenv("LOOP_DENY_LIST")
+    approvals.comment(7, "Seen in Acme-Widgets's run.\n")
+    assert len(calls) == 2
+    monkeypatch.setenv("LOOP_DENY_LIST", str(tmp_path / "missing.txt"))
+    with pytest.raises(approvals.Refused, match="can't be read"):
+        approvals.comment(7, "anything")
+    assert len(calls) == 2
+
+
 def test_approve_refuses_the_coordinator(
     github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:
