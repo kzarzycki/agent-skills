@@ -81,6 +81,7 @@ loop:
   local_ci_env:
     - GATE_TIER
   opt_out: true
+  batch_queue: true   # lands through a batching merge queue of its own (below)
 
 practice:
   plan: writing-plans
@@ -362,7 +363,8 @@ because `land` is what refuses a PR whose proof is missing. A repo without
 such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
 which the loop obeys and never overrides.
 
-A project may instead land a base through a batching merge queue of its own: it merges every
+A project may instead land a base through a batching merge queue of its own, opting in with
+`batch_queue: true` under loop.md's `loop` (without it no batch proof counts): it merges every
 waiting PR's verified head onto the base, runs the full gate once on the result and pushes
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
 `uv run scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter

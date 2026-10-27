@@ -4869,10 +4869,29 @@ def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
 NO_LOCAL_CHECK = "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
 
 
+QUEUED = add(
+    LOOP, "loop", "batch_queue: true\n"
+)  # a project that lands through a batching merge queue
+
+
+def test_a_batch_proof_counts_only_where_loop_md_opts_into_a_queue(batched: dict[str, str]) -> None:
+    """A project that never set up a batching merge queue gets no second way past the CI or local-check wait: the
+    same valid batch proof stands in for it only under `batch_queue: true`."""
+    gated_head(batched["head"])
+    proof = batch_note(batched["head"], batched["merge"], batched["batch"])
+    assert queued_merge(batched["head"], proof) == []
+    pr = pull(reviews=(verdict_on(batched["head"]),), comments=(proof,), checks=())
+    pr["headRefOid"] = batched["head"]
+    assert merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == [
+        NO_LOCAL_CHECK
+    ]
+    assert merge(pr, [approved(1, "area:web")]) == ["PR #7: no `check` on the head commit yet"]
+
+
 def queued_merge(head: str, *comments: str) -> list[str]:
     pr = pull(reviews=(verdict_on(head),), comments=comments, checks=())
     pr["headRefOid"] = head
-    return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n"))
+    return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\nbatch_queue: true\n"))
 
 
 def queued_reasons(head: str, *comments: str) -> list[str] | None:
@@ -4961,12 +4980,12 @@ def test_only_a_batch_proof_by_the_running_account_or_a_writer_counts(
     monkeypatch.setattr(approvals, "writer", lambda login: login == "colleague")
     pr = pull(reviews=(verdict_on(head),), comments=(proof,), checks=())
     pr["headRefOid"] = head
-    lines = merge(pr, [approved(1, "area:web")])
+    lines = merge(pr, [approved(1, "area:web")], QUEUED)
     assert lines and all("batch" not in line for line in lines)  # waits on CI, as with no proof
     proof["author"] = {"login": "colleague"}
-    assert merge(pr, [approved(1, "area:web")]) == []
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == []
     proof["author"] = None  # a deleted account
-    assert merge(pr, [approved(1, "area:web")]) == lines
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == lines
 
 
 def test_comments_that_are_no_batch_proof_cost_no_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4997,7 +5016,9 @@ def test_a_red_batch_through_another_pr_leaves_land_alone(
 def test_a_head_evicted_through_another_pr_may_re_enter_the_queue(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     queueing["pull"]["comments"]["nodes"].append(note(RED_BATCH))
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
 
@@ -5006,7 +5027,9 @@ def test_with_ci_check_queue_still_needs_the_heads_own_record(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """batch refuses a head without one, so a head check queue admitted would never get its proof."""
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     queueing["records"] = set()
     assert queue_check(capsys) == (
         1,
@@ -5025,7 +5048,7 @@ def test_the_batch_proof_also_stands_in_for_ci(batched: dict[str, str]) -> None:
         checks=(),
     )
     pr["headRefOid"] = head
-    assert merge(pr, [approved(1, "area:web")]) == []
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == []
 
 
 def test_batch_posts_the_proof_check_merge_reads(
@@ -5066,7 +5089,9 @@ def test_batch_posts_the_proof_check_merge_reads(
 @pytest.fixture
 def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`landing` with `ci: false`, and a local-ci pass recorded on HEAD under the current env."""
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(add(GITHUB_RULE, "loop", "ci: false\n"))
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "ci: false\nbatch_queue: true\n")
+    )
     landing["records"] = {HEAD}
     monkeypatch.setattr(
         approvals, "reusable", lambda head: {"head": head} if head in landing["records"] else None
@@ -5080,10 +5105,27 @@ def queue_check(capsys: pytest.CaptureFixture[str], head: str = HEAD) -> tuple[i
     return code, capsys.readouterr().out.splitlines()
 
 
+def test_check_queue_refuses_a_project_without_the_setting(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(add(GITHUB_RULE, "loop", "ci: false\n"))
+    assert queue_check(capsys) == (
+        1,
+        [
+            (
+                "PR #7: loop.md doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+                " through `land`"
+            )
+        ],
+    )
+
+
 def test_check_queue_waits_for_the_checks_the_base_branch_requires(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     monkeypatch.setattr(
         approvals, "required_checks", lambda _base: {"qualify", approvals.APPROVALS}
     )
@@ -5153,7 +5195,9 @@ def test_check_queue_refuses_a_missing_merge_proof(
 def test_with_ci_check_queue_needs_the_heads_check_green(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
     queueing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][0][
         "conclusion"
