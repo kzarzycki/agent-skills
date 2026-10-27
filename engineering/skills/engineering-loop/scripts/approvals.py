@@ -655,7 +655,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
     `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
     was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
-    blocker or major open (capped)."""
+    blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
+    issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
@@ -2239,26 +2240,24 @@ def project() -> tuple[str | None, str | None]:
 def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Every missing proof at `point`, and the issues the PR names (none for an exact revert, whose risk reverted()
-    reads instead)."""
+    """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
+    reads its issues from `named` and the reverted PR's risk from `reverted` instead)."""
     revert, found = reverts(pull)
     if revert:
-        pull["reverted"] = reverted(pull, revert)
+        pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
         return found + proofs(point, pull, [], loop, revert), []
     issues = closing_issues(pull)
     found += problems(issues, None if tracker is None else label_names(tracker))
     return found + proofs(point, pull, issues, loop, revert), issues
 
 
-def reverted(pull: dict[str, Any], number: int) -> str | None:
-    """Why an exact revert of #number is high risk, or None: `risk:high` on an issue it names or on #number, or
-    #number's last verdict judging it high (judged), since undoing a high-risk change (or re-landing one, a revert of
-    its revert) changes as much as making it."""
+def reverted(number: int) -> str | None:
+    """Why an exact revert of #number is high risk for what it reverts, or None: `risk:high` on #number, or #number's
+    last verdict judging it high (judged), since undoing a high-risk change (or re-landing one, a revert of its
+    revert) changes as much as making it."""
     original = pull_request(number)
-    marked = [f"#{issue['number']}" for issue in closing_issues(pull) if RISK_LABEL in names(issue)]
-    marked += [f"#{number}, which it reverts"] * (RISK_LABEL in names(original))
-    if marked:
-        return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if RISK_LABEL in names(original):
+        return f"`{RISK_LABEL}` is on #{number}, which it reverts"
     if why := judged(original):
         return f"it reverts #{number}, and {why}"
     return None

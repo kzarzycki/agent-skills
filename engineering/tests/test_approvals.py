@@ -1257,10 +1257,11 @@ def held_revert(
     capsys: pytest.CaptureFixture[str],
     revert: dict[str, Any],
     original: dict[str, Any],
+    loop: str = BARE,
 ) -> tuple[int, list[str]]:
-    """check merge on an exact revert of `original` (#1) under a loop.md with no risk rule, so only the risk of what
-    it reverts can hold it."""
-    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, BARE))
+    """check merge on an exact revert of `original` (#1), by default under a loop.md with no risk rule, so only the
+    risk of what it reverts can hold it."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
     monkeypatch.setattr(approvals, "pull_request", lambda n: original if n == 1 else revert)
     code = approvals.main(["check", "merge", str(revert["number"])])
     return code, capsys.readouterr().out.splitlines()
@@ -1292,6 +1293,14 @@ def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_label(
             held
             + "it reverts #1, and the verifier's pass 2 on aaaaaaa says `Risk: high — CI permissions`"
         ],
+    )
+    # a risk rule reads the labels of the issues a revert names, as for any PR
+    ruled = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    ruled["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug")]}
+    web = add(BARE, "risk", "labels: [area:web]\n")
+    assert held_revert(monkeypatch, capsys, ruled, low, web) == (
+        approvals.WAITING,
+        [held + "it matches a risk rule (label `area:web`)"],
     )
     # the owner's label clears each, and a revert of a low-risk PR lands without it
     assert held_revert(monkeypatch, capsys, revert_pr(labels=OWNED), high) == (0, [])
