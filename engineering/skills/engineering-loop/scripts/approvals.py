@@ -201,7 +201,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
-import functools
 import io
 import itertools
 import json
@@ -685,7 +684,6 @@ def default(pull: dict[str, Any]) -> bool:
     return pull["baseRefName"] == pull["baseRepository"]["defaultBranchRef"]["name"]
 
 
-@functools.cache  # flag() and owner_waits() both ask risk() in one run
 def merged_high(branch: str) -> list[int]:
     """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
     # ponytail: one page of 100; page when a feature branch takes more high-risk PRs than that

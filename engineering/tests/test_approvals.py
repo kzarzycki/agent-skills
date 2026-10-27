@@ -59,6 +59,7 @@ WAITED = (
 TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
+MERGED_HIGH = approvals.merged_high
 
 
 @pytest.fixture(autouse=True)
@@ -2973,6 +2974,32 @@ def test_land_wait_asks_for_the_owners_label_only_once_ci_has_passed_the_head(
         ["PR #7: `check` is IN_PROGRESS on the head commit", GITHUB, GITHUB],
         [],
     )
+
+
+def test_land_wait_reads_a_branchs_high_risk_prs_again_on_every_poll(
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A high-risk PR merged into the feature branch while its merge to main waits holds that merge for the owner."""
+    landing["pull"] = proven(mergeStateStatus="UNKNOWN")
+    ready = proven()
+    later += [ready]
+    monkeypatch.setattr(
+        approvals, "merged_high", MERGED_HIGH
+    )  # the real one, asking GitHub each time
+    github = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "list"):
+            return "12\n" if landing["pull"] is ready else ""
+        return github(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    code, lines, calls = waited(capsys, landing)
+    assert (code, calls) == (approvals.WAITING, [])
+    assert lines[-1] == HELD + "`risk:high` is on #12, merged into feature"
 
 
 def test_land_wait_turns_on_auto_merge_and_ends_once_github_merges(
