@@ -248,8 +248,9 @@ FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.I
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
-# a tier below the default a `Verifier model:` line names, written in the review's family (verifier.md)
-LOWER_TIER = re.compile(r"\b(mid|small)\b", re.IGNORECASE)
+# a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
+# family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
+LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)

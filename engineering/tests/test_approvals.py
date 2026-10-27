@@ -985,6 +985,10 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
     )
     assert gate(said("codex/terra-6.1/med mid", 1, "low — a fixture")) == []
     assert gate(said("codex", 1, "high")) == []
+    # a tier word inside the model id is no tier: only a word of its own after the signature is
+    assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
+    assert gate(said("claude/small-model/?, same-family", 1, "high")) == []
+    assert gate(said("claude, same-family, small", 1, "high"))
 
 
 def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
