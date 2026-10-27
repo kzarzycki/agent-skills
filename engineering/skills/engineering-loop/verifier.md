@@ -119,6 +119,8 @@ keep these lines exact:
   pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
   (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
+  Text after the pass number is a qualifier the posted review's first line carries, such as
+  `Verifier: claude, same-family, pass 2 (merge of main)`.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR

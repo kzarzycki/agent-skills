@@ -130,7 +130,8 @@ record: H' runs its own gate, as CI would run on it. `check merge` and `land` pr
 predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
 nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
-one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
+one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
+(a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
 headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
 inline comment per finding, moved to the nearest line of the diff when its
@@ -2601,9 +2602,10 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
 
 def parse_report(
     report: Path,
-) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str]]:
-    """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings and its closing
-    `VERDICT:`, `SATISFIED:` and `Risk:` lines. Refused, naming the fix, when `verdict` couldn't post it whole."""
+) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
+    """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
+    `VERDICT:`, `SATISFIED:` and `Risk:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
+    none). Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
     verdicts = [line for line in lines if line.startswith("VERDICT:")]
@@ -2622,7 +2624,12 @@ def parse_report(
     passes = [
         found
         for line in lines
-        if (found := re.fullmatch(r"Verifier:[ \t]*(.+),[ \t]*pass[ \t]+(\d+)", line))
+        # free text after the pass number is a qualifier the review's first line carries
+        if (
+            found := re.fullmatch(
+                r"Verifier:[ \t]*(.+),[ \t]*pass[ \t]+(\d+)\b[ \t]*[:,;]?[ \t]*(.*)", line
+            )
+        )
     ]
     if not passes:
         raise Refused(f"{report} has no `Verifier: <family>, pass <n>` line")
@@ -2638,9 +2645,10 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
-    family, number = passes[-1].groups()
+    family, number, qualifier = passes[-1].groups()
     closing = [verdicts[-1], satisfied[-1], judgments[-1]]
-    return f"Verifier ({family}), pass {number}", heads[-1].lower(), found, closing
+    heading = f"Verifier ({family}), pass {number}"
+    return heading, heads[-1].lower(), found, closing, qualifier
 
 
 def report_check(report: Path) -> int:
@@ -2653,7 +2661,7 @@ def report_check(report: Path) -> int:
 def verdict(pr: int, report: Path) -> int:
     """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
     line of the diff when its line is outside it, in the review's body when its file is."""
-    heading, head, found, closing = parse_report(report)
+    heading, head, found, closing, qualifier = parse_report(report)
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
@@ -2671,7 +2679,8 @@ def verdict(pr: int, report: Path) -> int:
         comments.append(
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
-    summary = "\n\n".join([f"{heading} on {head[:7]}.", *outside, "\n".join(closing)])
+    first = f"{heading} on {head[:7]}" + (f": {qualifier}" if qualifier else "") + "."
+    summary = "\n\n".join([first, *outside, "\n".join(closing)])
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
     )
