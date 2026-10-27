@@ -4932,6 +4932,35 @@ ROUTES = [
         ("rule", "act"),
     ),
     ("deadline, parked", {"kind": "deadline", "last": "PARKED: full"}, None, ("rule", "record")),
+    # the two ordinary-word waits leads wrote, pinned so a change to WAIT or NAMED can't bring back
+    # the repeat nudges (#508); a bare STILL WORKING names none and gets its one nudge
+    (
+        "still working, a queue in ordinary words",
+        {
+            "kind": "ended",
+            "last": "STILL WORKING: waiting on the queue lead's runs for #12 and #13",
+        },
+        None,
+        ("rule", "record"),
+    ),
+    (
+        "still working, a heavy slot in ordinary words",
+        {"kind": "ended", "last": "STILL WORKING: #12 and #13 all still waiting for a heavy slot"},
+        None,
+        ("rule", "record"),
+    ),
+    (
+        "deadline, bare still working",
+        {"kind": "deadline", "last": "STILL WORKING."},
+        None,
+        ("rule", "nudge"),
+    ),
+    (
+        "deadline, bare still working after a nudge",
+        {"kind": "deadline", "last": "STILL WORKING.", "nudged": True},
+        None,
+        ("rule", "act"),
+    ),
     (
         "quiet again after a nudge",
         {"kind": "ended", "last": "on it", "nudged": True},
@@ -5129,6 +5158,16 @@ def follows(tmp_path: Path, *sids: str, after: dict[str, str] | None = None) -> 
 def events_of(registry: Path) -> list[dict]:
     lines = registry.with_suffix(".events.jsonl").read_text().splitlines()
     return [json.loads(e) for e in lines]
+
+
+def test_the_nudge_and_revive_end_on_a_wait_the_supervisor_accepts() -> None:
+    for text in (omnigent_agent.LEAD_NUDGE, omnigent_agent.LEAD_REVIVE):
+        example = re.search(r'For example: "(STILL WORKING: [^"]+)"\.$', text)
+        assert example and omnigent_agent.wait_of(example.group(1)) == "verifier", text
+        assert text.startswith(omnigent_agent.OWN_LINES[0])  # a restart knows it by this prefix
+    assert omnigent_agent.wait_of("STILL WORKING: waiting on the queue lead's runs") == "queue"
+    assert omnigent_agent.wait_of("STILL WORKING: all still waiting for a heavy slot") == "heavy"
+    assert omnigent_agent.wait_of("STILL WORKING.") == "unknown"
 
 
 def test_a_second_stall_without_progress_escalates_and_sends_no_second_nudge(
