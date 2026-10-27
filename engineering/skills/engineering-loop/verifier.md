@@ -119,6 +119,9 @@ keep these lines exact:
   pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
   (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
+  When your brief names your tier (`mid` or `small`, loop.md's `Verifier model:` line), write it after the
+  signature, `Verifier: codex/terra-6.1/med mid, pass 1`: `check merge` refuses a high-risk change whose newest
+  verdict names a lower tier, and reads a line without one as the default tier.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR

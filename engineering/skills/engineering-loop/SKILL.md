@@ -607,7 +607,8 @@ or the owner's private network.
   on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
   `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
-  its head before it lands, even when the lower-tier verdict is satisfied. It applies within the verifier's own family: it lowers the tier, never the family, which
+  its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
+  reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
   stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
   Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
   and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's

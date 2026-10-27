@@ -41,7 +41,9 @@ reviews, a review counting only when its body starts `Verifier (<family>), pass 
 PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
-commit after a verdict needs one of its own; no unresolved
+commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
+one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
+only for a change it rates low; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
@@ -246,6 +248,8 @@ FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.I
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
+# a tier below the default a `Verifier model:` line names, written in the review's family (verifier.md)
+LOWER_TIER = re.compile(r"\b(mid|small)\b", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
@@ -1130,7 +1134,14 @@ def proofs(
     if loop is not None:
         found += linked(pull, issues, loop)
     if revert is None and not exempt(pull, loop):
-        found += reviewed(where, pull, loop)
+        verdicts = passes(pull)
+        found += (unreviewed := reviewed(where, pull, loop, verdicts))
+        # only on a verdict that would land, and tier first, since risk() reads the reviews again
+        if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
+            found.append(
+                f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
+                " default-tier verifier pass on the head first"
+            )
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
         found.append(
@@ -1157,6 +1168,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
+    # the lines read, plus the heading's family, which names the verifier's tier when it ran below the default
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
     others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
     trusted |= {login for login in others if writer(login)}
@@ -1165,14 +1177,36 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
             ((review.get("commit") or {}).get("oid") or "").lower(),
             int(PASS.match(review["body"])[2]),
             {
-                key.strip(): value.strip()
-                for key, _, value in (line.partition(":") for line in review["body"].splitlines())
-                if key.strip() in ("VERDICT", "SATISFIED", "Risk")
+                "Family": PASS.match(review["body"])[1],
+                **{
+                    key.strip(): value.strip()
+                    for key, _, value in (
+                        line.partition(":") for line in review["body"].splitlines()
+                    )
+                    if key.strip() in ("VERDICT", "SATISFIED", "Risk")
+                },
             },
         )
         for review in found
         if (review.get("author") or {}).get("login") in trusted
     ]
+
+
+def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
+    """The tier below the default (LOWER_TIER) the newest verifier pass names in its heading's family, the newest
+    commit's highest pass (a mixed PR's two verifiers share one), or None: a heading naming no tier reads as the
+    default, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
+    if isinstance(verdicts, str) or not verdicts:
+        return None
+    head = verdicts[-1][0]
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    last = max(number for number, _ in on_head)
+    tiers = [
+        found[1]
+        for number, lines in on_head
+        if number == last and (found := LOWER_TIER.search(lines["Family"]))
+    ]
+    return tiers[0].lower() if tiers else None
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
@@ -1208,14 +1242,19 @@ def capped(pull: dict[str, Any], limit: int) -> bool:
     )
 
 
-def reviewed(where: str, pull: dict[str, Any], loop: str | None) -> list[str]:
+def reviewed(
+    where: str,
+    pull: dict[str, Any],
+    loop: str | None,
+    verdicts: list[tuple[str, int, dict[str, str]]] | str | None = None,
+) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried,
     which prints a line either way where loop.md opts in), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
-    needs none (exempt)."""
-    verdicts = passes(pull)
+    needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
+    verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
         return [f"{where} {verdicts}"]
     if not verdicts:

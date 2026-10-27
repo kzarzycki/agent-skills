@@ -113,8 +113,9 @@ design, wireframes included for a UI, and delegate the rest.
    refuses the write and a Claude Code child is prompted for a read (denied in auto mode),
    which nobody answers. Its model is the default, or, where the PR matches loop.md's
    `Verifier model:` line, the newest-generation model of that tier in the verifier's family
-   (SKILL.md, Models). A lower-tier verdict that says `Risk: high`, even a satisfied one, calls
-   for a default-tier pass on the head before landing. Name the family that wrote the diff when the backend takes it
+   (SKILL.md, Models), and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
+   verdict that says `Risk: high`, even a satisfied one, calls for a default-tier pass on the head before landing,
+   and `check merge` refuses the change until one is posted. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
    brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
