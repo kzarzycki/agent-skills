@@ -156,11 +156,14 @@ is no approval:
 
 A spec or plan is named by its last edit as GitHub shows it in the edit history (`as written <time>` before any), so
 a person can open the version approved. Every approval is a new comment: a re-approval says the spec or plan
-changed, and `approve` minimizes as outdated each earlier record, which it supersedes.
+changed, and `approve` minimizes as outdated each earlier record, which it supersedes. With `owner: <login>` under
+loop.md's `loop`, `check build`, `check merge` and `land` record an `approved:spec` (or `approved:plan`) label that
+login added after the spec's (plan's) last edit as `approve --by owner` would, removing `needs-owner`, and say so: the
+label is the owner's word. One they added before the last edit is named and changes nothing, nor does anyone else's.
 
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `loop` holds `cap`, `ci`, `opt_out` and `local_ci_env`; `spec` holds `auto`.
+the block. `loop` holds `cap`, `ci`, `opt_out`, `local_ci_env` and `owner`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -379,6 +382,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "ci": bool,
         "opt_out": bool,
         "local_ci_env": list,
+        "owner": str,
     },
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
@@ -2233,12 +2237,53 @@ def project() -> tuple[str | None, str | None]:
     return tracker, loop
 
 
+def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, Any]]:
+    """The issues, each read again after recording an `approved:<point>` label the owner (loop.md's `owner`) added
+    after the spec's or plan's last edit as their approval (approve), which also removes `needs-owner`, printing a line
+    for each; a label the owner added before that edit gets a line saying so and changes nothing, nor does anyone
+    else's. Without `owner` nothing is read, since only the owner's own label is their word."""
+    owner = settings(loop).get("owner")
+    if not owner:
+        return issues
+    found = []
+    for issue in issues:
+        number, recorded = issue["number"], False
+        for point in POINTS:
+            holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
+            name = f"approved:{point}"
+            if holder is None or name not in names(issue):
+                continue
+            value = version(holder)
+            if current(issue, point, point, value, "owner"):
+                continue
+            added = [
+                event
+                for event in events(issue, "LabeledEvent")
+                if (event.get("label") or {}).get("name") == name
+            ]
+            if not added or (added[-1].get("actor") or {}).get("login") != owner:
+                continue
+            if added[-1]["createdAt"] <= (holder.get("lastEditedAt") or holder["createdAt"]):
+                print(
+                    f"#{number}: the owner's `{name}` was added before the {point}'s last edit ({value}): the"
+                    " owner adds it again"
+                )
+                continue
+            approve(point, number)
+            recorded = True
+            print(
+                f"#{number}: recorded the owner's `{name}`, added after the {point}'s last edit, as their approval"
+            )
+        found.append(issue_node(number) if recorded else issue)
+    return found
+
+
 def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Every missing proof at `point`, and the issues the PR names (none for an exact revert)."""
     revert, found = reverts(pull)
-    issues = [] if revert else closing_issues(pull)
+    issues = [] if revert else adopted(closing_issues(pull), loop)
     if not revert:
         found += problems(issues, None if tracker is None else label_names(tracker))
     return found + proofs(point, pull, issues, loop, revert), issues
