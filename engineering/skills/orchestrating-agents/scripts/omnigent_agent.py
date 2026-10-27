@@ -1988,19 +1988,19 @@ def tracked_changes(workspace: Path) -> list[str]:
     path with a tab and its content's hash, so a further edit to a file already changed at the
     start shows; none outside a checkout. Untracked files are a verifier's repro files and gate
     staging, not a mutation it left."""
+    # -z: raw paths, never quoted; a rename's old path follows as a field of its own
     out = subprocess.run(
-        ["git", "-C", str(workspace), "status", "--porcelain", "--untracked-files=no"],
+        ["git", "-C", str(workspace), "status", "--porcelain", "-z", "--untracked-files=no"],
         capture_output=True,
-        text=True,
         check=False,
     )
-    lines = out.stdout.splitlines() if out.returncode == 0 else []
-    changed = []
-    for line in lines:
-        path = workspace / line[3:].split(" -> ")[-1]  # a rename's new path
+    fields = out.stdout.decode(errors="surrogateescape").split("\0") if out.returncode == 0 else []
+    changed, i = [], 0
+    while i < len(fields) and fields[i]:
+        line, i = fields[i], i + (2 if fields[i][0] in "RC" else 1)
         try:
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-        except OSError:  # deleted, a directory, or a quoted name
+            digest = hashlib.sha256((workspace / line[3:]).read_bytes()).hexdigest()[:16]
+        except OSError:  # deleted, or a directory
             digest = "-"
         changed.append(f"{line}\t{digest}")
     return changed

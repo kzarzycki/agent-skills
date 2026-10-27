@@ -330,6 +330,16 @@ def test_a_host_child_that_reports_with_a_tracked_change_fails_the_wait_naming_i
     (repo / "a.txt").write_text("mutated again\n")
     with pytest.raises(omnigent_agent.Fail, match=r"changed while it ran: a\.txt"):
         omnigent_agent.wait(og, sid, report, baseline=start)
+    # a name git would quote (a space, a quote, a non-ASCII letter) keeps its hash too
+    for name in ("b c.txt", 'q"d.txt', "é.txt"):
+        (repo / name).write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", name], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", name], check=True)
+        (repo / name).write_text("first\n")
+        start = omnigent_agent.tracked_changes(repo)
+        (repo / name).write_text("second\n")
+        with pytest.raises(omnigent_agent.Fail, match=f"changed while it ran: .*{re.escape(name)}"):
+            omnigent_agent.wait(og, sid, report, baseline=start)
     # a cloud child's tree is not this one
     monkeypatch.setattr(omnigent_agent, "pr_report", lambda said, pr, since=None: "from the PR")
     og.reply = "https://github.com/o/r/pull/7#issuecomment-1"
