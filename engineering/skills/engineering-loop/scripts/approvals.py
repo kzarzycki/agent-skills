@@ -10,6 +10,7 @@
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # the queue's proof
     uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
+    uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
@@ -50,7 +51,12 @@ PR or an issue it names, a risk rule matching (below) unless under `spec.auto: t
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
 failure to add it and carrying on. A push removes the label (the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
-GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
+GitHub's repository activity for the head branch. On a PR into a feature branch (any base but the repository's
+default branch) the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
+`By: delegate`), and refuses a PR into the default branch. There a label no newer than such a record is no approval,
+since only the owner approves a merge to the default branch; and a PR from a branch into the default branch is high
+risk while any PR merged into that branch carries `risk:high`, so a feature branch's merge waits for the owner.
+No PR yet, or every proof held: exit 0.
 With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
 `Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
@@ -227,6 +233,8 @@ SIZE_ORDER = ["size:XS", "size:S", "size:M", "size:L", "size:XL"]
 SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
 POINTS = ("spec", "plan")
+# the `By:` of the delegated approver's merge record (delegate), which owner_waits refuses on the default branch
+DELEGATE = "delegate"
 MERGE_LABEL = "approved:merge"
 # a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
@@ -252,7 +260,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue mergeQueueEntry {{ state enqueuedAt headCommit {{ checkSuites {{ totalCount }} }} }} body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue mergeQueueEntry {{ state enqueuedAt headCommit {{ checkSuites {{ totalCount }} }} }} body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -650,6 +658,11 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
+    if not marked and default(pull) and not pull["isCrossRepository"]:
+        # a feature branch's merge to the default branch carries every high-risk PR that landed in it
+        marked = [
+            f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])
+        ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
     if not spec_auto(loop):
@@ -664,6 +677,33 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     if capped(pull, limit):
         return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
     return None
+
+
+def default(pull: dict[str, Any]) -> bool:
+    """Whether the PR's base is its repository's default branch; any other base is a feature branch."""
+    return pull["baseRefName"] == pull["baseRepository"]["defaultBranchRef"]["name"]
+
+
+def merged_high(branch: str) -> list[int]:
+    """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
+    # ponytail: one page of 100; page when a feature branch takes more high-risk PRs than that
+    found = gh(
+        "pr",
+        "list",
+        "--base",
+        branch,
+        "--state",
+        "merged",
+        "--label",
+        RISK_LABEL,
+        "--limit",
+        "100",
+        "--json",
+        "number",
+        "--jq",
+        ".[].number",
+    )
+    return [int(number) for number in found.split()]
 
 
 def signoff(
@@ -1613,7 +1653,9 @@ def owner_waits(
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
     """A line while the change is high risk (risk) and the owner's `approved:merge` label is not on the PR, added
-    after the head's push. `pushed(pull)` is when the head was pushed (default: GitHub's repository activity)."""
+    after the head's push; on a PR into the default branch, a label no newer than a delegated record (delegate) is
+    the delegate's, not the owner's. `pushed(pull)` is when the head was pushed (default: GitHub's repository
+    activity)."""
     where, found = f"PR #{pull['number']}", []
     why = risk(pull, issues, loop)
     if why is None:
@@ -1638,6 +1680,14 @@ def owner_waits(
     elif added <= when:  # ISO 8601 in UTC, so it orders as text
         found.append(
             f"{where}: `{MERGE_LABEL}` was added before the head was pushed: the owner adds it again"
+        )
+    elif default(pull) and any(
+        (parsed(note["body"], "merge") or {}).get("by") == DELEGATE and note["createdAt"] >= added
+        for note in notes(pull)
+    ):
+        found.append(
+            f"{where}: `{MERGE_LABEL}` is the delegated approval, which covers a PR into a feature branch, not into"
+            f" {pull['baseRefName']}: the owner removes it and adds it again"
         )
     return found
 
@@ -2455,6 +2505,26 @@ def approve(point: str, number: int) -> int:
     return 0
 
 
+def delegate(number: int) -> int:
+    """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
+    label, then the record that names it the delegate's, so owner_waits refuses it once the PR targets the default
+    branch, whose merge only the owner approves. Into the default branch it is refused."""
+    pull = pull_request(number)
+    if default(pull):
+        raise Refused(
+            f"PR #{number} targets {pull['baseRefName']}, the default branch: only the owner approves its merge"
+        )
+    # the label first, so the record is never older than the label it names
+    label(number, MERGE_LABEL, add=True)
+    try:
+        comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+    except subprocess.CalledProcessError:
+        # a label with no record reads as the owner's once the PR targets the default branch: take it off again
+        label(number, MERGE_LABEL, add=False)
+        raise
+    return 0
+
+
 # a report's finding heading: `### <id> (<severity>) <path>:<line>: <title>`, the line a number or a range `<n>-<m>`
 FINDING = re.compile(
     r"###[ \t]+(\S+)[ \t]+\((blocker|major|minor)\)[ \t]+`?([^\s`]+?):(\d+(?:-\d+)?)`?:?[ \t]+(.+?)[ \t]*",
@@ -2744,6 +2814,8 @@ def main(argv: list[str]) -> int:
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest
     approving.add_argument("--by", choices=("owner",), required=True)
+    delegating = commands.add_parser("delegate")
+    delegating.add_argument("pr", type=int)
     posting = commands.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
@@ -2774,6 +2846,8 @@ def main(argv: list[str]) -> int:
             return batch(args.pr, args.merge, args.batch, args.exit, args.log)
         if args.command == "approve":
             return approve(args.point, args.number)
+        if args.command == "delegate":
+            return delegate(args.pr)
         if args.command == "local-ci":
             if (args.pr is None) != args.record:
                 raise Refused(

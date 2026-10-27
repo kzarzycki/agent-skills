@@ -28,7 +28,9 @@ risk:
 ## Approvals
 
 Specs and merges are approved by policy, so work doesn't stop on them; the owner sees only
-what no automated check can settle.
+what no automated check can settle. A `risk:high` PR into a feature branch lands on the chief
+of staff's `approved:merge` (`approvals.py delegate`), so dependent work doesn't stall; the
+branch's merge to main waits for the owner.
 
 ## Cloud worker
 

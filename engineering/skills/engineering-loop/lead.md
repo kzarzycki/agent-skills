@@ -156,7 +156,8 @@ design, wireframes included for a UI, and delegate the rest.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
      `approved:merge` label on the head that lands (SKILL.md, Approvals and proof); you
-     never add it. `land` adds `risk:high` to the PR when it infers the risk, and a failure
+     never add it. Into a feature branch, the delegated approver loop.md names may add it
+     with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
    - End the PR body with `Impl: <signature>`, the `AGENT_SIGNATURE=` line atop your brief (or the worker's, when it did most
      of the work; `?` for any part you can't know), instead of the harness's "Generated with" footer.
