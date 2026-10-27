@@ -60,6 +60,7 @@ TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 PUBLISH, PUBLISHED = approvals.publish, approvals.published
+MERGED_HIGH = approvals.merged_high
 
 
 @pytest.fixture(autouse=True)
@@ -72,6 +73,7 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     # a local-ci pass stays in its clone: `statuses` stands in for GitHub where a test shares one
     monkeypatch.setattr(approvals, "publish", lambda _record: None)
     monkeypatch.setattr(approvals, "published", lambda _head: None)
+    monkeypatch.setattr(approvals, "merged_high", lambda _branch: [])
 
 
 @pytest.fixture(autouse=True)
@@ -200,7 +202,10 @@ def pull(
         baseRefOid=BASE,
         headRefName="feature",
         headRefOid=HEAD,
-        baseRepository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
+        baseRepository={
+            "nameWithOwner": "kzarzycki/scratch-gate-revert",
+            "defaultBranchRef": {"name": "main"},
+        },
         files={"nodes": [{"path": path} for path in files]},
         latestReviews={
             "nodes": [{"state": state, "author": {"login": "reviewer"}} for state in latest]
@@ -783,6 +788,65 @@ def test_a_label_added_again_after_the_push_is_the_approval() -> None:
         {"createdAt": LABELED, "label": {"name": "approved:merge"}},
     ]
     assert merge(again, [approved(1, "area:web")]) == []
+
+
+DELEGATED = note(record("merge", "delegate"), createdAt="2026-10-01T11:00:01Z")
+
+
+def test_a_delegated_label_approves_a_merge_into_a_feature_branch_only() -> None:
+    """The delegate's record is newer than the label it names; the owner's label added after it is the owner's."""
+    high = ("risk:high", "approved:merge")
+    into_main = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
+    assert merge(into_main, [approved(1, "area:web")]) == [
+        (
+            "PR #7: `approved:merge` is the delegated approval, which covers a PR into a feature branch, not into"
+            " main: the owner removes it and adds it again"
+        )
+    ]
+    into_feature = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
+    into_feature["baseRefName"] = "stream"
+    assert merge(into_feature, [approved(1, "area:web")]) == []
+    owners = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
+    owners["timelineItems"]["nodes"].append(
+        {"createdAt": "2026-10-01T12:00:00Z", "label": {"name": "approved:merge"}}
+    )
+    assert merge(owners, [approved(1, "area:web")]) == []
+
+
+def test_a_branchs_merge_to_the_default_branch_carries_its_high_risk_prs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[str] = []
+    monkeypatch.setattr(approvals, "merged_high", lambda branch: asked.append(branch) or [12, 15])
+    assert merge(pull(reviews=(VERDICT,)), [approved(1, "area:web")]) == [
+        HELD + "`risk:high` is on #12, merged into feature, #15, merged into feature"
+    ]
+    into_feature = pull(reviews=(VERDICT,))
+    into_feature["baseRefName"] = "stream"
+    assert merge(into_feature, [approved(1, "area:web")]) == []
+    assert asked == ["feature"]
+    monkeypatch.undo()
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(approvals, "gh", lambda *args: calls.append(args) or "12\n15\n")
+    assert approvals.merged_high("feature") == [12, 15]
+    assert calls == [
+        (
+            "pr",
+            "list",
+            "--base",
+            "feature",
+            "--state",
+            "merged",
+            "--label",
+            "risk:high",
+            "--limit",
+            "100",
+            "--json",
+            "number",
+            "--jq",
+            ".[].number",
+        )
+    ]
 
 
 def test_the_head_was_pushed_when_the_branchs_activity_last_names_it(
@@ -1400,6 +1464,45 @@ def test_approve_refuses_the_coordinator(
     assert exited.value.code == 2
     assert "invalid choice: 'coordinator'" in capsys.readouterr().err
     assert github == []
+
+
+def test_delegate_labels_then_records_a_feature_branch_pr_and_refuses_the_default_branch(
+    github: list[tuple[Any, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pr = pull()
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    assert approvals.main(["delegate", "7"]) == 1
+    assert capsys.readouterr().out == (
+        "PR #7 targets main, the default branch: only the owner approves its merge\n"
+    )
+    assert github == []
+    pr["baseRefName"] = "stream"
+    assert approvals.main(["delegate", "7"]) == 0
+    assert github == [
+        ("label", 7, "approved:merge", True),
+        ("comment", 7, "Approved: merge\nBy: delegate\n"),
+    ]
+
+
+def test_delegate_takes_its_label_off_again_when_the_record_fails(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label without its record would read as the owner's once the PR is retargeted to the default branch."""
+    pr = pull()
+    pr["baseRefName"] = "stream"
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+
+    def failing(number: int, body: str) -> None:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 503: Service Unavailable")
+
+    monkeypatch.setattr(approvals, "comment", failing)
+    assert approvals.main(["delegate", "7"]) == 1
+    assert github == [
+        ("label", 7, "approved:merge", True),
+        ("label", 7, "approved:merge", False),
+    ]
 
 
 def test_a_re_approval_says_why_and_minimizes_every_record_it_supersedes(
@@ -2258,6 +2361,21 @@ def test_land_merges_a_proven_ready_pr_at_its_head(
     assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
 
 
+def test_land_merges_a_high_risk_pr_on_a_delegated_label_into_a_feature_branch_only(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
+    pr = landing["pull"]
+    pr["labels"]["nodes"] += [{"name": "risk:high"}, {"name": "approved:merge"}]
+    pr["timelineItems"]["nodes"].append({"createdAt": LABELED, "label": {"name": "approved:merge"}})
+    pr["comments"]["nodes"].append(DELEGATED)
+    code, lines, calls = landed(capsys, landing)
+    assert (code, calls) == (approvals.WAITING, [])
+    assert "`approved:merge` is the delegated approval" in lines[-1]
+    pr["baseRefName"] = "stream"
+    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+
+
 def test_land_marks_a_proven_draft_ready_and_waits_for_the_ci_that_starts(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -2860,6 +2978,32 @@ def test_land_wait_asks_for_the_owners_label_only_once_ci_has_passed_the_head(
         ["PR #7: `check` is IN_PROGRESS on the head commit", GITHUB, GITHUB],
         [],
     )
+
+
+def test_land_wait_reads_a_branchs_high_risk_prs_again_on_every_poll(
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A high-risk PR merged into the feature branch while its merge to main waits holds that merge for the owner."""
+    landing["pull"] = proven(mergeStateStatus="UNKNOWN")
+    ready = proven()
+    later += [ready]
+    monkeypatch.setattr(
+        approvals, "merged_high", MERGED_HIGH
+    )  # the real one, asking GitHub each time
+    github = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "list"):
+            return "12\n" if landing["pull"] is ready else ""
+        return github(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    code, lines, calls = waited(capsys, landing)
+    assert (code, calls) == (approvals.WAITING, [])
+    assert lines[-1] == HELD + "`risk:high` is on #12, merged into feature"
 
 
 def test_land_wait_turns_on_auto_merge_and_ends_once_github_merges(
