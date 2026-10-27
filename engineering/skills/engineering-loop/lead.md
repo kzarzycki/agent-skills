@@ -109,13 +109,17 @@ design, wireframes included for a UI, and delegate the rest.
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
    yours while it reviews and no commit of yours moves the head under review. Copy into its
-   `tmp/loop/` the proof logs and, on a later pass, the previous report and its repros, and
-   name those copies, since a read outside its workspace is prompted; give it the path of
-   `verifier.md`, the base, the reviewed
-   head, the spec number, the priorities for this change, and a report path under
-   `tmp/loop/` in that worktree, which the project gitignores: outside its workspace a Codex
-   child's sandbox refuses the write and a Claude Code child is prompted for a read (denied
-   in auto mode), which nobody answers. Its model is the default, or, where the PR matches loop.md's
+   `tmp/loop/` the proof logs and, on a later pass, the previous report (as the
+   `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
+   workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
+   spec number, the priorities for this change, and a report path under `tmp/loop/` in that
+   worktree, which the project gitignores. `uv run scripts/approvals.py brief <pr>
+   --priorities <file> --proof <log>…`, run from that worktree, prints that brief with every
+   fact but the priorities read from the PR, the previous report and its head from pass 2,
+   and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
+   appended; it refuses a proof log whose first line isn't the head. The report path matters:
+   outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
+   prompted for a read (denied in auto mode), which nobody answers. Its model is the default, or, where the PR matches loop.md's
    `Verifier model:` line, the newest-generation model of that tier in the verifier's family
    (SKILL.md, Models). A lower-tier verdict that says `Risk: high`, even a satisfied one, calls
    for a default-tier pass on the head before landing. Name the family that wrote the diff when the backend takes it
@@ -260,7 +264,9 @@ design, wireframes included for a UI, and delegate the rest.
    real data against a reference the code did not produce, in the order of loop.md § Acceptance references. The
    spec's acceptance examples name which. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
-10. **Clean up** once acceptance has run, pass or fail. Close the agents. For every
+10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
+   processes you started, as worker.md, Report says, since a shared pattern kills other
+   agents' runs too. For every
    worktree your notes list, children's before yours (each verifier's detached one
    included), since removing yours first leaves
    theirs as stale entries, run its teardown (loop.md § Worktree), then, from the main checkout,
