@@ -14,6 +14,7 @@ def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
         "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
         "OMNIGENT_SESSION_ID",
         "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
+        "LOOP_HEAVY_LOCK",
     ):
         monkeypatch.delenv(var, raising=False)
 
