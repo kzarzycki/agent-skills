@@ -4,6 +4,7 @@
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
+    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -58,7 +59,10 @@ not read); exit 1 when one failed;
 accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
 tool call it answered; exit 1 when none was pending (naming any pending question and
 ``relay --answer``) or a resolve failed. Whether an agent may
-approve is the project's policy, not this script's. ``status`` prints one line per session:
+approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
+seconds pass (exit 6), so a pending condition is one foreground call. ``run`` and ``wait`` fail, naming
+the paths, when a host child reports with a tracked change in its workspace that ``run`` did not see
+at the start (a standalone ``wait``: any). ``status`` prints one line per session:
 its state, queued inputs and last assistant message (``(none)`` before its first).
 ``report`` prints a file through the session's file API, from any host: an absolute ``<path>`` is
 read on the session's host, a relative one in its workspace, and no path is the report in its
@@ -310,6 +314,8 @@ Standing decisions:
 # ponytail: a knob; the browser marks a line stale past 10 min, so keep it well under that.
 LABEL_SECONDS = 60.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
+LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
+EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -1691,6 +1697,7 @@ def wait(
     verdict: bool = False,
     since: int | None = None,
     pr: int | None = None,
+    baseline: list[str] | None = None,
 ) -> str:
     """Return the report path, or raise with the child's last message once it cannot deliver one.
 
@@ -1703,7 +1710,10 @@ def wait(
     ``settled``, read again first, since the child can rewrite it until its turn ends. With ``pr``
     (a cloud worker), a turn whose last message links a comment on that PR (created after ``since``)
     has that comment's body written to ``report`` as the report; a file already there never counts,
-    since only this wait writes it.
+    since only this wait writes it. A host child's report fails the wait while its workspace holds
+    a tracked change missing from ``baseline`` (its ``tracked_changes`` at the start; without one,
+    any), naming each path: the child left a mutation or an edit behind. A cloud child (``pr``) or
+    one on another host is not checked here, since its tree is not this one.
     """
     deadline = time.monotonic() + timeout
     idle_since, nudged = None, False
@@ -1809,7 +1819,49 @@ def wait(
                 f"session {sid} gave no {'verdict' if verdict else 'report'} after {timeout:.0f}s\nlast message: {said}"
             )
         time.sleep(POLL_SECONDS)
+    workspace = info.get("workspace")
+    here = not info.get("host_id") or str(info["host_id"]) == og.host_id
+    if workspace and here and not pr:
+        before = set(baseline or [])
+        if left := [line for line in tracked_changes(Path(workspace)) if line not in before]:
+            raise Fail(
+                f"session {sid} reported, but left tracked changes in {workspace}: "
+                + ", ".join(line[3:] for line in left)
+                + f"\nreport: {report}"
+            )
     return str(report)
+
+
+def tracked_changes(workspace: Path) -> list[str]:
+    """``git status --porcelain --untracked-files=no`` of ``workspace``, a line per changed tracked
+    path; none outside a checkout. Untracked files are a verifier's repro files and gate staging,
+    not a mutation it left."""
+    out = subprocess.run(
+        ["git", "-C", str(workspace), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return out.stdout.splitlines() if out.returncode == 0 else []
+
+
+def wait_until(cmd: list[str], every: float, limit: float) -> int:
+    """Run ``cmd`` every ``every`` seconds until it exits 0 (return 0) or ``limit`` seconds pass
+    (return ``LIMIT``). No shell unless ``cmd`` is one."""
+    deadline = time.monotonic() + limit
+    while True:
+        try:
+            if subprocess.run(cmd, check=False).returncode == 0:
+                return 0
+        except OSError as e:
+            usage = Fail(f"wait-until: {cmd[0]}: {e.strerror}")
+            usage.code = 2
+            raise usage from e
+        left = deadline - time.monotonic()
+        if left <= 0:
+            print(f"wait-until: {' '.join(cmd)} did not hold within {limit:.0f}s", file=sys.stderr)
+            return LIMIT
+        time.sleep(min(every, left))
 
 
 def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
@@ -3611,6 +3663,15 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("wait")
     p.add_argument("session")
     p.add_argument("report", type=Path)
+    p = sub.add_parser(
+        "wait-until",
+        description=f"run CMD until it exits 0 (exit 0), or exit {LIMIT} once --limit passes",
+    )
+    p.add_argument(
+        "--every", type=float, required=True, help=f"seconds between runs, at most {EVERY_MAX:.0f}"
+    )
+    p.add_argument("--limit", type=float, required=True, help="seconds before giving up")
+    p.add_argument("until", nargs=argparse.REMAINDER, metavar="-- CMD")
     for p in sub.choices.values():
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
@@ -3639,6 +3700,7 @@ def main(argv: list[str] | None = None) -> int:
             "status",
             "direct",
             "owner-said",
+            "wait-until",
         ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
@@ -3671,6 +3733,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "signature":
             print(running_signature())
             return 0
+        if args.cmd == "wait-until":
+            cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
+            if not cmd or not 0 < args.every <= EVERY_MAX:
+                usage = Fail(f"wait-until needs -- CMD and 0 < --every <= {EVERY_MAX:.0f}")
+                usage.code = 2
+                raise usage
+            return wait_until(cmd, args.every, args.limit)
         if args.cmd == "capacity":
             ok, line = capacity()
             print(line)
@@ -3856,6 +3925,8 @@ def main(argv: list[str] | None = None) -> int:
             pin_environment(workspace)
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
+        # what the child's tree held before it ran: wait fails only on a change it made
+        baseline = tracked_changes(workspace) if not remote else None
         # A followed lead's own top-level helper (an install or a salvage on another host) is
         # its lead's to hear, not the chief of staff's: subscribe the lead, arm nothing.
         # ponytail: a helper whose lead is gone pages no one; its lead's revive or reap finds it.
@@ -3898,7 +3969,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(sid, flush=True)
         if args.cmd == "run":
-            print(wait(og, sid, report, args.timeout, verifier, launched, args.pr))
+            print(wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline))
             arm_quietly(registry, sid)
             if not args.keep:
                 archive_delivered(og, sid)
