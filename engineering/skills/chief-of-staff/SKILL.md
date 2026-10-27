@@ -299,14 +299,15 @@ a successor on any host reads the current one:
   not yours, its file is the one there, since this checkout's may be older: read it on
   that host (a pushed board you pull instead), or ask the owner to paste it when you cannot
   reach the host, since rebuilding
-  from transcripts is what the file exists to avoid. Once the predecessor's turn has ended,
-  archive it (`reap <session>`, which keeps its transcript): archiving drops its
-  subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
-  staff would both act, and it marks every file that names it in Owner contact as stale. When
-  `reap` keeps it (`kept (busy)`: the owner switched away mid-turn, or Omnigent lost its turn
-  end), write `to archive` beside its id in Owner contact and reap it again at your next
-  wake; when it still reads `running` then, ask the owner whether it still works, since a lost
-  turn end and a live turn look the same from here. Stop
+  from transcripts is what the file exists to avoid. Archive the predecessor at takeover
+  (`reap <session>`, which keeps its transcript): archiving drops its subscriptions, which
+  would otherwise wake it on every lead's notice, so two chiefs of staff would both act, and
+  it marks every file that names it in Owner contact as stale. `reap` keeps one whose turn
+  still runs (`kept (running)`: the owner switched away mid-turn, or Omnigent lost its turn
+  end): write `to archive` beside its id in Owner contact and run `reap` on it again at every
+  wake until it prints `archived`, then drop the mark. The first wake it is still kept, ask
+  the owner once whether it still works, since a lost turn end and a live turn look the same
+  from here and only the owner can stop its turn. Stop
   its supervisor too (Follow in the file), since it notifies the archived id, and start yours
   with `--console` on the same registry with your own id: the `follow` lines stay in it, and the
   state file beside it keeps the settled events, nudge and revive budgets, open intents, queued
