@@ -1843,13 +1843,70 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
     ]
     assert omnigent_agent.PREAMBLE == DEFAULT_PREAMBLE
     og = FakeOmnigent()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", "roles/worker.md", 0)
+    lock = f"LOOP_HEAVY_LOCK={tmp_path / 'engineering-loop/heavy-coord.lock'}\n"
     assert (
         tmp_path / "r.md.brief"
-    ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + DEFAULT_PREAMBLE.format(
+    ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + lock + DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
     ) + "do X"
     assert og.top_level == [False] and og.roles == ["roles/worker.md"]
+
+
+def test_children_of_one_lead_share_one_heavy_lock_and_another_lead_s_get_their_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    def lock_line(name: str, agent: str = "claude") -> str | None:
+        og = FakeOmnigent()
+        report = tmp_path / f"{name}.md"
+        sid, _ = omnigent_agent.start(og, agent, name, "do X", report, None, 0)
+        sent = next(i for i in og.items(sid) if i["type"] == "message")["content"][0]["text"]
+        text = (
+            omnigent_agent.brief_of(report).read_text()
+            if report.with_suffix(".md.brief").exists()
+            else sent
+        )
+        return next((x for x in text.splitlines() if x.startswith("LOOP_HEAVY_LOCK=")), None)
+
+    assert lock_line("outside") is None  # no lead, nothing changes
+    monkeypatch.setenv("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID", "lead1")
+    first, second = lock_line("w1"), lock_line("w2")
+    assert (
+        first == second == f"LOOP_HEAVY_LOCK={tmp_path / 'cache/engineering-loop/heavy-lead1.lock'}"
+    )
+    assert lock_line("cloud", "claude-cloud") is None  # its tools run in a VM with its own cores
+    og = FakeOmnigent()  # another lead: it caps its own children
+    omnigent_agent.start(og, "claude", "l", "x", tmp_path / "l.md", None, 0, top_level=True)
+    assert "LOOP_HEAVY_LOCK" not in omnigent_agent.brief_of(tmp_path / "l.md").read_text()
+    monkeypatch.setenv("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID", "lead2")
+    assert lock_line("w3") not in (first, None)
+    monkeypatch.setenv("LOOP_HEAVY_LOCK", "/l/lead1.lock")  # a child starting children keeps it
+    assert lock_line("w4") == "LOOP_HEAVY_LOCK=/l/lead1.lock"
+    # a worker of lead1 starting its own child, with no LOOP_HEAVY_LOCK of its own: still lead1's
+    monkeypatch.delenv("LOOP_HEAVY_LOCK")
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "worker1")
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead1")
+    assert lock_line("w5") == first
+
+
+def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_through(
+    tmp_path: Path,
+) -> None:
+    import fcntl
+
+    text = (Path(__file__).resolve().parents[1] / "skills/engineering-loop/worker.md").read_text()
+    command = re.search(r"`(perl -MFcntl=:flock .*?)\s+<path> mise run check`", text, re.DOTALL)
+    assert command, "worker.md's gate step names the lock command"
+    lock = tmp_path / "heavy.lock"
+    argv = ["sh", "-c", command.group(1) + ' "$0" sh -c "exit 7"', str(lock)]
+    with lock.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess.run(argv, timeout=1, check=False)
+    assert subprocess.run(argv, timeout=10, check=False).returncode == 7
 
 
 def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
@@ -1860,6 +1917,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert "parent_session_id" not in bodies[-1] and bodies[-1]["project_id"] == "p1"
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )

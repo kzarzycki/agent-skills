@@ -925,6 +925,22 @@ def parent_id() -> str:
     return os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
 
 
+def heavy_lock() -> str:
+    """The lock a lead's children on this host share around each heavy step, so a lead running
+    two workers holds one heavy slot, not two (the host's slot counts every caller): the caller's
+    ``LOOP_HEAVY_LOCK`` when set, else one per runner's primary session (the lead, in its children
+    and theirs too) beside the host's gate slot (``gate.1.lock``), since one lead starts children
+    from several worktrees; ``""`` outside a session. A session gets no environment from its starter, so the
+    path goes atop the brief, as ``AGENT_SIGNATURE`` does."""
+    if path := os.environ.get("LOOP_HEAVY_LOCK"):
+        return path
+    if not (sid := parent_id() or own_id()):
+        return ""
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "engineering-loop"
+    cache.mkdir(parents=True, exist_ok=True)
+    return str(cache / f"heavy-{sid}.lock")
+
+
 def own_id() -> str:
     """The session this runs in: a child's own id, not its lead's. Codex names it in
     OMNIGENT_SESSION_ID, a Claude pane in OMNIGENT_TERMINAL_LAUNCH_SESSION_ID; else the primary."""
@@ -1611,8 +1627,12 @@ def start(
         model or (agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")) or None
     )
     sig = signature(agent if agent in AGENTS else og.harness(agent), chosen)
+    by_file = briefed_by_file(og, agent, host_id)
+    # a cloud VM or another host has its own cores, and a top-level lead caps its own children
+    lock = heavy_lock() if by_file and not top_level else ""
     full = (
         f"AGENT_SIGNATURE={sig}\n"
+        + (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
         + (PR_PREAMBLE if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
             report=report,
             pr=pr,
@@ -1623,7 +1643,6 @@ def start(
     )
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
-    by_file = briefed_by_file(og, agent, host_id)
     if not by_file:
         # A file here is not on that host, nor where a non-native agent runs its tools (a cloud
         # VM); inline, a Claude lead may read it as pasted text and ask its starter for a go-ahead.
