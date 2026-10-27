@@ -23,7 +23,7 @@ only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict
 path of a question the child wrote (``<report>.question``) instead of a report; exit 1 prints the
 reason and the child's last message (for a failed session, its ``last_task_error`` and runner log)
 and writes ``FAILED: <code>: <message>`` to the report path, as a SIGTERM, SIGINT or SIGHUP does
-(exit 128 plus its number), unless the child wrote there; no reader takes that line as a report.
+(exit 128 plus its number), when no report is there (the child's, or an earlier pass's); no reader takes that line as a report.
 A ``start`` whose launch fails or is stopped writes it the same way.
 A report already at the path is a pass before: only one written after the launch counts. It counts
 once final (``settled``): the child's turn has ended and the file is unchanged since, since a child
@@ -432,20 +432,14 @@ def launcher_failed(report: Path) -> bool:
         return False
 
 
-def write_failed(
-    og: Omnigent, sid: str | None, report: Path, launched: int | None, e: Fail
-) -> None:
+def write_failed(og: Omnigent, sid: str | None, report: Path, e: Fail) -> None:
     """Write ``FAILED: <code>: <message>`` to ``report`` for a ``run`` or ``start`` that ends
     without one. The code is the child's terminal state and its ``last_task_error`` code, else the
     launcher's own: ``interrupted``, ``not-started``, ``timeout``, ``blocked`` on a prompt,
-    ``unreachable``. A file newer than ``launched`` is the child's and stays, since a report it
-    wrote is never overwritten; an earlier launch's ``FAILED:`` line is replaced by this one's."""
-    try:
-        mtime = report.stat().st_mtime_ns
-        if mtime > (launched if launched is not None else -1) and not launcher_failed(report):
-            return
-    except FileNotFoundError:
-        pass
+    ``unreachable``. Only an absent file or an earlier launch's ``FAILED:`` line is replaced: a
+    report there, the child's or an earlier pass's a fix pass reuses the path of, stays."""
+    if report.exists() and not launcher_failed(report):
+        return
     code = "interrupted" if isinstance(e, Interrupted) else "not-started"
     if sid and not isinstance(e, Interrupted):
         try:
@@ -3962,7 +3956,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     args = ap.parse_args(argv)
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
-    unreported: tuple[Path, int | None] | None = None
+    unreported: Path | None = None
     stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
     launches = args.cmd in ("run", "start")
     handlers = {s: signal.signal(s, interrupt) for s in stops} if launches else {}
@@ -4183,7 +4177,7 @@ def main(argv: list[str] | None = None) -> int:
             else None
         )
         if launches and here:  # what ends it without a report writes FAILED there
-            unreported = (report, launched)
+            unreported = report
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
@@ -4257,7 +4251,7 @@ def main(argv: list[str] | None = None) -> int:
         if e.code == ASKED and sid:  # the caller has the question
             arm_quietly(registry, sid)
         elif unreported:
-            write_failed(og, sid, *unreported, e)
+            write_failed(og, sid, unreported, e)
         print(e, file=sys.stderr)
         return e.code
     finally:

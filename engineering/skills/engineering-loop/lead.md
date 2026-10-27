@@ -295,6 +295,8 @@ in-session background shells. Start each with `exec`, or in its own process grou
 `trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
 you have moved past; count runs with a pattern anchored at the interpreter
 (`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.
+A run started with `exec` leaves no exit file, since nothing runs after it: judge its end by its
+log or report, or use the trap form where its exit code matters.
 Wait on a child or a run by whether it is alive, never on its report file alone: your backend's
 status (Omnigent: `omnigent_agent.py status <session>`) or the run's pid and exit code, since a
 child that died, or a `run` killed mid-retry, writes nothing and a file wait polls on for good.

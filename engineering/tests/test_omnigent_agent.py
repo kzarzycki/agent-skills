@@ -2529,6 +2529,12 @@ def test_a_failed_run_never_overwrites_a_report_its_child_wrote(
     argv = ["run", "claude", "t", "b.md", "r.md", "--role", "verifier.md", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv + ["--same-family"]) == 1  # no SATISFIED: line, no verdict
     assert report.read_text() == "C1: findings, gate still running\n"
+    # nor an earlier pass's report a fix pass reuses the path of
+    report.write_text("pass 1 report: C1 major\n")
+    og.final = "failed"
+    argv = ["run", "claude", "t2", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert report.read_text() == "pass 1 report: C1 major\n"
 
 
 def test_a_re_attached_wait_takes_the_child_s_report_over_run_s_failed_line(
