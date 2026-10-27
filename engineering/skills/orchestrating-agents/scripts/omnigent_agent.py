@@ -3889,6 +3889,7 @@ def main(argv: list[str] | None = None) -> int:
                 then.write_text(text)
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
+            baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds)
             # armed once the message is in the history, as start arms: before it, the report or
             # question of the turn before reads as newer than the last instruction; never for
@@ -3897,7 +3898,9 @@ def main(argv: list[str] | None = None) -> int:
                 arm_quietly(
                     registry, args.session, report, then=then.resolve(), verdict=args.verdict
                 )
-            print(wait(og, args.session, report, args.timeout, args.verdict, since, args.pr))
+            print(
+                wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
+            )
             arm_quietly(registry, args.session)
             return 0
         if args.cmd == "run" and args.top_level:
