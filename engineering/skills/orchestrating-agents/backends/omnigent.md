@@ -79,13 +79,15 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
-(`scope=user`). Several agents can share a name, since each upload of one spec registers another
-agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
+(`scope=user`). `claude` and `codex` take the server's native agent, though the UI may register a
+user copy of it. Several user agents can share a name, since each upload of one spec registers
+another agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
 identity and bookkeeping (`id`, `version`, `created_at`, `updated_at`, `object`), the name starts the newest by `created_at`: copies of one spec can't be told
 apart, and an agent record has no host (`--host` picks that per session), so an id in project
 config would only be wrong on another server. Both are compared since each holds fields the other
 lacks: the record policies, skills and terminals, the config instructions and model. When they
-differ, the name fails, listing their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
+differ, or a server agent shares the name (only a user agent has a config to compare), the name
+fails, listing their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
 from a file as the aliases do; any other may run its tools on another machine, so its brief goes
 inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases only (`--model`
 works for any), and so does permission mode, except Antigravity: it asks for approval of every
@@ -117,7 +119,11 @@ repository's counts for nothing. The nudge asks for the comment, and a second tu
 without one fails. `run` and `wait` finish a worker once its report is in, unless given
 `--keep`: a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
-round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). `send --pr <n>`
+round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
+child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
+message), `run` starts once more in a fresh session with the same brief, and one that stalls
+(`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
+message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
 workspace is, since the report is the file `wait` writes here, and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
@@ -156,6 +162,9 @@ fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
 message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
 server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
 own posts, which read no history, still count a timeout as a failure and try again.
+`relay`, `send`, `status` and `report` take a session id or a unique prefix of one (the six
+characters other tools print), looked up among every session you can see, archived ones
+included; a prefix several sessions share fails, listing them.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
@@ -166,6 +175,8 @@ so a report written in stages does not end it early. `wait` has no launch time, 
 path a pass before already wrote it returns that report at once: check the report's time
 against the run's start before taking it. Start a second only for a child that failed or
 is gone: two children on one item write the same branch.
+An HTTP failure names the server's reason after its status (`HTTP 400 Bad Request: <message>`),
+from at most 2 KB of the body read within 2 s, so a 400 tells a bad brief from a refusal.
 
 **Whoever starts a worker collects it.** Omnigent files every child under the runner's
 primary session, so a fork's or a worker's own children notify the lead, not the
@@ -585,7 +596,7 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each, and prints which it kept. A finish that fails is printed and the rest still run, and
+each and `already archived` for one finished before, and prints which it kept. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
 which finishes it on return, never reaped. Run `reap --children
