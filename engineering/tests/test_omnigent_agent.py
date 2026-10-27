@@ -6058,6 +6058,36 @@ def test_a_message_argument_is_a_file_or_the_text_itself(
     )
 
 
+def test_a_directory_or_a_path_through_a_file_names_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "brief folder").mkdir()
+    (tmp_path / "brief.md").write_text("a file")
+    for text in ("brief folder", "brief.md/do this next"):
+        assert omnigent_agent.text_or_file(text) == (text, None)
+    for word in ("briefs", "brief.md/missing.md"):
+        with pytest.raises(omnigent_agent.Fail) as e:
+            omnigent_agent.text_or_file(word)
+        assert (str(e.value), e.value.code) == (
+            f"{word}: no such file; pass a file or the text itself",
+            2,
+        )
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    capsys.readouterr()
+    assert omnigent_agent.main(["relay", sid, "briefs"]) == 2
+    assert "briefs: no such file" in capsys.readouterr().err
+    if os.geteuid():  # root reads any file
+        (tmp_path / "locked.md").write_text("x")
+        (tmp_path / "locked.md").chmod(0)
+        with pytest.raises(omnigent_agent.Fail) as e:
+            omnigent_agent.text_or_file("locked.md")
+        assert e.value.code == 1  # a file that exists stays a read error
+
+
 def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
