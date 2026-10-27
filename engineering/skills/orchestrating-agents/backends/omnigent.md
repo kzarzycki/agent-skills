@@ -162,6 +162,9 @@ fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
 message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
 server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
 own posts, which read no history, still count a timeout as a failure and try again.
+`relay`, `send`, `status` and `report` take a session id or a unique prefix of one (the six
+characters other tools print), looked up among every session you can see, archived ones
+included; a prefix several sessions share fails, listing them.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
@@ -172,6 +175,8 @@ so a report written in stages does not end it early. `wait` has no launch time, 
 path a pass before already wrote it returns that report at once: check the report's time
 against the run's start before taking it. Start a second only for a child that failed or
 is gone: two children on one item write the same branch.
+An HTTP failure names the server's reason after its status (`HTTP 400 Bad Request: <message>`),
+from at most 2 KB of the body read within 2 s, so a 400 tells a bad brief from a refusal.
 
 **Whoever starts a worker collects it.** Omnigent files every child under the runner's
 primary session, so a fork's or a worker's own children notify the lead, not the
