@@ -34,6 +34,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    with its log, pid and exit code in files, and is polled, since a foreground call times out
    and Claude Code's low-memory reaper stops in-session background shells; never end a turn
    saying you are waiting, since nothing wakes you and the lead reads silence as work.
+   A pending condition (a queued run, a free device, an unlocked screen) is waited on the same
+   way, in the foreground, with orchestrating-agents' `scripts/omnigent_agent.py wait-until
+   --every <s> --limit <s> -- <check>` or a sleep loop, each call under the tool timeout: the
+   turn goes on once it holds, and past the limit you state it ends with a report naming the
+   condition, since a background command's exit does not wake an idle session.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or
@@ -46,7 +51,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    before the report, which lists each proof log with the SHA it names.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
-   scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
+   <this skill's folder>/scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
    `--omnigent` to sign in to an Omnigent server; its docstring says what a sandbox needs).
    Every host with Playwright's Chromium in `~/.cache/ms-playwright` can render headless;
    hand over the PNG paths.

@@ -61,7 +61,7 @@ wrong type, and refuses a loop.md without the block, so a mistyped setting is ne
 a rule nobody wrote.
 
 The scripts read the block with PyYAML, the one package they need beyond the standard
-library. Each declares it inline (PEP 723), so `uv run scripts/approvals.py` installs it
+library. Each declares it inline (PEP 723), so `uv run <this skill's folder>/scripts/approvals.py` installs it
 into uv's cache on first use and nothing is installed by hand; uv comes with the project's
 mise. Run with a bare `python3` that lacks PyYAML, a script exits with one line saying to
 run it with `uv run`. They need Python 3.9 or later. Every key is optional:
@@ -131,7 +131,7 @@ carry_over_main:
 |---|---|---|---|
 | `spec` | `auto` | a list of `bug`, `follow-up` and `sub-issue`, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
 | `loop` | `cap` | a whole number (The cap) | the default |
-| | `ci` | `false` for a project without CI, whose merge proof is then `uv run scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
+| | `ci` | `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `local_ci_env` | the environment variables that local check reads (Adopting the loop) | none |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
@@ -216,7 +216,7 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
 draft, `mise run check` before each push is its check. With `ci: false` in loop.md, the
-check on a head you push for review is `uv run scripts/approvals.py local-ci --record`
+check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, committed and clean: it runs the merge check, `mise run check:all`, and records
 the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
 for the same head, command and environment rather than running the check again. A project
@@ -228,9 +228,10 @@ posted comment names those values.
 with the project's. Issue states, categories, sizes and board columns are the method's,
 in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
 does them on GitHub. A
-`scripts/` path is relative to this skill's folder; run it from the worktree with
-`python3` (standard library only), except `scripts/browse.py`, which needs Playwright and so
-runs with `uv run`: it renders a web UI headless, signed in to an Omnigent server when
+`scripts/` path is relative to this skill's folder, not the repo root: in a project that
+installs the skill it is under the install, such as
+`.agents/skills/engineering-loop/scripts/board.py`. Run it from the worktree with `uv run`,
+which installs what its inline header declares. `scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
 asked, and screenshots it (worker.md, Report; its docstring has the flags).
 
 ### Practice
@@ -258,11 +259,11 @@ Only people approve: the owner, or a teammate where loop.md asks for one. No age
 an approval record, since an agent approving its own work is no approval; where nobody
 was asked, the authority is the owner's standing policy in loop.md's settings, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
-`uv run scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
+`uv run <this skill's folder>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
 owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
 a later edit needs approving again, plus the `approved:<point>` label. A re-approval says
 what changed and minimizes the records it supersedes as outdated. The verifier only gives
-the verdict, which `uv run scripts/approvals.py verdict <pr> <report>` posts as a PR
+the verdict, which `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
 
 loop.md's settings hold the policy (Settings):
@@ -340,8 +341,8 @@ green. A pass counts whichever model family wrote it (Independent verification).
 
 When a spec or plan needs the owner, add `needs-owner`, comment what to approve, and stop:
 a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
-on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`python3
-scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
+on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`uv run
+<this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
 which records their word, adds the label and removes `needs-owner`. A change to an
 approved spec's scope or acceptance is a decision the owner never saw: remove
 `approved:spec`, add `needs-owner` with a one-line comment saying what changed, and stop
@@ -350,7 +351,7 @@ until they approve. A spec the owner approved and then edited for wording needs 
 needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
-is missing. An agent merges only with `uv run scripts/approvals.py land <pr>` (the
+is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land <pr>` (the
 project's `loop:land` task): it runs every merge proof, refuses a head behind or in
 conflict with its base, marks a draft ready and waits for the CI that starts, and on a ready
 PR merges it pinned to its head, or turns on auto-merge while only required checks are
@@ -372,7 +373,7 @@ which the loop obeys and never overrides.
 A project may instead land a base through a batching merge queue of its own: it merges every
 waiting PR's verified head onto the base, runs the full gate once on the result and pushes
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
-`uv run scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
+`uv run <this skill's folder>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
 it: every merge proof but the CI wait, the head's own `local-ci --record` pass under the
 current environment and, with CI, its `check`, and nothing high risk or
 owner-approved, since the owner's label covers one head landing alone, through `land`. The
