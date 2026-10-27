@@ -2122,6 +2122,53 @@ def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_ho
     assert len(calls) == posted  # posts nothing again
 
 
+def test_a_cloud_report_brings_the_repro_files_it_carries_and_lists_the_missing_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = (
+        "Repro: tmp/loop/test_repro_7.py and tmp/loop/repro-7.sh; gate log tmp/loop/gate-7.log;"
+        " also tmp/loop/lost.txt and tmp/loop/x.\n\n<!-- file: tmp/loop/test_repro_7.py -->\n```python\n"
+        "def test_x():\n    assert 1\n```\n\n<!-- file: tmp/loop/repro-7.sh -->\n````sh\n"
+        "echo ```\n````\n<!-- file: tmp/loop/../../evil -->\n```\nx\n```\n"
+        "<!-- file: tmp/loop/link.txt -->\n```\nnot through the link\n```\n"
+        "<!-- file: tmp/loop/unclosed.py -->\n```\nno closing fence\n"
+        "<!-- file: tmp/loop/after.py -->\n```\nb = 1\n```\n"
+        "<!-- file: tmp/loop/adir -->\n```\ncan't land\n```\n"
+        "<!-- file: tmp/loop/big.log (last lines) -->\n```\nthe end\n```\n"
+    )
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-9")
+    fake_gh(monkeypatch, {"9": on_pr(7, body)})
+    loop = tmp_path / "tmp" / "loop"
+    (loop / "adir").mkdir(parents=True)
+    (loop / "gate-7.log").write_text("the lead's own")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("untouched")
+    (loop / "link.txt").symlink_to(outside)
+    report = loop / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "<!-- file: tmp/loop/<name> -->" in brief and "65,536" in brief
+    assert omnigent_agent.wait(og, sid, report, pr=7) == str(report)  # whatever the files do
+    assert report.read_text() == body
+    assert (loop / "test_repro_7.py").read_text() == "def test_x():\n    assert 1\n"
+    assert (loop / "repro-7.sh").read_text() == "echo ```\n"  # a longer fence holds a shorter one
+    assert (loop / "after.py").read_text() == "b = 1\n"  # an unclosed block ends at the next file
+    assert outside.read_text() == "untouched" and not (loop / "link.txt").is_symlink()
+    assert (loop / "link.txt").read_text() == "not through the link\n"
+    assert (loop / "gate-7.log").read_text() == "the lead's own"
+    assert not (tmp_path / "evil").exists() and not (tmp_path / "tmp" / "evil").exists()
+    err = capsys.readouterr().err
+    assert f"brought {loop / 'test_repro_7.py'}" in err and f"brought {loop / 'repro-7.sh'}" in err
+    for name in ("lost.txt", "x", "unclosed.py", "gate-7.log", "adir"):
+        assert f"missing: tmp/loop/{name} (" in err, name
+    assert "this host's own copy stays" in err and "not written here" in err
+    assert not (loop / "big.log").exists() and (loop / "big.log.tail").read_text() == "the end\n"
+    assert (
+        f"missing: tmp/loop/big.log (too long for a comment; its last lines are {loop / 'big.log'}.tail)"
+        in err
+    )
+
+
 @pytest.mark.parametrize(
     "link",
     [
@@ -2329,6 +2376,142 @@ def test_a_failed_session_reports_its_last_task_error_and_runner_log(
     ):
         omnigent_agent.wait(og, sid, tmp_path / "r.md")
     assert og.posts == 1  # a failed session is not nudged
+
+
+SETUP_ERROR = (
+    "inner executor error: cloud session setup failed: Setup script failed with exit code -1"
+)
+STALL_ERROR = (
+    "cloud session https://claude.ai/code/x made no progress for 1800s; it is left as it is,"
+    " and the next message continues it"
+)
+
+
+def failing(og: FakeOmnigent, errors: dict[str, list[str]]) -> None:
+    """Each session in ``errors`` reads failed with its next error per look (``running``: running,
+    an empty one: as it is), and the last for good."""
+    info = og.info
+
+    def look(s: str) -> dict:
+        snap = info(s)
+        if not (left := errors.get(s)):
+            return snap
+        error = left.pop(0) if len(left) > 1 else left[0]
+        if error == "running":
+            return {**snap, "status": "running"}
+        return (
+            {**snap, "status": "failed", "last_task_error": {"message": error}} if error else snap
+        )
+
+    og.info = look  # type: ignore[method-assign]
+
+
+def capped(og: FakeOmnigent, posts: int) -> None:
+    """A send past ``posts`` fails the test: a recovery repeated would loop for good."""
+    send = og.send
+
+    def once(sid: str, text: str) -> None:
+        assert og.posts < posts, f"a send past {posts}: {text}"
+        send(sid, text)
+
+    og.send = once  # type: ignore[method-assign]
+
+
+def test_run_retries_a_setup_failure_once_in_a_fresh_session_with_the_same_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    failing(og, {"s0": [SETUP_ERROR]})
+    look = og.info
+    og.info = lambda s: ((tmp_path / "r.md").write_text("ok") if s == "s1" else None, look(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    out, err = capsys.readouterr()
+    assert out.split()[:2] == ["s0", "s1"] and out.split()[-1] == str(tmp_path / "r.md")
+    assert re.search(
+        r"session s0 failed in setup before its first turn \(.*setup failed.*\).*session s1", err
+    )
+    assert [omnigent_agent.text_of(i) for i in og.items("s1")[1:]] == [
+        omnigent_agent.text_of(i) for i in og.items("s0")[1:]
+    ]
+    assert og.archived == ["s1"]
+
+
+def test_run_fails_on_a_second_setup_failure_naming_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    failing(og, {"s0": [SETUP_ERROR], "s1": [SETUP_ERROR]})
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    err = capsys.readouterr().err
+    assert re.search(
+        r"(?s)session s0 failed in setup.*session s1 ended \(failed\): .*setup failed", err
+    )
+    assert len(og.sessions) == 2
+
+
+def test_wait_continues_a_stalled_child_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    # the stall, and after the continue one look still at its end, then the new turn's report
+    looks = [STALL_ERROR, STALL_ERROR, ""]
+    failing(og, {sid: looks})
+    look = og.info
+    og.info = lambda s: (  # type: ignore[method-assign]
+        (tmp_path / "r.md").write_text("ok") if looks == [""] else None,
+        look(s),
+    )[1]
+    assert omnigent_agent.wait(og, sid, tmp_path / "r.md") == str(tmp_path / "r.md")
+    assert og.posts == 2  # the brief and one continue
+    assert omnigent_agent.text_of(og.items(sid)[-2]) == omnigent_agent.CONTINUE
+    assert f"session {sid} stalled (" in capsys.readouterr().err
+
+    og = FakeOmnigent(reply="done")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "s.md", None, 0)
+    failing(og, {sid: [STALL_ERROR, "running", STALL_ERROR]})  # stalls again once its new turn ran
+    capped(og, 2)
+    with pytest.raises(
+        omnigent_agent.Fail,
+        match=f"(?s)session {sid} stalled .*session {sid} ended \\(failed\\): .*made no progress",
+    ):
+        omnigent_agent.wait(og, sid, tmp_path / "s.md")
+    assert og.posts == 2
+
+    # another error just after the continue is a new failure, not the stall's end
+    og = FakeOmnigent(reply="done")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "u.md", None, 0)
+    failing(og, {sid: [STALL_ERROR, "claude exited: boom"]})
+    capped(og, 2)
+    began = time.monotonic()
+    with pytest.raises(omnigent_agent.Fail, match=f"(?s)session {sid} stalled .*boom"):
+        omnigent_agent.wait(og, sid, tmp_path / "u.md")
+    assert time.monotonic() - began < omnigent_agent.CONTINUE_SECONDS / 4
+
+
+def test_wait_neither_retries_nor_continues_a_failure_after_the_first_turn_or_any_other(
+    tmp_path: Path,
+) -> None:
+    relaunched = []
+    for error, reply in ((SETUP_ERROR, "working on it"), ("claude exited: boom", "")):
+        og = FakeOmnigent(reply=reply)
+        sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+        failing(og, {sid: [error]})
+        capped(og, 1)
+        with pytest.raises(omnigent_agent.Fail, match="ended \\(failed\\)"):
+            omnigent_agent.wait(
+                og, sid, tmp_path / "r.md", relaunch=lambda: relaunched.append(1) or "x"
+            )
+        assert og.posts == 1
+    assert relaunched == []
 
 
 def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
@@ -4876,6 +5059,35 @@ ROUTES = [
         ("rule", "act"),
     ),
     ("deadline, parked", {"kind": "deadline", "last": "PARKED: full"}, None, ("rule", "record")),
+    # the two ordinary-word waits leads wrote, pinned so a change to WAIT or NAMED can't bring back
+    # the repeat nudges (#508); a bare STILL WORKING names none and gets its one nudge
+    (
+        "still working, a queue in ordinary words",
+        {
+            "kind": "ended",
+            "last": "STILL WORKING: waiting on the queue lead's runs for #12 and #13",
+        },
+        None,
+        ("rule", "record"),
+    ),
+    (
+        "still working, a heavy slot in ordinary words",
+        {"kind": "ended", "last": "STILL WORKING: #12 and #13 all still waiting for a heavy slot"},
+        None,
+        ("rule", "record"),
+    ),
+    (
+        "deadline, bare still working",
+        {"kind": "deadline", "last": "STILL WORKING."},
+        None,
+        ("rule", "nudge"),
+    ),
+    (
+        "deadline, bare still working after a nudge",
+        {"kind": "deadline", "last": "STILL WORKING.", "nudged": True},
+        None,
+        ("rule", "act"),
+    ),
     (
         "quiet again after a nudge",
         {"kind": "ended", "last": "on it", "nudged": True},
@@ -5073,6 +5285,16 @@ def follows(tmp_path: Path, *sids: str, after: dict[str, str] | None = None) -> 
 def events_of(registry: Path) -> list[dict]:
     lines = registry.with_suffix(".events.jsonl").read_text().splitlines()
     return [json.loads(e) for e in lines]
+
+
+def test_the_nudge_and_revive_end_on_a_wait_the_supervisor_accepts() -> None:
+    for text in (omnigent_agent.LEAD_NUDGE, omnigent_agent.LEAD_REVIVE):
+        example = re.search(r'For example: "(STILL WORKING: [^"]+)"\.$', text)
+        assert example and omnigent_agent.wait_of(example.group(1)) == "verifier", text
+        assert text.startswith(omnigent_agent.OWN_LINES[0])  # a restart knows it by this prefix
+    assert omnigent_agent.wait_of("STILL WORKING: waiting on the queue lead's runs") == "queue"
+    assert omnigent_agent.wait_of("STILL WORKING: all still waiting for a heavy slot") == "heavy"
+    assert omnigent_agent.wait_of("STILL WORKING.") == "unknown"
 
 
 def test_a_second_stall_without_progress_escalates_and_sends_no_second_nudge(
