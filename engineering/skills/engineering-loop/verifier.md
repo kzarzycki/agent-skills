@@ -72,13 +72,14 @@ yourself, keeping standards and spec as separate axes.
   looked right. Real data you see may go in your report, never in anything bound for the
   tracker. When the sandbox can't reach the instance or its log, say so.
 - **Run loop.md § Verifier checklist**, when it has one.
-- **Mutation-check the new tests.** For each test that guards a behaviour the spec
-  changes, save the production change it guards as a patch beside your report
-  (`git diff <base> HEAD -- <file> > <patch>`). Undo it with `git apply -R <patch>`, run
-  the test, and redo it with `git apply <patch>`; undo and redo are symmetric, so this
-  also restores a file the change added or deleted. A test that still passes guards
-  nothing: report it as a major. Then check that `git status --porcelain` matches what it
-  showed at the start.
+- **Mutation-check the new tests.** Undo each production change the spec adds on its own
+  (a hunk, or a branch), never the whole diff at once, since a whole-patch revert fails the
+  tests for the wrong reason (a flag gone) and hides a change no test covers. Save that one
+  change as a patch beside your report (`git diff <base> HEAD -- <file> > <patch>`, cut to
+  its hunk). Undo it with `git apply -R <patch>`, run the tests, and redo it with
+  `git apply <patch>`; undo and redo are symmetric, so this also restores a file the change
+  added or deleted. A change whose undoing leaves every test green is untested: report it
+  as a major. Then check that `git status --porcelain` matches what it showed at the start.
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
