@@ -596,7 +596,7 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each, and prints which it kept. A finish that fails is printed and the rest still run, and
+each and `already archived` for one finished before, and prints which it kept. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
 which finishes it on return, never reaped. Run `reap --children
