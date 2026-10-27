@@ -169,7 +169,7 @@ def pull(
     *,
     body: str = "## Evidence\n\nlog line\n",
     files: tuple[str, ...] = (),
-    comments: tuple[str, ...] = (),
+    comments: tuple[str | dict[str, Any], ...] = (),
     labels: tuple[str, ...] = (),
     checks: tuple[tuple[str, str], ...] = (("check", "SUCCESS"),),
     labeled: str = LABELED,
@@ -974,6 +974,28 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
         proofs(f"> {approvals.CHECKED}\n> Head: {HEAD}\n"),
         proofs(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
     ) == (missing, missing, missing, missing, missing, [])
+
+
+def test_a_local_check_counts_only_from_the_author_the_runner_or_a_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anyone can comment on a public repo, so a `Local check passed` comment from an account without write access
+    proves nothing."""
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
+    passed = f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
+
+    def proofs(login: str) -> list[str]:
+        merged = pull(
+            reviews=(VERDICT,), comments=(note(passed, author={"login": login}),), labels=OWNED
+        )
+        return merge(merged, [approved(1, "area:web")], no_ci)
+
+    assert proofs("stranger") == [
+        "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the"
+        " head (approvals.py local-ci)"
+    ]
+    assert proofs("loop") == proofs("maintainer") == proofs("worker") == []
 
 
 def test_more_checks_than_one_page_is_refused() -> None:

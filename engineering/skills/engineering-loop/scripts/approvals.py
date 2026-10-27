@@ -45,7 +45,8 @@ commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
-`ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
+`ci: false` in loop.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
+writer, instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
@@ -1390,8 +1391,9 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
         if any(
-            [line.strip() for line in body.strip().splitlines()[:2]] == head
-            for body in bodies(pull)
+            [line.strip() for line in note["body"].strip().splitlines()[:2]] == head
+            and trusted(pull, note)
+            for note in notes(pull)
         ):
             found = []
         else:
@@ -1411,7 +1413,6 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    me: list[str | None] = []  # viewer(), asked once and only when a batch proof is found
     for note in notes(pull):
         lines = note["body"].strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
@@ -1422,17 +1423,23 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
         fields = {
             key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
         }
-        if fields.get("Head", "").lower() != head:
-            continue
-        login = (note.get("author") or {}).get("login")
-        if not me:
-            me.append(viewer())
-        if login is None or (login != me[0] and not writer(login)):
+        if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
             continue
         if (why := unproven(head, fields)) is None:
             return None
         found.append(f"{where}: {why}")
     return found
+
+
+def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> bool:
+    """Whether a proof comment's author counts: the account running this, a writer (writer), and with `author` the
+    PR's author, as passes() reads verifier reviews, since anyone can comment on a public repo."""
+    login = (note.get("author") or {}).get("login")
+    if login is None:
+        return False
+    if author and login == (pull.get("author") or {}).get("login"):
+        return True
+    return login == viewer() or writer(login)
 
 
 def unproven(head: str, fields: dict[str, str]) -> str | None:
