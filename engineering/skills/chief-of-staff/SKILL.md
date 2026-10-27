@@ -302,7 +302,11 @@ a successor on any host reads the current one:
   from transcripts is what the file exists to avoid. Once the predecessor's turn has ended,
   archive it (`reap <session>`, which keeps its transcript): archiving drops its
   subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
-  staff would both act, and it marks every file that names it in Owner contact as stale. Stop
+  staff would both act, and it marks every file that names it in Owner contact as stale. When
+  `reap` keeps it (`kept (busy)`: the owner switched away mid-turn, or Omnigent lost its turn
+  end), write `to archive` beside its id in Owner contact and reap it again at your next
+  wake; when it still reads `running` then, ask the owner whether it still works, since a lost
+  turn end and a live turn look the same from here. Stop
   its supervisor too (Follow in the file), since it notifies the archived id, and start yours
   with `--console` on the same registry with your own id: the `follow` lines stay in it, and the
   state file beside it keeps the settled events, nudge and revive budgets, open intents, queued
@@ -315,7 +319,9 @@ a successor on any host reads the current one:
   found by the registry's name, so the two must keep it; a registry without its state file
   starts fresh, which re-raises every event, and a copy of the registry alone follows its leads
   but forgets their budgets. Nothing is written back to the predecessor's files.
-  Then recall with the query `owner standing decisions` (Memory), read a lead's state from
+  Then recall with the query `owner standing decisions` (Memory) in this repo and in each
+  live lead's repo you can reach, since `memory.py` reaches only the bank of the directory it
+  runs in and a decision retained in a lead's repo is missed otherwise. Read a lead's state from
   `status <session>` only when the state file or a post doesn't settle it, subscribe to a lead
   (`sys_session_subscribe(session_id=<id>)`) only when you follow it by subscription, never
   beside the supervisor: the subscription wakes you on every turn and bypasses the supervisor's
