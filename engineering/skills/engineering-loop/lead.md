@@ -109,7 +109,11 @@ design, wireframes included for a UI, and delegate the rest.
    head (SKILL.md, Independent verification) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
-   worktree, which the project gitignores: outside its workspace a Codex child's sandbox
+   worktree, which the project gitignores. `uv run scripts/approvals.py brief <pr>
+   --priorities <file> --proof <log>…` prints that brief with every fact but the priorities
+   read from the PR, the previous report and its head from pass 2, and loop.md's
+   `## Verifier brief` (the project's own lines, such as host load rules) appended; it
+   refuses a proof log whose first line isn't the head. The report path matters: outside its workspace a Codex child's sandbox
    refuses the write and a Claude Code child is prompted for a read (denied in auto mode),
    which nobody answers. Its model is the default, or, where the PR matches loop.md's
    `Verifier model:` line, the newest-generation model of that tier in the verifier's family

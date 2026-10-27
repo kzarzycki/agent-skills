@@ -13,6 +13,7 @@
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
+    uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -2794,6 +2795,51 @@ def local_ci(pr: int | None) -> int:
     return 0
 
 
+def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
+    """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
+    verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
+    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    file as is and loop.md's `## Verifier brief`. A proof log whose first line isn't the head is refused, since the
+    verifier counts a stale proof as missing and spends the pass on it."""
+    _, loop = project()
+    pull = pull_request(pr)
+    head = pull["headRefOid"]
+    if stale := [str(log) for log in proofs if log.read_text().partition("\n")[0].strip() != head]:
+        raise Refused(
+            f"PR #{pr}: stale proof, its first line isn't the head {head}: {', '.join(stale)}; rerun it"
+        )
+    reviewed = passes(pull)
+    if isinstance(reviewed, str):
+        raise Refused(f"PR #{pr} {reviewed}")
+    number = max((n for _, n, _ in reviewed), default=0) + 1
+    base = merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
+    issues = sorted(
+        {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
+        | set(named(pull["body"] or ""))
+    )
+    role = os.path.relpath(Path(__file__).resolve().parents[1] / "verifier.md")
+    lines = [
+        f"Review PR #{pr} as the verifier, pass {number}, following {role}.",
+        f"- Base: {base}",
+        f"- Reviewed head: {head}",
+        f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
+        f"- Report: tmp/loop/pr{pr}-v{number}.md",
+    ]
+    if reviewed:
+        newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
+        lines.append(
+            f"- Previous report: tmp/loop/pr{pr}-v{number - 1}.md, on {newest}: review the diff since that head and"
+            " rerun its repros"
+        )
+    lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
+    if priorities is not None:
+        lines += ["", "Priorities:", priorities.read_text().rstrip()]
+    if own := section(loop or "", "Verifier brief").strip():
+        lines += ["", own]
+    print("\n".join(lines))
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -2827,6 +2873,10 @@ def main(argv: list[str]) -> int:
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
+    briefing = commands.add_parser("brief")
+    briefing.add_argument("pr", type=int)
+    briefing.add_argument("--priorities", type=Path)
+    briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
@@ -2856,6 +2906,8 @@ def main(argv: list[str]) -> int:
             return local_ci(args.pr)
         if args.command == "land":
             return land(args.pr, args.wait)
+        if args.command == "brief":
+            return brief(args.pr, args.priorities, args.proof)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)

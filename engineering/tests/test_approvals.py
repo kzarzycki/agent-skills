@@ -1620,6 +1620,63 @@ def test_a_report_whose_verifier_line_names_a_signature_becomes_the_headings_fam
     assert approvals.parse_report(report)[0] == "Verifier (codex/terra-6.1/med), pass 5"
 
 
+def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The base is the merge-base with the default branch, the head the PR's, the pass one after the newest verdict
+    review's, whose commit is the previous report's head; loop.md's `## Verifier brief` is appended."""
+    earlier = "c" * 40
+    reviews = (
+        verdict_on(earlier, heading="Verifier (codex), pass 1"),
+        verdict_on(earlier, heading="Verifier (codex), pass 2"),
+    )
+    pr = pull(body="Closes #12.\n\n## Evidence\n\nlog\n", reviews=reviews)
+    asked: list[tuple[str, str]] = []
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(
+        approvals, "merge_base", lambda base, head: asked.append((base, head)) or BASE
+    )
+    monkeypatch.setattr(
+        approvals,
+        "project",
+        lambda: (None, LOOP + "\n## Verifier brief\n\n- Run the full gate bare.\n"),
+    )
+    priorities, proof, stale = tmp_path / "p.md", tmp_path / "gate.log", tmp_path / "old.log"
+    priorities.write_text("- the revert path\n")
+    proof.write_text(f"{HEAD}\nok\n")
+    stale.write_text(f"{earlier}\nok\n")
+    assert (
+        approvals.main(["brief", "7", "--priorities", str(priorities), "--proof", str(proof)]) == 0
+    )
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("Review PR #7 as the verifier, pass 3, following ")
+    assert out[0].endswith("verifier.md.")
+    assert out[1:] == [
+        f"- Base: {BASE}",
+        f"- Reviewed head: {HEAD}",
+        "- Spec: #12",
+        "- Report: tmp/loop/pr7-v3.md",
+        f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
+        f"- Proof log: {proof} (its first line is the head)",
+        "",
+        "Priorities:",
+        "- the revert path",
+        "",
+        "- Run the full gate bare.",
+    ]
+    assert asked == [("main", HEAD)]
+    assert approvals.main(["brief", "7", "--proof", str(proof), "--proof", str(stale)]) == 1
+    assert (
+        capsys.readouterr().out
+        == f"PR #7: stale proof, its first line isn't the head {HEAD}: {stale}; rerun it\n"
+    )
+    pr["reviews"] = {"nodes": []}
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "- Report: tmp/loop/pr7-v1.md" in out
+    assert not [line for line in out if line.startswith("- Previous report")]
+
+
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
     reviewing: list[tuple[Any, ...]], tmp_path: Path
 ) -> None:
