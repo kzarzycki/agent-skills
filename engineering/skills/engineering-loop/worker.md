@@ -15,7 +15,9 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
 2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
    before each push (with `ci: false`, `approvals.py local-ci --record` on the committed
    head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
-   file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report.
+   file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
+   the run it came from (a CI run's id, else the time the gate started), since that run and
+   the head are what make it one occurrence.
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
