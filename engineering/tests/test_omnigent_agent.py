@@ -5608,23 +5608,28 @@ def test_a_name_held_by_agents_that_differ_is_refused_with_their_ids(
         assert all(path != "/v1/sessions" for _, path, _ in calls)
 
 
-def test_a_server_agent_wins_its_name_over_a_user_copy_without_reading_configs(
+def test_an_alias_takes_the_server_s_native_agent_and_other_shared_names_are_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    native = {"name": "claude-native-ui", "builtin": True, "created_at": 100}
-    calls = _agent_server(
-        monkeypatch,
-        {
-            "/v1/agents": {"data": [{"id": "srv", **native}]},
-            # newer and listed second; only a user agent has a config, the server's answers 404
-            "/v1/agents?scope=user": {"data": [{"id": "usr", **native, "created_at": 200}]},
-            "/v1/projects": {"data": []},
-            "/v1/sessions": {"id": "s1"},
-        },
-    )
-    omnigent_agent.Omnigent().create("claude", "t")
-    assert calls[-1][2]["agent_id"] == "srv"
-    assert all("/config" not in path for _, path, _ in calls)
+    for name in ("claude-native-ui", "custom"):
+        record = {"name": name, "builtin": name != "custom", "created_at": 100}
+        calls = _agent_server(
+            monkeypatch,
+            {
+                "/v1/agents": {"data": [{"id": "srv", **record}]},
+                # newer and listed second; only a user agent has a config, the server's is 404
+                "/v1/agents?scope=user": {"data": [{"id": "usr", **record, "created_at": 200}]},
+                "/v1/projects": {"data": []},
+                "/v1/sessions": {"id": "s1"},
+            },
+        )
+        if name == "custom":  # a user's own agent may share a server name on purpose
+            with pytest.raises(omnigent_agent.Fail, match="agents srv, usr are all called custom"):
+                omnigent_agent.Omnigent().create(name, "t")
+        else:
+            omnigent_agent.Omnigent().create("claude", "t")
+            assert calls[-1][2]["agent_id"] == "srv"
+        assert all("/config" not in path for _, path, _ in calls)
 
 
 def test_an_agent_is_taken_by_its_id_even_when_others_share_its_name(

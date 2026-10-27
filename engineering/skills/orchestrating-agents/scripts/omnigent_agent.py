@@ -522,19 +522,25 @@ class Omnigent:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
-        A name the server's agents hold resolves there, since only a user agent has a config to
-        compare (``GET /v1/agents/{id}/config`` is 404 for the server's) and the UI registers
-        user copies of the native agents. Each upload of one spec registers another agent under
-        its name, and an agent record has no host, so copies whose record and config match apart
-        from identity and bookkeeping (``IDENTITY``) can't be told
+        An alias names the server's native agent, though the UI registers user copies of it.
+        Each upload of one spec registers another agent under
+        its name, and an agent record has no host, so copies whose record and config
+        (``GET /v1/agents/{id}/config``) match apart from identity and bookkeeping (``IDENTITY``)
+        can't be told
         apart: the name resolves to the newest by ``created_at``. The record carries policies,
         skills and terminals, the config instructions and model, so both are compared. Agents
-        that differ are refused, listing their ids, rather than picked by order."""
+        that differ are refused, listing their ids, rather than picked by order, and so is a
+        server agent sharing its name with a user agent, since only a user agent has a config
+        (the server's answers 404)."""
+        alias = name in AGENTS
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
+        on_server: set[str] = set()
         for path in ("/v1/agents", "/v1/agents?scope=user"):
-            if named:
-                break
+            if path.endswith("scope=user"):
+                if named and alias:
+                    break
+                on_server = set(named)
             after = ""
             while True:
                 sep = "&" if "?" in path else "?"
@@ -551,6 +557,8 @@ class Omnigent:
                 after = str(last)
         if not named:
             raise Fail(f"agent {name} not registered")
+        if len(named) > 1 and on_server:
+            raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
         if len(named) > 1:
             specs = [
                 [
