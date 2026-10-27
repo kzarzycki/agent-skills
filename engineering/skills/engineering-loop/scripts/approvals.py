@@ -13,6 +13,7 @@
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
+    uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -99,8 +100,9 @@ A pass also leaves a record keyed by commit under the git common dir (`approvals
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
 `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
 check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
-same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
-check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
+same command and the same env, `local-ci <pr>` posts the pass from it, naming its time, instead of running the
+check again; a record without env is never reused. The host stays in the record: nothing `approvals.py` posts names
+it, and posted text writes the home directory `~` (public), since a public board would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
@@ -1446,7 +1448,8 @@ def unproven(head: str, fields: dict[str, str]) -> str | None:
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
     if (record := reusable(head)) is None:
         return f"the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    if (env := env_line(record["env"])[len("Env: ") :].strip()) != fields.get("Env"):
+    # the comment names the env as posted, its home written `~` (public)
+    if (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
         return (
             f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
         )
@@ -1635,7 +1638,7 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         tail = []
     body = (
         f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n{env_line(record['env'])}"
-        f"Gated: {record['time']} on {record['host']}\nLog: {log}\n"
+        f"Gated: {record['time']}\nLog: {log}\n"
     )
     if tail:
         body += (
@@ -2105,6 +2108,13 @@ def assign(number: int, login: str, add: bool) -> None:
     )
 
 
+def public(text: str) -> str:
+    """`text` as posted: the home directory written `~`, since a path under it (a log's, a cache's) names the person
+    whose machine posted it, and GitHub's edit history keeps a comment's first text for good."""
+    home = str(Path.home()).rstrip("/")
+    return re.sub(re.escape(home) + r"(?![\w.-])", "~", text) if home else text
+
+
 def comment(number: int, body: str) -> None:
     gh(
         "api",
@@ -2112,7 +2122,7 @@ def comment(number: int, body: str) -> None:
         "-F",
         "body=@-",
         "--silent",
-        data=body,
+        data=public(body),
     )
 
 
@@ -2596,7 +2606,8 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
         "--input",
         "-",
         "--silent",
-        data=json.dumps(review),
+        # unescaped, so public() finds a non-ASCII home as GitHub will decode it
+        data=public(json.dumps(review, ensure_ascii=False)),
     )
 
 
@@ -2792,7 +2803,7 @@ def local_ci(pr: int | None) -> int:
     head = pull_request(pr)["headRefOid"]
     record = reusable(head)
     if record:
-        source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+        source = f"From the recorded run at {record['time']}, not run again.\n"
     else:
         record = run_local_ci(pr, head)
         source = ""
@@ -2800,6 +2811,57 @@ def local_ci(pr: int | None) -> int:
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
     )
+    return 0
+
+
+def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
+    """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
+    verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
+    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    file as is and loop.md's `## Verifier brief`. A proof log whose first line isn't the head is refused, since the
+    verifier counts a stale proof as missing and spends the pass on it."""
+    _, loop = project()
+    pull = pull_request(pr)
+    head = pull["headRefOid"]
+    if missing := [str(log) for log in proofs if not log.is_file()]:
+        raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
+    # byte for byte, as lead.md's `head -1 <log> | grep -qx <head>` compares: a trailing space or CR is another line
+    if stale := [
+        str(log) for log in proofs if log.read_bytes().split(b"\n", 1)[0] != head.encode()
+    ]:
+        raise Refused(
+            f"PR #{pr}: stale proof, its first line isn't the head {head}: {', '.join(stale)}; rerun it"
+        )
+    reviewed = passes(pull)
+    if isinstance(reviewed, str):
+        raise Refused(f"PR #{pr} {reviewed}")
+    number = max((n for _, n, _ in reviewed), default=0) + 1
+    base = merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
+    issues = sorted(
+        {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
+        | set(named(pull["body"] or ""))
+    )
+    role = os.path.relpath(Path(__file__).resolve().parents[1] / "verifier.md")
+    lines = [
+        f"Review PR #{pr} as the verifier, pass {number}, following {role}.",
+        f"- Base: {base}",
+        f"- Reviewed head: {head}",
+        f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
+        f"- Report: tmp/loop/pr{pr}-v{number}.md",
+    ]
+    if reviewed:
+        newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
+        lines.append(
+            f"- Previous report: tmp/loop/pr{pr}-v{number - 1}.md, on {newest}: review the diff since that head and"
+            " rerun its repros"
+        )
+    lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
+    if priorities is not None:
+        lines += ["", "Priorities:", priorities.read_text().rstrip()]
+    # as written, but for the blank lines around it: indentation may be a snippet's
+    if (own := section(loop or "", "Verifier brief").strip("\n")).strip():
+        lines += ["", own]
+    print("\n".join(lines))
     return 0
 
 
@@ -2836,6 +2898,10 @@ def main(argv: list[str]) -> int:
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
+    briefing = commands.add_parser("brief")
+    briefing.add_argument("pr", type=int)
+    briefing.add_argument("--priorities", type=Path)
+    briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
@@ -2865,6 +2931,8 @@ def main(argv: list[str]) -> int:
             return local_ci(args.pr)
         if args.command == "land":
             return land(args.pr, args.wait)
+        if args.command == "brief":
+            return brief(args.pr, args.priorities, args.proof)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)

@@ -16,6 +16,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    before each push (with `ci: false`, `approvals.py local-ci --record` on the committed
    head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
    file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report.
+   When your brief opens with a `LOOP_HEAVY_LOCK=<path>` line, run each gate or full test run
+   under that lock, around the project's own heavy wrapper, since your lead may run another
+   worker beside you and the host's slot counts every caller: `perl -MFcntl=:flock -e '$^F =
+   1023; open(F, ">>", shift) or die "$!\n"; flock(F, LOCK_EX) or die "$!\n"; exec @ARGV'
+   <path> mise run check` (perl, since macOS has no `flock`).
    Once it exits 0, commit and push with `git push -u origin <branch>` as
    its own command, since a pre-tool hook may scan the whole command text. Commit and push
    after each step whose gates are green, not only at the end, so a worker killed mid-task
@@ -52,7 +57,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    open the browser in the background without taking focus and say in the report which
    test needed it and why. A project whose e2e opens a headed browser by default names the
    headless switch in its `docs/agents/` files.
-   Clean up what you started (servers, temporary files), then write your
+   Clean up what you started (servers, temporary files), and only that: stop a process by
+   the pid or process group you saved at its launch, or by a pattern holding your own
+   worktree path once `lsof -a -p <pid> -d cwd` shows each match runs there, never with
+   `pkill -f` or `killall` on a pattern other agents share, since on a shared host it kills
+   their runs too. Then write your
    report to a file and send the lead its path: the branch and head SHA, the gate
    exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
    the `AGENT_SIGNATURE=` line atop your brief), anything left out and why, and what you tried and
