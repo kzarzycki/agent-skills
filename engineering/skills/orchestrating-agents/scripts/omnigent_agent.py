@@ -703,6 +703,28 @@ class Omnigent:
         cursor = f"&after={quote(after, safe='')}" if after else ""
         return self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc{cursor}")
 
+    def session_id(self, sid: str) -> str:
+        """The session ``sid`` names: a hex string shorter than a whole id is a prefix, resolved
+        among every session the caller sees (archived ones, sub-agents and side chats included,
+        since a lead relays to its children and to other leads); anything else is taken as it
+        is. A prefix no session or several sessions share fails, naming the matches."""
+        if not re.fullmatch(r"[0-9a-f]{1,31}", sid):
+            return sid
+        path = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
+        matches, after = [], ""
+        while True:
+            page = self.call("GET", path + (f"&after={after}" if after else ""))
+            matches += [x for x in page.get("data", []) if str(x.get("id")).startswith(sid)]
+            if not (page.get("has_more") and page.get("last_id")):
+                break
+            after = str(page["last_id"])
+        if len(matches) == 1:
+            return str(matches[0]["id"])
+        if not matches:
+            raise Fail(f"{sid}: no session matches")
+        named = "; ".join(f"{x['id']} {x.get('title') or ''}".rstrip() for x in matches)
+        raise Fail(f"{sid}: {len(matches)} sessions match: {named}")
+
     def info(self, sid: str) -> dict:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
         return self.call("GET", f"/v1/sessions/{sid}")
@@ -3639,6 +3661,11 @@ def main(argv: list[str] | None = None) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
+        og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd in ("relay", "send", "report"):
+            sid = args.session = og.session_id(args.session)
+        if args.cmd == "status":
+            args.sessions = [og.session_id(s) for s in args.sessions]
         if args.cmd == "report" and not args.path:
             line = registry and registered(registry)[0].get(sid)
             if not line:
@@ -3648,7 +3675,6 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2  # argparse's usage exit
                 raise usage
             args.path = str(line[0])
-        og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "report":
             print(og.read_file(sid, args.path))
             return 0
