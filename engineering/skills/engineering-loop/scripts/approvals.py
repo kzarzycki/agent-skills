@@ -201,6 +201,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import functools
 import io
 import itertools
 import json
@@ -684,6 +685,7 @@ def default(pull: dict[str, Any]) -> bool:
     return pull["baseRefName"] == pull["baseRepository"]["defaultBranchRef"]["name"]
 
 
+@functools.cache  # flag() and owner_waits() both ask risk() in one run
 def merged_high(branch: str) -> list[int]:
     """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
     # ponytail: one page of 100; page when a feature branch takes more high-risk PRs than that
@@ -2514,10 +2516,14 @@ def delegate(number: int) -> int:
         raise Refused(
             f"PR #{number} targets {pull['baseRefName']}, the default branch: only the owner approves its merge"
         )
-    label(
-        number, MERGE_LABEL, add=True
-    )  # first, so the record is never older than the label it names
-    comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+    # the label first, so the record is never older than the label it names
+    label(number, MERGE_LABEL, add=True)
+    try:
+        comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+    except subprocess.CalledProcessError:
+        # a label with no record reads as the owner's once the PR targets the default branch: take it off again
+        label(number, MERGE_LABEL, add=False)
+        raise
     return 0
 
 

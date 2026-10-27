@@ -1481,6 +1481,25 @@ def test_delegate_labels_then_records_a_feature_branch_pr_and_refuses_the_defaul
     ]
 
 
+def test_delegate_takes_its_label_off_again_when_the_record_fails(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label without its record would read as the owner's once the PR is retargeted to the default branch."""
+    pr = pull()
+    pr["baseRefName"] = "stream"
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+
+    def failing(number: int, body: str) -> None:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 503: Service Unavailable")
+
+    monkeypatch.setattr(approvals, "comment", failing)
+    assert approvals.main(["delegate", "7"]) == 1
+    assert github == [
+        ("label", 7, "approved:merge", True),
+        ("label", 7, "approved:merge", False),
+    ]
+
+
 def test_a_re_approval_says_why_and_minimizes_every_record_it_supersedes(
     github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
