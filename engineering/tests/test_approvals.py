@@ -1621,6 +1621,42 @@ def test_a_report_whose_verifier_line_names_a_signature_becomes_the_headings_fam
     assert approvals.parse_report(report)[0] == "Verifier (codex/terra-6.1/med), pass 5"
 
 
+def test_a_qualifier_after_the_pass_number_is_posted_in_the_reviews_first_line(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path
+) -> None:
+    """Text after `pass <n>` on the `Verifier:` line is accepted and posted, so a qualifier the project asks for needs
+    no line or comment of its own; the heading the gate reads stays `Verifier (<family>), pass <n>`."""
+    report = tmp_path / "report.md"
+    report.write_text(
+        REPORT.replace(
+            "Verifier: claude, same-family, pass 2",
+            "Verifier: claude, same-family, pass 2 (merge of main; the other family is out of quota)",
+        )
+    )
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    (_, _asked), (_, _pr, review) = reviewing
+    first = review["body"].splitlines()[0]
+    assert first == (
+        f"Verifier (claude, same-family), pass 2 on {HEAD[:7]}: (merge of main; the other family is out of quota)."
+    )
+    assert approvals.PASS.match(review["body"]).groups() == ("claude, same-family", "2")
+    assert review["comments"][0]["body"].startswith(
+        "**Verifier (claude, same-family), pass 2 · C1**"
+    )
+
+
+@pytest.mark.parametrize("qualifier", [": note, pass 12", "(redoes Verifier (other), pass 12)"])
+def test_a_qualifier_naming_another_pass_never_changes_the_pass(
+    tmp_path: Path, qualifier: str
+) -> None:
+    report = tmp_path / "report.md"
+    line = "Verifier: claude, same-family, pass 2"
+    report.write_text(REPORT.replace(line, f"{line} {qualifier}"))
+    heading, *_rest, said = approvals.parse_report(report)
+    assert approvals.PASS.match(heading).groups() == ("claude, same-family", "2")
+    assert said == qualifier.lstrip(": ")
+
+
 def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
