@@ -9,6 +9,7 @@ import re
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from email.message import Message
 from pathlib import Path
@@ -1546,6 +1547,46 @@ def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> No
     with pytest.raises(omnigent_agent.Fail, match="HTTP 404"):
         og.call("GET", "/x")
     assert len(calls) == 1
+
+
+def test_an_http_error_shows_its_body_s_reason_and_a_stalled_body_costs_only_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stall = threading.Event()
+
+    class Stalled(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, b: bytearray) -> int:
+            stall.wait(5)
+            return 0
+
+    for body, line in (
+        (b'{"error": {"code": "invalid_input", "message": "bad role path"}}', "bad role path"),
+        (b'{"detail": [{"loc": ["body", "agent_id"]}]}', '[{"loc": ["body", "agent_id"]}]'),
+        (b"plain\n  text " + b"x" * 3000, "plain text " + "x" * (2048 - 13)),
+        (b"", None),
+        (None, "(body not read within 0.3s)"),
+    ):
+        fp = io.BufferedReader(Stalled()) if body is None else io.BytesIO(body)
+
+        def urlopen(req: Request, timeout: float, fp: object = fp) -> None:
+            raise HTTPError("http://omnigent.test/x", 400, "Bad Request", Message(), fp)
+
+        monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+        monkeypatch.setattr(omnigent_agent, "ERROR_BODY_SECONDS", 0.3)
+        og = object.__new__(omnigent_agent.Omnigent)
+        og.base, og._token = "http://omnigent.test", "synthetic"
+        began = time.monotonic()
+        with pytest.raises(omnigent_agent.Fail) as e:
+            og.call("POST", "/v1/sessions", {})
+        assert time.monotonic() - began < 1.5
+        head = "POST /v1/sessions: HTTP 400 Bad Request"
+        assert str(e.value) == (
+            head if line is None else f"{head}{':' * (body is not None)} {line}"
+        )
+    stall.set()
 
 
 def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_session(
