@@ -3430,7 +3430,8 @@ def test_a_background_task_id_is_a_named_wait() -> None:
     assert omnigent_agent.wait_of("STILL WORKING: waiting on bz3jp5aod") == "bz3jp5aod"
     assert omnigent_agent.wait_of("STILL WORKING: on it") == "unknown"
     assert omnigent_agent.wait_of("STILL WORKING backports") == "unknown"
-    assert omnigent_agent.wait_of("STILL WORKING on bz3jp5aodx") == "unknown"  # ten characters: no task id
+    # ten characters: no task id
+    assert omnigent_agent.wait_of("STILL WORKING on bz3jp5aodx") == "unknown"
 
 
 def test_a_childs_activity_reaches_the_state_once_a_minute_before_any_deadline(
