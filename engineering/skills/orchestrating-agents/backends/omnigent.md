@@ -111,7 +111,14 @@ report path, so whatever reads the report reads a file as for any child. The wor
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
 report; the lead merges that branch into the PR. A worker whose post fails (the session's token
 expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wait` posts that
-body on PR n from this host and writes it to the report path. A question goes in
+body on PR n from this host and writes it to the report path. The VM's files never reach this
+host either, so a file under `tmp/loop/` the report names (a repro, a log) rides in the comment
+as a `<!-- file: tmp/loop/<name> -->` line and a fenced block (a file past GitHub's 65,536
+characters goes as its last lines, marked so, and lands as `<name>.tail` with `<name>` listed
+missing, since a cut repro would run as the whole one); `wait` writes each beside the report, never through a symlink,
+prints where it landed, and lists as missing a named file the comment does not carry (even when
+this host has one by that name, which may be another) or that can't be written here, with no
+change to the exit code. A question goes in
 that report, since `<report>.question` is a path here too. Only a comment GitHub files on
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
@@ -148,6 +155,17 @@ elsewhere.
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
 runs in, read from the harness at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
 however the session started. The `AGENT_SIGNATURE=` line `start` puts atop a brief knows only the launch arguments.
+Below it, a child on this host that is not a top-level lead gets `LOOP_HEAVY_LOCK=<path>`, one
+lock per lead (the runner's primary session, which a lead's workers and their children share;
+`$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
+take one heavy slot between them (worker.md, Gates and push); a session gets no environment from
+its starter, so the path rides in the brief.
+
+**Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
+<s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
+each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
+passes; keep a call's `--limit` under the harness's tool timeout, so the call returns rather
+than being cut off, and call it again while the budget lasts.
 
 **Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
 share over about a second and its available memory, and exits 0 when it has room for another
@@ -165,6 +183,16 @@ own posts, which read no history, still count a timeout as a failure and try aga
 `relay`, `send`, `status` and `report` take a session id or a unique prefix of one (the six
 characters other tools print), looked up among every session you can see, archived ones
 included; a prefix several sessions share fails, listing them.
+
+**A child that leaves its tree dirty fails the wait.** When a child on this host reports, `run`
+and `wait` fail, naming each path, while its workspace has a tracked change (`git status
+--porcelain --untracked-files=no`, with each file's content hash, so a further edit to a file
+already changed shows) that was not there when `run` started it or `send` sent it its
+follow-up; a standalone `wait` has no start listing, so any tracked change counts. The failure
+says the change may be another edit in that tree since the child started, a lead's own in a
+shared worktree among them. Untracked files (a verifier's
+repros, gate staging) don't count, nor does a cloud child (`--pr`) or one on another host,
+whose report says whether its tree was clean.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
