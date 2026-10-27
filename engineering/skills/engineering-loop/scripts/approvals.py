@@ -6,6 +6,7 @@
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # may that head enter a batching merge queue; exit 0 or 1
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # the queue's proof
     uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
@@ -56,7 +57,9 @@ default branch) the label may be the delegated approver's: `delegate <pr>` adds 
 `By: delegate`), and refuses a PR into the default branch. There a label no newer than such a record is no approval,
 since only the owner approves a merge to the default branch; and a PR from a branch into the default branch is high
 risk while any PR merged into that branch carries `risk:high`, so a feature branch's merge waits for the owner.
-No PR yet, or every proof held: exit 0.
+Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
+the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
+since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
 `Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
@@ -2244,9 +2247,19 @@ def gated(
     return found + proofs(point, pull, issues, loop, revert), issues
 
 
-def check(point: str, pr: int | None, head: str | None = None) -> int:
+def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
     tracker, loop = project()
+    if issue is not None:
+        return unbuilt(issue, tracker, loop)
     if pr is None and (pr := current_pr()) is None:
+        if point == "build":
+            if (issue := branch_issue()) is None:
+                print(
+                    "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build"
+                    " needs an approved spec"
+                )
+                return 1
+            return unbuilt(issue, tracker, loop)
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
@@ -2262,6 +2275,29 @@ def check(point: str, pr: int | None, head: str | None = None) -> int:
     for line in holds(pull, issues, loop) + found + waiting + after:
         print(line)
     return 1 if found else WAITING if waiting else 0
+
+
+# a PR with no labels and no files yet: what `check build` judges an issue's spec beside before the PR exists
+UNOPENED: dict[str, Any] = {"labels": {"nodes": []}, "files": {"nodes": []}}
+
+
+def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
+    """check build on one issue before its PR exists: every build proof a PR's issues need (problems, proofs), judged
+    on the issue alone; it claims nothing, since there is no PR to give the assignee."""
+    issues = [issue_node(number)]
+    found = problems(issues, None if tracker is None else label_names(tracker))
+    found += proofs("build", UNOPENED, issues, loop)
+    for line in holds(UNOPENED, issues, loop) + found:
+        print(line)
+    if not found:
+        print(f"#{number}: every build proof holds; no PR yet")
+    return 1 if found else 0
+
+
+def branch_issue() -> int | None:
+    """The issue number the current branch's name starts a segment with (`loop/329-build-issue`), or None."""
+    found = re.search(r"(?:^|/)(\d+)(?:-|$)", git("rev-parse", "--abbrev-ref", "HEAD").strip())
+    return int(found[1]) if found else None
 
 
 def land(pr: int, wait: bool = False) -> int:
@@ -2803,6 +2839,7 @@ def main(argv: list[str]) -> int:
     checking.add_argument("point", choices=("build", "merge", "queue"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
+    checking.add_argument("--issue", type=int)
     batching = commands.add_parser("batch")
     batching.add_argument("pr", type=int)
     batching.add_argument("--merge", required=True)
@@ -2841,7 +2878,9 @@ def main(argv: list[str]) -> int:
                 )
             if args.point != "queue" and args.head is not None:
                 raise Refused("--head goes with check queue only")
-            return check(args.point, args.pr, args.head)
+            if args.issue is not None and (args.point != "build" or args.pr is not None):
+                raise Refused("--issue goes with check build and no PR number")
+            return check(args.point, args.pr, args.head, args.issue)
         if args.command == "batch":
             return batch(args.pr, args.merge, args.batch, args.exit, args.log)
         if args.command == "approve":
