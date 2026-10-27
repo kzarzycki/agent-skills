@@ -139,6 +139,10 @@ reviewer must be of the other family is the caller's policy.
 `start` and `wait <session> <report>` are the two halves, for a start whose wait runs
 elsewhere.
 
+**Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
+runs in, read from the harness at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
+however the session started. The `AGENT_SIGNATURE=` line `start` puts atop a brief knows only the launch arguments.
+
 **Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
 share over about a second and its available memory, and exits 0 when it has room for another
 session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads

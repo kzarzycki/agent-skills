@@ -230,6 +230,35 @@ def test_start_gives_the_child_its_signature_from_what_it_passes(
     assert f"AGENT_SIGNATURE={expected}\n" in (tmp_path / "r.md.brief").read_text()
 
 
+def test_a_running_session_reads_its_signature_without_launch_arguments(tmp_path: Path) -> None:
+    """A session started with no model or effort (Omnigent's own tools, a default model) still signs in full."""
+    rollout = tmp_path / ".codex/sessions/2026/10/27/rollout-2026-10-27T11-53-35-T1.jsonl"
+    rollout.parent.mkdir(parents=True)
+    turns = [
+        {"model": "gpt-6.1-terra", "effort": "high"},
+        {"model": "gpt-6.1-sol", "effort": "medium"},
+    ]
+    rollout.write_text(
+        '{"type":"session_meta","payload":{}}\nnot json\n'
+        + "".join(json.dumps({"type": "turn_context", "payload": t}) + "\n" for t in turns)
+    )
+    transcript = tmp_path / ".claude/projects/-repo/S1.jsonl"
+    transcript.parent.mkdir(parents=True)
+    replies = [
+        {"type": "assistant", "message": {"model": "claude-opus-5-5"}},
+        {"type": "user", "message": {}},
+    ]
+    transcript.write_text("".join(json.dumps(r) + "\n" for r in replies))
+    read = omnigent_agent.running_signature
+    assert read({"CODEX_THREAD_ID": "T1"}, tmp_path) == "codex/sol-6.1/med"
+    assert read(
+        {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "S1", "CLAUDE_EFFORT": "xhigh"}, tmp_path
+    ) == ("cc/opus-5.5/xhigh")
+    assert read({"CLAUDECODE": "1"}, tmp_path) == "cc/?/?"
+    assert read({"CODEX_THREAD_ID": "gone"}, tmp_path) == "codex/?/?"
+    assert read({}, tmp_path) == "?/?/?"
+
+
 def test_start_abandons_deaf_session_and_retries(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0) == (
