@@ -147,7 +147,10 @@ design, wireframes included for a UI, and delegate the rest.
      mergeStateStatus` is `DIRTY` (a conflict) or `BEHIND` (main requires an up-to-date
      branch). A merge queue, where the repo has one, tests the PR on top of main anyway, so a
      merge there only costs a CI run. When you do merge it in, rerun the gates and get a verifier pass on the
-     merge (step 7), since `land` merges only a head with a verdict of its own. When main's
+     merge (step 7), since `land` merges only a head with a verdict of its own. Where loop.md
+     has `carry_over_main`, no verifier pass is needed when `check merge` prints that the
+     merge carries the head's verdict (SKILL.md, Approvals and proof); the gates still rerun
+     on the merge (`local-ci <pr>` under `ci: false`). Otherwise, when main's
      changes touch no file the PR changes and no merge check (a `check:` task, a tool it
      runs, or the lint, type or test configuration), that pass is the short delta pass.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
@@ -155,6 +158,8 @@ design, wireframes included for a UI, and delegate the rest.
      `approved:merge` label on the head that lands (SKILL.md, Approvals and proof); you
      never add it. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
+   - End the PR body with `Impl: <signature>`, the `AGENT_SIGNATURE=` line atop your brief (or the worker's, when it did most
+     of the work; `?` for any part you can't know), instead of the harness's "Generated with" footer.
    - Where the project lands this base through a batching merge queue (its own instructions
      name it), enqueue the PR there instead of running `land`, once `approvals.py check queue
      <pr> --head <sha>` exits 0, and go on with the next item: the queue tells you the outcome.
@@ -291,7 +296,8 @@ ended over 15 min ago. Only you know a report is in: an idle child still owing o
 finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
-A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
+A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
+supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
 before then.
 

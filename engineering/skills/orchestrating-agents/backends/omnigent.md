@@ -429,7 +429,9 @@ lead's first line, whatever its status reads; a lead whose wait is unknown and t
 on this chain (`nudged_at`, the `progress_at` its nudge was sent at) gets a second, `no progress
 <n>m after a nudge`, 10 minutes later. The
 wait comes from the lead's last message: `parked` for a `PARKED` ending, the thing a `STILL
-WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, opening it or after `on`/`for`), else
+WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, a child's session id, or a
+background task id such as `bz3jp5aod`, `b` and 8 lowercase letters and digits with one digit at
+least, opening it or after `on`/`for`), else
 `unknown`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that

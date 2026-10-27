@@ -205,6 +205,31 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("agent", "model", "env", "expected"),
+    [
+        ("claude", "claude-sonnet-5-5", None, "cc/sonnet-5.5/?"),
+        ("codex", "gpt-6.1-terra", None, "codex/terra-6.1/?"),
+        ("codex", None, "gpt-6.1-sol", "codex/sol-6.1/?"),
+        ("claude", None, None, "cc/?/?"),
+    ],
+)
+def test_start_gives_the_child_its_signature_from_what_it_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    agent: str,
+    model: str | None,
+    env: str | None,
+    expected: str,
+) -> None:
+    monkeypatch.delenv(f"OMNIGENT_MODEL_{agent.upper()}", raising=False)
+    if env:
+        monkeypatch.setenv(f"OMNIGENT_MODEL_{agent.upper()}", env)
+    og = FakeOmnigent()
+    omnigent_agent.start(og, agent, "t", "do X", tmp_path / "r.md", None, 0, model=model)
+    assert f"AGENT_SIGNATURE={expected}\n" in (tmp_path / "r.md.brief").read_text()
+
+
 def test_start_abandons_deaf_session_and_retries(tmp_path: Path) -> None:
     og = FakeOmnigent(deaf={0})
     assert omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0) == (
@@ -1642,7 +1667,9 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
     assert omnigent_agent.PREAMBLE == DEFAULT_PREAMBLE
     og = FakeOmnigent()
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", "roles/worker.md", 0)
-    assert (tmp_path / "r.md.brief").read_text() == DEFAULT_PREAMBLE.format(
+    assert (
+        tmp_path / "r.md.brief"
+    ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
     ) + "do X"
     assert og.top_level == [False] and og.roles == ["roles/worker.md"]
@@ -1661,7 +1688,12 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     )
     assert og.top_level == [True, True]
     text = (tmp_path / "r.md.brief").read_text()
-    assert text == omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="") + "do X"
+    assert (
+        text
+        == "AGENT_SIGNATURE=cc/?/?\n"
+        + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
+        + "do X"
+    )
     assert "owner's own words" in text and "ask them here" in text
     assert "USER NEEDED" not in text and "needs-owner" not in text
     assert "setsid; exec @ARGV" in text and f"final report to {tmp_path / 'r.md'}" in text
@@ -3389,6 +3421,17 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
     assert [p.split("\n")[0] for p in fyis(og)] == (
         [f"Supervisor: a t-a: no progress 60m (until {due})"] if deadline else []
     )
+
+
+def test_a_background_task_id_is_a_named_wait() -> None:
+    """`b` and 8 lowercase letters and digits, one a digit at least, opening the wait or after "on"/"for"."""
+    assert omnigent_agent.wait_of("STILL WORKING bz3jp5aod") == "bz3jp5aod"
+    assert omnigent_agent.wait_of("STILL WORKING bz3jp5aod: the queue runs for #12") == "bz3jp5aod"
+    assert omnigent_agent.wait_of("STILL WORKING: waiting on bz3jp5aod") == "bz3jp5aod"
+    assert omnigent_agent.wait_of("STILL WORKING: on it") == "unknown"
+    assert omnigent_agent.wait_of("STILL WORKING backports") == "unknown"
+    # ten characters: no task id
+    assert omnigent_agent.wait_of("STILL WORKING on bz3jp5aodx") == "unknown"
 
 
 def test_a_childs_activity_reaches_the_state_once_a_minute_before_any_deadline(
