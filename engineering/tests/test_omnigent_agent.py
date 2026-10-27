@@ -2054,6 +2054,7 @@ def test_a_cloud_report_brings_the_repro_files_it_carries_and_lists_the_missing_
         "<!-- file: tmp/loop/unclosed.py -->\n```\nno closing fence\n"
         "<!-- file: tmp/loop/after.py -->\n```\nb = 1\n```\n"
         "<!-- file: tmp/loop/adir -->\n```\ncan't land\n```\n"
+        "<!-- file: tmp/loop/big.log (last lines) -->\n```\nthe end\n```\n"
     )
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-9")
     fake_gh(monkeypatch, {"9": on_pr(7, body)})
@@ -2081,6 +2082,11 @@ def test_a_cloud_report_brings_the_repro_files_it_carries_and_lists_the_missing_
     for name in ("lost.txt", "x", "unclosed.py", "gate-7.log", "adir"):
         assert f"missing: tmp/loop/{name} (" in err, name
     assert "this host's own copy stays" in err and "not written here" in err
+    assert not (loop / "big.log").exists() and (loop / "big.log.tail").read_text() == "the end\n"
+    assert (
+        f"missing: tmp/loop/big.log (too long for a comment; its last lines are {loop / 'big.log'}.tail)"
+        in err
+    )
 
 
 @pytest.mark.parametrize(

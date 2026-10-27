@@ -348,7 +348,7 @@ The owner authorized this task; do it now, without asking for a go-ahead. This i
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
-A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, the block preceded by a line saying so.
+A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
@@ -1853,8 +1853,8 @@ def wait(
 # A file a cloud worker's report names under tmp/loop/ rides in its comment as this marker line and a
 # fenced block (PR_PREAMBLE), since the VM's files never reach the host.
 CARRIED = re.compile(
-    r"^<!-- file: tmp/loop/(\w(?:[\w.-]*[\w-])?) -->\n(`{3,}|~{3,})[^\n]*\n"
-    r"((?:(?!^<!-- file: ).)*?)\n?^\2[ \t]*$",  # a block never runs into the next file's
+    r"^<!-- file: tmp/loop/(\w(?:[\w.-]*[\w-])?)( \(last lines\))? -->\n(`{3,}|~{3,})[^\n]*\n"
+    r"((?:(?!^<!-- file: ).)*?)\n?^\3[ \t]*$",  # a block never runs into the next file's
     re.MULTILINE | re.DOTALL,
 )
 NAMED_FILE = re.compile(r"\btmp/loop/(\w(?:[\w.-]*[\w-])?)")
@@ -1864,12 +1864,23 @@ def carry_files(body: str, report: Path) -> None:
     """Write each file the cloud report ``body`` carries beside ``report``, saying where it landed;
     a file it names under ``tmp/loop/`` without carrying it, or one that can't be written here, is
     listed as missing. Never raises: the report is in already."""
-    carried = {m[1]: m[3] for m in CARRIED.finditer(body)}
+    carried, tails = {}, set()
+    for m in CARRIED.finditer(body):
+        carried[m[1]] = m[4]
+        if m[2]:
+            tails.add(m[1])
     for name in dict.fromkeys(NAMED_FILE.findall(body) + list(carried)):
         path = report.parent / name
         if name == report.name:
             continue
-        if name not in carried:
+        if name in tails:
+            # a cut file under its own name would run or read as the whole one
+            print(
+                f"missing: tmp/loop/{name} (too long for a comment; its last lines are {path}.tail)",
+                file=sys.stderr,
+            )
+            path = path.with_name(name + ".tail")
+        elif name not in carried:
             # a copy here may be the lead's own or a stale one: it can't stand in for the cloud's
             mine = "; this host's own copy stays" if path.exists() else ""
             print(
@@ -1884,7 +1895,8 @@ def carry_files(body: str, report: Path) -> None:
         except OSError as e:
             print(f"missing: tmp/loop/{name} (carried, but not written here: {e})", file=sys.stderr)
         else:
-            print(f"brought {path}", file=sys.stderr)
+            if name not in tails:
+                print(f"brought {path}", file=sys.stderr)
 
 
 def pr_report(said: str, pr: int, since: int | None = None) -> str | None:

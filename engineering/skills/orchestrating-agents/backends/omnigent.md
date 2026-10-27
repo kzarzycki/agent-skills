@@ -114,7 +114,8 @@ expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wai
 body on PR n from this host and writes it to the report path. The VM's files never reach this
 host either, so a file under `tmp/loop/` the report names (a repro, a log) rides in the comment
 as a `<!-- file: tmp/loop/<name> -->` line and a fenced block (a file past GitHub's 65,536
-characters goes as its tail); `wait` writes each beside the report, never through a symlink,
+characters goes as its last lines, marked so, and lands as `<name>.tail` with `<name>` listed
+missing, since a cut repro would run as the whole one); `wait` writes each beside the report, never through a symlink,
 prints where it landed, and lists as missing a named file the comment does not carry (even when
 this host has one by that name, which may be another) or that can't be written here, with no
 change to the exit code. A question goes in
