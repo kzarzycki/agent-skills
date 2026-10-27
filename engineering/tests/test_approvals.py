@@ -340,10 +340,10 @@ def test_check_build_before_the_pr_judges_the_issue(
 
     def git(*args: str) -> str:
         if args[0] == "diff":
-            assert args == ("diff", "--name-only", "origin/main...HEAD")
+            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
             if changed[0] is None:
                 raise subprocess.CalledProcessError(128, ["git", *args])
-            return changed[0]
+            return "".join(f"{path}\0" for path in changed[0].split())
         return ("origin/main" if args[-1] == "origin/HEAD" else branch[0]) + "\n"
 
     monkeypatch.setattr(approvals, "git", git)
@@ -4202,10 +4202,10 @@ def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
 
     def git(*args: str) -> str:
         if args[0] == "diff":
-            assert args == ("diff", "--name-only", "origin/main...HEAD")
+            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
             if changed[0] is None:
                 raise subprocess.CalledProcessError(128, ["git", *args])
-            return changed[0]
+            return "".join(f"{path}\0" for path in changed[0].split())
         return "origin/main\n" if args[-1] == "origin/HEAD" else "loop/1-fix\n"
 
     monkeypatch.setattr(approvals, "project", lambda: (TRACKER, AUTO))
@@ -4235,6 +4235,28 @@ def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
     changed[0] = None
     code, out = build(1)
     assert code == 1 and "the gate can't read every file the PR changes" in out[0]
+
+
+def test_the_branch_files_check_build_reads_are_its_real_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-ASCII name, which git quotes in its plain output, and one with spaces reach the risk rules as committed."""
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    committed(clone)
+    git_in(clone, "branch", "-M", "main")
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "push", "-q", "origin", "main")
+    git_in(clone, "remote", "set-head", "origin", "main")
+    git_in(clone, "checkout", "-q", "-b", "loop/1-fix")
+    names = [".github/workflows/contrôle.yml", "docs/decision notes.md"]
+    for name in names:
+        (clone / name).parent.mkdir(parents=True, exist_ok=True)
+        (clone / name).write_text("x\n")
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-qm", "files")
+    monkeypatch.chdir(clone)
+    assert sorted(approvals.paths(approvals.unopened())) == sorted(names)
 
 
 def test_spec_auto_is_its_own_policy() -> None:

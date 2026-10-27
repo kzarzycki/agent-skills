@@ -2283,7 +2283,8 @@ def unopened() -> dict[str, Any]:
     than it lists (paths() None), so a `paths` risk rule holds rather than reading as unmatched."""
     try:
         base = git("rev-parse", "--abbrev-ref", "origin/HEAD").strip()
-        found = git("diff", "--name-only", f"{base}...HEAD").split()
+        # NUL-separated, since git quotes a non-ASCII name and a name may hold spaces
+        found = git("diff", "--name-only", "-z", f"{base}...HEAD").split("\0")[:-1]
     except subprocess.CalledProcessError:
         return {"labels": {"nodes": []}, "files": {"nodes": [], "totalCount": 1}}
     return {"labels": {"nodes": []}, "files": {"nodes": [{"path": path} for path in found]}}
