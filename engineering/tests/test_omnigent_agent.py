@@ -2298,6 +2298,142 @@ def test_a_failed_session_reports_its_last_task_error_and_runner_log(
     assert og.posts == 1  # a failed session is not nudged
 
 
+SETUP_ERROR = (
+    "inner executor error: cloud session setup failed: Setup script failed with exit code -1"
+)
+STALL_ERROR = (
+    "cloud session https://claude.ai/code/x made no progress for 1800s; it is left as it is,"
+    " and the next message continues it"
+)
+
+
+def failing(og: FakeOmnigent, errors: dict[str, list[str]]) -> None:
+    """Each session in ``errors`` reads failed with its next error per look (``running``: running,
+    an empty one: as it is), and the last for good."""
+    info = og.info
+
+    def look(s: str) -> dict:
+        snap = info(s)
+        if not (left := errors.get(s)):
+            return snap
+        error = left.pop(0) if len(left) > 1 else left[0]
+        if error == "running":
+            return {**snap, "status": "running"}
+        return (
+            {**snap, "status": "failed", "last_task_error": {"message": error}} if error else snap
+        )
+
+    og.info = look  # type: ignore[method-assign]
+
+
+def capped(og: FakeOmnigent, posts: int) -> None:
+    """A send past ``posts`` fails the test: a recovery repeated would loop for good."""
+    send = og.send
+
+    def once(sid: str, text: str) -> None:
+        assert og.posts < posts, f"a send past {posts}: {text}"
+        send(sid, text)
+
+    og.send = once  # type: ignore[method-assign]
+
+
+def test_run_retries_a_setup_failure_once_in_a_fresh_session_with_the_same_brief(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    failing(og, {"s0": [SETUP_ERROR]})
+    look = og.info
+    og.info = lambda s: ((tmp_path / "r.md").write_text("ok") if s == "s1" else None, look(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    out, err = capsys.readouterr()
+    assert out.split()[:2] == ["s0", "s1"] and out.split()[-1] == str(tmp_path / "r.md")
+    assert re.search(
+        r"session s0 failed in setup before its first turn \(.*setup failed.*\).*session s1", err
+    )
+    assert [omnigent_agent.text_of(i) for i in og.items("s1")[1:]] == [
+        omnigent_agent.text_of(i) for i in og.items("s0")[1:]
+    ]
+    assert og.archived == ["s1"]
+
+
+def test_run_fails_on_a_second_setup_failure_naming_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    failing(og, {"s0": [SETUP_ERROR], "s1": [SETUP_ERROR]})
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    err = capsys.readouterr().err
+    assert re.search(
+        r"(?s)session s0 failed in setup.*session s1 ended \(failed\): .*setup failed", err
+    )
+    assert len(og.sessions) == 2
+
+
+def test_wait_continues_a_stalled_child_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    # the stall, and after the continue one look still at its end, then the new turn's report
+    looks = [STALL_ERROR, STALL_ERROR, ""]
+    failing(og, {sid: looks})
+    look = og.info
+    og.info = lambda s: (  # type: ignore[method-assign]
+        (tmp_path / "r.md").write_text("ok") if looks == [""] else None,
+        look(s),
+    )[1]
+    assert omnigent_agent.wait(og, sid, tmp_path / "r.md") == str(tmp_path / "r.md")
+    assert og.posts == 2  # the brief and one continue
+    assert omnigent_agent.text_of(og.items(sid)[-2]) == omnigent_agent.CONTINUE
+    assert f"session {sid} stalled (" in capsys.readouterr().err
+
+    og = FakeOmnigent(reply="done")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "s.md", None, 0)
+    failing(og, {sid: [STALL_ERROR, "running", STALL_ERROR]})  # stalls again once its new turn ran
+    capped(og, 2)
+    with pytest.raises(
+        omnigent_agent.Fail,
+        match=f"(?s)session {sid} stalled .*session {sid} ended \\(failed\\): .*made no progress",
+    ):
+        omnigent_agent.wait(og, sid, tmp_path / "s.md")
+    assert og.posts == 2
+
+    # another error just after the continue is a new failure, not the stall's end
+    og = FakeOmnigent(reply="done")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "u.md", None, 0)
+    failing(og, {sid: [STALL_ERROR, "claude exited: boom"]})
+    capped(og, 2)
+    began = time.monotonic()
+    with pytest.raises(omnigent_agent.Fail, match=f"(?s)session {sid} stalled .*boom"):
+        omnigent_agent.wait(og, sid, tmp_path / "u.md")
+    assert time.monotonic() - began < omnigent_agent.CONTINUE_SECONDS / 4
+
+
+def test_wait_neither_retries_nor_continues_a_failure_after_the_first_turn_or_any_other(
+    tmp_path: Path,
+) -> None:
+    relaunched = []
+    for error, reply in ((SETUP_ERROR, "working on it"), ("claude exited: boom", "")):
+        og = FakeOmnigent(reply=reply)
+        sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+        failing(og, {sid: [error]})
+        capped(og, 1)
+        with pytest.raises(omnigent_agent.Fail, match="ended \\(failed\\)"):
+            omnigent_agent.wait(
+                og, sid, tmp_path / "r.md", relaunch=lambda: relaunched.append(1) or "x"
+            )
+        assert og.posts == 1
+    assert relaunched == []
+
+
 def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2542,7 +2678,15 @@ def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
         "running t-running: kept (running)",
         "blocked t-blocked: kept (blocked on a prompt)",
         "queued t-queued: kept (input pending)",
+        "gone t-gone: already archived",
     ]
+
+    def unknown(s: str) -> dict:
+        raise omnigent_agent.Gone(f"GET /v1/sessions/{s}: HTTP 404 Not Found")
+
+    og.info = unknown  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Gone):  # an unknown session still fails, as before
+        omnigent_agent.reap(og, ["nope"])
 
 
 def test_reap_goes_on_past_a_finish_that_fails() -> None:
