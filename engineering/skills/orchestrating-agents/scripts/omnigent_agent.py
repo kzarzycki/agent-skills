@@ -3379,20 +3379,20 @@ def reason(e: Exception) -> str:
 def text_or_file(arg: str) -> tuple[str, Path | None]:
     """A brief or message argument: the file it names, read, and that file; else the text itself
     and None, when it reads as text (it holds whitespace, or is too long for a file name). One word
-    naming no file is a usage error (exit 2), since it is most likely a mistyped path."""
+    naming no file (nothing there, a directory, a path through a file) is a usage error (exit 2),
+    since it is most likely a mistyped path; a file that exists but can't be read exits 1."""
     try:
         return Path(arg).read_text(), Path(arg)
     except OSError as e:
-        if e.errno == errno.ENAMETOOLONG or (
-            isinstance(e, FileNotFoundError) and re.search(r"\s", arg)
-        ):
+        no_file = isinstance(e, (FileNotFoundError, IsADirectoryError, NotADirectoryError))
+        if e.errno == errno.ENAMETOOLONG or (no_file and re.search(r"\s", arg)):
             return arg, None
         error = Fail(
             f"{arg}: no such file; pass a file or the text itself"
-            if isinstance(e, FileNotFoundError)
+            if no_file
             else f"{arg}: {reason(e)}"
         )
-        error.code = 2 if isinstance(e, FileNotFoundError) else 1
+        error.code = 2 if no_file else 1
         raise error from e
 
 
