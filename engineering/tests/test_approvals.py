@@ -3642,8 +3642,10 @@ def test_check_without_a_pr_or_an_issue_has_nothing_to_gate(
     )
     assert (approvals.main(["check", "build"]), capsys.readouterr().out) == (
         1,
-        "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build needs an"
-        " approved spec\n",
+        (
+            "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build needs an"
+            " approved spec\n"
+        ),
     )
 
 
