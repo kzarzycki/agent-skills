@@ -60,6 +60,7 @@ TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
+COMMENT = approvals.comment
 
 
 @pytest.fixture(autouse=True)
@@ -3770,12 +3771,27 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
             7,
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n"
-                f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+                f"From the recorded run at {record['time']}, not run again.\n"
             ),
         )
     ]
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
+    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
+
+
+def test_a_local_ci_comment_names_no_host(
+    checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run and recorded on a host named for its owner, the pass is posted without it, and still proves the head."""
+    sent = posts(monkeypatch)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    record = json.loads(approvals.recorded(HEAD).read_text())
+    assert record["host"] == "owner-MacBook.local"  # the local record keeps it
+    assert approvals.main(["local-ci", "7"]) == 0
+    [body] = sent
+    assert "owner-MacBook" not in body and "/Users/owner" not in body
+    merged = pull(reviews=(VERDICT,), comments=(body,), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
 
 
@@ -3851,7 +3867,7 @@ def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
                 "Env: GATE_SCOPE=changed GATE_UI_TESTS=0\n"
-                f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+                f"From the recorded run at {record['time']}, not run again.\n"
             ),
         )
     ]
@@ -4847,7 +4863,7 @@ def batched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 def batch_note(head: str, merge: str, batch: str, exit: int = 0, env: str = "default") -> str:
     return (
         f"{approvals.BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch}\nExit: {exit}\nEnv: {env}\n"
-        "Gated: 2026-01-01T00:00:00Z on host\nLog: /tmp/gate.log\n"
+        "Gated: 2026-01-01T00:00:00Z\nLog: /tmp/gate.log\n"
     )
 
 
@@ -5060,6 +5076,37 @@ def test_batch_posts_the_proof_check_merge_reads(
         )
     )
     assert "gate: green" in body and "line 12\n" in body and "line 11\n" not in body
+    assert queued_merge(batched["head"], body) == []
+
+
+def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every body comment() hands gh, from a fake host whose name and home name its owner."""
+    sent: list[str] = []
+    monkeypatch.setattr(approvals, "comment", COMMENT)
+    monkeypatch.setattr(approvals, "gh", lambda *args, data=None: sent.append(data) or "")
+    monkeypatch.setattr(approvals.socket, "gethostname", lambda: "owner-MacBook.local")
+    monkeypatch.setenv("HOME", "/Users/owner")
+    return sent
+
+
+def test_posted_comments_name_no_host_or_home(
+    batched: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A queue gate comment quoting build notes under the home directory, from a host named for its owner."""
+    sent = posts(monkeypatch)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    gated_head(batched["head"])
+    record = approvals.recorded(batched["head"])
+    record.write_text(record.read_text().replace('"host": "host"', '"host": "owner-MacBook.local"'))
+    log = tmp_path / "gate.log"
+    log.write_text(
+        "note: cached at /Users/owner/Library/Caches/x\nhome /Users/owner\ngate: green\n"
+    )
+    args = ["batch", "7", "--merge", batched["merge"], "--batch", batched["batch"], "--exit", "0"]
+    assert approvals.main([*args, "--log", str(log)]) == 0
+    [body] = sent
+    assert "owner-MacBook" not in body and "/Users/owner" not in body
+    assert "note: cached at ~/Library/Caches/x\nhome ~\n" in body
     assert queued_merge(batched["head"], body) == []
 
 
