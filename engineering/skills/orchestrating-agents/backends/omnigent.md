@@ -79,13 +79,15 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
-(`scope=user`). Several agents can share a name, since each upload of one spec registers another
-agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
+(`scope=user`). `claude` and `codex` take the server's native agent, though the UI may register a
+user copy of it. Several user agents can share a name, since each upload of one spec registers
+another agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
 identity and bookkeeping (`id`, `version`, `created_at`, `updated_at`, `object`), the name starts the newest by `created_at`: copies of one spec can't be told
 apart, and an agent record has no host (`--host` picks that per session), so an id in project
 config would only be wrong on another server. Both are compared since each holds fields the other
 lacks: the record policies, skills and terminals, the config instructions and model. When they
-differ, the name fails, listing their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
+differ, or a server agent shares the name (only a user agent has a config to compare), the name
+fails, listing their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
 from a file as the aliases do; any other may run its tools on another machine, so its brief goes
 inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases only (`--model`
 works for any), and so does permission mode, except Antigravity: it asks for approval of every
@@ -109,7 +111,14 @@ report path, so whatever reads the report reads a file as for any child. The wor
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
 report; the lead merges that branch into the PR. A worker whose post fails (the session's token
 expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wait` posts that
-body on PR n from this host and writes it to the report path. A question goes in
+body on PR n from this host and writes it to the report path. The VM's files never reach this
+host either, so a file under `tmp/loop/` the report names (a repro, a log) rides in the comment
+as a `<!-- file: tmp/loop/<name> -->` line and a fenced block (a file past GitHub's 65,536
+characters goes as its last lines, marked so, and lands as `<name>.tail` with `<name>` listed
+missing, since a cut repro would run as the whole one); `wait` writes each beside the report, never through a symlink,
+prints where it landed, and lists as missing a named file the comment does not carry (even when
+this host has one by that name, which may be another) or that can't be written here, with no
+change to the exit code. A question goes in
 that report, since `<report>.question` is a path here too. Only a comment GitHub files on
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
@@ -117,7 +126,11 @@ repository's counts for nothing. The nudge asks for the comment, and a second tu
 without one fails. `run` and `wait` finish a worker once its report is in, unless given
 `--keep`: a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
-round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). `send --pr <n>`
+round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
+child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
+message), `run` starts once more in a fresh session with the same brief, and one that stalls
+(`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
+message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
 workspace is, since the report is the file `wait` writes here, and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
@@ -142,6 +155,17 @@ elsewhere.
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
 runs in, read from the harness at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
 however the session started. The `AGENT_SIGNATURE=` line `start` puts atop a brief knows only the launch arguments.
+Below it, a child on this host that is not a top-level lead gets `LOOP_HEAVY_LOCK=<path>`, one
+lock per lead (the runner's primary session, which a lead's workers and their children share;
+`$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
+take one heavy slot between them (worker.md, Gates and push); a session gets no environment from
+its starter, so the path rides in the brief.
+
+**Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
+<s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
+each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
+passes; keep a call's `--limit` under the harness's tool timeout, so the call returns rather
+than being cut off, and call it again while the budget lasts.
 
 **Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
 share over about a second and its available memory, and exits 0 when it has room for another
@@ -156,6 +180,19 @@ fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
 message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
 server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
 own posts, which read no history, still count a timeout as a failure and try again.
+`relay`, `send`, `status` and `report` take a session id or a unique prefix of one (the six
+characters other tools print), looked up among every session you can see, archived ones
+included; a prefix several sessions share fails, listing them.
+
+**A child that leaves its tree dirty fails the wait.** When a child on this host reports, `run`
+and `wait` fail, naming each path, while its workspace has a tracked change (`git status
+--porcelain --untracked-files=no`, with each file's content hash, so a further edit to a file
+already changed shows) that was not there when `run` started it or `send` sent it its
+follow-up; a standalone `wait` has no start listing, so any tracked change counts. The failure
+says the change may be another edit in that tree since the child started, a lead's own in a
+shared worktree among them. Untracked files (a verifier's
+repros, gate staging) don't count, nor does a cloud child (`--pr`) or one on another host,
+whose report says whether its tree was clean.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
@@ -166,6 +203,8 @@ so a report written in stages does not end it early. `wait` has no launch time, 
 path a pass before already wrote it returns that report at once: check the report's time
 against the run's start before taking it. Start a second only for a child that failed or
 is gone: two children on one item write the same branch.
+An HTTP failure names the server's reason after its status (`HTTP 400 Bad Request: <message>`),
+from at most 2 KB of the body read within 2 s, so a 400 tells a bad brief from a refusal.
 
 **Whoever starts a worker collects it.** Omnigent files every child under the runner's
 primary session, so a fork's or a worker's own children notify the lead, not the
@@ -585,7 +624,7 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each, and prints which it kept. A finish that fails is printed and the rest still run, and
+each and `already archived` for one finished before, and prints which it kept. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
 which finishes it on return, never reaped. Run `reap --children
