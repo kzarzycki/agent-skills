@@ -3799,6 +3799,33 @@ def test_a_parked_lead_has_no_deadline(
     assert state_of(registry)["leads"]["a"]["wait"] == "parked"
 
 
+@pytest.mark.parametrize("task", ["monitor", "shell"])
+def test_a_lead_that_ended_with_only_a_monitor_live_has_no_deadline_and_a_shell_keeps_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: str
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    reply = {**ending("DONE: the page is published", 60), "status": "completed"}
+    og = Lead(told("brief", 120), reply)
+    og.snap = {"status": "running", "background_tasks": [{"type": task, "status": "running"}]}
+    at = {1: 1300.0, 2: 5000.0}
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, at[poll]),
+        notify="cos",
+        console=True,
+        fyi="post",
+    )
+    firsts = [p.split("\n")[0] for p in fyis(og)]
+    if task == "monitor":  # its turn ended: told once, then it waits on its follower
+        assert firsts == ["Supervisor: a t-a: turn ended"]
+    else:  # a shell is work in flight: watched as running, so the deadline still holds
+        assert firsts and all("no progress" in f for f in firsts)
+
+
 def test_a_live_child_is_progress_and_the_deadline_counts_from_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
