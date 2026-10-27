@@ -992,8 +992,10 @@ def test_a_local_check_counts_only_from_the_author_the_runner_or_a_writer(
         return merge(merged, [approved(1, "area:web")], no_ci)
 
     assert proofs("stranger") == [
-        "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the"
-        " head (approvals.py local-ci)"
+        (
+            "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the"
+            " head (approvals.py local-ci)"
+        )
     ]
     assert proofs("loop") == proofs("maintainer") == proofs("worker") == []
 
