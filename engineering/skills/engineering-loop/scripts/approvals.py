@@ -660,7 +660,9 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     ]
     if not marked and default(pull) and not pull["isCrossRepository"]:
         # a feature branch's merge to the default branch carries every high-risk PR that landed in it
-        marked = [f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])]
+        marked = [
+            f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])
+        ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
     if not spec_auto(loop):
@@ -686,8 +688,20 @@ def merged_high(branch: str) -> list[int]:
     """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
     # ponytail: one page of 100; page when a feature branch takes more high-risk PRs than that
     found = gh(
-        "pr", "list", "--base", branch, "--state", "merged", "--label", RISK_LABEL,
-        "--limit", "100", "--json", "number", "--jq", ".[].number",
+        "pr",
+        "list",
+        "--base",
+        branch,
+        "--state",
+        "merged",
+        "--label",
+        RISK_LABEL,
+        "--limit",
+        "100",
+        "--json",
+        "number",
+        "--jq",
+        ".[].number",
     )
     return [int(number) for number in found.split()]
 
@@ -2500,7 +2514,9 @@ def delegate(number: int) -> int:
         raise Refused(
             f"PR #{number} targets {pull['baseRefName']}, the default branch: only the owner approves its merge"
         )
-    label(number, MERGE_LABEL, add=True)  # first, so the record is never older than the label it names
+    label(
+        number, MERGE_LABEL, add=True
+    )  # first, so the record is never older than the label it names
     comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
     return 0
 

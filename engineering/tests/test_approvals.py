@@ -793,8 +793,10 @@ def test_a_delegated_label_approves_a_merge_into_a_feature_branch_only() -> None
     high = ("risk:high", "approved:merge")
     into_main = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
     assert merge(into_main, [approved(1, "area:web")]) == [
-        "PR #7: `approved:merge` is the delegated approval, which covers a PR into a feature branch, not into main:"
-        " the owner removes it and adds it again"
+        (
+            "PR #7: `approved:merge` is the delegated approval, which covers a PR into a feature branch, not into"
+            " main: the owner removes it and adds it again"
+        )
     ]
     into_feature = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
     into_feature["baseRefName"] = "stream"
@@ -824,8 +826,20 @@ def test_a_branchs_merge_to_the_default_branch_carries_its_high_risk_prs(
     assert approvals.merged_high("feature") == [12, 15]
     assert calls == [
         (
-            "pr", "list", "--base", "feature", "--state", "merged", "--label", "risk:high",
-            "--limit", "100", "--json", "number", "--jq", ".[].number",
+            "pr",
+            "list",
+            "--base",
+            "feature",
+            "--state",
+            "merged",
+            "--label",
+            "risk:high",
+            "--limit",
+            "100",
+            "--json",
+            "number",
+            "--jq",
+            ".[].number",
         )
     ]
 
@@ -1448,7 +1462,9 @@ def test_approve_refuses_the_coordinator(
 
 
 def test_delegate_labels_then_records_a_feature_branch_pr_and_refuses_the_default_branch(
-    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    github: list[tuple[Any, ...]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     pr = pull()
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
