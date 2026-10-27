@@ -31,7 +31,8 @@ sys.modules["omnigent_agent"] = omnigent_agent
 spec.loader.exec_module(omnigent_agent)
 
 
-REAL_SESSION_ID = omnigent_agent.Omnigent.session_id  # tests replace the class
+# tests replace the class; a script without the lookup passes every id through
+REAL_SESSION_ID = getattr(omnigent_agent.Omnigent, "session_id", lambda _, sid: sid)
 SESSIONS_EVERY = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
 
 
