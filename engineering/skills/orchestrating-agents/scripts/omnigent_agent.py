@@ -522,15 +522,25 @@ class Omnigent:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
-        Each upload of one spec registers another agent under its name, and an agent record has
-        no host, so copies whose record and config (``GET /v1/agents/{id}/config``) match apart
-        from identity and bookkeeping (``IDENTITY``) can't be told
+        An alias names the server's native agent, though the UI registers user copies of it.
+        Each upload of one spec registers another agent under
+        its name, and an agent record has no host, so copies whose record and config
+        (``GET /v1/agents/{id}/config``) match apart from identity and bookkeeping (``IDENTITY``)
+        can't be told
         apart: the name resolves to the newest by ``created_at``. The record carries policies,
         skills and terminals, the config instructions and model, so both are compared. Agents
-        that differ are refused, listing their ids, rather than picked by order."""
+        that differ are refused, listing their ids, rather than picked by order, and so is a
+        server agent sharing its name with a user agent, since only a user agent has a config
+        (the server's answers 404)."""
+        alias = name in AGENTS
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
+        on_server: set[str] = set()
         for path in ("/v1/agents", "/v1/agents?scope=user"):
+            if path.endswith("scope=user"):
+                if named and alias:
+                    break
+                on_server = set(named)
             after = ""
             while True:
                 sep = "&" if "?" in path else "?"
@@ -547,6 +557,8 @@ class Omnigent:
                 after = str(last)
         if not named:
             raise Fail(f"agent {name} not registered")
+        if len(named) > 1 and on_server:
+            raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
         if len(named) > 1:
             specs = [
                 [
@@ -3389,20 +3401,20 @@ def reason(e: Exception) -> str:
 def text_or_file(arg: str) -> tuple[str, Path | None]:
     """A brief or message argument: the file it names, read, and that file; else the text itself
     and None, when it reads as text (it holds whitespace, or is too long for a file name). One word
-    naming no file is a usage error (exit 2), since it is most likely a mistyped path."""
+    naming no file (nothing there, a directory, a path through a file) is a usage error (exit 2),
+    since it is most likely a mistyped path; a file that exists but can't be read exits 1."""
     try:
         return Path(arg).read_text(), Path(arg)
     except OSError as e:
-        if e.errno == errno.ENAMETOOLONG or (
-            isinstance(e, FileNotFoundError) and re.search(r"\s", arg)
-        ):
+        no_file = isinstance(e, (FileNotFoundError, IsADirectoryError, NotADirectoryError))
+        if e.errno == errno.ENAMETOOLONG or (no_file and re.search(r"\s", arg)):
             return arg, None
         error = Fail(
             f"{arg}: no such file; pass a file or the text itself"
-            if isinstance(e, FileNotFoundError)
+            if no_file
             else f"{arg}: {reason(e)}"
         )
-        error.code = 2 if isinstance(e, FileNotFoundError) else 1
+        error.code = 2 if no_file else 1
         raise error from e
 
 
