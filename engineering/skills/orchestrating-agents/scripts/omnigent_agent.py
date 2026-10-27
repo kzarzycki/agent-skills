@@ -4,6 +4,7 @@
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
+    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -58,7 +59,10 @@ not read); exit 1 when one failed;
 accepts (``--decline``: declines) every pending approval prompt, never a question, printing each
 tool call it answered; exit 1 when none was pending (naming any pending question and
 ``relay --answer``) or a resolve failed. Whether an agent may
-approve is the project's policy, not this script's. ``status`` prints one line per session:
+approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
+seconds pass (exit 6), so a pending condition is one foreground call. ``run`` and ``wait`` fail, naming
+the paths, when a host child reports with a tracked change in its workspace that ``run`` did not see
+at the start (a standalone ``wait``: any). ``status`` prints one line per session:
 its state, queued inputs and last assistant message (``(none)`` before its first).
 ``report`` prints a file through the session's file API, from any host: an absolute ``<path>`` is
 read on the session's host, a relative one in its workspace, and no path is the report in its
@@ -149,6 +153,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -168,6 +173,10 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
+    2048,
+    2.0,
+)  # of an HTTP error's body: its reason, never a stall
 # Idle with the brief last for this long: a turn that ended with no output. Shorter is not proof:
 # claude-native was seen idle for 15 s mid-turn, with the brief last, before its reply came.
 IDLE_GRACE_SECONDS = 30.0
@@ -213,17 +222,31 @@ PR_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
+# The claude-cloud bridge's two failures that are no fault of the child (#510): its bootstrap
+# failed before the brief reached the cloud (retried in a fresh session), or the cloud session
+# made no progress past its stall limit and is left as it is (continued with one message).
+SETUP_FAILED = "cloud session setup failed"
+STALLED = ("made no progress", "next message continues it")
+CONTINUE = (
+    "Your session made no progress for a while and was stopped. Continue from where you left off."
+)
+# A continued session can still read failed, the stall's own end, until its new turn starts.
+CONTINUE_SECONDS = 120.0
 # The line after a revive, which can relaunch a session with its context dropped: it names the
 # brief files and the report. Like the resume line, no instruction; found by this fixed start.
 REVIVED = "Your session was restarted and may have lost its context."
 # The console's own messages to a followed lead; fixed text, so a restart finds each in its history.
+# Each ends on an accepted wait, since a lead whose line was not read would guess again. A restarted
+# supervisor knows them as its own by the "Supervisor: " prefix (OWN_LINES), not their text.
 LEAD_NUDGE = (
     "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
     " end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
 )
 LEAD_REVIVE = (
     "Supervisor: your session failed and was resumed. Carry on from your last step, and end your"
     " turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
 )
 LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
 # ``relay --from``'s first line: a notice from a task or an agent, which a reader must not take for
@@ -310,6 +333,8 @@ Standing decisions:
 # ponytail: a knob; the browser marks a line stale past 10 min, so keep it well under that.
 LABEL_SECONDS = 60.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
+LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
+EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -343,6 +368,7 @@ The owner authorized this task; do it now, without asking for a go-ahead. This i
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
@@ -430,6 +456,38 @@ def _omnigent_python() -> str:
     return str(Path.home() / ".local/share/uv/tools/omnigent/bin/python")
 
 
+def error_body(e: HTTPError) -> str:
+    """``: <reason>`` from at most ``ERROR_BODY_BYTES`` of an HTTP error's body: its JSON
+    ``detail``, or ``error`` (Omnigent's ``{"error": {"message": ...}}``), else its text; ``""``
+    for none. A body can stall past the call's timeout, so it is read in a thread given
+    ``ERROR_BODY_SECONDS``, and one not read by then is named as such."""
+    got: list[bytes] = []
+
+    def read() -> None:
+        try:
+            got.append(e.read(ERROR_BODY_BYTES))
+        except (OSError, ValueError, http.client.HTTPException):
+            pass  # the reason is in the status line already
+
+    # ponytail: a stalled reader thread lingers until its socket times out; daemon, so exit ends it
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(ERROR_BODY_SECONDS)
+    if reader.is_alive():
+        return f" (body not read within {ERROR_BODY_SECONDS:g}s)"
+    text = (got[0] if got else b"").decode(errors="replace").strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and (data.get("detail") or data.get("error")):
+        reason = data.get("detail") or data.get("error")
+        if isinstance(reason, dict):
+            reason = reason.get("message") or reason
+        text = reason if isinstance(reason, str) else json.dumps(reason)
+    return f": {' '.join(text.split())}" if text else ""
+
+
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
@@ -496,9 +554,7 @@ class Omnigent:
                     print(f"{method} {path}: HTTP {e.code}; retrying", file=sys.stderr)
                     time.sleep(retries.pop(0))
                     continue
-                raise Fail(
-                    f"{method} {path}: HTTP {e.code} {e.reason}"
-                ) from e  # never read the body: it can stall past the timeout
+                raise Fail(f"{method} {path}: HTTP {e.code} {e.reason}{error_body(e)}") from e
             except (
                 OSError,
                 http.client.HTTPException,
@@ -522,15 +578,25 @@ class Omnigent:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
-        Each upload of one spec registers another agent under its name, and an agent record has
-        no host, so copies whose record and config (``GET /v1/agents/{id}/config``) match apart
-        from identity and bookkeeping (``IDENTITY``) can't be told
+        An alias names the server's native agent, though the UI registers user copies of it.
+        Each upload of one spec registers another agent under
+        its name, and an agent record has no host, so copies whose record and config
+        (``GET /v1/agents/{id}/config``) match apart from identity and bookkeeping (``IDENTITY``)
+        can't be told
         apart: the name resolves to the newest by ``created_at``. The record carries policies,
         skills and terminals, the config instructions and model, so both are compared. Agents
-        that differ are refused, listing their ids, rather than picked by order."""
+        that differ are refused, listing their ids, rather than picked by order, and so is a
+        server agent sharing its name with a user agent, since only a user agent has a config
+        (the server's answers 404)."""
+        alias = name in AGENTS
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
+        on_server: set[str] = set()
         for path in ("/v1/agents", "/v1/agents?scope=user"):
+            if path.endswith("scope=user"):
+                if named and alias:
+                    break
+                on_server = set(named)
             after = ""
             while True:
                 sep = "&" if "?" in path else "?"
@@ -547,6 +613,8 @@ class Omnigent:
                 after = str(last)
         if not named:
             raise Fail(f"agent {name} not registered")
+        if len(named) > 1 and on_server:
+            raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
         if len(named) > 1:
             specs = [
                 [
@@ -703,6 +771,30 @@ class Omnigent:
         cursor = f"&after={quote(after, safe='')}" if after else ""
         return self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc{cursor}")
 
+    def session_id(self, sid: str) -> str:
+        """The session ``sid`` names: a hex string shorter than a whole id is a prefix, resolved
+        among every session the caller sees (archived ones, sub-agents and side chats included,
+        since a lead relays to its children and to other leads); anything else is taken as it
+        is. A prefix no session or several sessions share fails, naming the matches."""
+        if not re.fullmatch(r"[0-9a-f]{1,31}", sid):
+            return sid
+        path = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
+        matches, after = [], ""
+        while True:
+            page = self.call("GET", path + (f"&after={after}" if after else ""))
+            matches += [x for x in page.get("data", []) if str(x.get("id")).startswith(sid)]
+            if not (page.get("has_more") and page.get("last_id")):
+                break
+            after = str(page["last_id"])
+        if len(matches) == 1:
+            return str(matches[0]["id"])
+        if not matches:
+            raise Fail(f"{sid}: no session matches")
+        named = "".join(f"\n  {x['id']} {x.get('title') or ''}".rstrip() for x in matches)
+        raise Fail(
+            f"{sid}: {len(matches)} sessions match:{named}"
+        )  # a line each, as there may be hundreds
+
     def info(self, sid: str) -> dict:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
         return self.call("GET", f"/v1/sessions/{sid}")
@@ -831,6 +923,22 @@ def loose(name: str) -> str:
 def parent_id() -> str:
     """The runner's primary session (the lead, also when a child runs this), else empty."""
     return os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "")
+
+
+def heavy_lock() -> str:
+    """The lock a lead's children on this host share around each heavy step, so a lead running
+    two workers holds one heavy slot, not two (the host's slot counts every caller): the caller's
+    ``LOOP_HEAVY_LOCK`` when set, else one per runner's primary session (the lead, in its children
+    and theirs too) beside the host's gate slot (``gate.1.lock``), since one lead starts children
+    from several worktrees; ``""`` outside a session. A session gets no environment from its starter, so the
+    path goes atop the brief, as ``AGENT_SIGNATURE`` does."""
+    if path := os.environ.get("LOOP_HEAVY_LOCK"):
+        return path
+    if not (sid := parent_id() or own_id()):
+        return ""
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "engineering-loop"
+    cache.mkdir(parents=True, exist_ok=True)
+    return str(cache / f"heavy-{sid}.lock")
 
 
 def own_id() -> str:
@@ -1519,8 +1627,12 @@ def start(
         model or (agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")) or None
     )
     sig = signature(agent if agent in AGENTS else og.harness(agent), chosen)
+    by_file = briefed_by_file(og, agent, host_id)
+    # a cloud VM or another host has its own cores, and a top-level lead caps its own children
+    lock = heavy_lock() if by_file and not top_level else ""
     full = (
         f"AGENT_SIGNATURE={sig}\n"
+        + (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
         + (PR_PREAMBLE if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
             report=report,
             pr=pr,
@@ -1531,7 +1643,6 @@ def start(
     )
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
-    by_file = briefed_by_file(og, agent, host_id)
     if not by_file:
         # A file here is not on that host, nor where a non-native agent runs its tools (a cloud
         # VM); inline, a Claude lead may read it as pasted text and ask its starter for a go-ahead.
@@ -1655,6 +1766,8 @@ def wait(
     verdict: bool = False,
     since: int | None = None,
     pr: int | None = None,
+    baseline: list[str] | None = None,
+    relaunch: Callable[[], str] | None = None,
 ) -> str:
     """Return the report path, or raise with the child's last message once it cannot deliver one.
 
@@ -1667,10 +1780,18 @@ def wait(
     ``settled``, read again first, since the child can rewrite it until its turn ends. With ``pr``
     (a cloud worker), a turn whose last message links a comment on that PR (created after ``since``)
     has that comment's body written to ``report`` as the report; a file already there never counts,
-    since only this wait writes it.
+    since only this wait writes it. A host child's report fails the wait while its workspace holds
+    a tracked change missing from ``baseline`` (its ``tracked_changes`` at the start; without one,
+    any), naming each path: the child left a mutation or an edit behind. A cloud child (``pr``) or
+    one on another host is not checked here, since its tree is not this one. A cloud child
+    recovers once from each failure that is no fault of its own (``recovery``): one that failed in setup goes to ``relaunch``, which briefs a fresh
+    session the same way (``run``'s; without it, it fails), and one that stalled gets one continue
+    message; a second of either fails, naming the first.
     """
     deadline = time.monotonic() + timeout
     idle_since, nudged = None, False
+    recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
+    continued: float | None = None  # when the stalled session was told to continue
     ended: dict[str, float] = {}
     question = question_of(report)
     missing = (
@@ -1697,6 +1818,17 @@ def wait(
             raise Asked(str(question))
         info = og.info(sid)
         status = str(info.get("status"))
+        error = (info.get("last_task_error") or {}).get("message") or ""
+        if status in RUNNING or continued and time.monotonic() - continued >= CONTINUE_SECONDS:
+            continued = None
+        elif (
+            continued
+            and status == "failed"
+            and recovery(error, []) == "stall"  # another error is a new failure
+            and time.monotonic() < deadline
+        ):  # the stall's own end: its new turn is to come
+            time.sleep(POLL_SECONDS)
+            continue
         items = og.items(sid)
         last = last_message(items)
         said = last_said(items)
@@ -1743,10 +1875,12 @@ def wait(
                 )
                 report.parent.mkdir(parents=True, exist_ok=True)
                 report.write_text(body)
+                carry_files(body, report)
             break
         if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
+            carry_files(body, report)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
@@ -1754,9 +1888,30 @@ def wait(
                 raise Asked(str(question))
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
-                raise Fail(
-                    f"session {sid} ended (failed): {error}\nrunner log: {runner_log(info)}\nlast message: {said}"
-                )
+                kind = recovery(error, items)
+                if kind == "setup" and kind not in recovered and relaunch:
+                    old, sid = sid, relaunch()
+                    recovered[kind] = (
+                        f"session {old} failed in setup before its first turn ({error});"
+                        f" its brief went once to a fresh session {sid}"
+                    )
+                    ended, nudged = {}, False
+                    print(recovered[kind], file=sys.stderr)
+                elif kind == "stall" and kind not in recovered:
+                    send_to_confirm(og, sid, CONTINUE)
+                    delivered(og, sid, CONTINUE, 60.0)
+                    recovered[kind] = (
+                        f"session {sid} stalled ({error}); sent it one continue message"
+                    )
+                    continued = time.monotonic()
+                    print(recovered[kind], file=sys.stderr)
+                else:
+                    raise Fail(
+                        "".join(f"{r}\n" for r in recovered.values())
+                        + f"session {sid} ended (failed): {error}\nrunner log: {runner_log(info)}\nlast message: {said}"
+                    )
+                idle_since = None
+                continue
             if not nudged:  # often a turn ended on a background command: one reminder
                 nudge = PR_NUDGE.format(pr=pr) if pr else NUDGE.format(report=report)
                 print(
@@ -1773,7 +1928,120 @@ def wait(
                 f"session {sid} gave no {'verdict' if verdict else 'report'} after {timeout:.0f}s\nlast message: {said}"
             )
         time.sleep(POLL_SECONDS)
+    workspace = info.get("workspace")
+    here = not info.get("host_id") or str(info["host_id"]) == og.host_id
+    if workspace and here and not pr:
+        before = set(baseline or [])
+        if left := [line for line in tracked_changes(Path(workspace)) if line not in before]:
+            raise Fail(
+                f"session {sid} reported, but tracked files in {workspace} changed while it ran: "
+                + ", ".join(line[3:].split("\t")[0] for line in left)
+                + " (its own mutation, or another edit in that tree since it started)"
+                + f"\nreport: {report}"
+            )
     return str(report)
+
+
+def recovery(error: str, items: list[dict]) -> str | None:
+    """Which failure of a cloud child's ``last_task_error`` is no fault of its own: ``setup``, its
+    bridge's bootstrap failing before the brief reached the cloud (no assistant message yet; one
+    after it may have written, so it is no setup failure), or ``stall``, the cloud session left
+    as it is past the bridge's stall limit, which the next message continues; else None."""
+    said = any(i.get("type") == "message" and i.get("role") == "assistant" for i in items)
+    if SETUP_FAILED in error and not said:
+        return "setup"
+    return "stall" if all(s in error for s in STALLED) else None
+
+
+# A file a cloud worker's report names under tmp/loop/ rides in its comment as this marker line and a
+# fenced block (PR_PREAMBLE), since the VM's files never reach the host.
+CARRIED = re.compile(
+    r"^<!-- file: tmp/loop/(\w(?:[\w.-]*[\w-])?)( \(last lines\))? -->\n(`{3,}|~{3,})[^\n]*\n"
+    r"((?:(?!^<!-- file: ).)*?)\n?^\3[ \t]*$",  # a block never runs into the next file's
+    re.MULTILINE | re.DOTALL,
+)
+NAMED_FILE = re.compile(r"\btmp/loop/(\w(?:[\w.-]*[\w-])?)")
+
+
+def carry_files(body: str, report: Path) -> None:
+    """Write each file the cloud report ``body`` carries beside ``report``, saying where it landed;
+    a file it names under ``tmp/loop/`` without carrying it, or one that can't be written here, is
+    listed as missing. Never raises: the report is in already."""
+    carried, tails = {}, set()
+    for m in CARRIED.finditer(body):
+        carried[m[1]] = m[4]
+        if m[2]:
+            tails.add(m[1])
+    for name in dict.fromkeys(NAMED_FILE.findall(body) + list(carried)):
+        path = report.parent / name
+        if name == report.name:
+            continue
+        if name in tails:
+            # a cut file under its own name would run or read as the whole one
+            print(
+                f"missing: tmp/loop/{name} (too long for a comment; its last lines are {path}.tail)",
+                file=sys.stderr,
+            )
+            path = path.with_name(name + ".tail")
+        elif name not in carried:
+            # a copy here may be the lead's own or a stale one: it can't stand in for the cloud's
+            mine = "; this host's own copy stays" if path.exists() else ""
+            print(
+                f"missing: tmp/loop/{name} (the report names it, its comment does not carry it{mine})",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            if path.is_symlink():
+                path.unlink()  # else the write lands wherever it points
+            path.write_text(carried[name] + "\n")
+        except OSError as e:
+            print(f"missing: tmp/loop/{name} (carried, but not written here: {e})", file=sys.stderr)
+        else:
+            if name not in tails:
+                print(f"brought {path}", file=sys.stderr)
+
+
+def tracked_changes(workspace: Path) -> list[str]:
+    """``git status --porcelain --untracked-files=no`` of ``workspace``, a line per changed tracked
+    path with a tab and its content's hash, so a further edit to a file already changed at the
+    start shows; none outside a checkout. Untracked files are a verifier's repro files and gate
+    staging, not a mutation it left."""
+    # -z: raw paths, never quoted; a rename's old path follows as a field of its own
+    out = subprocess.run(
+        ["git", "-C", str(workspace), "status", "--porcelain", "-z", "--untracked-files=no"],
+        capture_output=True,
+        check=False,
+    )
+    fields = out.stdout.decode(errors="surrogateescape").split("\0") if out.returncode == 0 else []
+    changed, i = [], 0
+    while i < len(fields) and fields[i]:
+        line, i = fields[i], i + (2 if fields[i][0] in "RC" else 1)
+        try:
+            digest = hashlib.sha256((workspace / line[3:]).read_bytes()).hexdigest()[:16]
+        except OSError:  # deleted, or a directory
+            digest = "-"
+        changed.append(f"{line}\t{digest}")
+    return changed
+
+
+def wait_until(cmd: list[str], every: float, limit: float) -> int:
+    """Run ``cmd`` every ``every`` seconds until it exits 0 (return 0) or ``limit`` seconds pass
+    (return ``LIMIT``). No shell unless ``cmd`` is one."""
+    deadline = time.monotonic() + limit
+    while True:
+        try:
+            if subprocess.run(cmd, check=False).returncode == 0:
+                return 0
+        except OSError as e:
+            usage = Fail(f"wait-until: {cmd[0]}: {e.strerror}")
+            usage.code = 2
+            raise usage from e
+        left = deadline - time.monotonic()
+        if left <= 0:
+            print(f"wait-until: {' '.join(cmd)} did not hold within {limit:.0f}s", file=sys.stderr)
+            return LIMIT
+        time.sleep(min(every, left))
 
 
 def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
@@ -1815,7 +2083,8 @@ def reap(
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
-    saying which: ``archived``, or kept and why, and whether any finish failed. Each session it
+    saying which: ``archived``, ``already archived``, or kept and why, and whether any finish
+    failed. Each session it
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
@@ -1825,6 +2094,7 @@ def reap(
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
+            lines.append(f"{sid} {info.get('title') or ''}: already archived")
             continue
         if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
             busy = (
@@ -3367,20 +3637,20 @@ def reason(e: Exception) -> str:
 def text_or_file(arg: str) -> tuple[str, Path | None]:
     """A brief or message argument: the file it names, read, and that file; else the text itself
     and None, when it reads as text (it holds whitespace, or is too long for a file name). One word
-    naming no file is a usage error (exit 2), since it is most likely a mistyped path."""
+    naming no file (nothing there, a directory, a path through a file) is a usage error (exit 2),
+    since it is most likely a mistyped path; a file that exists but can't be read exits 1."""
     try:
         return Path(arg).read_text(), Path(arg)
     except OSError as e:
-        if e.errno == errno.ENAMETOOLONG or (
-            isinstance(e, FileNotFoundError) and re.search(r"\s", arg)
-        ):
+        no_file = isinstance(e, (FileNotFoundError, IsADirectoryError, NotADirectoryError))
+        if e.errno == errno.ENAMETOOLONG or (no_file and re.search(r"\s", arg)):
             return arg, None
         error = Fail(
             f"{arg}: no such file; pass a file or the text itself"
-            if isinstance(e, FileNotFoundError)
+            if no_file
             else f"{arg}: {reason(e)}"
         )
-        error.code = 2 if isinstance(e, FileNotFoundError) else 1
+        error.code = 2 if no_file else 1
         raise error from e
 
 
@@ -3575,6 +3845,15 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("wait")
     p.add_argument("session")
     p.add_argument("report", type=Path)
+    p = sub.add_parser(
+        "wait-until",
+        description=f"run CMD until it exits 0 (exit 0), or exit {LIMIT} once --limit passes",
+    )
+    p.add_argument(
+        "--every", type=float, required=True, help=f"seconds between runs, at most {EVERY_MAX:.0f}"
+    )
+    p.add_argument("--limit", type=float, required=True, help="seconds before giving up")
+    p.add_argument("until", nargs=argparse.REMAINDER, metavar="-- CMD")
     for p in sub.choices.values():
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
@@ -3603,6 +3882,7 @@ def main(argv: list[str] | None = None) -> int:
             "status",
             "direct",
             "owner-said",
+            "wait-until",
         ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
@@ -3635,10 +3915,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "signature":
             print(running_signature())
             return 0
+        if args.cmd == "wait-until":
+            cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
+            if not cmd or not 0 < args.every <= EVERY_MAX:
+                usage = Fail(f"wait-until needs -- CMD and 0 < --every <= {EVERY_MAX:.0f}")
+                usage.code = 2
+                raise usage
+            return wait_until(cmd, args.every, args.limit)
         if args.cmd == "capacity":
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
+        og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd in ("relay", "send", "report"):
+            sid = args.session = og.session_id(args.session)
+        if args.cmd == "status":
+            args.sessions = [og.session_id(s) for s in args.sessions]
         if args.cmd == "report" and not args.path:
             line = registry and registered(registry)[0].get(sid)
             if not line:
@@ -3648,7 +3940,6 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2  # argparse's usage exit
                 raise usage
             args.path = str(line[0])
-        og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "report":
             print(og.read_file(sid, args.path))
             return 0
@@ -3780,6 +4071,7 @@ def main(argv: list[str] | None = None) -> int:
                 then.write_text(text)
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
+            baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds)
             # armed once the message is in the history, as start arms: before it, the report or
             # question of the turn before reads as newer than the last instruction; never for
@@ -3788,7 +4080,9 @@ def main(argv: list[str] | None = None) -> int:
                 arm_quietly(
                     registry, args.session, report, then=then.resolve(), verdict=args.verdict
                 )
-            print(wait(og, args.session, report, args.timeout, args.verdict, since, args.pr))
+            print(
+                wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
+            )
             arm_quietly(registry, args.session)
             return 0
         if args.cmd == "run" and args.top_level:
@@ -3816,6 +4110,8 @@ def main(argv: list[str] | None = None) -> int:
             pin_environment(workspace)
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
+        # what the child's tree held before it ran: wait fails only on a change it made
+        baseline = tracked_changes(workspace) if not remote else None
         # A followed lead's own top-level helper (an install or a salvage on another host) is
         # its lead's to hear, not the chief of staff's: subscribe the lead, arm nothing.
         # ponytail: a helper whose lead is gone pages no one; its lead's revive or reap finds it.
@@ -3826,39 +4122,52 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             registry = None
-        sid, survivors = start(
-            og,
-            args.agent,
-            args.title,
-            brief,
-            report,
-            args.role,
-            args.confirm_seconds,
-            model=args.model,
-            permission_mode=args.permission_mode,
-            top_level=args.top_level,
-            workspace=str(workspace),
-            host_id=host,
-            # the supervisor follows it instead, but never a --pr one, which it can't arm
-            subscribe=not (registry and args.top_level and not args.pr),
-            subscriber=lead,
-            pr=args.pr,
-        )
-        # a supervisor reads the report file, which for --pr only wait writes: it would revive
-        # and nudge a cloud worker toward a host path it can't write
-        if (not remote or (registry and args.top_level)) and not args.pr:
-            arm_quietly(
-                registry,
-                sid,
+        survivors: list[str] = []
+
+        def launch() -> str:
+            """Start the child and arm it; again (``wait``'s ``relaunch``) for a setup failure."""
+            nonlocal sid
+            if sid:  # the failed one's line goes: the fresh one owes the report now
+                arm_quietly(registry, sid)
+            sid, abandoned = start(
+                og,
+                args.agent,
+                args.title,
+                brief,
                 report,
-                [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
-                verdict=verifier,
-                followed=args.top_level,
-                after=args.after or "",
+                args.role,
+                args.confirm_seconds,
+                model=args.model,
+                permission_mode=args.permission_mode,
+                top_level=args.top_level,
+                workspace=str(workspace),
+                host_id=host,
+                # the supervisor follows it instead, but never a --pr one, which it can't arm
+                subscribe=not (registry and args.top_level and not args.pr),
+                subscriber=lead,
+                pr=args.pr,
             )
-        print(sid, flush=True)
+            survivors.extend(abandoned)
+            # a supervisor reads the report file, which for --pr only wait writes: it would revive
+            # and nudge a cloud worker toward a host path it can't write
+            if (not remote or (registry and args.top_level)) and not args.pr:
+                arm_quietly(
+                    registry,
+                    sid,
+                    report,
+                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
+                    verdict=verifier,
+                    followed=args.top_level,
+                    after=args.after or "",
+                )
+            print(sid, flush=True)
+            return sid
+
+        sid = launch()
         if args.cmd == "run":
-            print(wait(og, sid, report, args.timeout, verifier, launched, args.pr))
+            print(
+                wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline, launch)
+            )
             arm_quietly(registry, sid)
             if not args.keep:
                 archive_delivered(og, sid)
