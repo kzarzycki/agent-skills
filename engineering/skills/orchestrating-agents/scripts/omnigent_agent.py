@@ -149,6 +149,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -168,6 +169,10 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
+    2048,
+    2.0,
+)  # of an HTTP error's body: its reason, never a stall
 # Idle with the brief last for this long: a turn that ended with no output. Shorter is not proof:
 # claude-native was seen idle for 15 s mid-turn, with the brief last, before its reply came.
 IDLE_GRACE_SECONDS = 30.0
@@ -434,6 +439,38 @@ def _omnigent_python() -> str:
     return str(Path.home() / ".local/share/uv/tools/omnigent/bin/python")
 
 
+def error_body(e: HTTPError) -> str:
+    """``: <reason>`` from at most ``ERROR_BODY_BYTES`` of an HTTP error's body: its JSON
+    ``detail``, or ``error`` (Omnigent's ``{"error": {"message": ...}}``), else its text; ``""``
+    for none. A body can stall past the call's timeout, so it is read in a thread given
+    ``ERROR_BODY_SECONDS``, and one not read by then is named as such."""
+    got: list[bytes] = []
+
+    def read() -> None:
+        try:
+            got.append(e.read(ERROR_BODY_BYTES))
+        except (OSError, ValueError, http.client.HTTPException):
+            pass  # the reason is in the status line already
+
+    # ponytail: a stalled reader thread lingers until its socket times out; daemon, so exit ends it
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(ERROR_BODY_SECONDS)
+    if reader.is_alive():
+        return f" (body not read within {ERROR_BODY_SECONDS:g}s)"
+    text = (got[0] if got else b"").decode(errors="replace").strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and (data.get("detail") or data.get("error")):
+        reason = data.get("detail") or data.get("error")
+        if isinstance(reason, dict):
+            reason = reason.get("message") or reason
+        text = reason if isinstance(reason, str) else json.dumps(reason)
+    return f": {' '.join(text.split())}" if text else ""
+
+
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
@@ -500,9 +537,7 @@ class Omnigent:
                     print(f"{method} {path}: HTTP {e.code}; retrying", file=sys.stderr)
                     time.sleep(retries.pop(0))
                     continue
-                raise Fail(
-                    f"{method} {path}: HTTP {e.code} {e.reason}"
-                ) from e  # never read the body: it can stall past the timeout
+                raise Fail(f"{method} {path}: HTTP {e.code} {e.reason}{error_body(e)}") from e
             except (
                 OSError,
                 http.client.HTTPException,
@@ -1855,7 +1890,8 @@ def reap(
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
-    saying which: ``archived``, or kept and why, and whether any finish failed. Each session it
+    saying which: ``archived``, ``already archived``, or kept and why, and whether any finish
+    failed. Each session it
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
@@ -1865,6 +1901,7 @@ def reap(
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
+            lines.append(f"{sid} {info.get('title') or ''}: already archived")
             continue
         if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
             busy = (
