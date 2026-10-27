@@ -251,12 +251,13 @@ FOLLOW_QUIET_SECONDS = 300.0
 DEADLINE_SECONDS = 1200.0
 NUDGED_SECONDS = 600.0
 # What a lead's ``STILL WORKING`` message says it waits on, for its status and its deadline: the
-# wait word, or a child's full session id (32 hex: a commit is 40 or a short 7-12), opens it or
-# follows "on"/"for", at most one word between, so "per lead event" is none.
+# wait word, a child's full session id (32 hex: a commit is 40 or a short 7-12) or a harness's
+# background task id (`b` and 8 lowercase letters and digits, one a digit at least, so "backports"
+# is none), opens it or follows "on"/"for", at most one word between, so "per lead event" is none.
 # ponytail: one regex over the lead's own words; a wait named any other way reads as unknown, which
 # only adds the nudge step. Upgrade: a structured wait line in the lead's report.
 WAIT = re.compile(
-    r"STILL WORKING\b\W*(?:.*?\b(?:on|for)\s+)?(?:[\w'-]+\s+)?((?i:verifier|worker|lead|merge)|CI|[0-9a-f]{32})s?\b",
+    r"STILL WORKING\b\W*(?:.*?\b(?:on|for)\s+)?(?:[\w'-]+\s+)?((?i:verifier|worker|lead|merge)|CI|[0-9a-f]{32}|b(?=[a-z]{0,7}[0-9])[a-z0-9]{8})s?\b",
     re.DOTALL,
 )
 # Else any wait it names after "waiting on"/"waits for" ("waiting on deployment", a child's session
