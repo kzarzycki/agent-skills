@@ -297,7 +297,8 @@ ended over 15 min ago. Only you know a report is in: an idle child still owing o
 finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
-A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
+A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
+supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
 before then.
 
