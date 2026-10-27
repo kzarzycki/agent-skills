@@ -105,11 +105,13 @@ yourself, keeping standards and spec as separate axes.
   `risk` lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
-- **A full heavy slot.** When a gate or mutation run still waits for the host's heavy slot
-  after 30 minutes, stop it and ask the lead for a proof run in `<report>.question`, naming
-  the runs and the patches they need: the lead has them run off this host with the brief in
-  [proof-run.md](proof-run.md) and answers with the head-stamped logs. Never end the review
-  without the runs, since a verdict without them is repeated once the logs exist.
+- **A full heavy slot.** A gate or mutation run that waits for the host's heavy slot is
+  waited on in the foreground like any pending run, with a 30-minute limit. Past it, stop the
+  run (so its mutation can't apply after you) and, instead of the report, write
+  `<report>.question` asking the lead for a proof run, naming the runs and the patches they
+  need: the lead has them run off this host with the brief in [proof-run.md](proof-run.md)
+  and answers with the head-stamped logs. A verdict without those runs would be repeated once
+  the logs exist.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run with the exact owner action, since parking it is
   the lead's.
