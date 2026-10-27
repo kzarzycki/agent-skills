@@ -217,13 +217,17 @@ PR_NUDGE = (
 # brief files and the report. Like the resume line, no instruction; found by this fixed start.
 REVIVED = "Your session was restarted and may have lost its context."
 # The console's own messages to a followed lead; fixed text, so a restart finds each in its history.
+# Each ends on an accepted wait, since a lead whose line was not read would guess again. A restarted
+# supervisor knows them as its own by the "Supervisor: " prefix (OWN_LINES), not their text.
 LEAD_NUDGE = (
     "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
     " end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
 )
 LEAD_REVIVE = (
     "Supervisor: your session failed and was resumed. Carry on from your last step, and end your"
     " turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    ' For example: "STILL WORKING: waiting on the verifier".'
 )
 LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
 # ``relay --from``'s first line: a notice from a task or an agent, which a reader must not take for
