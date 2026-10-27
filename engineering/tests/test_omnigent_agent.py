@@ -31,6 +31,11 @@ sys.modules["omnigent_agent"] = omnigent_agent
 spec.loader.exec_module(omnigent_agent)
 
 
+# tests replace the class; a script without the lookup passes every id through
+REAL_SESSION_ID = getattr(omnigent_agent.Omnigent, "session_id", lambda _, sid: sid)
+SESSIONS_EVERY = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
+
+
 class FakeOmnigent:
     """Sessions whose sends land only when `deaf` is not set for that session number."""
 
@@ -55,6 +60,13 @@ class FakeOmnigent:
         self.resolved: list[tuple[str, str, str, dict | None]] = []
         self.host_id = "h"  # this host
         self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
+
+    def session_id(self, sid: str) -> str:  # the real lookup, over these sessions
+        return REAL_SESSION_ID(self, sid)
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        assert (method, path.split("&after=")[0]) == ("GET", SESSIONS_EVERY), path
+        return {"data": [{"id": s, "title": self.titles.get(s)} for s in self.sessions]}
 
     def harness(self, agent: str) -> str:
         return self.harnesses.get(agent, "")
@@ -106,7 +118,7 @@ class FakeOmnigent:
         if "send" in self.fail:
             raise omnigent_agent.Fail("POST events: HTTP 503")
         self.posts += 1
-        if int(sid[1:]) in self.deaf:
+        if sid[1:].isdigit() and int(sid[1:]) in self.deaf:
             return
         if self.hold:
             self.held.append((sid, text, self.hold))
@@ -5594,9 +5606,9 @@ def test_an_unknown_agent_fails_naming_it_before_any_session_is_created(
 def _copies(
     config_b: dict, listed: tuple[str, str] = ("c1", "c2"), record_b: dict | None = None
 ) -> dict[str, object]:
-    """Pages for agents c1 (older) and c2 (newer), both called claude-cloud, listed in
-    ``listed`` order across the server's and the user's pages, c2's config and record carrying
-    ``config_b`` and ``record_b`` on top of c1's."""
+    """Pages for user agents c1 (older) and c2 (newer), both called claude-cloud, listed in
+    ``listed`` order, c2's config and record carrying ``config_b`` and ``record_b`` on top of
+    c1's."""
     same = {"policies": [], "skills": ["s"], "terminals": [], "mcp_servers_editable": True}
     record = {
         "c1": {"created_at": 100, **same},
@@ -5605,8 +5617,8 @@ def _copies(
     first, second = ({"name": "claude-cloud", "id": i, **record[i]} for i in listed)
     config = {"name": "claude-cloud", "harness": "acp:claude-cloud", "instructions": None}
     return {
-        "/v1/agents": {"data": [first]},
-        "/v1/agents?scope=user": {"data": [second, {"name": "solo", "id": "c3"}]},
+        "/v1/agents": {"data": []},
+        "/v1/agents?scope=user": {"data": [first, second, {"name": "solo", "id": "c3"}]},
         "/v1/agents/c1/config": {"id": "c1", "version": 1, **config},
         "/v1/agents/c2/config": {"id": "c2", "version": 2, **config, **config_b},
         "/v1/projects": {"data": []},
@@ -5645,6 +5657,30 @@ def test_a_name_held_by_agents_that_differ_is_refused_with_their_ids(
         with pytest.raises(omnigent_agent.Fail, match="agents c1, c2 are all called claude-cloud"):
             omnigent_agent.Omnigent().create("claude-cloud", "t")
         assert all(path != "/v1/sessions" for _, path, _ in calls)
+
+
+def test_an_alias_takes_the_server_s_native_agent_and_other_shared_names_are_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("claude-native-ui", "custom"):
+        record = {"name": name, "builtin": name != "custom", "created_at": 100}
+        calls = _agent_server(
+            monkeypatch,
+            {
+                "/v1/agents": {"data": [{"id": "srv", **record}]},
+                # newer and listed second; only a user agent has a config, the server's is 404
+                "/v1/agents?scope=user": {"data": [{"id": "usr", **record, "created_at": 200}]},
+                "/v1/projects": {"data": []},
+                "/v1/sessions": {"id": "s1"},
+            },
+        )
+        if name == "custom":  # a user's own agent may share a server name on purpose
+            with pytest.raises(omnigent_agent.Fail, match="agents srv, usr are all called custom"):
+                omnigent_agent.Omnigent().create(name, "t")
+        else:
+            omnigent_agent.Omnigent().create("claude", "t")
+            assert calls[-1][2]["agent_id"] == "srv"
+        assert all("/config" not in path for _, path, _ in calls)
 
 
 def test_an_agent_is_taken_by_its_id_even_when_others_share_its_name(
@@ -6095,6 +6131,83 @@ def test_a_message_argument_is_a_file_or_the_text_itself(
     assert capsys.readouterr().err.strip() == (
         "missing.md: no such file; pass a file or the text itself"
     )
+
+
+def test_relay_send_status_and_report_take_a_unique_session_id_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    a, b, c = (p + "0" * 26 for p in ("abc123", "abc124", "abd999"))
+    for sid in (a, b, c):
+        og.sessions[sid], og.titles[sid] = [{"type": "resource_event"}], f"t-{sid[:6]}"
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "cos")
+    assert omnigent_agent.main(["relay", "abc123", "carry on"]) == 0
+    assert omnigent_agent.text_of(og.sessions[a][-1]) == "[relayed by cos]\ncarry on"
+    capsys.readouterr()
+    assert omnigent_agent.main(["status", "abd"]) == 0
+    assert capsys.readouterr().out.startswith(f"{c}: turn ended")
+    assert omnigent_agent.main(["relay", "abc12", "x"]) == 1
+    err = capsys.readouterr().err
+    assert f"abc12: 2 sessions match:\n  {a} t-abc123\n  {b} t-abc124" in err
+    many = [f"abe{n:02d}" + "0" * 27 for n in range(11)]
+    for sid in many:
+        og.sessions[sid] = []
+    assert omnigent_agent.main(["status", "abe"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("abe: 11 sessions match:") and all(f"\n  {sid}" in err for sid in many)
+    for cmd in (["relay", "fff0", "x"], ["send", "fff0", "x", "r.md"], ["report", "fff0", "r.md"]):
+        assert omnigent_agent.main(cmd) == 1
+        assert "fff0: no session matches" in capsys.readouterr().err
+    assert len(og.sessions[a]) == 2 and len(og.sessions[b]) == 1  # nothing else was sent
+
+
+def test_a_session_id_prefix_pages_every_session_and_a_whole_id_needs_no_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    whole = "ab" * 16
+    calls = _agent_server(
+        monkeypatch,
+        {
+            SESSIONS_EVERY: {"data": [{"id": "ab" + "0" * 30}], "has_more": True, "last_id": "x"},
+            SESSIONS_EVERY + "&after=x": {"data": [{"id": whole, "archived": True}]},
+        },
+    )
+    og = omnigent_agent.Omnigent()
+    assert og.session_id(whole) == whole and og.session_id("s9") == "s9" and not calls
+    assert og.session_id("abab") == whole  # found on the second page, archived
+    assert [path for _, path, _ in calls] == [SESSIONS_EVERY, SESSIONS_EVERY + "&after=x"]
+
+
+def test_a_directory_or_a_path_through_a_file_names_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "briefs").mkdir()
+    (tmp_path / "brief folder").mkdir()
+    (tmp_path / "brief.md").write_text("a file")
+    for text in ("brief folder", "brief.md/do this next"):
+        assert omnigent_agent.text_or_file(text) == (text, None)
+    for word in ("briefs", "brief.md/missing.md"):
+        with pytest.raises(omnigent_agent.Fail) as e:
+            omnigent_agent.text_or_file(word)
+        assert (str(e.value), e.value.code) == (
+            f"{word}: no such file; pass a file or the text itself",
+            2,
+        )
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    capsys.readouterr()
+    assert omnigent_agent.main(["relay", sid, "briefs"]) == 2
+    assert "briefs: no such file" in capsys.readouterr().err
+    if os.geteuid():  # root reads any file
+        (tmp_path / "locked.md").write_text("x")
+        (tmp_path / "locked.md").chmod(0)
+        with pytest.raises(omnigent_agent.Fail) as e:
+            omnigent_agent.text_or_file("locked.md")
+        assert e.value.code == 1  # a file that exists stays a read error
 
 
 def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
