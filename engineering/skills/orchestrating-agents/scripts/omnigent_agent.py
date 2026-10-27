@@ -218,6 +218,12 @@ PR_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
+# PR_NUDGE for a worker held from posting (pr_preamble), which never posts
+HELD_NUDGE = (
+    NO_REPORT
+    + " Poll any long run you started detached, then reply with the line `{unposted}` and the report as"
+    " your brief says, without posting it."
+)
 # The claude-cloud bridge's two failures that are no fault of the child (#510): its bootstrap
 # failed before the brief reached the cloud (retried in a fresh session), or the cloud session
 # made no progress past its stall limit and is left as it is (continued with one message).
@@ -1881,6 +1887,7 @@ def wait(
                 carry_files(body, report)
             break
         if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
+            denied(body)  # posted already, but neither it nor its files land here
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
             carry_files(body, report)
@@ -1916,7 +1923,13 @@ def wait(
                 idle_since = None
                 continue
             if not nudged:  # often a turn ended on a background command: one reminder
-                nudge = PR_NUDGE.format(pr=pr) if pr else NUDGE.format(report=report)
+                nudge = (
+                    (HELD_NUDGE if os.environ.get(DENY_LIST) else PR_NUDGE).format(
+                        pr=pr, unposted=UNPOSTED
+                    )
+                    if pr
+                    else NUDGE.format(report=report)
+                )
                 print(
                     f"session {sid} ended ({status}) without {missing}; nudging once",
                     file=sys.stderr,
