@@ -158,6 +158,9 @@ fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
 message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
 server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
 own posts, which read no history, still count a timeout as a failure and try again.
+`relay`, `send`, `status` and `report` take a session id or a unique prefix of one (the six
+characters other tools print), looked up among every session you can see, archived ones
+included; a prefix several sessions share fails, listing them.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
