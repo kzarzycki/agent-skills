@@ -775,30 +775,8 @@ class Omnigent:
         )  # a line each, as there may be hundreds
 
     def info(self, sid: str) -> dict:
-        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads).
-        A session whose live background tasks are all ``monitor`` ones (the live updates a published
-        Artifact arms) reads ``running`` after its turn ended; with its last item a completed
-        assistant message it is ``idle`` here, since nothing that monitor does ends a turn. Any other
-        task, a shell, keeps it running. The message must have stayed last for IDLE_GRACE_SECONDS:
-        a running turn persists its narration just before the tool call that follows it, and a
-        monitor from an earlier turn outlives it, so a fresh one is mid-turn as often as not."""
-        info = self.call("GET", f"/v1/sessions/{sid}")
-        tasks = info.get("background_tasks") or []
-        if (
-            str(info.get("status")) in RUNNING
-            and tasks
-            and all(t.get("type") == "monitor" for t in tasks)
-        ):
-            page = self.call("GET", f"/v1/sessions/{sid}/items?limit=1&order=desc")
-            last = (page.get("data") or [{}])[0]
-            if (last.get("type"), last.get("role"), last.get("status")) == (
-                "message",
-                "assistant",
-                "completed",
-            ) and time.time() - float(last.get("created_at") or 0) >= IDLE_GRACE_SECONDS:
-                # ponytail: the server's clock against this host's; a skew past the grace misreads
-                info["status"] = "idle"
-        return info
+        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
+        return self.call("GET", f"/v1/sessions/{sid}")
 
     def read_file(self, sid: str, path: str) -> str:
         """``path`` through ``sid``'s file API, whichever host the session runs on: an absolute
@@ -946,6 +924,27 @@ def runner_log(info: dict) -> str:
 
 def text_of(item: dict) -> str:
     return "".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict))
+
+
+def ended_on_monitor(info: dict, items: list[dict]) -> bool:
+    """Whether a session Omnigent reports running ended its turn with only ``monitor`` background
+    tasks live (the live updates a published Artifact arms, which keep a claude-native session
+    reading ``running``): its last item a completed assistant reply that has stayed last for
+    IDLE_GRACE_SECONDS, since a running turn persists its narration just before the tool call that
+    follows it. Any other task, a shell, keeps it running. A tool call is persisted only once it
+    returns, so a foreground one past the grace reads as ended too: only the readers a misread costs
+    a nudge or a status line (``observe``, ``lead_status``) take this, never ``wait`` or ``reap``."""
+    tasks = info.get("background_tasks") or []
+    last = items[-1] if items else {}
+    return (
+        str(info.get("status")) in RUNNING
+        and bool(tasks)
+        and all(t.get("type") == "monitor" for t in tasks)
+        and (last.get("type"), last.get("role"), last.get("status"))
+        == ("message", "assistant", "completed")
+        # ponytail: the server's clock against this host's; a skew past the grace misreads
+        and time.time() - float(last.get("created_at") or 0) >= IDLE_GRACE_SECONDS
+    )
 
 
 def last_message(items: list[dict]) -> dict | None:
@@ -1956,8 +1955,8 @@ def observe(
     its own. ``baseline`` starts a new idle already past the grace: idle at the start is no news.
     """
     info = og.info(sid)
-    status = str(info.get("status"))
     items = og.items(sid)
+    status = "idle" if ended_on_monitor(info, items) else str(info.get("status"))
     last = last_message(items)
     head = f"{sid} {info.get('title') or ''}".rstrip()
     if queued := len(info.get("pending_inputs") or []):
@@ -2519,7 +2518,8 @@ def lead_status(info: dict, items: list[dict]) -> dict:
     elif str(info.get("status")) == "failed":
         state = "failed"
     else:
-        state = "running" if str(info.get("status")) in RUNNING else "idle"
+        running = str(info.get("status")) in RUNNING and not ended_on_monitor(info, items)
+        state = "running" if running else "idle"
     error = e.get("message") or e.get("title") or "(no error recorded)"
     return {
         "state": state,

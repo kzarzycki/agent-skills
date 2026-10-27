@@ -302,7 +302,10 @@ snapshot: a native Claude session reads idle while quiet mid-turn, so an idle lo
 `turn ended`, which a notice has already confirmed. A session Omnigent reports running whose only
 live background tasks are `monitor`s (a published Artifact's live updates), its last item a
 finished reply at least 30 s old (a running turn persists its narration just before the tool
-call that follows), reads idle here and to the supervisor; a shell task keeps it running.
+call that follows), reads `turn ended` here and idle to the supervisor; a shell task keeps it
+running. A tool call is persisted only once it returns, so a foreground one past 30 s reads so
+too; `wait` and `reap` therefore keep the server's `running`, since there a misread would end
+a wait or archive a working session.
 
 **Reading a report.** `python3 scripts/omnigent_agent.py report <session> [<path>]` prints a
 file of a session's workspace through Omnigent's file API, from any host, so a lead's report on

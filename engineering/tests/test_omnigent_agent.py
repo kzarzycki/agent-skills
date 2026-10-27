@@ -5597,21 +5597,21 @@ def test_a_turn_ended_with_only_an_artifact_monitor_reads_idle_and_a_shell_keeps
         ([monitor], call, "running"),  # mid-turn: a tool call is the last item
         ([], reply, "running"),
     ):
-        calls = _agent_server(
+        _agent_server(
             monkeypatch,
             {
                 "/v1/sessions/m": {"status": "running", "title": "t", "background_tasks": tasks},
-                "/v1/sessions/m/items?limit=1&order=desc": {"data": [last]},
                 "/v1/sessions/m/items?limit=100&order=desc": {"data": [last]},
             },
         )
         og = omnigent_agent.Omnigent()
-        assert og.info("m")["status"] == status, (tasks, last)
-        assert (len(calls) > 1) == (tasks == [monitor])  # items read only for monitors alone
+        # the snapshot stays as the server says, so wait and reap, which a long foreground tool
+        # misread as ended would end or archive, never take it
+        assert og.info("m")["status"] == "running"
         _, line = omnigent_agent.observe(og, "m", {})
         assert line.startswith("m t: turn ended" if status == "idle" else "m t: running")
         # the supervisor's deadline rule reads this state: an idle lead that ended its turn waits
-        assert omnigent_agent.lead_status(og.info("m"), [last])["state"] == status
+        assert omnigent_agent.lead_status(og.info("m"), [last])["state"] == status, (tasks, last)
 
 
 def test_a_users_own_agent_is_found_after_the_server_s_pages_and_gets_its_id(
