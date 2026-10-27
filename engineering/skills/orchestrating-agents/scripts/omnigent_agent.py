@@ -1886,7 +1886,8 @@ def reap(
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
-    saying which: ``archived``, or kept and why, and whether any finish failed. Each session it
+    saying which: ``archived``, ``already archived``, or kept and why, and whether any finish
+    failed. Each session it
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
@@ -1896,6 +1897,7 @@ def reap(
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
+            lines.append(f"{sid} {info.get('title') or ''}: already archived")
             continue
         if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
             busy = (

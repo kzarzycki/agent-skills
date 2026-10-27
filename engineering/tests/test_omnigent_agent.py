@@ -2495,7 +2495,15 @@ def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
         "running t-running: kept (running)",
         "blocked t-blocked: kept (blocked on a prompt)",
         "queued t-queued: kept (input pending)",
+        "gone t-gone: already archived",
     ]
+
+    def unknown(s: str) -> dict:
+        raise omnigent_agent.Gone(f"GET /v1/sessions/{s}: HTTP 404 Not Found")
+
+    og.info = unknown  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Gone):  # an unknown session still fails, as before
+        omnigent_agent.reap(og, ["nope"])
 
 
 def test_reap_goes_on_past_a_finish_that_fails() -> None:
