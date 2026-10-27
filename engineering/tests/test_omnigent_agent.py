@@ -299,6 +299,101 @@ def test_wait_returns_report(tmp_path: Path) -> None:
     assert omnigent_agent.wait(og, sid, tmp_path / "r.md") == str(tmp_path / "r.md")
 
 
+def git_checkout(root: Path) -> Path:
+    """A checkout with one committed file, ``a.txt``."""
+    root.mkdir(parents=True, exist_ok=True)
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True)
+    (root / "a.txt").write_text("a\n")
+    subprocess.run(["git", "-C", str(root), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "a"], check=True)
+    return root
+
+
+def test_a_host_child_that_reports_with_a_tracked_change_fails_the_wait_naming_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = git_checkout(tmp_path / "w")
+    og = FakeOmnigent()
+    sid = og.create("claude", "t", workspace=str(repo))
+    report = repo / "tmp" / "r.md"
+    report.parent.mkdir()
+    report.write_text("ok")
+    (repo / "repro.py").write_text("untracked: a verifier's repro file")
+    assert omnigent_agent.wait(og, sid, report) == str(report)  # clean: unchanged
+
+    (repo / "a.txt").write_text("mutated\n")
+    with pytest.raises(omnigent_agent.Fail, match=r"changed while it ran: a\.txt \(its own"):
+        omnigent_agent.wait(og, sid, report)
+    # a change already there when run started the child is not its own
+    start = omnigent_agent.tracked_changes(repo)
+    assert omnigent_agent.wait(og, sid, report, baseline=start) == str(report)
+    # but the child editing that file further is
+    (repo / "a.txt").write_text("mutated again\n")
+    with pytest.raises(omnigent_agent.Fail, match=r"changed while it ran: a\.txt"):
+        omnigent_agent.wait(og, sid, report, baseline=start)
+    # a name git would quote (a space, a quote, a non-ASCII letter) keeps its hash too
+    for name in ("b c.txt", 'q"d.txt', "é.txt"):
+        (repo / name).write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", name], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", name], check=True)
+        (repo / name).write_text("first\n")
+        start = omnigent_agent.tracked_changes(repo)
+        (repo / name).write_text("second\n")
+        with pytest.raises(omnigent_agent.Fail, match=f"changed while it ran: .*{re.escape(name)}"):
+            omnigent_agent.wait(og, sid, report, baseline=start)
+    # a cloud child's tree is not this one
+    monkeypatch.setattr(omnigent_agent, "pr_report", lambda said, pr, since=None: "from the PR")
+    og.reply = "https://github.com/o/r/pull/7#issuecomment-1"
+    og.land(sid, "go")
+    assert omnigent_agent.wait(og, sid, tmp_path / "pr.md", pr=7) == str(tmp_path / "pr.md")
+
+
+def test_run_fails_only_on_a_tracked_change_the_child_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = git_checkout(tmp_path / "w")
+    (repo / "a.txt").write_text("the lead's own edit\n")
+    (repo / "b.md").write_text("do X")
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main([*argv, "--keep"]) == 0
+    # a follow-up, too, holds only the child to what changed since it was sent
+    (repo / "f.md").write_text("fix Y")
+    sid = next(iter(og.sessions))
+    assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
+
+    (repo / "c.txt").write_text("c\n")
+    subprocess.run(["git", "-C", str(repo), "add", "c.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "c"], check=True)
+    og.info = lambda s: (  # type: ignore[method-assign]
+        (repo / "r.md").write_text("ok"),
+        (repo / "c.txt").write_text("mutated\n"),
+        info(s),
+    )[2]
+    assert omnigent_agent.main(argv) == 1
+
+
+def test_wait_until_exits_0_once_the_command_does_and_its_own_code_at_the_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    count = tmp_path / "count"
+    third = f"n=$(cat {count} 2>/dev/null || echo 0); echo $((n+1)) > {count}; [ $n -ge 2 ]"
+    argv = ["wait-until", "--every", "0.01", "--limit", "30", "--", "sh", "-c", third]
+    assert omnigent_agent.main(argv) == 0
+    assert count.read_text().strip() == "3"
+
+    argv = ["wait-until", "--every", "0.01", "--limit", "0.05", "--", "false"]
+    assert omnigent_agent.main(argv) == omnigent_agent.LIMIT != 0
+    assert "did not hold within" in capsys.readouterr().err
+    # a sleep past a minute could outlast a tool call
+    assert omnigent_agent.main(["wait-until", "--every", "61", "--limit", "5", "--", "true"]) == 2
+
+
 def test_verifier_wait_returns_only_after_the_verdict(tmp_path: Path) -> None:
     og = FakeOmnigent(reply="checking", status="running")
     report = tmp_path / "r.md"
@@ -1750,13 +1845,70 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
     ]
     assert omnigent_agent.PREAMBLE == DEFAULT_PREAMBLE
     og = FakeOmnigent()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", "roles/worker.md", 0)
+    lock = f"LOOP_HEAVY_LOCK={tmp_path / 'engineering-loop/heavy-coord.lock'}\n"
     assert (
         tmp_path / "r.md.brief"
-    ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + DEFAULT_PREAMBLE.format(
+    ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + lock + DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
     ) + "do X"
     assert og.top_level == [False] and og.roles == ["roles/worker.md"]
+
+
+def test_children_of_one_lead_share_one_heavy_lock_and_another_lead_s_get_their_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    def lock_line(name: str, agent: str = "claude") -> str | None:
+        og = FakeOmnigent()
+        report = tmp_path / f"{name}.md"
+        sid, _ = omnigent_agent.start(og, agent, name, "do X", report, None, 0)
+        sent = next(i for i in og.items(sid) if i["type"] == "message")["content"][0]["text"]
+        text = (
+            omnigent_agent.brief_of(report).read_text()
+            if report.with_suffix(".md.brief").exists()
+            else sent
+        )
+        return next((x for x in text.splitlines() if x.startswith("LOOP_HEAVY_LOCK=")), None)
+
+    assert lock_line("outside") is None  # no lead, nothing changes
+    monkeypatch.setenv("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID", "lead1")
+    first, second = lock_line("w1"), lock_line("w2")
+    assert (
+        first == second == f"LOOP_HEAVY_LOCK={tmp_path / 'cache/engineering-loop/heavy-lead1.lock'}"
+    )
+    assert lock_line("cloud", "claude-cloud") is None  # its tools run in a VM with its own cores
+    og = FakeOmnigent()  # another lead: it caps its own children
+    omnigent_agent.start(og, "claude", "l", "x", tmp_path / "l.md", None, 0, top_level=True)
+    assert "LOOP_HEAVY_LOCK" not in omnigent_agent.brief_of(tmp_path / "l.md").read_text()
+    monkeypatch.setenv("OMNIGENT_TERMINAL_LAUNCH_SESSION_ID", "lead2")
+    assert lock_line("w3") not in (first, None)
+    monkeypatch.setenv("LOOP_HEAVY_LOCK", "/l/lead1.lock")  # a child starting children keeps it
+    assert lock_line("w4") == "LOOP_HEAVY_LOCK=/l/lead1.lock"
+    # a worker of lead1 starting its own child, with no LOOP_HEAVY_LOCK of its own: still lead1's
+    monkeypatch.delenv("LOOP_HEAVY_LOCK")
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "worker1")
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead1")
+    assert lock_line("w5") == first
+
+
+def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_through(
+    tmp_path: Path,
+) -> None:
+    import fcntl
+
+    text = (Path(__file__).resolve().parents[1] / "skills/engineering-loop/worker.md").read_text()
+    command = re.search(r"`(perl -MFcntl=:flock .*?)\s+<path> mise run check`", text, re.DOTALL)
+    assert command, "worker.md's gate step names the lock command"
+    lock = tmp_path / "heavy.lock"
+    argv = ["sh", "-c", command.group(1) + ' "$0" sh -c "exit 7"', str(lock)]
+    with lock.open("a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess.run(argv, timeout=1, check=False)
+    assert subprocess.run(argv, timeout=10, check=False).returncode == 7
 
 
 def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
@@ -1767,6 +1919,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert "parent_session_id" not in bodies[-1] and bodies[-1]["project_id"] == "p1"
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
