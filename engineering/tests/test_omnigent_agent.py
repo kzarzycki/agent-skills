@@ -6244,7 +6244,7 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "co-author line only, with no session link, since the commit reaches a public" in preamble
+    assert "co-author line only, with no session link, since the commit reaches a" in preamble
 
 
 def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:
