@@ -5584,10 +5584,14 @@ def test_a_turn_ended_with_only_an_artifact_monitor_reads_idle_and_a_shell_keeps
 ) -> None:
     monitor = {"type": "monitor", "status": "running", "description": "live updates for artifact"}
     shell = {"type": "shell", "status": "running", "command": "sleep 120"}
+    old = time.time() - omnigent_agent.IDLE_GRACE_SECONDS - 1
     reply = {"id": "i2", "type": "message", "role": "assistant", "status": "completed"}
-    call = {"id": "i3", "type": "function_call", "status": "completed"}
+    reply["created_at"] = old
+    fresh = {**reply, "created_at": time.time()}  # narration a running turn persisted just now
+    call = {"id": "i3", "type": "function_call", "status": "completed", "created_at": old}
     for tasks, last, status in (
         ([monitor], reply, "idle"),
+        ([monitor], fresh, "running"),  # its tool call is still to land
         ([monitor, shell], reply, "running"),
         ([shell], reply, "running"),
         ([monitor], call, "running"),  # mid-turn: a tool call is the last item

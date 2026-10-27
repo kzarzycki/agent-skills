@@ -779,7 +779,9 @@ class Omnigent:
         A session whose live background tasks are all ``monitor`` ones (the live updates a published
         Artifact arms) reads ``running`` after its turn ended; with its last item a completed
         assistant message it is ``idle`` here, since nothing that monitor does ends a turn. Any other
-        task, a shell, keeps it running."""
+        task, a shell, keeps it running. The message must have stayed last for IDLE_GRACE_SECONDS:
+        a running turn persists its narration just before the tool call that follows it, and a
+        monitor from an earlier turn outlives it, so a fresh one is mid-turn as often as not."""
         info = self.call("GET", f"/v1/sessions/{sid}")
         tasks = info.get("background_tasks") or []
         if (
@@ -793,7 +795,8 @@ class Omnigent:
                 "message",
                 "assistant",
                 "completed",
-            ):
+            ) and time.time() - float(last.get("created_at") or 0) >= IDLE_GRACE_SECONDS:
+                # ponytail: the server's clock against this host's; a skew past the grace misreads
                 info["status"] = "idle"
         return info
 
