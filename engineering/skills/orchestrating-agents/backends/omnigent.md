@@ -166,6 +166,8 @@ so a report written in stages does not end it early. `wait` has no launch time, 
 path a pass before already wrote it returns that report at once: check the report's time
 against the run's start before taking it. Start a second only for a child that failed or
 is gone: two children on one item write the same branch.
+An HTTP failure names the server's reason after its status (`HTTP 400 Bad Request: <message>`),
+from at most 2 KB of the body read within 2 s, so a 400 tells a bad brief from a refusal.
 
 **Whoever starts a worker collects it.** Omnigent files every child under the runner's
 primary session, so a fork's or a worker's own children notify the lead, not the
