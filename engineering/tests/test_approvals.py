@@ -7,6 +7,7 @@ import importlib.util
 import itertools
 import json
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -4146,6 +4147,59 @@ def test_an_up_to_date_head_gets_no_stale_base_warning(
     just_pushed["heads"] = [just_pushed["new"]]
     assert approvals.main(["local-ci", "7"]) == 0
     assert len(capfd.readouterr().out.splitlines()) == 2
+
+
+@pytest.mark.parametrize("code", [0, 3])
+def test_proof_writes_the_verifier_shape_and_passes_the_exit_code_through(
+    github: list[tuple[Any, ...]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    repo = tmp_path / "repo"
+    head = committed(repo)
+    (repo / "scratch.txt").write_text("")
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(repo)
+    log = tmp_path / "proof.log"
+    script = f"import sys; print('ran'); sys.exit({code})"
+    assert (
+        approvals.main(["proof", "7", "--out", str(log), "--", sys.executable, "-c", script])
+        == code
+    )
+    lines = log.read_text().splitlines()
+    assert lines[:4] == [
+        head,
+        f"CMD {shlex.join([sys.executable, '-c', script])}",
+        "?? scratch.txt",
+        "ran",
+    ]
+    assert lines[4] == f"exit {code}"
+    assert re.fullmatch(r"wall \d+\.\ds", lines[5])
+    assert github == []  # --out writes the log and posts nothing
+
+
+def test_a_posted_proof_is_bounded_and_the_full_log_stays_on_disk(
+    github: list[tuple[Any, ...]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    head = committed(repo)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "toplevel", lambda: repo)
+    monkeypatch.chdir(repo)
+    command = [sys.executable, "-c", "for n in range(200): print(f'line {n}')"]
+    assert approvals.main(["proof", "7", "--", *command]) == 0
+    full = (repo / "tmp" / "loop" / f"proof-pr7-{head[:7]}.log").read_text().splitlines()
+    assert full[:3] == [head, f"CMD {shlex.join(command)}", "Status: clean"]
+    assert full[3:203] == [f"line {n}" for n in range(200)]
+    [(kind, number, body)] = github
+    shown = body.splitlines()
+    assert (kind, number, shown[0]) == ("comment", 7, f"Proof on {head[:7]}")
+    assert shown[3:7] == [
+        head,
+        f"CMD {shlex.join(command)}",
+        "Status: clean",
+        "[120 lines before these]",
+    ]
+    assert shown[7:87] == [f"line {n}" for n in range(120, 200)]
+    assert shown[87] == "exit 0"
 
 
 @pytest.fixture

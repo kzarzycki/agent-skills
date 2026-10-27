@@ -80,7 +80,9 @@ yourself, keeping standards and spec as separate axes.
   nothing: report it as a major. Then check that `git status --porcelain` matches what it
   showed at the start.
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
-  that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
+  that produced it (worker.md, Report): the shape `approvals.py proof <pr> -- <command>`
+  writes (the head, `CMD <command>`, `git status --porcelain` or `Status: clean`, the output,
+  `exit <n>`, `wall <s>s`), and the first two lines `local-ci` prints. One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
   commit proves nothing about this one.
 - **Risky but checkable is a finding.** When the change is risky in a way evidence can

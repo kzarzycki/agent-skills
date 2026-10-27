@@ -15,6 +15,7 @@
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
+    uv run scripts/approvals.py proof <pr> [--out <log>] -- <command>  # run it, write a proof log; its exit code
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
@@ -217,6 +218,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -2712,6 +2714,37 @@ def header(head: str, command: str, env: dict[str, str | None]) -> str:
     return f"{head}\nCMD {' '.join([*named, command])}"
 
 
+# proof: the lines of a command's output a PR comment carries; the whole log stays on disk
+PROOF_TAIL = 80
+
+
+def proof(pr: int, out: Path | None, command: list[str]) -> int:
+    """Run `command` in the checkout and write its proof log in verifier.md's shape: header()'s two lines, `git status
+    --porcelain` (or `Status: clean`), the output, `exit <n>` and `wall <s>s`. With `out` the log goes there and
+    nothing is posted; without it the log goes to tmp/loop/ and a PR comment carries its head lines and last PROOF_TAIL
+    output lines. Returns the command's exit code."""
+    if not command:
+        raise Refused("proof takes the command after `--`: proof <pr> -- <command>")
+    head = git("rev-parse", "HEAD").strip()
+    status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+    top = [header(head, shlex.join(command), {}), status.rstrip() if status else "Status: clean"]
+    started = time.monotonic()
+    ran = subprocess.run(
+        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False
+    )
+    tail = [f"exit {ran.returncode}", f"wall {time.monotonic() - started:.1f}s"]
+    lines = ran.stdout.splitlines()
+    where = out or toplevel() / "tmp" / "loop" / f"proof-pr{pr}-{head[:7]}.log"
+    where.parent.mkdir(parents=True, exist_ok=True)
+    where.write_text("\n".join([*top, *lines, *tail]) + "\n")
+    print(f"{shlex.join(command)} exited {ran.returncode}: log {where}")
+    if out is None:
+        cut = [f"[{len(lines) - PROOF_TAIL} lines before these]"] if len(lines) > PROOF_TAIL else []
+        shown = "\n".join([*top, *cut, *lines[-PROOF_TAIL:], *tail])
+        comment(pr, f"Proof on {head[:7]}\n\n````\n{shown}\n````\n")
+    return ran.returncode
+
+
 def pushed_head(pr: int, pull: dict[str, Any]) -> str:
     """The PR's head, read again for up to PUSHED_WAIT seconds while the checkout's HEAD descends from it and the PR's
     branch on origin already points at HEAD, since GitHub updates a PR's head a few seconds after a push; any other
@@ -2991,6 +3024,10 @@ def main(argv: list[str]) -> int:
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
+    proving = commands.add_parser("proof")
+    proving.add_argument("pr", type=int)
+    proving.add_argument("--out", type=Path)
+    proving.add_argument("run", nargs="*")  # after `--`, so its own flags stay its own
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
@@ -3020,6 +3057,8 @@ def main(argv: list[str]) -> int:
             return local_ci(args.pr, None if args.no_stale_check else args.stale_after)
         if args.command == "land":
             return land(args.pr, args.wait)
+        if args.command == "proof":
+            return proof(args.pr, args.out, args.run[args.run[:1] == ["--"] :])
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)
