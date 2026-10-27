@@ -1415,6 +1415,23 @@ def briefed_by_file(og: Omnigent, agent: str, host_id: str | None) -> bool:
     return agent in AGENTS or og.harness(agent).endswith("-native")
 
 
+def signature(harness: str, model: str | None) -> str:
+    """``<harness>/<model>/<effort>`` for a session about to start, from what it is started with: ``cc``,
+    ``codex`` or ``omp`` by harness, the model id without its vendor prefix and dotted (``claude-sonnet-5-5`` is
+    ``sonnet-5.5``, ``gpt-6.1-terra`` is ``terra-6.1``), and ``?`` for anything not set explicitly. Omnigent
+    takes no effort, so it is always ``?``."""
+    name = next(
+        (n for key, n in (("claude", "cc"), ("codex", "codex"), ("omp", "omp")) if key in harness),
+        "?",
+    )
+    short = re.sub(r"^(claude|gpt)-", "", model or "")
+    if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):  # gpt-6.1-terra
+        short = f"{found[3]}-{found[1]}.{found[2]}"
+    elif found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", short):  # claude-sonnet-5-5
+        short = f"{found[1]}-{found[2]}.{found[3]}"
+    return f"{name}/{short or '?'}/?"
+
+
 def start(
     og: Omnigent,
     agent: str,
@@ -1461,12 +1478,20 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    full = (PR_PREAMBLE if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
-        report=report,
-        pr=pr,
-        unposted=UNPOSTED,
-        role=f"Your role file is {role}; read it first.\n" if role else "",
-    ) + brief
+    chosen = (
+        model or (agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")) or None
+    )
+    sig = signature(agent if agent in AGENTS else og.harness(agent), chosen)
+    full = (
+        f"AGENT_SIGNATURE={sig}\n"
+        + (PR_PREAMBLE if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
+            report=report,
+            pr=pr,
+            unposted=UNPOSTED,
+            role=f"Your role file is {role}; read it first.\n" if role else "",
+        )
+        + brief
+    )
     # Omnigent labels a child by a model summary of this first message, not by its title, so the
     # title leads: a generic line gets labels like "Read Brief and Execute".
     by_file = briefed_by_file(og, agent, host_id)

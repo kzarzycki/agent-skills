@@ -1485,6 +1485,32 @@ def reviewing(
     return github
 
 
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "Verifier (codex), pass 5",
+        "Verifier (codex/terra-6.1/med), pass 5",
+        "Verifier (cc/opus-5.5/?, same-family), pass 5",
+    ],
+)
+@pytest.mark.parametrize("marker", ["", "> 🤖 AI\n\n"])
+def test_a_review_or_comment_is_found_with_or_without_a_signature_and_the_ai_marker(
+    heading: str, marker: str
+) -> None:
+    review = verdict_on(HEAD, heading=heading)
+    assert approvals.PASS.match(review["body"])[2] == "5"
+    note = {"body": f"{marker}{heading}\n\nbody", "author": {"login": "loop"}}
+    assert approvals.headed({"comments": {"nodes": [note]}}, heading) is not None
+
+
+def test_a_report_whose_verifier_line_names_a_signature_becomes_the_headings_family(
+    tmp_path: Path,
+) -> None:
+    report = tmp_path / "r.md"
+    report.write_text(REPORT.replace("claude, same-family, pass 2", "codex/terra-6.1/med, pass 5"))
+    assert approvals.parse_report(report)[0] == "Verifier (codex/terra-6.1/med), pass 5"
+
+
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
     reviewing: list[tuple[Any, ...]], tmp_path: Path
 ) -> None:

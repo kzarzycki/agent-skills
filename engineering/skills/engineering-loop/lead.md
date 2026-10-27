@@ -155,6 +155,8 @@ design, wireframes included for a UI, and delegate the rest.
      `approved:merge` label on the head that lands (SKILL.md, Approvals and proof); you
      never add it. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
+   - End the PR body with `Impl: <signature>`, your `AGENT_SIGNATURE` (or the worker's, when it did most
+     of the work; `?` for any part you can't know), instead of the harness's "Generated with" footer.
    - Where the project lands this base through a batching merge queue (its own instructions
      name it), enqueue the PR there instead of running `land`, once `approvals.py check queue
      <pr> --head <sha>` exits 0, and go on with the next item: the queue tells you the outcome.
