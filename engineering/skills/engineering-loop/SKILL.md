@@ -489,7 +489,9 @@ or the owner's private network.
   dialog, a locked screen, a device, a permission prompt or classifier denial, a
   credential, an approval link that expires) is stopped at its first sign, so a hang
   becomes a failure, and whatever it holds (a gate slot, a lock, an instance) is released.
-  Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, add
+  Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, unless an
+  `Owner step:` for the same action is already there, since a second copy reads as a second
+  ask; add
   `needs-owner`, add a checklist line to the decision-log issue so the owner clears every
   step in one sitting, and move to the next item; ask once, since a retry while they are
   away fails the same way. Before a long or unattended run, try once each owner-only
@@ -538,8 +540,11 @@ or the owner's private network.
   `ci: false` project needs the retry option, since its `local-ci` record runs the whole
   `check`. Each test that passed on the retry has one open
   `kind:bug` issue titled `Flaky: <test id>`: search the open issues for the id before
-  filing, and comment each occurrence on it (head SHA, PR, failure line), so two leads find
-  the same issue and its comments count the occurrences. The third occurrence gets a PR
+  filing, and comment each occurrence on it (head SHA, PR, run, failure line), so two leads find
+  the same issue and its comments count the occurrences. An occurrence is its head SHA plus
+  the failing run (a CI run's id, else the time the local gate started): a report whose pair
+  the issue already has is that occurrence again, not a new one, since two leads reading one
+  run would otherwise count it twice toward the third. The third occurrence gets a PR
   from main that skips the test in the blocking gate, citing the issue, which stays open
   for the fix. A test red on both tries is a real failure: run it on main before blaming
   the PR.

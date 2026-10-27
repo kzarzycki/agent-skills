@@ -83,7 +83,7 @@ design, wireframes included for a UI, and delegate the rest.
    each worker's branch from the PR branch with loop.md § Worktree, run from your own
    worktree so the worker's sits inside it (../orchestrating-agents/backends/omnigent.md, Permission prompts),
    and start it
-   with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
+   with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model is the default, or, where the

@@ -1,7 +1,7 @@
 # Worker
 
 You implement one item of a spec, or a list of findings, on your own branch. The
-lead's message gives the spec, the item, worktree, branch, notes path and gates.
+lead's message gives the spec, the item, the PR, worktree, branch, notes path and gates.
 Read the notes, the spec, [coding-standards.md](coding-standards.md) and the project's
 `docs/agents/coding-standards.md` first. Run every command in your worktree, never in the
 main checkout. A lead that builds an item itself follows this file on its own PR
@@ -53,7 +53,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    test needed it and why. A project whose e2e opens a headed browser by default names the
    headless switch in its `docs/agents/` files.
    Clean up what you started (servers, temporary files), then write your
-   report to a file and send the lead its path: the branch and head SHA, the gate
+   report to a file and send the lead its path: the branch and head SHA, the PR, the gate
    exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
    the `AGENT_SIGNATURE=` line atop your brief), anything left out and why, and what you tried and
    dropped. A follow-up starts fresh from this report, not your transcript. If you're
