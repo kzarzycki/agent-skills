@@ -9,6 +9,7 @@ import re
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from email.message import Message
 from pathlib import Path
@@ -29,6 +30,11 @@ assert spec and spec.loader
 omnigent_agent = importlib.util.module_from_spec(spec)
 sys.modules["omnigent_agent"] = omnigent_agent
 spec.loader.exec_module(omnigent_agent)
+
+
+# tests replace the class; a script without the lookup passes every id through
+REAL_SESSION_ID = getattr(omnigent_agent.Omnigent, "session_id", lambda _, sid: sid)
+SESSIONS_EVERY = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
 
 
 class FakeOmnigent:
@@ -55,6 +61,13 @@ class FakeOmnigent:
         self.resolved: list[tuple[str, str, str, dict | None]] = []
         self.host_id = "h"  # this host
         self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
+
+    def session_id(self, sid: str) -> str:  # the real lookup, over these sessions
+        return REAL_SESSION_ID(self, sid)
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        assert (method, path.split("&after=")[0]) == ("GET", SESSIONS_EVERY), path
+        return {"data": [{"id": s, "title": self.titles.get(s)} for s in self.sessions]}
 
     def harness(self, agent: str) -> str:
         return self.harnesses.get(agent, "")
@@ -106,7 +119,7 @@ class FakeOmnigent:
         if "send" in self.fail:
             raise omnigent_agent.Fail("POST events: HTTP 503")
         self.posts += 1
-        if int(sid[1:]) in self.deaf:
+        if sid[1:].isdigit() and int(sid[1:]) in self.deaf:
             return
         if self.hold:
             self.held.append((sid, text, self.hold))
@@ -1534,6 +1547,46 @@ def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> No
     with pytest.raises(omnigent_agent.Fail, match="HTTP 404"):
         og.call("GET", "/x")
     assert len(calls) == 1
+
+
+def test_an_http_error_shows_its_body_s_reason_and_a_stalled_body_costs_only_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stall = threading.Event()
+
+    class Stalled(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, b: bytearray) -> int:
+            stall.wait(5)
+            return 0
+
+    for body, line in (
+        (b'{"error": {"code": "invalid_input", "message": "bad role path"}}', "bad role path"),
+        (b'{"detail": [{"loc": ["body", "agent_id"]}]}', '[{"loc": ["body", "agent_id"]}]'),
+        (b"plain\n  text " + b"x" * 3000, "plain text " + "x" * (2048 - 13)),
+        (b"", None),
+        (None, "(body not read within 0.3s)"),
+    ):
+        fp = io.BufferedReader(Stalled()) if body is None else io.BytesIO(body)
+
+        def urlopen(req: Request, timeout: float, fp: object = fp) -> None:
+            raise HTTPError("http://omnigent.test/x", 400, "Bad Request", Message(), fp)
+
+        monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+        monkeypatch.setattr(omnigent_agent, "ERROR_BODY_SECONDS", 0.3)
+        og = object.__new__(omnigent_agent.Omnigent)
+        og.base, og._token = "http://omnigent.test", "synthetic"
+        began = time.monotonic()
+        with pytest.raises(omnigent_agent.Fail) as e:
+            og.call("POST", "/v1/sessions", {})
+        assert time.monotonic() - began < 1.5
+        head = "POST /v1/sessions: HTTP 400 Bad Request"
+        assert str(e.value) == (
+            head if line is None else f"{head}{':' * (body is not None)} {line}"
+        )
+    stall.set()
 
 
 def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_session(
@@ -6121,6 +6174,53 @@ def test_a_message_argument_is_a_file_or_the_text_itself(
     assert capsys.readouterr().err.strip() == (
         "missing.md: no such file; pass a file or the text itself"
     )
+
+
+def test_relay_send_status_and_report_take_a_unique_session_id_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    a, b, c = (p + "0" * 26 for p in ("abc123", "abc124", "abd999"))
+    for sid in (a, b, c):
+        og.sessions[sid], og.titles[sid] = [{"type": "resource_event"}], f"t-{sid[:6]}"
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "cos")
+    assert omnigent_agent.main(["relay", "abc123", "carry on"]) == 0
+    assert omnigent_agent.text_of(og.sessions[a][-1]) == "[relayed by cos]\ncarry on"
+    capsys.readouterr()
+    assert omnigent_agent.main(["status", "abd"]) == 0
+    assert capsys.readouterr().out.startswith(f"{c}: turn ended")
+    assert omnigent_agent.main(["relay", "abc12", "x"]) == 1
+    err = capsys.readouterr().err
+    assert f"abc12: 2 sessions match:\n  {a} t-abc123\n  {b} t-abc124" in err
+    many = [f"abe{n:02d}" + "0" * 27 for n in range(11)]
+    for sid in many:
+        og.sessions[sid] = []
+    assert omnigent_agent.main(["status", "abe"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("abe: 11 sessions match:") and all(f"\n  {sid}" in err for sid in many)
+    for cmd in (["relay", "fff0", "x"], ["send", "fff0", "x", "r.md"], ["report", "fff0", "r.md"]):
+        assert omnigent_agent.main(cmd) == 1
+        assert "fff0: no session matches" in capsys.readouterr().err
+    assert len(og.sessions[a]) == 2 and len(og.sessions[b]) == 1  # nothing else was sent
+
+
+def test_a_session_id_prefix_pages_every_session_and_a_whole_id_needs_no_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    whole = "ab" * 16
+    calls = _agent_server(
+        monkeypatch,
+        {
+            SESSIONS_EVERY: {"data": [{"id": "ab" + "0" * 30}], "has_more": True, "last_id": "x"},
+            SESSIONS_EVERY + "&after=x": {"data": [{"id": whole, "archived": True}]},
+        },
+    )
+    og = omnigent_agent.Omnigent()
+    assert og.session_id(whole) == whole and og.session_id("s9") == "s9" and not calls
+    assert og.session_id("abab") == whole  # found on the second page, archived
+    assert [path for _, path, _ in calls] == [SESSIONS_EVERY, SESSIONS_EVERY + "&after=x"]
 
 
 def test_a_directory_or_a_path_through_a_file_names_no_file(

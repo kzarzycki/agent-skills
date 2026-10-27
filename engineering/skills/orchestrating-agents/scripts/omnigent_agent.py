@@ -149,6 +149,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -168,6 +169,10 @@ RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
 HTTP_SECONDS = 30.0
+ERROR_BODY_BYTES, ERROR_BODY_SECONDS = (
+    2048,
+    2.0,
+)  # of an HTTP error's body: its reason, never a stall
 # Idle with the brief last for this long: a turn that ended with no output. Shorter is not proof:
 # claude-native was seen idle for 15 s mid-turn, with the brief last, before its reply came.
 IDLE_GRACE_SECONDS = 30.0
@@ -431,6 +436,38 @@ def _omnigent_python() -> str:
     return str(Path.home() / ".local/share/uv/tools/omnigent/bin/python")
 
 
+def error_body(e: HTTPError) -> str:
+    """``: <reason>`` from at most ``ERROR_BODY_BYTES`` of an HTTP error's body: its JSON
+    ``detail``, or ``error`` (Omnigent's ``{"error": {"message": ...}}``), else its text; ``""``
+    for none. A body can stall past the call's timeout, so it is read in a thread given
+    ``ERROR_BODY_SECONDS``, and one not read by then is named as such."""
+    got: list[bytes] = []
+
+    def read() -> None:
+        try:
+            got.append(e.read(ERROR_BODY_BYTES))
+        except (OSError, ValueError, http.client.HTTPException):
+            pass  # the reason is in the status line already
+
+    # ponytail: a stalled reader thread lingers until its socket times out; daemon, so exit ends it
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    reader.join(ERROR_BODY_SECONDS)
+    if reader.is_alive():
+        return f" (body not read within {ERROR_BODY_SECONDS:g}s)"
+    text = (got[0] if got else b"").decode(errors="replace").strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict) and (data.get("detail") or data.get("error")):
+        reason = data.get("detail") or data.get("error")
+        if isinstance(reason, dict):
+            reason = reason.get("message") or reason
+        text = reason if isinstance(reason, str) else json.dumps(reason)
+    return f": {' '.join(text.split())}" if text else ""
+
+
 class Omnigent:
     def __init__(self, named: str = "") -> None:
         text = CONFIG.read_text()
@@ -497,9 +534,7 @@ class Omnigent:
                     print(f"{method} {path}: HTTP {e.code}; retrying", file=sys.stderr)
                     time.sleep(retries.pop(0))
                     continue
-                raise Fail(
-                    f"{method} {path}: HTTP {e.code} {e.reason}"
-                ) from e  # never read the body: it can stall past the timeout
+                raise Fail(f"{method} {path}: HTTP {e.code} {e.reason}{error_body(e)}") from e
             except (
                 OSError,
                 http.client.HTTPException,
@@ -715,6 +750,30 @@ class Omnigent:
         item id) the 100 before that item; ``data``, ``last_id`` and ``has_more``."""
         cursor = f"&after={quote(after, safe='')}" if after else ""
         return self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc{cursor}")
+
+    def session_id(self, sid: str) -> str:
+        """The session ``sid`` names: a hex string shorter than a whole id is a prefix, resolved
+        among every session the caller sees (archived ones, sub-agents and side chats included,
+        since a lead relays to its children and to other leads); anything else is taken as it
+        is. A prefix no session or several sessions share fails, naming the matches."""
+        if not re.fullmatch(r"[0-9a-f]{1,31}", sid):
+            return sid
+        path = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
+        matches, after = [], ""
+        while True:
+            page = self.call("GET", path + (f"&after={after}" if after else ""))
+            matches += [x for x in page.get("data", []) if str(x.get("id")).startswith(sid)]
+            if not (page.get("has_more") and page.get("last_id")):
+                break
+            after = str(page["last_id"])
+        if len(matches) == 1:
+            return str(matches[0]["id"])
+        if not matches:
+            raise Fail(f"{sid}: no session matches")
+        named = "".join(f"\n  {x['id']} {x.get('title') or ''}".rstrip() for x in matches)
+        raise Fail(
+            f"{sid}: {len(matches)} sessions match:{named}"
+        )  # a line each, as there may be hundreds
 
     def info(self, sid: str) -> dict:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
@@ -3691,6 +3750,11 @@ def main(argv: list[str] | None = None) -> int:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
+        og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd in ("relay", "send", "report"):
+            sid = args.session = og.session_id(args.session)
+        if args.cmd == "status":
+            args.sessions = [og.session_id(s) for s in args.sessions]
         if args.cmd == "report" and not args.path:
             line = registry and registered(registry)[0].get(sid)
             if not line:
@@ -3700,7 +3764,6 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2  # argparse's usage exit
                 raise usage
             args.path = str(line[0])
-        og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd == "report":
             print(og.read_file(sid, args.path))
             return 0
