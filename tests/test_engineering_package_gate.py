@@ -50,8 +50,9 @@ def test_advertised_package_gate_rejects_marketplace_mutation(
     env.pop("CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT", None)
     env["UV_PROJECT_ENVIRONMENT"] = str(REPOSITORY / ".venv")
     env["UV_NO_SYNC"] = "1"
-    # The gate's time follows the host's load; QUALIFY_TIMEOUT raises the limit, as for vendir sync.
-    timeout = int(os.environ.get("QUALIFY_TIMEOUT", "120"))
+    # The gate's time follows the host's load: 120 s failed under a loaded host's full gate, so the default is
+    # 600, and QUALIFY_TIMEOUT raises it, as for vendir sync.
+    timeout = int(os.environ.get("QUALIFY_TIMEOUT", "600"))
     try:
         result = subprocess.run(
             ["mise", "run", "test-engineering-package"],
