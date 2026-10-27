@@ -159,9 +159,10 @@ design, wireframes included for a UI, and delegate the rest.
      never add it. Into a feature branch, the delegated approver loop.md names may add it
      with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
-   - End the PR body with `Impl: <signature>`, what orchestrating-agents' `scripts/omnigent_agent.py signature` prints
-     in your session, else the `AGENT_SIGNATURE=` line atop your brief (or the worker's, when it did most of the work; `?`
-     for any part you can't know), instead of the harness's "Generated with" footer.
+   - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
+     "Generated with" footer: the worker's from its report, or yours, what orchestrating-agents'
+     `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
+     (`?` for any part you can't know).
    - Where the project lands this base through a batching merge queue (its own instructions
      name it), enqueue the PR there instead of running `land`, once `approvals.py check queue
      <pr> --head <sha>` exits 0, and go on with the next item: the queue tells you the outcome.
