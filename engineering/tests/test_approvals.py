@@ -3877,9 +3877,14 @@ def statuses(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]
             status = {**fields, "creator": {"login": "loop"}, "created_at": "2026-10-27T11:00:00Z"}
             posted.setdefault(args[1].rsplit("/", 1)[1], []).insert(0, status)
             return ""
-        head = re.fullmatch(r"repos/\{owner\}/\{repo\}/commits/(\w+)/statuses", args[1])
+        assert args[:2] == ("api", "--paginate") and args[3:] == (
+            "--jq",
+            '.[] | select(.context == "local-ci")',
+        ), args
+        head = re.fullmatch(r"repos/\{owner\}/\{repo\}/commits/(\w+)/statuses", args[2])
         assert head, args
-        return json.dumps(posted.get(head[1], []))
+        listed = [status for status in posted.get(head[1], []) if status["context"] == "local-ci"]
+        return "".join(json.dumps(status) + "\n" for status in listed)
 
     monkeypatch.setattr(approvals, "gh", gh)
     monkeypatch.setattr(approvals, "publish", PUBLISH)
@@ -3918,41 +3923,66 @@ def test_a_pass_recorded_on_one_host_is_reused_by_a_clone_on_another(
     assert approvals.reusable(head) is None  # another env
 
 
-def test_a_published_pass_counts_only_from_a_writer_and_only_when_well_formed(
+def test_a_long_gate_env_is_published_as_its_digest_and_reused_on_another_host(
+    github: list[tuple[Any, ...]],
+    statuses: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An env past a status description's 140 characters still crosses hosts: the status holds its digest."""
+    one, two = tmp_path / "one", tmp_path / "two"
+    head = committed(one)
+    git_in(tmp_path, "clone", "-q", str(one), str(two))
+    env = {"GATE_SCOPE": "integration,unit,accessibility,devices," * 4, "GATE_UI_TESTS": "smoke"}
+    monkeypatch.setattr(approvals, "local_ci_env", lambda: env)
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(one)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert len(statuses[head][0]["description"]) <= approvals.DESCRIBED
+    monkeypatch.chdir(two)
+    assert approvals.reusable(head)["env"] == env
+
+
+def test_a_published_pass_counts_only_from_a_writer_and_for_todays_gate(
     statuses: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(approvals, "local_ci_env", dict)
     monkeypatch.setattr(approvals, "recorded", lambda head: Path("/nonexistent") / head)
-    described = '{"command":"mise run check:all","env":{},"host":"b"}'
-    status = {"context": "local-ci", "state": "success", "description": described}
+    digest = approvals.gated_as("mise run check:all", {})
+    status = {"context": "local-ci", "state": "success", "description": f"{digest} b"}
     statuses[HEAD] = [{**status, "creator": {"login": "loop"}, "created_at": WRITTEN}]
-    assert approvals.reusable(HEAD)["host"] == "b"
+    assert approvals.reusable(HEAD) == {
+        "head": HEAD,
+        "command": "mise run check:all",
+        "exit": 0,
+        "env": {},
+        "time": WRITTEN,
+        "host": "b",
+    }
+    other = approvals.gated_as("mise run check:all", {"TIER": "smoke"})
+    statuses[HEAD] = [
+        {**status, "description": f"{other} b", "creator": {"login": "loop"}, "created_at": WRITTEN}
+    ]
+    assert approvals.reusable(HEAD) is None  # another env's gate
+    statuses[HEAD] = [
+        {**status, "description": "passed", "creator": {"login": "loop"}, "created_at": WRITTEN}
+    ]
+    assert approvals.reusable(HEAD) is None
     monkeypatch.setattr(approvals, "writer", lambda _login: False)
     statuses[HEAD] = [{**status, "creator": {"login": "stranger"}, "created_at": WRITTEN}]
     assert approvals.reusable(HEAD) is None
-    statuses[HEAD] = [{**status, "description": "passed", "creator": {"login": "loop"}}]
-    assert approvals.reusable(HEAD) is None
-    overriding = '{"command":"mise run check:all","env":{},"host":"b","head":"c","exit":1}'
-    statuses[HEAD] = [
-        {**status, "description": overriding, "creator": {"login": "loop"}, "created_at": WRITTEN}
-    ]
-    assert approvals.reusable(HEAD)["head"] == HEAD  # the description never names another head
 
 
-def test_a_pass_github_refuses_or_too_long_to_publish_stays_local(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_pass_github_refuses_to_publish_stays_local(monkeypatch: pytest.MonkeyPatch) -> None:
     record = {"head": HEAD, "command": "mise run check:all", "env": {}, "host": "a"}
 
     def refused(*args: str, data: str | None = None) -> str:
-        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: Resource not accessible")
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 422: No commit found for SHA")
 
     monkeypatch.setattr(approvals, "gh", refused)
     assert PUBLISH(record) == (
-        "could not publish the pass on GitHub (HTTP 403: Resource not accessible): only this clone reuses it"
-    )
-    assert PUBLISH({**record, "env": {"TIER": "x" * 140}}) == (
-        "the record is longer than a commit status holds (140 characters): only this clone reuses it"
+        "could not publish the pass on GitHub (HTTP 422: No commit found for SHA): only this clone reuses it"
     )
 
 

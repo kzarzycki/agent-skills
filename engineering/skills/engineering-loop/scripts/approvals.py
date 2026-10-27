@@ -91,10 +91,10 @@ a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
-It also posts the pass as a `local-ci` success status on the head, its command, env and host as JSON in the
-description, so a clone on another host reuses it: a clone without the file reads the newest such status on the head,
-posted by the account running this or a writer. A status GitHub refuses, or a record longer than its description
-holds, prints a line and leaves only the local record.
+It also posts the pass as a `local-ci` success status on the head, described as the SHA-256 of its command and env
+and its host, so a clone on another host reuses it: a clone without the file reads the newest such status on the head
+(every page), posted by the account running this or a writer, whose digest is its own command's and env's. A status
+GitHub refuses prints a line and leaves only the local record.
 `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
 check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
 same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
@@ -199,6 +199,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import hashlib
 import io
 import itertools
 import json
@@ -2619,7 +2620,7 @@ def git(*args: str) -> str:
 LOCAL_CI = ["mise", "run", "check:all"]
 # the commit status a local-ci pass also posts on its head, so a clone on another host reuses it (published)
 PUBLISHED = "local-ci"
-# GitHub's limit on a commit status's description, which carries the record's command, env and host
+# GitHub's limit on a commit status's description: the gate's digest and as much of the host as fits
 DESCRIBED = 140
 
 
@@ -2676,15 +2677,17 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
     return record
 
 
+def gated_as(command: str, env: dict[str, str | None]) -> str:
+    """The SHA-256 of a gate's command and env: a commit status holds this whatever the env's size, and a reader
+    compares it with its own."""
+    return hashlib.sha256(json.dumps([command, env], sort_keys=True).encode()).hexdigest()
+
+
 def publish(record: dict[str, Any]) -> str | None:
-    """Post a pass as a `local-ci` success status on its head, its command, env and host as JSON in the description, so
-    `reusable` finds it from a clone on another host; a line when GitHub refuses or it doesn't fit, never a failure,
-    since this clone's record still holds."""
-    described = json.dumps(
-        {key: record[key] for key in ("command", "env", "host")}, separators=(",", ":")
-    )
-    if len(described) > DESCRIBED:
-        return f"the record is longer than a commit status holds ({DESCRIBED} characters): only this clone reuses it"
+    """Post a pass as a `local-ci` success status on its head, described as its gate's digest (gated_as) and host, so
+    `reusable` finds it from a clone on another host; a line when GitHub refuses, never a failure, since this clone's
+    record still holds."""
+    described = f"{gated_as(record['command'], record['env'])} {record['host']}"[:DESCRIBED]
     try:
         gh(
             "api",
@@ -2703,25 +2706,37 @@ def publish(record: dict[str, Any]) -> str | None:
 
 
 def published(head: str) -> dict[str, Any] | None:
-    """The newest `local-ci` status on `head` as a record (publish), posted by the account running this or a writer,
-    since a status is the one record anyone outside the clone could have written; else None. Its time is GitHub's."""
+    """The newest `local-ci` status on `head` (publish), every page read, as a record of today's gate when its digest
+    is today's command and env and the account running this or a writer posted it, since a status is the one record
+    anyone outside the clone could have written; else None. Its time is GitHub's, its host what the status holds."""
     try:
-        statuses = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/commits/{head}/statuses"))
+        found = gh(
+            "api",
+            "--paginate",
+            f"repos/{{owner}}/{{repo}}/commits/{head}/statuses",
+            "--jq",
+            f'.[] | select(.context == "{PUBLISHED}")',
+        )
+        status = json.loads(found.splitlines()[0]) if found.strip() else None  # newest first
     except (subprocess.CalledProcessError, ValueError):
         return None
-    status = next((each for each in statuses if each.get("context") == PUBLISHED), None)
-    if not status or status.get("state") != "success":
+    if not isinstance(status, dict) or status.get("state") != "success":
         return None
     login = (status.get("creator") or {}).get("login")
     if not login or (login != viewer() and not writer(login)):
         return None
-    try:
-        described = json.loads(status.get("description") or "")
-    except ValueError:
+    digest, _, host = (status.get("description") or "").partition(" ")
+    command, env = " ".join(LOCAL_CI), local_ci_env()
+    if digest != gated_as(command, env):
         return None
-    if not isinstance(described, dict):
-        return None
-    return {**described, "head": head, "exit": 0, "time": status.get("created_at")}
+    return {
+        "head": head,
+        "command": command,
+        "exit": 0,
+        "env": env,
+        "time": status.get("created_at"),
+        "host": host,
+    }
 
 
 def local_ci_env() -> dict[str, str | None]:
