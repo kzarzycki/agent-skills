@@ -108,8 +108,8 @@ yourself, keeping standards and spec as separate axes.
 - **A full heavy slot.** A gate or mutation run that waits for the host's heavy slot is
   waited on in the foreground like any pending run, with a 30-minute limit. Past it, stop the
   run (so its mutation can't apply after you) and, instead of the report, write
-  `<report>.question` asking the lead for a proof run, naming the runs and the patches they
-  need: the lead has them run off this host with the brief in [proof-run.md](proof-run.md)
+  `<report>.question` asking the lead for a proof run, naming the runs, the patches they
+  need and the commands that undo and redo each patch: the lead has them run off this host with the brief in [proof-run.md](proof-run.md)
   and answers with the head-stamped logs. A verdict without those runs would be repeated once
   the logs exist.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
