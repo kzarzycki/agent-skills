@@ -114,8 +114,10 @@ design, wireframes included for a UI, and delegate the rest.
    workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
    spec number, the priorities for this change, and a report path under `tmp/loop/` in that
    worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
-   <pr> --priorities <file> --proof <log>…`, run from that worktree, prints that brief with every
-   fact but the priorities read from the PR, the previous report and its head from pass 2,
+   <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
+   own copy of the skill, since the role path it prints follows the script's copy and only
+   that one stays inside the verifier's workspace, prints that brief with every fact but the
+   priorities read from the PR, the previous report and its head from pass 2,
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
    appended; it refuses a proof log whose first line isn't the head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
