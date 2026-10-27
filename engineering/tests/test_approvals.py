@@ -1063,13 +1063,14 @@ def test_a_wayfinder_ticket_and_a_repo_without_loop_md_are_not_checked() -> None
 
 # GitHub's REST answers from a scratch round trip, trimmed to what the gate reads where noted: #1 merged (pull-1.json
 # trimmed), #2 the PR GitHub's Revert button made for it after main moved, #3 that revert plus one line, still open;
-# #2's merge base (trimmed) and the trees (trimmed to path, mode and type) of #1's base and merge commit and of #2's
-# merge base and head.
+# #2's and #3's merge base (trimmed) and the trees (trimmed to path, mode, SHA and type) of #1's base and merge
+# commit and of the reverts' merge base and heads.
 REVERTED = Path(__file__).resolve().parent / "fixtures" / "reverts"
 REVERT_BASE, REVERT_HEAD = (
     "340b9aa38acac5a0d84e8c6d276a6ed2f3afdbe4",
     "47e28a794ff0884f8631342b8ed1aae4733e1ba6",
 )
+HEADS = {2: REVERT_HEAD, 3: "89cfd913d7696aafeb9cd6b4ac444aa131717e5b"}
 REVERT_BODY = "Reverts kzarzycki/scratch-gate-revert#1\n\n## Evidence\n\n#1 set the wrong rate.\n"
 
 
@@ -1106,7 +1107,7 @@ def revert_pr(number: int = 2, body: str = REVERT_BODY, **fields: Any) -> dict[s
         **pull(body=body, files=("app.py", "billing/rate.py", "notes.py"), **fields),
         "number": number,
         "baseRefOid": REVERT_BASE,
-        "headRefOid": REVERT_HEAD,
+        "headRefOid": HEADS.get(number, REVERT_HEAD),
     }
 
 
@@ -1227,9 +1228,9 @@ def test_the_inverse_ignores_line_numbers_and_context_and_follows_renames() -> N
         entry("a.py", "@@ -10,2 +10,2 @@\n moved context\n-2\n+two"),
         entry("old.py", "@@ -1 +1 @@\n-y\n+x", previous_filename="new.py", status="renamed"),
     ]
-    assert approvals.inexact(original, revert, 1, NONE, NONE) == []
+    assert approvals.inexact(original, revert, 1, KEPT, MOVED) == []
     moved = revert[:1] + [entry("new.py", "@@ -1 +1 @@\n-y\n+x")]
-    assert approvals.inexact(original, moved, 1, NONE, NONE) == [
+    assert approvals.inexact(original, moved, 1, KEPT, MOVED) == [
         "it changes `new.py`, which #1 did not",
         "it leaves `old.py -> new.py` as #1 changed it",
     ]
@@ -1237,13 +1238,13 @@ def test_the_inverse_ignores_line_numbers_and_context_and_follows_renames() -> N
 
 def test_a_file_github_shows_no_diff_of_is_no_exact_revert() -> None:
     assert approvals.inexact(
-        [entry("logo.png", None)], [entry("logo.png", None)], 1, NONE, NONE
+        [entry("logo.png", None)], [entry("logo.png", None)], 1, KEPT, MOVED
     ) == [
         "GitHub shows no diff of `logo.png` to compare",
         "GitHub shows no diff of `logo.png` to compare",
     ]
     unchanged = {"filename": "run.sh", "status": "modified", "changes": 0, "patch": ""}
-    assert approvals.inexact([unchanged], [unchanged], 1, NONE, NONE) == [
+    assert approvals.inexact([unchanged], [unchanged], 1, KEPT, MOVED) == [
         "GitHub shows no diff of `run.sh` to compare",
         "GitHub shows no diff of `run.sh` to compare",
     ]
@@ -1257,34 +1258,65 @@ def test_a_missing_final_newline_counts() -> None:
 
 CALLS = "@@ -1,2 +1,2 @@\n-authorize()\n-transfer()\n+authorize_v2()\n+transfer_v2()"
 UNDO_CALLS = "@@ -3,2 +3,2 @@\n-authorize_v2()\n-transfer_v2()\n+authorize()\n+transfer()"
-MODES = {"app.py": "100644"}
-# the trees before and after a PR: none of the paths, and app.py's mode kept
-NONE: tuple[dict[str, str], dict[str, str]] = ({}, {})
-KEPT = (MODES, MODES)
+PATHS = ("a.py", "new.py", "old.py", "logo.png", "run.sh", "app.py")
+
+
+def at(*blobs: str) -> tuple[dict[str, tuple[str, str]], ...]:
+    """Trees holding every path with mode 100644, the nth tree's blobs named blobs[n]."""
+    return tuple({path: ("100644", blob) for path in PATHS} for blob in blobs)
+
+
+# #1's base and merge commit trees, and the revert's merge base and head after main changed the files since, so the
+# trees can't show the inverse and the diffs decide; every mode kept
+KEPT, MOVED = at("before", "after"), at("main", "head")
 
 
 def test_the_inverse_keeps_the_order_of_changed_lines() -> None:
     original = [entry("app.py", CALLS)]
-    assert approvals.inexact(original, [entry("app.py", UNDO_CALLS)], 1, KEPT, KEPT) == []
+    assert approvals.inexact(original, [entry("app.py", UNDO_CALLS)], 1, KEPT, MOVED) == []
     swapped = UNDO_CALLS.replace("+authorize()\n+transfer()", "+transfer()\n+authorize()")
-    assert approvals.inexact(original, [entry("app.py", swapped)], 1, KEPT, KEPT) == [
+    assert approvals.inexact(original, [entry("app.py", swapped)], 1, KEPT, MOVED) == [
         "`app.py` changes the lines #1 changed in another order"
     ]
     # the same lines in the same order, one of them moved into another run
     two = [entry("app.py", "@@ -1,3 +1,3 @@\n-a\n+b\n x\n-c\n+d")]
     moved = [entry("app.py", "@@ -1,3 +1,3 @@\n-b\n+a\n+c\n x\n-d")]
-    assert approvals.inexact(two, moved, 1, KEPT, KEPT) == [
+    assert approvals.inexact(two, moved, 1, KEPT, MOVED) == [
         "`app.py` changes the lines #1 changed in another order"
+    ]
+
+
+def test_a_revert_that_restores_the_trees_is_exact_whatever_order_its_diff_shows() -> None:
+    """A `git revert` of #1 with no later change to its files: GitHub's diff pairs the restored lines another way
+    (#351), but the head holds #1's base blobs, so the change is undone."""
+    original = [entry("app.py", CALLS)]
+    swapped = [
+        entry(
+            "app.py", UNDO_CALLS.replace("+authorize()\n+transfer()", "+transfer()\n+authorize()")
+        )
+    ]
+    restored = (KEPT[1], KEPT[0])
+    assert approvals.inexact(original, swapped, 1, KEPT, restored) == []
+    # a head that keeps a line of #1 holds another blob, so the diffs decide
+    kept = (KEPT[1], {**KEPT[0], "app.py": ("100644", "kept")})
+    assert approvals.inexact(original, swapped, 1, KEPT, kept) == [
+        "`app.py` changes the lines #1 changed in another order"
+    ]
+    # a file #1 did not change is no part of its revert, whatever the trees hold
+    extra = swapped + [entry("run.sh", "@@ -1 +1 @@\n-a\n+b")]
+    assert approvals.inexact(original, extra, 1, KEPT, restored) == [
+        "`app.py` changes the lines #1 changed in another order",
+        "it changes `run.sh`, which #1 did not",
     ]
 
 
 def test_a_revert_that_changes_a_mode_is_no_exact_revert() -> None:
     exact = ([entry("app.py", CALLS)], [entry("app.py", UNDO_CALLS)], 1)
-    assert approvals.inexact(*exact, KEPT, (MODES, {"app.py": "100755"})) == [
-        "`app.py` has mode 100755 at the head, and 100644 before #1"
-    ]
-    for truncated in ((None, MODES), (MODES, None)):
-        assert approvals.inexact(*exact, truncated, KEPT) == [
+    assert approvals.inexact(
+        *exact, KEPT, (MOVED[0], {**MOVED[1], "app.py": ("100755", "head")})
+    ) == ["`app.py` has mode 100755 at the head, and 100644 before #1"]
+    for truncated in ((None, MOVED[1]), (MOVED[0], None)):
+        assert approvals.inexact(*exact, truncated, MOVED) == [
             "GitHub truncates a tree it would compare file modes in"
         ]
         assert approvals.inexact(*exact, KEPT, truncated) == [
@@ -1296,9 +1328,9 @@ def test_a_revert_that_also_undoes_a_later_mode_change_is_no_exact_revert() -> N
     """#1 kept app.py's mode, main made it executable after, and the revert branches from there and resets it: its
     head has app.py's mode from before #1, but it undoes main's change too."""
     exact = ([entry("app.py", CALLS)], [entry("app.py", UNDO_CALLS)], 1)
-    assert approvals.inexact(*exact, KEPT, ({"app.py": "100755"}, MODES)) == [
-        "`app.py` has mode 100755 at the merge base, and 100644 after #1"
-    ]
+    assert approvals.inexact(
+        *exact, KEPT, ({**MOVED[0], "app.py": ("100755", "main")}, MOVED[1])
+    ) == ["`app.py` has mode 100755 at the merge base, and 100644 after #1"]
 
 
 def test_an_empty_file_left_in_place_is_no_exact_revert() -> None:
@@ -1308,8 +1340,8 @@ def test_an_empty_file_left_in_place_is_no_exact_revert() -> None:
         [added],
         [moded],
         1,
-        ({}, {"run.sh": "100644"}),
-        ({"run.sh": "100644"}, {"run.sh": "100755"}),
+        ({}, {"run.sh": ("100644", "empty")}),
+        ({"run.sh": ("100644", "empty")}, {"run.sh": ("100755", "empty")}),
     ) == [
         "GitHub shows no diff of `run.sh` to compare",
         "GitHub shows no diff of `run.sh` to compare",
