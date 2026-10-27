@@ -56,6 +56,7 @@ WAITED = (
 )
 TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
+REQUIRED = approvals.required_checks
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +66,14 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: PUSHED)
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
+
+
+@pytest.fixture(autouse=True)
+def required(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The base branch requires no checks, instead of reading its rules; the list holds each base asked about."""
+    asked: list[str] = []
+    monkeypatch.setattr(approvals, "required_checks", lambda base: asked.append(base) or set())
+    return asked
 
 
 @pytest.fixture(autouse=True)
@@ -811,6 +820,43 @@ def test_only_the_aggregate_check_is_read() -> None:
     assert approvals.ci("PR #7", pr) == ["PR #7: no `check` on the head commit yet"]
     pr = with_runs(run("lint", "FAILURE", "2026-10-03T13:00:00Z"), run("check", "SUCCESS", ""))
     assert approvals.ci("PR #7", pr) == []
+
+
+@pytest.mark.parametrize(
+    ("base", "checks", "lines"),
+    [
+        ({"qualify"}, (("qualify", "SUCCESS"),), []),
+        (
+            {"qualify"},
+            (("check", "SUCCESS"), ("qualify", "FAILURE")),
+            ["PR #7: `qualify` is FAILURE on the head commit"],
+        ),
+        ({"qualify"}, (("check", "SUCCESS"),), ["PR #7: no `qualify` on the head commit yet"]),
+        # a base that requires nothing: the aggregate `check` alone, not land's every check
+        (set(), (("check", "SUCCESS"), ("lint", "FAILURE")), []),
+        (set(), (("lint", "SUCCESS"),), ["PR #7: no `check` on the head commit yet"]),
+        # the shipped ruleset: `loop:approvals` is check merge's own output, never something it waits for
+        ({"check", approvals.APPROVALS}, (("check", "SUCCESS"),), []),
+        ({approvals.APPROVALS}, (("check", "SUCCESS"),), []),
+        (
+            {approvals.APPROVALS},
+            (("lint", "SUCCESS"),),
+            ["PR #7: no `check` on the head commit yet"],
+        ),
+    ],
+)
+def test_check_merge_waits_for_the_checks_the_base_branch_requires(
+    monkeypatch: pytest.MonkeyPatch,
+    required: list[str],
+    base: set[str],
+    checks: tuple[tuple[str, str], ...],
+    lines: list[str],
+) -> None:
+    """check merge reads the base's required checks as land does, once."""
+    monkeypatch.setattr(approvals, "required_checks", lambda name: required.append(name) or base)
+    pr = pull(reviews=(VERDICT,), checks=checks)
+    assert approvals.waits(pr, [approved(1, "area:web")], LOOP) == lines
+    assert required == ["main"]
 
 
 def test_a_run_cancelled_by_a_newer_green_run_of_the_same_check_is_not_a_problem() -> None:
@@ -2121,6 +2167,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         raise AssertionError(args)
 
     monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "required_checks", REQUIRED)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
     monkeypatch.chdir(tmp_path)
     return state
@@ -4823,6 +4870,16 @@ def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[s
 def queue_check(capsys: pytest.CaptureFixture[str], head: str = HEAD) -> tuple[int, list[str]]:
     code = approvals.main(["check", "queue", "7", "--head", head])
     return code, capsys.readouterr().out.splitlines()
+
+
+def test_check_queue_waits_for_the_checks_the_base_branch_requires(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    monkeypatch.setattr(
+        approvals, "required_checks", lambda _base: {"qualify", approvals.APPROVALS}
+    )
+    assert queue_check(capsys) == (1, ["PR #7: no `qualify` on the head commit yet"])
 
 
 def test_a_verified_head_with_its_recorded_pass_may_enter_the_queue(
