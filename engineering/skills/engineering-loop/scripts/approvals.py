@@ -2277,17 +2277,26 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
     return 1 if found else WAITING if waiting else 0
 
 
-# a PR with no labels and no files yet: what `check build` judges an issue's spec beside before the PR exists
-UNOPENED: dict[str, Any] = {"labels": {"nodes": []}, "files": {"nodes": []}}
+def unopened() -> dict[str, Any]:
+    """The PR `check build` judges an issue's spec beside before it exists: no labels, and the files the branch has
+    changed since it left origin's default branch, as a PR's would be at `check build`; when git can't tell, more files
+    than it lists (paths() None), so a `paths` risk rule holds rather than reading as unmatched."""
+    try:
+        base = git("rev-parse", "--abbrev-ref", "origin/HEAD").strip()
+        found = git("diff", "--name-only", f"{base}...HEAD").split()
+    except subprocess.CalledProcessError:
+        return {"labels": {"nodes": []}, "files": {"nodes": [], "totalCount": 1}}
+    return {"labels": {"nodes": []}, "files": {"nodes": [{"path": path} for path in found]}}
 
 
 def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
     """check build on one issue before its PR exists: every build proof a PR's issues need (problems, proofs), judged
-    on the issue alone; it claims nothing, since there is no PR to give the assignee."""
-    issues = [issue_node(number)]
+    on the issue and the files the branch changes so far (unopened); it claims nothing, since there is no PR to give
+    the assignee."""
+    issues, pull = [issue_node(number)], unopened()
     found = problems(issues, None if tracker is None else label_names(tracker))
-    found += proofs("build", UNOPENED, issues, loop)
-    for line in holds(UNOPENED, issues, loop) + found:
+    found += proofs("build", pull, issues, loop)
+    for line in holds(pull, issues, loop) + found:
         print(line)
     if not found:
         print(f"#{number}: every build proof holds; no PR yet")

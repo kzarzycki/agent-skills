@@ -336,8 +336,17 @@ def test_check_build_before_the_pr_judges_the_issue(
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
     monkeypatch.setattr(approvals, "current_pr", lambda: None)
-    branch = ["loop/3-fix"]
-    monkeypatch.setattr(approvals, "git", lambda *_args: branch[0] + "\n")
+    branch, changed = ["loop/3-fix"], [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return changed[0]
+        return ("origin/main" if args[-1] == "origin/HEAD" else branch[0]) + "\n"
+
+    monkeypatch.setattr(approvals, "git", git)
 
     def build(*args: str) -> tuple[int, list[str]]:
         code = approvals.main(["check", "build", *args])
@@ -4178,6 +4187,54 @@ AUTO = loop_md(
 
 def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
     return {**found, "author": {"login": author}}
+
+
+def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
+    writers: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no PR, a `paths` risk rule under `spec.auto` reads the files the branch changed since it left the default
+    branch, as it reads a PR's: a protected file holds the spec for the owner, and files git can't list hold too."""
+    spec = {
+        1: by("worker", specced(1, "kind:enhancement")),
+        2: by("worker", approved(2, "kind:enhancement", "area:web", "size:S")),
+    }
+    changed: list[str | None] = [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return changed[0]
+        return "origin/main\n" if args[-1] == "origin/HEAD" else "loop/1-fix\n"
+
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, AUTO))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(number: int) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", "--issue", str(number)])
+        return code, capsys.readouterr().out.splitlines()
+
+    assert build(1) == (0, ["#1: every build proof holds; no PR yet"])
+    changed[0] = "app.py\nbilling/a.py\n"
+    assert build(1) == (
+        1,
+        [
+            (
+                "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path"
+                " `billing/**`)"
+            ),
+            "#1 has no `Approved: spec` record by the owner",
+            "#1 lacks the `approved:spec` label",
+        ],
+    )
+    assert build(2)[0] == 0  # the owner approved it
+    changed[0] = None
+    code, out = build(1)
+    assert code == 1 and "the gate can't read every file the PR changes" in out[0]
 
 
 def test_spec_auto_is_its_own_policy() -> None:
