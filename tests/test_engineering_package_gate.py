@@ -50,15 +50,22 @@ def test_advertised_package_gate_rejects_marketplace_mutation(
     env.pop("CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT", None)
     env["UV_PROJECT_ENVIRONMENT"] = str(REPOSITORY / ".venv")
     env["UV_NO_SYNC"] = "1"
-    result = subprocess.run(
-        ["mise", "run", "test-engineering-package"],
-        cwd=checkout,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=120,
-    )
+    # The gate's time follows the host's load; QUALIFY_TIMEOUT raises the limit, as for vendir sync.
+    timeout = int(os.environ.get("QUALIFY_TIMEOUT", "120"))
+    try:
+        result = subprocess.run(
+            ["mise", "run", "test-engineering-package"],
+            cwd=checkout,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            f"the package gate took over {timeout} seconds; on a loaded host raise QUALIFY_TIMEOUT"
+        )
 
     assert result.returncode != 0, (
         f"advertised package gate accepted {mutation} marketplace metadata\n"

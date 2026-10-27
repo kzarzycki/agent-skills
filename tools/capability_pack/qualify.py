@@ -26,6 +26,7 @@ VENDIR_MANIFEST = "vendir.yml"
 VENDIR_LOCK = "vendir.lock.yml"
 ENGINEERING_SOURCE_URL = "https://github.com/mattpocock/skills.git"
 INTAKE_LEDGER = "upstream-intake.yml"
+TIMEOUT_VARIABLE = "QUALIFY_TIMEOUT"
 
 
 class QualificationError(RuntimeError):
@@ -624,6 +625,7 @@ def _excluded_skills(config: dict) -> tuple[str, ...]:
 
 
 def _git_output(arguments: list[str], *, cwd: Path | None = None) -> str:
+    timeout = _timeout()
     try:
         return subprocess.run(
             ["git", *arguments],
@@ -631,8 +633,10 @@ def _git_output(arguments: list[str], *, cwd: Path | None = None) -> str:
             check=True,
             text=True,
             capture_output=True,
-            timeout=120,
+            timeout=timeout,
         ).stdout.strip()
+    except subprocess.TimeoutExpired as error:
+        raise _timed_out(f"git {arguments[0]}", timeout) from error
     except (OSError, subprocess.SubprocessError) as error:
         raise QualificationError(f"Git command failed: {error}") from error
 
@@ -830,15 +834,71 @@ def _inventory(stage: Path, managed: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(name for name in managed if (stage / "skills" / name / "SKILL.md").is_file())
 
 
+def _timeout() -> int:
+    """Seconds an upstream fetch or a vendir sync may take: ``QUALIFY_TIMEOUT``, else 120. Their time
+    follows the host's load, so a loaded host raises it rather than failing on a fixed limit."""
+    raw = os.environ.get(TIMEOUT_VARIABLE, "120")
+    if not raw.isdigit() or int(raw) == 0:
+        raise ConfigurationError(
+            f"{TIMEOUT_VARIABLE} must be a whole number of seconds, not {raw!r}"
+        )
+    return int(raw)
+
+
+def _timed_out(what: str, timeout: int) -> QualificationError:
+    return QualificationError(
+        f"{what} timed out after {timeout} seconds; on a loaded host raise {TIMEOUT_VARIABLE}"
+    )
+
+
+def _mirror_sources(config: dict, root: Path, timeout: int) -> None:
+    """Point every Git source of ``config`` at a local bare clone in ``root``, made once per URL, so
+    vendir's clone per directory (one per imported skill) reads the disk, not the network."""
+    mirrors: dict[str, str] = {}
+    for directory in config["directories"]:
+        for content in directory["contents"]:
+            if not isinstance((git := content.get("git")), dict):
+                continue
+            url = git["url"]
+            if url not in mirrors:
+                mirror = root / f"{len(mirrors)}.git"
+                try:
+                    subprocess.run(
+                        ["git", "clone", "--quiet", "--bare", url, str(mirror)],
+                        check=True,
+                        capture_output=True,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired as error:
+                    raise _timed_out(f"fetching {url}", timeout) from error
+                except (OSError, subprocess.SubprocessError) as error:
+                    raise QualificationError(f"fetching {url} failed: {error}") from error
+                mirrors[url] = str(mirror)
+            git["url"] = mirrors[url]
+
+
 def _sync_manifest(stage: Path, mode: Literal["update", "locked"]) -> None:
+    timeout = _timeout()
+    manifest = stage / VENDIR_MANIFEST
+    original = manifest.read_text()
+    config = yaml.safe_load(original)
+    mirrors = Path(tempfile.mkdtemp(prefix=".vendir-upstream-"))
     command = ["vendir", "sync"]
     if mode == "locked":
         command.append("--locked")
     command.extend(["--chdir", str(stage)])
     try:
-        subprocess.run(command, check=True, timeout=120)
+        _mirror_sources(config, mirrors, timeout)
+        manifest.write_text(yaml.safe_dump(config, sort_keys=False))
+        subprocess.run(command, check=True, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise _timed_out("vendir sync", timeout) from error
     except (OSError, subprocess.SubprocessError) as error:
         raise QualificationError(f"vendir sync failed for {VENDIR_MANIFEST}: {error}") from error
+    finally:
+        # The lock names no URL, so only the manifest carries the mirror and gets its own text back.
+        manifest.write_text(original)
+        shutil.rmtree(mirrors, ignore_errors=True)
 
 
 def _owned_manifest(package: Path, owned: tuple[str, ...]) -> tuple[FileHash, ...]:
