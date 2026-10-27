@@ -119,7 +119,11 @@ repository's counts for nothing. The nudge asks for the comment, and a second tu
 without one fails. `run` and `wait` finish a worker once its report is in, unless given
 `--keep`: a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
-round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). `send --pr <n>`
+round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
+child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
+message), `run` starts once more in a fresh session with the same brief, and one that stalls
+(`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
+message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
 workspace is, since the report is the file `wait` writes here, and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
@@ -175,6 +179,8 @@ so a report written in stages does not end it early. `wait` has no launch time, 
 path a pass before already wrote it returns that report at once: check the report's time
 against the run's start before taking it. Start a second only for a child that failed or
 is gone: two children on one item write the same branch.
+An HTTP failure names the server's reason after its status (`HTTP 400 Bad Request: <message>`),
+from at most 2 KB of the body read within 2 s, so a 400 tells a bad brief from a refusal.
 
 **Whoever starts a worker collects it.** Omnigent files every child under the runner's
 primary session, so a fork's or a worker's own children notify the lead, not the
@@ -594,7 +600,7 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each, and prints which it kept. A finish that fails is printed and the rest still run, and
+each and `already archived` for one finished before, and prints which it kept. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
 which finishes it on return, never reaped. Run `reap --children
