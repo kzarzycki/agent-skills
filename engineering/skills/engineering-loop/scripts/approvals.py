@@ -42,7 +42,8 @@ public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
-status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with
+status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
+of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
@@ -99,7 +100,7 @@ A project may land through a batching merge queue of its own (merge every waitin
 full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
-with CI, the aggregate `check` passed, and the change is not high risk and has no `approved:merge`, since the
+with CI, the checks `check merge` waits for passed, and the change is not high risk and has no `approved:merge`, since the
 owner's label covers one head landing alone: such a PR lands through `land`. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
 exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
@@ -1210,7 +1211,7 @@ def waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: ran()'s aggregate `check`, and the owner's label (owner_waits)."""
+    """One line per thing the merge waits for: ran()'s checks, and the owner's label (owner_waits)."""
     return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
 
 
@@ -1341,8 +1342,8 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
-    """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
-    `ci: false` a local-ci pass."""
+    """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
+    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
     if queued(pull) is None:
         return []
@@ -1358,6 +1359,9 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
                 f"{where}: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
             ]
     else:
+        if required is None:
+            # the approvals status is check merge's own output: waiting for it never ends
+            required = required_checks(pull["baseRefName"]) - {APPROVALS} or None
         found = ci(where, pull, required)
     return found
 
@@ -1664,15 +1668,36 @@ def inexact(
     original: list[dict[str, Any]],
     revert: list[dict[str, Any]],
     number: int,
-    undone: tuple[dict[str, str] | None, dict[str, str] | None],
-    undoing: tuple[dict[str, str] | None, dict[str, str] | None],
+    undone: tuple[dict[str, tuple[str, str]] | None, dict[str, tuple[str, str]] | None],
+    undoing: tuple[dict[str, tuple[str, str]] | None, dict[str, tuple[str, str]] | None],
 ) -> list[str]:
     """Why `revert` does not undo #number, both as GitHub's REST API lists a PR's files; empty when it does. Each file
     must have the inverse status and the inverse runs of changed lines in order, while line numbers and context move
     with main. Every path either touches must have, in `undoing` (the revert's merge base and head trees), the modes
     it had in `undone` (#number's base and merge commit trees) the other way round, absence included. A tree GitHub
-    truncated is None."""
+    truncated is None. Trees map a path to its (mode, blob): a revert that touches only #number's paths and whose
+    trees hold #number's blobs the other way round is exact whatever its diff looks like, since a diff can pair the
+    same change's lines another way (#351)."""
     why: list[str] = []
+    before, after = undone
+    base, head = undoing
+    trees = None not in (before, after, base, head)
+
+    def paths(entries: list[dict[str, Any]]) -> set[str]:
+        return {
+            entry[name]
+            for entry in entries
+            for name in ("filename", "previous_filename")
+            if entry.get(name)
+        }
+
+    touched = paths(original) | paths(revert)
+    if (
+        trees
+        and touched == paths(original)
+        and all(base.get(p) == after.get(p) and head.get(p) == before.get(p) for p in touched)
+    ):
+        return why
 
     def changes(entries: list[dict[str, Any]], inverted: bool) -> dict[tuple[str, str], Any]:
         found = {}
@@ -1717,27 +1742,17 @@ def inexact(
                 if extra or missing
                 else f"`{shown(*key)}` changes the lines #{number} changed in another order"
             )
-    before, after = undone
-    base, head = undoing
-    if None in (before, after, base, head):
+    if not trees:
         why.append("GitHub truncates a tree it would compare file modes in")
     else:
-        touched = {
-            entry[name]
-            for entry in original + revert
-            for name in ("filename", "previous_filename")
-            if entry.get(name)
-        }
         for path in sorted(touched):
             for theirs, ours, where, when in (
                 (after, base, "at the merge base", "after"),
                 (before, head, "at the head", "before"),
             ):
-                if ours.get(path) != theirs.get(path):
-                    why.append(
-                        f"`{path}` has mode {ours.get(path, 'absent')} {where}, and"
-                        f" {theirs.get(path, 'absent')} {when} #{number}"
-                    )
+                mode, wanted = (ours.get(path, ("absent",))[0], theirs.get(path, ("absent",))[0])
+                if mode != wanted:
+                    why.append(f"`{path}` has mode {mode} {where}, and {wanted} {when} #{number}")
     return why
 
 
@@ -1780,8 +1795,8 @@ def head_checks(
     pull: dict[str, Any], required: set[str] | None
 ) -> tuple[list[tuple[str, str]], int | None, set[str]]:
     """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
-    the aggregate `check`, the one check `check merge` reads, since every other check is advisory or the ruleset's;
-    empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
+    the aggregate `check`, the one check `check merge` reads on a base that requires none, since every other check is
+    advisory; empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
     names whose only run is a draft's skip, which the ready PR's CI has not reached yet."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
@@ -1964,13 +1979,17 @@ def auto_merge_allowed() -> bool:
     return gh("api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge").strip() == "true"
 
 
-def tree(sha: str) -> dict[str, str] | None:
-    """The mode of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
+def tree(sha: str) -> dict[str, tuple[str, str]] | None:
+    """The (mode, blob SHA) of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
     ponytail: one recursive read, up to GitHub's 100,000 entries; read each touched directory when a repo outgrows it."""
     found = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/git/trees/{sha}?recursive=1"))
     if found["truncated"]:
         return None
-    return {entry["path"]: entry["mode"] for entry in found["tree"] if entry["type"] != "tree"}
+    return {
+        entry["path"]: (entry["mode"], entry["sha"])
+        for entry in found["tree"]
+        if entry["type"] != "tree"
+    }
 
 
 def head_pushed(pull: dict[str, Any]) -> str | None:

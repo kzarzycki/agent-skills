@@ -5,6 +5,17 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.24.4 - 2026-10-26
+
+#361's merge-queue proof: a project that lands through a batching merge queue of its own gets a proof `check merge` accepts in place of the CI wait. Also: `approvals.py report` checks a verifier report offline; `run` and `start` attach to a live child that already holds the brief; the verifier's gate runs bare and detaches on macOS; long waits use few blocking calls; an optional `Verifier model:` line.
+
+- engineering-loop: a project may land through a batching merge queue of its own. `approvals.py check queue <pr> --head <sha>` says whether a head may enter it (every merge proof but the CI wait, the head's own `local-ci --record` pass under the current env and, with CI, its `check`, not high risk, no `approved:merge`); `approvals.py batch` posts the queue's proof on each PR it merged; `check merge` accepts that proof in place of the CI wait once git shows the head merged unchanged, with no conflict resolution, into a batch whose full gate passed, and the head has its own green `local-ci --record` pass under the env the proof names; `batch` refuses a head without one. Only a batch proof by the running account or a writer counts, and a red or unproven one adds no hold: the wait is exactly as before (#361).
+- engineering-loop: `approvals.py report <report>` checks a verifier report the way `verdict` reads it, without GitHub, and the verifier runs it before replying, so a report the lead cannot post costs no extra turn (#481).
+- orchestrating-agents: `omnigent_agent.py run` and `start` attach to a live child of the same parent that already holds the brief, instead of starting a second session on the same pass, and refuse one that already wrote its report (#482).
+- engineering-loop: the verifier runs an allowed gate as the bare command so a machine's allow rules match it, and detached runs use Perl's `setsid`, since macOS has no `setsid` command (#485).
+- engineering-loop, orchestrating-agents: a verifier and the agents the preambles brief wait on a long run in few calls that each block close to the tool limit, not short polls, and a later verifier pass reruns the previous repros from one script (#487).
+- engineering-loop: an optional `Verifier model: <tier> for <condition>` line in loop.md lowers the verifier's tier within its own family, as `Worker model:` does for workers (#488).
+
 ## 0.24.3 - 2026-10-26
 
 #473's fix: a session `omnigent_agent.py` starts files under its caller's Omnigent project, so a scheduled run's leads land in the task's project. Also: a loop.md bot section may name an updater by head-branch prefix; urgency is the tracker's Priority field; the board's "Item closed" workflow keeps closed issues in a `Closed` column.
