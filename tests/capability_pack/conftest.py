@@ -218,6 +218,9 @@ refs = {
     for content in directory["contents"]
     if "git" in content
 }
+if argv_log := os.environ.get("FAKE_VENDIR_ARGV_LOG"):
+    with open(argv_log, "a") as log:
+        log.write(" ".join(sys.argv[1:]) + "\\n")
 if ref_log := os.environ.get("FAKE_VENDIR_REF_LOG"):
     Path(ref_log).write_text("\\n".join(sorted(refs)) + "\\n")
 for directory in config["directories"]:

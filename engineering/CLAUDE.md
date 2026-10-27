@@ -18,7 +18,9 @@ future coding-agent adapters.
 
 Never hand-edit a generated path. Change an overlay at its source, an untuned
 imported skill through a substitution or by tuning it, then run
-`mise run vendor-engineering`.
+`mise run vendor-engineering-regenerate`: it rewrites the leaves, provenance and version at
+the locked upstream commit, so the edit takes in nothing upstream did since. `mise run
+vendor-engineering` follows upstream `main`, so it is the intake's task, not an edit's.
 
 ## Tuning contract
 

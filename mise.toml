@@ -86,6 +86,10 @@ fi
 [tasks.vendor-engineering]
 run = "uv run python -m tools.capability_pack.cli update engineering"
 
+[tasks.vendor-engineering-regenerate]
+description = "Regenerate the engineering leaves from their overlays at the locked upstream commit, after an overlay edit."
+run = "uv run python -m tools.capability_pack.cli regenerate engineering"
+
 [tasks.vendor-engineering-check]
 run = "uv run python -m tools.capability_pack.cli check engineering"
 
