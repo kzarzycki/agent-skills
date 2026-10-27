@@ -5095,7 +5095,10 @@ def test_posted_comments_name_no_host_or_home(
     """A queue gate comment quoting build notes under the home directory, from a host named for its owner."""
     sent = posts(monkeypatch)
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
-    gated_head(batched["head"])
+    # a gate env naming a path under the home directory, posted as `~` and still matching the head's record
+    env = {"CACHE": "/Users/owner/cache"}
+    monkeypatch.setattr(approvals, "local_ci_env", lambda: env)
+    gated_head(batched["head"], env)
     record = approvals.recorded(batched["head"])
     record.write_text(record.read_text().replace('"host": "host"', '"host": "owner-MacBook.local"'))
     log = tmp_path / "gate.log"
@@ -5106,8 +5109,25 @@ def test_posted_comments_name_no_host_or_home(
     assert approvals.main([*args, "--log", str(log)]) == 0
     [body] = sent
     assert "owner-MacBook" not in body and "/Users/owner" not in body
-    assert "note: cached at ~/Library/Caches/x\nhome ~\n" in body
+    assert "note: cached at ~/Library/Caches/x\nhome ~\n" in body and "Env: CACHE=~/cache\n" in body
     assert queued_merge(batched["head"], body) == []
+
+
+def test_a_posted_review_names_no_home_however_it_is_spelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A review goes as JSON: a non-ASCII home is replaced as GitHub decodes it, in the body and inline comments."""
+    sent = posts(monkeypatch)
+    monkeypatch.setenv("HOME", "/home/é")
+    approvals.post_review(
+        7,
+        {
+            "body": "cache /home/é/cache",
+            "comments": [{"path": "a.py", "line": 1, "body": "at /home/é"}],
+        },
+    )
+    review = json.loads(sent[0])
+    assert (review["body"], review["comments"][0]["body"]) == ("cache ~/cache", "at ~")
 
 
 @pytest.fixture

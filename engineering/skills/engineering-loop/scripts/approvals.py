@@ -1446,7 +1446,8 @@ def unproven(head: str, fields: dict[str, str]) -> str | None:
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
     if (record := reusable(head)) is None:
         return f"the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    if (env := env_line(record["env"])[len("Env: ") :].strip()) != fields.get("Env"):
+    # the comment names the env as posted, its home written `~` (public)
+    if (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
         return (
             f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
         )
@@ -2603,7 +2604,8 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
         "--input",
         "-",
         "--silent",
-        data=public(json.dumps(review)),
+        # unescaped, so public() finds a non-ASCII home as GitHub will decode it
+        data=public(json.dumps(review, ensure_ascii=False)),
     )
 
 
