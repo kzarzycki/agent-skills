@@ -99,8 +99,9 @@ A pass also leaves a record keyed by commit under the git common dir (`approvals
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
 `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
 check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
-same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
-check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
+same command and the same env, `local-ci <pr>` posts the pass from it, naming its time, instead of running the
+check again; a record without env is never reused. The host stays in the record: nothing `approvals.py` posts names
+it, and posted text writes the home directory `~` (public), since a public board would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
@@ -1445,7 +1446,8 @@ def unproven(head: str, fields: dict[str, str]) -> str | None:
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
     if (record := reusable(head)) is None:
         return f"the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    if (env := env_line(record["env"])[len("Env: ") :].strip()) != fields.get("Env"):
+    # the comment names the env as posted, its home written `~` (public)
+    if (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
         return (
             f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
         )
@@ -1634,7 +1636,7 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         tail = []
     body = (
         f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n{env_line(record['env'])}"
-        f"Gated: {record['time']} on {record['host']}\nLog: {log}\n"
+        f"Gated: {record['time']}\nLog: {log}\n"
     )
     if tail:
         body += (
@@ -2104,6 +2106,13 @@ def assign(number: int, login: str, add: bool) -> None:
     )
 
 
+def public(text: str) -> str:
+    """`text` as posted: the home directory written `~`, since a path under it (a log's, a cache's) names the person
+    whose machine posted it, and GitHub's edit history keeps a comment's first text for good."""
+    home = str(Path.home()).rstrip("/")
+    return re.sub(re.escape(home) + r"(?![\w.-])", "~", text) if home else text
+
+
 def comment(number: int, body: str) -> None:
     gh(
         "api",
@@ -2111,7 +2120,7 @@ def comment(number: int, body: str) -> None:
         "-F",
         "body=@-",
         "--silent",
-        data=body,
+        data=public(body),
     )
 
 
@@ -2595,7 +2604,8 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
         "--input",
         "-",
         "--silent",
-        data=json.dumps(review),
+        # unescaped, so public() finds a non-ASCII home as GitHub will decode it
+        data=public(json.dumps(review, ensure_ascii=False)),
     )
 
 
@@ -2783,7 +2793,7 @@ def local_ci(pr: int | None) -> int:
     head = pull_request(pr)["headRefOid"]
     record = reusable(head)
     if record:
-        source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+        source = f"From the recorded run at {record['time']}, not run again.\n"
     else:
         record = run_local_ci(pr, head)
         source = ""
