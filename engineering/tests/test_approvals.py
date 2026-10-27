@@ -1480,6 +1480,22 @@ def test_a_post_naming_a_term_of_the_local_deny_list_is_refused_before_any_call(
         )
     with pytest.raises(approvals.Refused, match="names `Acme-Widgets`"):
         approvals.post_review(7, {"body": "pass 1 on acme-widgets"})
+    # a review is JSON: the text GitHub publishes is checked, not its escaped form (`\nAcme`, `Caf\u00e9`)
+    deny.write_text("Acme-Widgets\nCafé\n")
+    for review, term, line in [
+        ({"body": "Safe heading\nAcme-Widgets is listed"}, "Acme-Widgets", 2),
+        (
+            {
+                "body": "Safe",
+                "comments": [{"path": "x.py", "line": 1, "body": "Safe\n\nSeen in café"}],
+            },
+            "Café",
+            3,
+        ),
+    ]:
+        with pytest.raises(approvals.Refused) as refused:
+            approvals.post_review(7, review)
+        assert f"line {line} names `{term}`" in str(refused.value)
     assert calls == []
     # a term inside a longer word is no match
     approvals.comment(7, "Acme-Widgetsmith and xacme/secret-repo are fine.\n")
@@ -1491,6 +1507,22 @@ def test_a_post_naming_a_term_of_the_local_deny_list_is_refused_before_any_call(
     with pytest.raises(approvals.Refused, match="can't be read"):
         approvals.comment(7, "anything")
     assert len(calls) == 2
+
+
+def test_verdict_refuses_a_report_naming_a_listed_term_before_reading_github(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deny, report = tmp_path / "deny.txt", tmp_path / "report.md"
+    deny.write_text("Acme-Widgets\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    report.write_text(REPORT.replace("The doc.", "Seen in Acme-Widgets."))
+    read: list[str] = []
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: read.append("pull") or pull())
+    monkeypatch.setattr(approvals, "diff_lines", lambda *_a: read.append("diff") or {})
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert "names `Acme-Widgets` from the deny list" in capsys.readouterr().out
+    assert read == []
 
 
 def test_approve_refuses_the_coordinator(

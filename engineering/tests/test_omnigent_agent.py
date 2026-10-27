@@ -1989,6 +1989,31 @@ def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_ho
     assert len(calls) == posted  # posts nothing again
 
 
+def test_with_a_deny_list_a_cloud_worker_replies_with_its_report_and_the_host_checks_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker can't read the host's list, so it never posts: its reply carries the report, which wait checks
+    before posting, and a listed term posts nothing."""
+    deny = tmp_path / "deny.txt"
+    deny.write_text("Acme-Widgets\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    body = "Branch: claude/x at abc\nSeen in acme-widgets.\n"
+    og = FakeOmnigent(reply=f"UNPOSTED REPORT\n{body}")
+    calls = fake_gh(monkeypatch, {"comments": "https://github.com/o/r/pull/7#issuecomment-9"})
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "which you don't post: reply with the line `UNPOSTED REPORT`" in brief
+    assert "gh api" not in brief and "comment's URL" not in brief
+    with pytest.raises(omnigent_agent.Fail, match="line 2 names `Acme-Widgets` from the deny list"):
+        omnigent_agent.wait(og, sid, report, pr=7)
+    assert not [call for call in calls if "body=" in " ".join(call)]
+    monkeypatch.delenv("LOOP_DENY_LIST")
+    assert "gh api repos/{owner}/{repo}/issues/7/comments" in omnigent_agent.pr_preamble().format(
+        pr=7, report=report, unposted="U", role=""
+    )
+
+
 @pytest.mark.parametrize(
     "link",
     [

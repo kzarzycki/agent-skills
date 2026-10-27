@@ -1966,9 +1966,27 @@ def denied(text: str) -> None:
                 )
 
 
+def texts(data: str) -> list[str]:
+    """The text GitHub will publish from a post's `data`: every string a JSON payload holds, decoded (a review's body
+    and its inline comments), else the data itself (a comment's body)."""
+    try:
+        found: list[Any] = [json.loads(data)]
+    except ValueError:
+        return [data]
+    strings = []
+    while found:
+        value = found.pop()
+        if isinstance(value, str):
+            strings.append(value)
+        elif isinstance(value, dict | list):
+            found.extend(value.values() if isinstance(value, dict) else value)
+    return strings
+
+
 def gh(*args: str, data: str | None = None) -> str:
     if data is not None:  # every comment and review approvals.py posts goes as `data`
-        denied(data)
+        for text in texts(data):
+            denied(text)
     return subprocess.run(
         ["gh", *args], input=data, check=True, capture_output=True, text=True
     ).stdout
@@ -2684,6 +2702,7 @@ def verdict(pr: int, report: Path) -> int:
     """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
     line of the diff when its line is outside it, in the review's body when its file is."""
     heading, head, found, closing = parse_report(report)
+    denied(report.read_text())  # before any read of GitHub, not only at the post
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
