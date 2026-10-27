@@ -734,9 +734,10 @@ class Omnigent:
             return str(matches[0]["id"])
         if not matches:
             raise Fail(f"{sid}: no session matches")
-        named = "; ".join(f"{x['id']} {x.get('title') or ''}".rstrip() for x in matches[:10])
-        more = f"; and {len(matches) - 10} more" if len(matches) > 10 else ""
-        raise Fail(f"{sid}: {len(matches)} sessions match: {named}{more}")
+        named = "".join(f"\n  {x['id']} {x.get('title') or ''}".rstrip() for x in matches)
+        raise Fail(
+            f"{sid}: {len(matches)} sessions match:{named}"
+        )  # a line each, as there may be hundreds
 
     def info(self, sid: str) -> dict:
         """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
