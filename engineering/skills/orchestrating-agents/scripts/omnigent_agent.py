@@ -343,6 +343,7 @@ The owner authorized this task; do it now, without asking for a go-ahead. This i
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block.
 Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
@@ -1755,10 +1756,12 @@ def wait(
                 )
                 report.parent.mkdir(parents=True, exist_ok=True)
                 report.write_text(body)
+                carry_files(body, report)
             break
         if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
+            carry_files(body, report)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
@@ -1786,6 +1789,32 @@ def wait(
             )
         time.sleep(POLL_SECONDS)
     return str(report)
+
+
+# A file a cloud worker's report names under tmp/loop/ rides in its comment as this marker line and a
+# fenced block (PR_PREAMBLE), since the VM's files never reach the host.
+CARRIED = re.compile(
+    r"^<!-- file: tmp/loop/([\w-][\w.-]*) -->\n(`{3,}|~{3,})[^\n]*\n(.*?)\n?\2[ \t]*$",
+    re.MULTILINE | re.DOTALL,
+)
+NAMED_FILE = re.compile(r"\btmp/loop/([\w-][\w.-]*[\w-])")
+
+
+def carry_files(body: str, report: Path) -> None:
+    """Write each file the cloud report ``body`` carries beside ``report``, saying where it landed;
+    a file it names under ``tmp/loop/`` without carrying it is listed as missing."""
+    carried = {m[1]: m[3] for m in CARRIED.finditer(body)}
+    for name in dict.fromkeys(NAMED_FILE.findall(body) + list(carried)):
+        if name == report.name or (name not in carried and (report.parent / name).exists()):
+            continue  # the report itself, or a file of the lead's own it names
+        if name in carried:
+            (path := report.parent / name).write_text(carried[name] + "\n")
+            print(f"brought {path}", file=sys.stderr)
+        else:
+            print(
+                f"missing: tmp/loop/{name} (the report names it, its comment does not carry it)",
+                file=sys.stderr,
+            )
 
 
 def pr_report(said: str, pr: int, since: int | None = None) -> str | None:

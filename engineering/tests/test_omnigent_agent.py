@@ -1989,6 +1989,39 @@ def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_ho
     assert len(calls) == posted  # posts nothing again
 
 
+def test_a_cloud_report_brings_the_repro_files_it_carries_and_lists_the_missing_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = (
+        "Repro: tmp/loop/test_repro_7.py and tmp/loop/repro-7.sh; gate log tmp/loop/gate-7.log;"
+        " also tmp/loop/lost.txt\n\n<!-- file: tmp/loop/test_repro_7.py -->\n```python\n"
+        "def test_x():\n    assert 1\n```\n\n<!-- file: tmp/loop/repro-7.sh -->\n````sh\n"
+        "echo ```\n````\n<!-- file: tmp/loop/../../evil -->\n```\nx\n```\n"
+    )
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-9")
+    fake_gh(monkeypatch, {"9": on_pr(7, body)})
+    loop = tmp_path / "tmp" / "loop"
+    loop.mkdir(parents=True)
+    (loop / "gate-7.log").write_text("the lead's own")
+    report = loop / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    assert "<!-- file: tmp/loop/<name> -->" in omnigent_agent.text_of(og.sessions[sid][1])
+    assert omnigent_agent.wait(og, sid, report, pr=7) == str(report)
+    assert report.read_text() == body
+    assert (loop / "test_repro_7.py").read_text() == "def test_x():\n    assert 1\n"
+    assert (loop / "repro-7.sh").read_text() == "echo ```\n"  # a longer fence holds a shorter one
+    assert (loop / "gate-7.log").read_text() == "the lead's own"
+    assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file() and p.suffix != ".held") == [
+        "gate-7.log",
+        "r.md",
+        "repro-7.sh",
+        "test_repro_7.py",
+    ]  # nothing outside tmp/loop/
+    err = capsys.readouterr().err
+    assert f"brought {loop / 'test_repro_7.py'}" in err and f"brought {loop / 'repro-7.sh'}" in err
+    assert "missing: tmp/loop/lost.txt" in err and "gate-7.log" not in err
+
+
 @pytest.mark.parametrize(
     "link",
     [

@@ -111,7 +111,11 @@ report path, so whatever reads the report reads a file as for any child. The wor
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
 report; the lead merges that branch into the PR. A worker whose post fails (the session's token
 expires after a while) replies with an `UNPOSTED REPORT` line and the body; `wait` posts that
-body on PR n from this host and writes it to the report path. A question goes in
+body on PR n from this host and writes it to the report path. The VM's files never reach this
+host either, so a file under `tmp/loop/` the report names (a repro, a log) rides in the comment
+as a `<!-- file: tmp/loop/<name> -->` line and a fenced block; `wait` writes each beside the
+report, prints where it landed, and lists a named file the comment lacks and this host lacks
+too as missing, with no change to the exit code. A question goes in
 that report, since `<report>.question` is a path here too. Only a comment GitHub files on
 PR n of this checkout's repository (`gh repo view`, checked against the comment's
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
