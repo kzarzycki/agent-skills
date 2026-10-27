@@ -106,26 +106,26 @@ design, wireframes included for a UI, and delegate the rest.
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
    prints the ones to rerun. Then start the verifier on that pushed
-   head (SKILL.md, Independent verification) in
-   your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
-   number, the priorities for this change, and a report path under `tmp/loop/` in that
-   worktree, which the project gitignores: outside its workspace a Codex child's sandbox
-   refuses the write and a Claude Code child is prompted for a read (denied in auto mode),
-   which nobody answers. Its model is the default, or, where the PR matches loop.md's
+   head (SKILL.md, Independent verification) in a worktree of its own at that head,
+   `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
+   yours while it reviews and no commit of yours moves the head under review. Copy the proof
+   logs into its `tmp/loop/`, and give it the path of `verifier.md`, the base, the reviewed
+   head, the spec number, the priorities for this change, and a report path under
+   `tmp/loop/` in that worktree, which the project gitignores: outside its workspace a Codex
+   child's sandbox refuses the write and a Claude Code child is prompted for a read (denied
+   in auto mode), which nobody answers. Its model is the default, or, where the PR matches loop.md's
    `Verifier model:` line, the newest-generation model of that tier in the verifier's family
    (SKILL.md, Models). A lower-tier verdict that says `Risk: high`, even a satisfied one, calls
    for a default-tier pass on the head before landing. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
    brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
-   bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
-   worktree alone until the report arrives. A report without a `SATISFIED:` line is
+   bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report with
    `uv run scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
-   `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. Only a mixed PR's second
-   verifier, running at the same time, gets a detached worktree at the same head, so the two
-   gate runs don't collide. Triage every finding (SKILL.md) and hand the fixes to a worker,
+   `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
+   verifier, running at the same time, gets its own detached worktree the same way. Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail): the fixer replies on each fixed thread with
    the SHA and resolves it `ADDRESSED`. Resolve each deferred finding's thread yourself,
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
@@ -258,7 +258,8 @@ design, wireframes included for a UI, and delegate the rest.
    spec's acceptance examples name which. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents. For every
-   worktree your notes list, children's before yours, since removing yours first leaves
+   worktree your notes list, children's before yours (each verifier's detached one
+   included), since removing yours first leaves
    theirs as stale entries, run its teardown (loop.md § Worktree), then, from the main checkout,
    `git worktree remove --force <path>` and `git branch -D <branch>`, the local branch only
    (a detached verifier's worktree has none): GitHub deleted the merged head branch, and you
