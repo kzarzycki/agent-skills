@@ -1725,9 +1725,15 @@ def wait(
             raise Asked(str(question))
         info = og.info(sid)
         status = str(info.get("status"))
+        error = (info.get("last_task_error") or {}).get("message") or ""
         if status in RUNNING or continued and time.monotonic() - continued >= CONTINUE_SECONDS:
             continued = None
-        elif continued and status == "failed":  # the stall's own end: its new turn is to come
+        elif (
+            continued
+            and status == "failed"
+            and recovery(error, []) == "stall"  # another error is a new failure
+            and time.monotonic() < deadline
+        ):  # the stall's own end: its new turn is to come
             time.sleep(POLL_SECONDS)
             continue
         items = og.items(sid)

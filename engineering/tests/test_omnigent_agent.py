@@ -2306,6 +2306,16 @@ def test_wait_continues_a_stalled_child_once(
         omnigent_agent.wait(og, sid, tmp_path / "s.md")
     assert og.posts == 2
 
+    # another error just after the continue is a new failure, not the stall's end
+    og = FakeOmnigent(reply="done")
+    sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "u.md", None, 0)
+    failing(og, {sid: [STALL_ERROR, "claude exited: boom"]})
+    capped(og, 2)
+    began = time.monotonic()
+    with pytest.raises(omnigent_agent.Fail, match=f"(?s)session {sid} stalled .*boom"):
+        omnigent_agent.wait(og, sid, tmp_path / "u.md")
+    assert time.monotonic() - began < omnigent_agent.CONTINUE_SECONDS / 4
+
 
 def test_wait_neither_retries_nor_continues_a_failure_after_the_first_turn_or_any_other(
     tmp_path: Path,
