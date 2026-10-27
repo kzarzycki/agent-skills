@@ -228,9 +228,10 @@ posted comment names those values.
 with the project's. Issue states, categories, sizes and board columns are the method's,
 in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
 does them on GitHub. A
-`scripts/` path is relative to this skill's folder; run it from the worktree with
-`python3` (standard library only), except `scripts/browse.py`, which needs Playwright and so
-runs with `uv run`: it renders a web UI headless, signed in to an Omnigent server when
+`scripts/` path is relative to this skill's folder, not the repo root: in a project that
+installs the skill it is under the install, such as
+`.agents/skills/engineering-loop/scripts/board.py`. Run it from the worktree with `uv run`,
+which installs what its inline header declares. `scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
 asked, and screenshots it (worker.md, Report; its docstring has the flags).
 
 ### Practice
@@ -340,8 +341,8 @@ green. A pass counts whichever model family wrote it (Independent verification).
 
 When a spec or plan needs the owner, add `needs-owner`, comment what to approve, and stop:
 a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
-on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`python3
-scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
+on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`uv run
+<this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
 which records their word, adds the label and removes `needs-owner`. A change to an
 approved spec's scope or acceptance is a decision the owner never saw: remove
 `approved:spec`, add `needs-owner` with a one-line comment saying what changed, and stop

@@ -96,7 +96,7 @@ from the remote.
 
 A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
 `utilities` plugin creates one, with an Epics view and the Parent issue and Sub-issues
-progress fields shown). `uv run scripts/board.py <issue> <column>` adds the
+progress fields shown). `uv run <this skill's folder>/scripts/board.py <issue> <column>` adds the
 issue when it is missing and sets its column, so the board's built-in workflows stay off, as
 they are on a board created through the API, except "Item closed", which sets the column
 `Done` shows in: GitHub closes an issue on a PR's `Closes` without the loop moving it, and a
@@ -106,7 +106,7 @@ column is named `Closed`, mapped from `Done` (below), since a closed issue may b
 not planned or a duplicate, and the card's icon says which. Its views show the Assignees field next to Status, so the board
 shows whose each ticket is. Where the project ranks work, the board's `Priority` single-select
 field holds it, since it takes one value per item, in its options' order, where an item can carry
-several labels; the gate never reads it. `uv run scripts/board.py column <issue>` prints the later of the
+several labels; the gate never reads it. `uv run <this skill's folder>/scripts/board.py column <issue>` prints the later of the
 loop column the issue's board column shows and the one its labels give, so an issue with `approved:spec` reads
 `Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
 
