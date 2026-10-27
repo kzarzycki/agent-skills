@@ -91,6 +91,10 @@ a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
+It also posts the pass as a `local-ci` success status on the head, its command, env and host as JSON in the
+description, so a clone on another host reuses it: a clone without the file reads the newest such status on the head,
+posted by the account running this or a writer. A status GitHub refuses, or a record longer than its description
+holds, prints a line and leaves only the local record.
 `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
 check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
 same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
@@ -2613,6 +2617,10 @@ def git(*args: str) -> str:
 
 
 LOCAL_CI = ["mise", "run", "check:all"]
+# the commit status a local-ci pass also posts on its head, so a clone on another host reuses it (published)
+PUBLISHED = "local-ci"
+# GitHub's limit on a commit status's description, which carries the record's command, env and host
+DESCRIBED = 140
 
 
 def recorded(head: str) -> Path:
@@ -2663,7 +2671,57 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
     where = recorded(before[0])
     where.parent.mkdir(parents=True, exist_ok=True)
     where.write_text(json.dumps(record, indent=2) + "\n")
+    if why := publish(record):
+        print(why)
     return record
+
+
+def publish(record: dict[str, Any]) -> str | None:
+    """Post a pass as a `local-ci` success status on its head, its command, env and host as JSON in the description, so
+    `reusable` finds it from a clone on another host; a line when GitHub refuses or it doesn't fit, never a failure,
+    since this clone's record still holds."""
+    described = json.dumps(
+        {key: record[key] for key in ("command", "env", "host")}, separators=(",", ":")
+    )
+    if len(described) > DESCRIBED:
+        return f"the record is longer than a commit status holds ({DESCRIBED} characters): only this clone reuses it"
+    try:
+        gh(
+            "api",
+            f"repos/{{owner}}/{{repo}}/statuses/{record['head']}",
+            "-f",
+            "state=success",
+            "-f",
+            f"context={PUBLISHED}",
+            "-f",
+            f"description={described}",
+            "--silent",
+        )
+    except subprocess.CalledProcessError as exc:
+        return f"could not publish the pass on GitHub ({(exc.stderr or '').strip() or exc}): only this clone reuses it"
+    return None
+
+
+def published(head: str) -> dict[str, Any] | None:
+    """The newest `local-ci` status on `head` as a record (publish), posted by the account running this or a writer,
+    since a status is the one record anyone outside the clone could have written; else None. Its time is GitHub's."""
+    try:
+        statuses = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/commits/{head}/statuses"))
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+    status = next((each for each in statuses if each.get("context") == PUBLISHED), None)
+    if not status or status.get("state") != "success":
+        return None
+    login = (status.get("creator") or {}).get("login")
+    if not login or (login != viewer() and not writer(login)):
+        return None
+    try:
+        described = json.loads(status.get("description") or "")
+    except ValueError:
+        return None
+    if not isinstance(described, dict):
+        return None
+    return {**described, "head": head, "exit": 0, "time": status.get("created_at")}
 
 
 def local_ci_env() -> dict[str, str | None]:
@@ -2683,24 +2741,33 @@ def env_line(env: dict[str, str | None]) -> str:
 
 
 def reusable(head: str) -> dict[str, Any] | None:
-    """A recorded pass on exactly `head` with today's command and environment, or None. A record without `env` (0.23.1
-    wrote none) never matches, since nothing says what tier it ran."""
+    """A recorded pass on exactly `head` with today's command and environment, this clone's or else one another host
+    published on the head, or None. A record without `env` (0.23.1 wrote none) never matches, since nothing says what
+    tier it ran."""
     try:
         record = json.loads(recorded(head).read_text())
     except (OSError, ValueError):
-        return None
+        record = None
+    if green_pass(record, head):
+        return record
+    # a pass recorded on another host: the status it published on the head
+    record = published(head)
+    return record if green_pass(record, head) else None
+
+
+def green_pass(record: Any, head: str) -> bool:
+    """Whether a record is a pass on exactly `head` with today's command and environment."""
     # the posting path reads time and host too: a record without them is a miss, not a crash
     if not isinstance(record, dict) or not all(
         isinstance(record.get(key), str) for key in ("time", "host")
     ):
-        return None
-    same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
+        return False
+    return (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
         head,
         " ".join(LOCAL_CI),
         0,
         local_ci_env(),
     )
-    return record if same else None
 
 
 def local_ci(pr: int | None) -> int:

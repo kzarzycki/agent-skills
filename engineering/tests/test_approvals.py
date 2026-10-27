@@ -59,6 +59,7 @@ WAITED = (
 TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
+PUBLISH, PUBLISHED = approvals.publish, approvals.published
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +69,9 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: PUSHED)
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
+    # a local-ci pass stays in its clone: `statuses` stands in for GitHub where a test shares one
+    monkeypatch.setattr(approvals, "publish", lambda _record: None)
+    monkeypatch.setattr(approvals, "published", lambda _head: None)
 
 
 @pytest.fixture(autouse=True)
@@ -3860,6 +3864,96 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     monkeypatch.chdir(repo)
     assert approvals.reusable(head)["head"] == head
     assert approvals.reusable("c" * 40) is None
+
+
+@pytest.fixture
+def statuses(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
+    """GitHub's commit statuses, newest first, by head: `local-ci` posts there and reads it back, as from any host."""
+    posted: dict[str, list[dict[str, Any]]] = {}
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[1].startswith("repos/{owner}/{repo}/statuses/"):
+            fields = dict(arg.split("=", 1) for arg in args[2:] if "=" in arg)
+            status = {**fields, "creator": {"login": "loop"}, "created_at": "2026-10-27T11:00:00Z"}
+            posted.setdefault(args[1].rsplit("/", 1)[1], []).insert(0, status)
+            return ""
+        head = re.fullmatch(r"repos/\{owner\}/\{repo\}/commits/(\w+)/statuses", args[1])
+        assert head, args
+        return json.dumps(posted.get(head[1], []))
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "publish", PUBLISH)
+    monkeypatch.setattr(approvals, "published", PUBLISHED)
+    return posted
+
+
+def test_a_pass_recorded_on_one_host_is_reused_by_a_clone_on_another(
+    github: list[tuple[Any, ...]],
+    statuses: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    one, two = tmp_path / "one", tmp_path / "two"
+    head = committed(one)
+    git_in(tmp_path, "clone", "-q", str(one), str(two))
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(one)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert [status["context"] for status in statuses[head]] == ["local-ci"]
+    monkeypatch.chdir(two)
+    assert not (two / ".git" / "approvals").exists()  # nothing of the first clone's here
+    record = approvals.reusable(head)
+    assert record is not None
+    assert (record["head"], record["command"], record["exit"], record["env"]) == (
+        head,
+        "true",
+        0,
+        {},
+    )
+    assert record["time"] == "2026-10-27T11:00:00Z"
+    assert approvals.reusable("c" * 40) is None  # another head
+    monkeypatch.setenv("TIER", "full")
+    monkeypatch.setattr(approvals, "local_ci_env", lambda: {"TIER": "full"})
+    assert approvals.reusable(head) is None  # another env
+
+
+def test_a_published_pass_counts_only_from_a_writer_and_only_when_well_formed(
+    statuses: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "local_ci_env", dict)
+    monkeypatch.setattr(approvals, "recorded", lambda head: Path("/nonexistent") / head)
+    described = '{"command":"mise run check:all","env":{},"host":"b"}'
+    status = {"context": "local-ci", "state": "success", "description": described}
+    statuses[HEAD] = [{**status, "creator": {"login": "loop"}, "created_at": WRITTEN}]
+    assert approvals.reusable(HEAD)["host"] == "b"
+    monkeypatch.setattr(approvals, "writer", lambda _login: False)
+    statuses[HEAD] = [{**status, "creator": {"login": "stranger"}, "created_at": WRITTEN}]
+    assert approvals.reusable(HEAD) is None
+    statuses[HEAD] = [{**status, "description": "passed", "creator": {"login": "loop"}}]
+    assert approvals.reusable(HEAD) is None
+    overriding = '{"command":"mise run check:all","env":{},"host":"b","head":"c","exit":1}'
+    statuses[HEAD] = [
+        {**status, "description": overriding, "creator": {"login": "loop"}, "created_at": WRITTEN}
+    ]
+    assert approvals.reusable(HEAD)["head"] == HEAD  # the description never names another head
+
+
+def test_a_pass_github_refuses_or_too_long_to_publish_stays_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = {"head": HEAD, "command": "mise run check:all", "env": {}, "host": "a"}
+
+    def refused(*args: str, data: str | None = None) -> str:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: Resource not accessible")
+
+    monkeypatch.setattr(approvals, "gh", refused)
+    assert PUBLISH(record) == (
+        "could not publish the pass on GitHub (HTTP 403: Resource not accessible): only this clone reuses it"
+    )
+    assert PUBLISH({**record, "env": {"TIER": "x" * 140}}) == (
+        "the record is longer than a commit status holds (140 characters): only this clone reuses it"
+    )
 
 
 # --- the owner's policy: specs approved and merges landed without an agent's approval ---

@@ -214,8 +214,10 @@ Merge-queue (`merge_group`) and push runs have no draft and run as before. While
 draft, `mise run check` before each push is its check. With `ci: false` in loop.md, the
 check on a head you push for review is `uv run scripts/approvals.py local-ci --record`
 instead, committed and clean: it runs the merge check, `mise run check:all`, and records
-the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
-for the same head, command and environment rather than running the check again. A project
+the pass by commit in the clone's git dir and as a `local-ci` status on the head, so
+`local-ci <pr>` at landing posts that pass for the same head, command and environment
+rather than running the check again, from this clone or a clone on another host, and a
+project can gate on whichever build host is free. A project
 whose check reads environment variables (a tier, a scope) names them in loop.md's
 `local_ci_env`: without it a pass recorded under one tier stands in for another, and the
 posted comment names those values.
