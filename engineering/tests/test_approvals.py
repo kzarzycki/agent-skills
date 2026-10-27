@@ -1517,6 +1517,38 @@ def test_the_owners_own_label_after_the_last_edit_is_their_approval(
     assert capsys.readouterr().out.splitlines() == ([said] if said else [])
 
 
+def test_an_edit_after_the_owners_label_is_never_recorded_under_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spec is read again to record it: an edit between the check and the record is refused, not approved, and
+    loop.md's owner matches the label's actor whatever its casing, as GitHub's logins do."""
+    loop = add(LOOP, "loop", "owner: Octocat\n")
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+    later = {**spec, "lastEditedAt": "2026-10-01T12:00:00Z"}
+    sent: list[str] = []
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: sent.append("label"))
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: later)
+    with pytest.raises(
+        approvals.Refused, match=r"edited \(as edited 2026-10-01 12:00:00 UTC\) after the owner"
+    ):
+        approvals.adopted([spec], loop)
+    assert sent == []
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    approvals.adopted([spec], loop)
+    assert sent[0] == f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"
+
+
 def test_approve_refuses_the_coordinator(
     github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -2261,7 +2261,11 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
                 for event in events(issue, "LabeledEvent")
                 if (event.get("label") or {}).get("name") == name
             ]
-            if not added or (added[-1].get("actor") or {}).get("login") != owner:
+            # GitHub logins are case-insensitive: `Octocat` in loop.md names the account `octocat`
+            if (
+                not added
+                or (added[-1].get("actor") or {}).get("login", "").lower() != str(owner).lower()
+            ):
                 continue
             if added[-1]["createdAt"] <= (holder.get("lastEditedAt") or holder["createdAt"]):
                 print(
@@ -2269,7 +2273,7 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
                     " owner adds it again"
                 )
                 continue
-            approve(point, number)
+            approve(point, number, value)
             recorded = True
             print(
                 f"#{number}: recorded the owner's `{name}`, added after the {point}'s last edit, as their approval"
@@ -2527,14 +2531,19 @@ def landing(
     return WAITING, ON_CI if pending else None
 
 
-def approve(point: str, number: int) -> int:
+def approve(point: str, number: int, seen: str | None = None) -> int:
     """Record the owner's approval of the issue's current spec or plan, on their word: the record, the label, and
-    `needs-owner` removed. Every earlier record of the point is superseded and minimized."""
+    `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
+    the owner's label was checked against (adopted), an edit since is refused: the label never covered it."""
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
         raise Refused(f"#{number} has no `## Plan` comment to approve")
     value = version(holder)
+    if seen is not None and value != seen:
+        raise Refused(
+            f"#{number}: the {point} was edited ({value}) after the owner's `approved:{point}`: the owner adds it again"
+        )
     record = f"{point.capitalize()}: {value}\n"
     earlier = [
         (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
