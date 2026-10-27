@@ -114,6 +114,15 @@ or a writer counts, since anyone can comment on a public repo. A red, unproven o
 exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
 the same head like any other. The proof is the verifier's
 verdict and gate on the PR's own head plus the full gate on the batch that merged it.
+With loop.md's `carry_over_main` section (`except: <globs>`), a merge of the base into a PR head H keeps H's proofs: a
+head H' whose first parent is H, whose second is on the base (an ancestor of its tip), whose tree is what `git
+merge-tree --write-tree` makes of the two (no conflict resolved, nothing added), and where the base's changes since
+the merge base touch no file H's side changes and no path an `except` glob matches (fnmatch, as a rule's `paths`:
+the project's merge-check configuration, such as lint, type, test and gate config and lockfiles). Then H's newest
+verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included). It never carries a `local-ci`
+record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line naming H, H' and the
+predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
+nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -370,6 +379,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
     "land": Table(signed_squash_to=str, allowed_signers=str),
+    "carry_over_main": Table({"except": list}),
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
 TRACKED: dict[str, Any] = dict.fromkeys(
@@ -607,15 +617,19 @@ def ruled(
     return None
 
 
-def judged(pull: dict[str, Any]) -> str | None:
-    """Why the verifier holds the change high, or None: the highest pass on the head (passes) says `Risk: high`, any
-    other word than `low`, or has no `Risk:` line; a mixed PR's two verifiers both must say `low`. A head no review
-    covers is None, since reviewed() then refuses the merge, or the PR needs no review (exempt, an exact revert)."""
+def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
+    """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
+    proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
+    PR's two verifiers both must say `low`. A head no review covers is None, since reviewed() then refuses the merge,
+    or the PR needs no review (exempt, an exact revert)."""
     found = passes(pull)
     if isinstance(found, str):
         return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
     head = pull["headRefOid"].lower()
     on_head = [(number, lines) for commit, number, lines in found if commit == head]
+    if not on_head and found and isinstance(carry := carried(pull, loop), tuple):
+        head = carry[0]
+        on_head = [(number, lines) for commit, number, lines in found if commit == head]
     if not on_head:
         return None
     last = max(number for number, _ in on_head)
@@ -640,11 +654,11 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
-        if why := ruled(labels, paths(pull), loop, judged(pull)):
+        if why := ruled(labels, paths(pull), loop, judged(pull, loop)):
             return why
     elif settings(loop).get("risk", {}).get("verifier"):
         # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
-        if why := judged(pull):
+        if why := judged(pull, loop):
             return f"it matches a risk rule's `verifier` term: {why}"
     limit = cap(loop)
     if capped(pull, limit):
@@ -718,7 +732,7 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         return [
             f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
         ]
-    if (verdict := judged(pull)) and verdict in why:
+    if (verdict := judged(pull, loop)) and verdict in why:
         try:
             comment(
                 pull["number"],
@@ -1076,7 +1090,7 @@ def proofs(
     if loop is not None:
         found += linked(pull, issues, loop)
     if revert is None and not exempt(pull, loop):
-        found += reviewed(where, pull)
+        found += reviewed(where, pull, loop)
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
         found.append(
@@ -1154,9 +1168,10 @@ def capped(pull: dict[str, Any], limit: int) -> bool:
     )
 
 
-def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
+def reviewed(where: str, pull: dict[str, Any], loop: str | None) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
-    since every commit after a verdict needs one of its own, or on its commit the highest pass (a mixed PR's two
+    since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried,
+    which prints a line either way where loop.md opts in), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt)."""
@@ -1174,7 +1189,7 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
             f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
         ]
     found = []
-    if pull["headRefOid"].lower() != head:
+    if pull["headRefOid"].lower() != head and not carries(where, pull, loop, head):
         found.append(
             f"{where}: the newest verifier review is on {head}, not on the head {pull['headRefOid']}:"
             " every commit after a verdict needs a verdict of its own"
@@ -1400,16 +1415,122 @@ def unproven(head: str, fields: dict[str, str]) -> str | None:
     parents = git("rev-list", "--parents", "-n", "1", merge).split()[1:]
     if len(parents) != 2 or parents[1] != head:
         return f"merge {merge} does not merge the head {head} as its second parent"
-    clean = subprocess.run(
-        ["git", "merge-tree", "--write-tree", *parents], capture_output=True, text=True, check=False
-    )
-    if clean.returncode or clean.stdout.split()[:1] != [
-        git("rev-parse", f"{merge}^{{tree}}").strip()
-    ]:
+    clean = merged(*parents)
+    if isinstance(clean, str) or clean[0] != git("rev-parse", f"{merge}^{{tree}}").strip():
         return f"merge {merge} is not the clean merge of its parents: the queue resolved or added something"
     if subprocess.run(["git", "merge-base", "--is-ancestor", merge, batch], check=False).returncode:
         return f"batch {batch} does not contain merge {merge}"
     return None
+
+
+def merged(
+    first: str, second: str, guard: list[str] | None = None, base: str = "the base"
+) -> tuple[str, str] | str:
+    """The tree `git merge-tree --write-tree` makes of commits `first` and `second`, so a merge with that tree resolved
+    no conflict and added nothing, and their merge base; a string names why not. With `guard`, the globs of loop.md's
+    `carry_over_main.except`, the proofs on `first` carry over to that merge only when `second`'s changes since the
+    merge base (`base`'s) touch no file `first`'s changes touch, neither side's changes touch a file a glob matches
+    (fnmatch on the full path, as a rule's `paths`), and the two have one merge base. `first` is the PR's head, so a
+    why names its side as the PR's. Fail-closed: a git error is a why, never a carry."""
+    try:
+        clean = subprocess.run(
+            ["git", "merge-tree", "--write-tree", first, second],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if clean.returncode or not clean.stdout.split():
+            return f"{first} and {second} conflict"
+        tree = clean.stdout.split()[0]
+        if guard is None:
+            return tree, ""
+        bases = git("merge-base", "--all", first, second).split()
+        if len(bases) != 1:
+            return f"{first} and {second} have {len(bases)} merge bases"
+        # plumbing: porcelain `git diff` follows config (diff.relative, a submodule's `ignore = all`) that hides paths
+        changed = [
+            set(
+                filter(
+                    None,
+                    git(
+                        "diff-tree",
+                        "-r",
+                        "--name-only",
+                        "--no-renames",
+                        "--ignore-submodules=none",
+                        "-z",
+                        bases[0],
+                        side,
+                    ).split("\0"),
+                )
+            )
+            for side in (first, second)
+        ]
+        if both := sorted(changed[0] & changed[1]):
+            return f"{both[0]} changed on both sides since {bases[0]}"
+        # the PR's own config change was gated only on the PR's code, never on what the base added since
+        for side, paths in ((f"{base}'s", changed[1]), ("the PR's", changed[0])):
+            if hit := sorted(
+                path for path in paths if any(fnmatch.fnmatch(path, glob) for glob in guard)
+            ):
+                return f"{side} changes since {bases[0]} touch {hit[0]}, a `carry_over_main.except` path"
+        return tree, bases[0]
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return f"git failed reading the merge of {first} and {second}: {exc}"
+
+
+def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
+    """The line check merge and land print when `what` carries the proofs of `head` (carried, merged)."""
+    return (
+        f"{what} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {base}'s"
+        f" {second}, whose changes since {since} touch none of the PR's files, and neither side touches a"
+        " `carry_over_main.except` path"
+    )
+
+
+def carried(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
+    """The commit whose verdict the PR's head carries, with carry_line(), where loop.md has
+    `carry_over_main`: the head is a merge whose first parent is that commit and whose second is on the base (an
+    ancestor of its tip), its tree is git merge-tree's of the two, and merged() finds the base's changes disjoint
+    from the PR's and neither side's touching an except glob. A string names why it carries nothing; None without the setting, which
+    then reads no git at all. ponytail: one merge deep; walk first parents when a PR merges main in twice unverified."""
+    guard = settings(loop).get("carry_over_main")
+    if guard is None:
+        return None
+    head, tip, base = pull["headRefOid"].lower(), pull["baseRefOid"].lower(), pull["baseRefName"]
+    try:
+        if not (fetched(head) and fetched(tip)):
+            return f"the head or {base}'s head {tip} is not a commit origin has"
+        parents = git("rev-list", "--parents", "-n", "1", head).split()[1:]
+        if len(parents) != 2:
+            return "it is no merge of two parents"
+        first, second = parents
+        on_base = ["git", "merge-base", "--is-ancestor", second, tip]
+        if subprocess.run(on_base, capture_output=True, check=False).returncode:
+            return f"its second parent {second} is not on {base}"
+        found = merged(first, second, guard["except"], base)
+        if isinstance(found, str):
+            return found
+        if found[0] != git("rev-parse", f"{head}^{{tree}}").strip():
+            return f"{head}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return f"git failed reading {head}: {exc}"
+    return first, carry_line(head, first, second, found[1], base)
+
+
+def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
+    """Whether the PR's head carries the proofs of `verified`, the newest verdict's commit (carried), printing the
+    line that says so, or where loop.md opts in, why it carries nothing."""
+    carry = carried(pull, loop)
+    if carry is None:
+        return False
+    if isinstance(carry, tuple) and carry[0] != verified:
+        carry = f"its first parent is {carry[0]}"
+    if isinstance(carry, str):
+        print(f"{where}: {pull['headRefOid']} carries nothing from {verified}: {carry}")
+        return False
+    print(f"{where}: {carry[1]}")
+    return True
 
 
 def fetched(sha: str) -> bool:
