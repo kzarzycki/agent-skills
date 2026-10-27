@@ -109,7 +109,7 @@ design, wireframes included for a UI, and delegate the rest.
    head (SKILL.md, Independent verification) in
    your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
    number, the priorities for this change, and a report path under `tmp/loop/` in that
-   worktree, which the project gitignores. `uv run scripts/approvals.py brief <pr>
+   worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief <pr>
    --priorities <file> --proof <log>…` prints that brief with every fact but the priorities
    read from the PR, the previous report and its head from pass 2, and loop.md's
    `## Verifier brief` (the project's own lines, such as host load rules) appended; it
