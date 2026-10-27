@@ -108,8 +108,10 @@ design, wireframes included for a UI, and delegate the rest.
    prints the ones to rerun. Then start the verifier on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
-   yours while it reviews and no commit of yours moves the head under review. Copy the proof
-   logs into its `tmp/loop/`, and give it the path of `verifier.md`, the base, the reviewed
+   yours while it reviews and no commit of yours moves the head under review. Copy into its
+   `tmp/loop/` the proof logs and, on a later pass, the previous report and its repros, and
+   name those copies, since a read outside its workspace is prompted; give it the path of
+   `verifier.md`, the base, the reviewed
    head, the spec number, the priorities for this change, and a report path under
    `tmp/loop/` in that worktree, which the project gitignores: outside its workspace a Codex
    child's sandbox refuses the write and a Claude Code child is prompted for a read (denied
@@ -119,7 +121,8 @@ design, wireframes included for a UI, and delegate the rest.
    for a default-tier pass on the head before landing. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
    brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
-   bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. A report without a `SATISFIED:` line is
+   bring your instance up on that head from the verifier's worktree (loop.md § Proof on a branch),
+   so the verifier finds it and its log there and can drive it. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report with
    `uv run scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
@@ -129,8 +132,8 @@ design, wireframes included for a UI, and delegate the rest.
    or make them yourself (`worker.md`, Trail): the fixer replies on each fixed thread with
    the SHA and resolves it `ADDRESSED`. Resolve each deferred finding's thread yourself,
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
-   `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way, plus
-   the previous report's path and head; reviving the old one re-reads its whole earlier
+   `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
+   worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
    review every turn. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
    concern per PR). Every fix after a verdict needs a verdict on its head, because `land`
