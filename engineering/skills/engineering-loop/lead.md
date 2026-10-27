@@ -261,7 +261,9 @@ design, wireframes included for a UI, and delegate the rest.
    real data against a reference the code did not produce, in the order of loop.md § Acceptance references. The
    spec's acceptance examples name which. A failure is reverted the same way, and the fix
    forward is a new change through this loop, never a patch on main.
-10. **Clean up** once acceptance has run, pass or fail. Close the agents. For every
+10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
+   processes you started, as worker.md, Report says, since a shared pattern kills other
+   agents' runs too. For every
    worktree your notes list, children's before yours, since removing yours first leaves
    theirs as stale entries, run its teardown (loop.md § Worktree), then, from the main checkout,
    `git worktree remove --force <path>` and `git branch -D <branch>`, the local branch only
