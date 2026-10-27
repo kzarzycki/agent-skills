@@ -2804,7 +2804,12 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
     _, loop = project()
     pull = pull_request(pr)
     head = pull["headRefOid"]
-    if stale := [str(log) for log in proofs if log.read_text().partition("\n")[0].strip() != head]:
+    if missing := [str(log) for log in proofs if not log.is_file()]:
+        raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
+    # byte for byte, as lead.md's `head -1 <log> | grep -qx <head>` compares: a trailing space or CR is another line
+    if stale := [
+        str(log) for log in proofs if log.read_bytes().split(b"\n", 1)[0] != head.encode()
+    ]:
         raise Refused(
             f"PR #{pr}: stale proof, its first line isn't the head {head}: {', '.join(stale)}; rerun it"
         )
@@ -2834,7 +2839,8 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
     lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]
-    if own := section(loop or "", "Verifier brief").strip():
+    # as written, but for the blank lines around it: indentation may be a snippet's
+    if (own := section(loop or "", "Verifier brief").strip("\n")).strip():
         lines += ["", own]
     print("\n".join(lines))
     return 0

@@ -1639,7 +1639,10 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     monkeypatch.setattr(
         approvals,
         "project",
-        lambda: (None, LOOP + "\n## Verifier brief\n\n- Run the full gate bare.\n"),
+        lambda: (
+            None,
+            LOOP + "\n## Verifier brief\n\n- Run the full gate bare.\n    indented snippet  \n\n",
+        ),
     )
     priorities, proof, stale = tmp_path / "p.md", tmp_path / "gate.log", tmp_path / "old.log"
     priorities.write_text("- the revert path\n")
@@ -1663,6 +1666,7 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         "- the revert path",
         "",
         "- Run the full gate bare.",
+        "    indented snippet  ",
     ]
     assert asked == [("main", HEAD)]
     assert approvals.main(["brief", "7", "--proof", str(proof), "--proof", str(stale)]) == 1
@@ -1670,6 +1674,13 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         capsys.readouterr().out
         == f"PR #7: stale proof, its first line isn't the head {HEAD}: {stale}; rerun it\n"
     )
+    # the first line exactly: a trailing space or a CR is not the head; a missing log is named, not a traceback
+    for line in (f"{HEAD} ", f"{HEAD}\r"):
+        stale.write_bytes(f"{line}\nok\n".encode())
+        assert approvals.main(["brief", "7", "--proof", str(stale)]) == 1
+        assert "stale proof" in capsys.readouterr().out
+    assert approvals.main(["brief", "7", "--proof", str(tmp_path / "absent.log")]) == 1
+    assert capsys.readouterr().out == f"PR #7: no proof log at {tmp_path / 'absent.log'}\n"
     pr["reviews"] = {"nodes": []}
     assert approvals.main(["brief", "7"]) == 0
     out = capsys.readouterr().out.splitlines()
