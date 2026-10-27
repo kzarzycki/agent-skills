@@ -116,8 +116,9 @@ Write Markdown to the report path; `approvals.py verdict` parses it into the PR 
 keep these lines exact:
 
 - Near the top, `Verifier: <family>, pass <n>`, such as `Verifier: claude, same-family,
-  pass 2` when you are the model family that wrote the diff. Give the `AGENT_SIGNATURE=` line atop your brief
-  (`<harness>/<model>/<effort>`, `?` for any part you can't know) as the family: `Verifier: codex/terra-6.1/med, pass 5`.
+  pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
+  `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
+  (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR

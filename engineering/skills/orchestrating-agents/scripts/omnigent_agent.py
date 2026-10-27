@@ -153,7 +153,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, NoReturn
+from typing import Any, Callable, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -1416,11 +1416,11 @@ def briefed_by_file(og: Omnigent, agent: str, host_id: str | None) -> bool:
     return agent in AGENTS or og.harness(agent).endswith("-native")
 
 
-def signature(harness: str, model: str | None) -> str:
-    """``<harness>/<model>/<effort>`` for a session about to start, from what it is started with: ``cc``,
-    ``codex`` or ``omp`` by harness, the model id without its vendor prefix and dotted (``claude-sonnet-5-5`` is
-    ``sonnet-5.5``, ``gpt-6.1-terra`` is ``terra-6.1``), and ``?`` for anything not set explicitly. Omnigent
-    takes no effort, so it is always ``?``."""
+def signature(harness: str, model: str | None, effort: str | None = None) -> str:
+    """``<harness>/<model>/<effort>``: ``cc``, ``codex`` or ``omp`` by harness, the model id without its vendor
+    prefix and dotted (``claude-sonnet-5-5`` is ``sonnet-5.5``, ``gpt-6.1-terra`` is ``terra-6.1``), the effort
+    (``medium`` is ``med``), and ``?`` for anything unknown. A session about to start knows only what it is
+    started with, and Omnigent takes no effort; ``running_signature`` reads the rest once it runs."""
     name = next(
         (n for key, n in (("claude", "cc"), ("codex", "codex"), ("omp", "omp")) if key in harness),
         "?",
@@ -1430,7 +1430,43 @@ def signature(harness: str, model: str | None) -> str:
         short = f"{found[3]}-{found[1]}.{found[2]}"
     elif found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", short):  # claude-sonnet-5-5
         short = f"{found[1]}-{found[2]}.{found[3]}"
-    return f"{name}/{short or '?'}/?"
+    return f"{name}/{short or '?'}/{ ({'medium': 'med'}.get(effort or '', effort) or '?') }"
+
+
+def last_line(path: Path | None, pick: Callable[[dict[str, Any]], Any]) -> Any:
+    """The last non-None ``pick(entry)`` over a JSONL file's entries, None when there is none."""
+    found = None
+    for line in path.read_text(errors="replace").splitlines() if path else []:
+        try:
+            found = pick(json.loads(line)) or found
+        except (ValueError, AttributeError):
+            continue
+    return found
+
+
+def running_signature(env: dict[str, str] | None = None, home: Path | None = None) -> str:
+    """The signature of the session this runs in, from what its harness exposes at runtime, so it holds
+    however the session started (Omnigent's own tools, a default model): Codex's rollout of
+    ``$CODEX_THREAD_ID``, whose last ``turn_context`` names model and effort; Claude Code's
+    ``$CLAUDE_EFFORT`` and the model of the last reply in its ``$CLAUDE_CODE_SESSION_ID`` transcript."""
+    env, home = os.environ if env is None else env, home or Path.home()
+    if thread := env.get("CODEX_THREAD_ID"):
+        sessions = Path(env.get("CODEX_HOME") or home / ".codex") / "sessions"
+        rollout = next(sessions.glob(f"**/rollout-*-{thread}.jsonl"), None)
+        turn = last_line(
+            rollout, lambda d: d["payload"] if d.get("type") == "turn_context" else None
+        )
+        return signature("codex", (turn or {}).get("model"), (turn or {}).get("effort"))
+    if env.get("CLAUDECODE"):
+        projects = Path(env.get("CLAUDE_CONFIG_DIR") or home / ".claude") / "projects"
+        session = env.get("CLAUDE_CODE_SESSION_ID")
+        transcript = session and next(projects.glob(f"*/{session}.jsonl"), None)
+        model = last_line(
+            transcript or None,
+            lambda d: d["message"].get("model") if d.get("type") == "assistant" else None,
+        )
+        return signature("claude", model, env.get("CLAUDE_EFFORT"))
+    return signature("?", None)
 
 
 def start(
@@ -3470,6 +3506,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     sub.add_parser("capacity", description="exit 0 when this host has room for another session")
+    sub.add_parser(
+        "signature", description="print <harness>/<model>/<effort> of the session this runs in"
+    )
     p = sub.add_parser(
         "direct",
         description="mark a followed lead as driven by the owner directly: no deadline or nudge",
@@ -3592,6 +3631,9 @@ def main(argv: list[str] | None = None) -> int:
             if not mark_direct(registry, sid, not args.off):
                 raise Fail(f"{registry}: no line for {sid}")
             print(f"{sid}: {'not ' * args.off}driven by the owner directly")
+            return 0
+        if args.cmd == "signature":
+            print(running_signature())
             return 0
         if args.cmd == "capacity":
             ok, line = capacity()
