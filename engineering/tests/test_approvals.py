@@ -1644,6 +1644,18 @@ def test_a_qualifier_after_the_pass_number_is_posted_in_the_reviews_first_line(
     )
 
 
+@pytest.mark.parametrize("qualifier", [": note, pass 12", "(redoes Verifier (other), pass 12)"])
+def test_a_qualifier_naming_another_pass_never_changes_the_pass(
+    tmp_path: Path, qualifier: str
+) -> None:
+    report = tmp_path / "report.md"
+    line = "Verifier: claude, same-family, pass 2"
+    report.write_text(REPORT.replace(line, f"{line} {qualifier}"))
+    heading, *_rest, said = approvals.parse_report(report)
+    assert approvals.PASS.match(heading).groups() == ("claude, same-family", "2")
+    assert said == qualifier.lstrip(": ")
+
+
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
     reviewing: list[tuple[Any, ...]], tmp_path: Path
 ) -> None:

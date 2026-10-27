@@ -2627,7 +2627,7 @@ def parse_report(
         # free text after the pass number is a qualifier the review's first line carries
         if (
             found := re.fullmatch(
-                r"Verifier:[ \t]*(.+),[ \t]*pass[ \t]+(\d+)\b[ \t]*[:,;]?[ \t]*(.*)", line
+                r"Verifier:[ \t]*(.+?),[ \t]*pass[ \t]+(\d+)\b[ \t]*[:,;]?[ \t]*(.*)", line
             )
         )
     ]
