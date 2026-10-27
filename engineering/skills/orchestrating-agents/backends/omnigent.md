@@ -149,7 +149,8 @@ elsewhere.
 runs in, read from the harness at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
 however the session started. The `AGENT_SIGNATURE=` line `start` puts atop a brief knows only the launch arguments.
 Below it, a child on this host that is not a top-level lead gets `LOOP_HEAVY_LOCK=<path>`, one
-lock per calling session (`$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
+lock per lead (the runner's primary session, which a lead's workers and their children share;
+`$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
 take one heavy slot between them (worker.md, Gates and push); a session gets no environment from
 its starter, so the path rides in the brief.
 

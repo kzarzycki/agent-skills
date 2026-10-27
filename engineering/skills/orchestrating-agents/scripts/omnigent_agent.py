@@ -917,13 +917,13 @@ def parent_id() -> str:
 def heavy_lock() -> str:
     """The lock a lead's children on this host share around each heavy step, so a lead running
     two workers holds one heavy slot, not two (the host's slot counts every caller): the caller's
-    ``LOOP_HEAVY_LOCK`` when set, so its children keep its lead's, else one per calling session
-    beside the host's gate slot (``gate.1.lock``), since one lead starts children from several
-    worktrees; ``""`` outside a session. A session gets no environment from its starter, so the
+    ``LOOP_HEAVY_LOCK`` when set, else one per runner's primary session (the lead, in its children
+    and theirs too) beside the host's gate slot (``gate.1.lock``), since one lead starts children
+    from several worktrees; ``""`` outside a session. A session gets no environment from its starter, so the
     path goes atop the brief, as ``AGENT_SIGNATURE`` does."""
     if path := os.environ.get("LOOP_HEAVY_LOCK"):
         return path
-    if not (sid := own_id()):
+    if not (sid := parent_id() or own_id()):
         return ""
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "engineering-loop"
     cache.mkdir(parents=True, exist_ok=True)

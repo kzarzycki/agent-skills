@@ -1790,6 +1790,11 @@ def test_children_of_one_lead_share_one_heavy_lock_and_another_lead_s_get_their_
     assert lock_line("w3") not in (first, None)
     monkeypatch.setenv("LOOP_HEAVY_LOCK", "/l/lead1.lock")  # a child starting children keeps it
     assert lock_line("w4") == "LOOP_HEAVY_LOCK=/l/lead1.lock"
+    # a worker of lead1 starting its own child, with no LOOP_HEAVY_LOCK of its own: still lead1's
+    monkeypatch.delenv("LOOP_HEAVY_LOCK")
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "worker1")
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead1")
+    assert lock_line("w5") == first
 
 
 def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_through(
