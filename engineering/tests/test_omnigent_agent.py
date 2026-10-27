@@ -9,6 +9,7 @@ import re
 import ssl
 import subprocess
 import sys
+import threading
 import time
 from email.message import Message
 from pathlib import Path
@@ -1628,6 +1629,46 @@ def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> No
     assert len(calls) == 1
 
 
+def test_an_http_error_shows_its_body_s_reason_and_a_stalled_body_costs_only_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stall = threading.Event()
+
+    class Stalled(io.RawIOBase):
+        def readable(self) -> bool:
+            return True
+
+        def readinto(self, b: bytearray) -> int:
+            stall.wait(5)
+            return 0
+
+    for body, line in (
+        (b'{"error": {"code": "invalid_input", "message": "bad role path"}}', "bad role path"),
+        (b'{"detail": [{"loc": ["body", "agent_id"]}]}', '[{"loc": ["body", "agent_id"]}]'),
+        (b"plain\n  text " + b"x" * 3000, "plain text " + "x" * (2048 - 13)),
+        (b"", None),
+        (None, "(body not read within 0.3s)"),
+    ):
+        fp = io.BufferedReader(Stalled()) if body is None else io.BytesIO(body)
+
+        def urlopen(req: Request, timeout: float, fp: object = fp) -> None:
+            raise HTTPError("http://omnigent.test/x", 400, "Bad Request", Message(), fp)
+
+        monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+        monkeypatch.setattr(omnigent_agent, "ERROR_BODY_SECONDS", 0.3)
+        og = object.__new__(omnigent_agent.Omnigent)
+        og.base, og._token = "http://omnigent.test", "synthetic"
+        began = time.monotonic()
+        with pytest.raises(omnigent_agent.Fail) as e:
+            og.call("POST", "/v1/sessions", {})
+        assert time.monotonic() - began < 1.5
+        head = "POST /v1/sessions: HTTP 400 Bad Request"
+        assert str(e.value) == (
+            head if line is None else f"{head}{':' * (body is not None)} {line}"
+        )
+    stall.set()
+
+
 def test_a_create_that_failed_after_the_server_made_the_session_briefs_that_session(
     tmp_path: Path,
 ) -> None:
@@ -2534,7 +2575,15 @@ def test_reap_finishes_done_children_and_keeps_the_busy_ones() -> None:
         "running t-running: kept (running)",
         "blocked t-blocked: kept (blocked on a prompt)",
         "queued t-queued: kept (input pending)",
+        "gone t-gone: already archived",
     ]
+
+    def unknown(s: str) -> dict:
+        raise omnigent_agent.Gone(f"GET /v1/sessions/{s}: HTTP 404 Not Found")
+
+    og.info = unknown  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Gone):  # an unknown session still fails, as before
+        omnigent_agent.reap(og, ["nope"])
 
 
 def test_reap_goes_on_past_a_finish_that_fails() -> None:
