@@ -297,6 +297,101 @@ def test_wait_returns_report(tmp_path: Path) -> None:
     assert omnigent_agent.wait(og, sid, tmp_path / "r.md") == str(tmp_path / "r.md")
 
 
+def git_checkout(root: Path) -> Path:
+    """A checkout with one committed file, ``a.txt``."""
+    root.mkdir(parents=True, exist_ok=True)
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(root), *args], check=True)
+    (root / "a.txt").write_text("a\n")
+    subprocess.run(["git", "-C", str(root), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "a"], check=True)
+    return root
+
+
+def test_a_host_child_that_reports_with_a_tracked_change_fails_the_wait_naming_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = git_checkout(tmp_path / "w")
+    og = FakeOmnigent()
+    sid = og.create("claude", "t", workspace=str(repo))
+    report = repo / "tmp" / "r.md"
+    report.parent.mkdir()
+    report.write_text("ok")
+    (repo / "repro.py").write_text("untracked: a verifier's repro file")
+    assert omnigent_agent.wait(og, sid, report) == str(report)  # clean: unchanged
+
+    (repo / "a.txt").write_text("mutated\n")
+    with pytest.raises(omnigent_agent.Fail, match=r"changed while it ran: a\.txt \(its own"):
+        omnigent_agent.wait(og, sid, report)
+    # a change already there when run started the child is not its own
+    start = omnigent_agent.tracked_changes(repo)
+    assert omnigent_agent.wait(og, sid, report, baseline=start) == str(report)
+    # but the child editing that file further is
+    (repo / "a.txt").write_text("mutated again\n")
+    with pytest.raises(omnigent_agent.Fail, match=r"changed while it ran: a\.txt"):
+        omnigent_agent.wait(og, sid, report, baseline=start)
+    # a name git would quote (a space, a quote, a non-ASCII letter) keeps its hash too
+    for name in ("b c.txt", 'q"d.txt', "é.txt"):
+        (repo / name).write_text("x\n")
+        subprocess.run(["git", "-C", str(repo), "add", name], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", name], check=True)
+        (repo / name).write_text("first\n")
+        start = omnigent_agent.tracked_changes(repo)
+        (repo / name).write_text("second\n")
+        with pytest.raises(omnigent_agent.Fail, match=f"changed while it ran: .*{re.escape(name)}"):
+            omnigent_agent.wait(og, sid, report, baseline=start)
+    # a cloud child's tree is not this one
+    monkeypatch.setattr(omnigent_agent, "pr_report", lambda said, pr, since=None: "from the PR")
+    og.reply = "https://github.com/o/r/pull/7#issuecomment-1"
+    og.land(sid, "go")
+    assert omnigent_agent.wait(og, sid, tmp_path / "pr.md", pr=7) == str(tmp_path / "pr.md")
+
+
+def test_run_fails_only_on_a_tracked_change_the_child_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = git_checkout(tmp_path / "w")
+    (repo / "a.txt").write_text("the lead's own edit\n")
+    (repo / "b.md").write_text("do X")
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main([*argv, "--keep"]) == 0
+    # a follow-up, too, holds only the child to what changed since it was sent
+    (repo / "f.md").write_text("fix Y")
+    sid = next(iter(og.sessions))
+    assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
+
+    (repo / "c.txt").write_text("c\n")
+    subprocess.run(["git", "-C", str(repo), "add", "c.txt"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "c"], check=True)
+    og.info = lambda s: (  # type: ignore[method-assign]
+        (repo / "r.md").write_text("ok"),
+        (repo / "c.txt").write_text("mutated\n"),
+        info(s),
+    )[2]
+    assert omnigent_agent.main(argv) == 1
+
+
+def test_wait_until_exits_0_once_the_command_does_and_its_own_code_at_the_limit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    count = tmp_path / "count"
+    third = f"n=$(cat {count} 2>/dev/null || echo 0); echo $((n+1)) > {count}; [ $n -ge 2 ]"
+    argv = ["wait-until", "--every", "0.01", "--limit", "30", "--", "sh", "-c", third]
+    assert omnigent_agent.main(argv) == 0
+    assert count.read_text().strip() == "3"
+
+    argv = ["wait-until", "--every", "0.01", "--limit", "0.05", "--", "false"]
+    assert omnigent_agent.main(argv) == omnigent_agent.LIMIT != 0
+    assert "did not hold within" in capsys.readouterr().err
+    # a sleep past a minute could outlast a tool call
+    assert omnigent_agent.main(["wait-until", "--every", "61", "--limit", "5", "--", "true"]) == 2
+
+
 def test_verifier_wait_returns_only_after_the_verdict(tmp_path: Path) -> None:
     og = FakeOmnigent(reply="checking", status="running")
     report = tmp_path / "r.md"
