@@ -23,6 +23,7 @@ path of a question the child wrote (``<report>.question``) instead of a report; 
 reason and the child's last message (for a failed session, its ``last_task_error`` and runner log)
 and writes ``FAILED: <code>: <message>`` to the report path, as a SIGTERM, SIGINT or SIGHUP does
 (exit 128 plus its number), unless the child wrote there; no reader takes that line as a report.
+A ``start`` whose launch fails or is stopped writes it the same way.
 A report already at the path is a pass before: only one written after the launch counts. It counts
 once final (``settled``): the child's turn has ended and the file is unchanged since, since a child
 can rewrite its report until then. The first turn that ends with neither gets one nudge to write
@@ -428,12 +429,14 @@ def launcher_failed(report: Path) -> bool:
 def write_failed(
     og: Omnigent, sid: str | None, report: Path, launched: int | None, e: Fail
 ) -> None:
-    """Write ``FAILED: <code>: <message>`` to ``report`` for a ``run`` that ends without one. The
-    code is the child's terminal state and its ``last_task_error`` code, else the launcher's own:
-    ``interrupted``, ``not-started``, ``timeout``, ``blocked`` on a prompt, ``unreachable``. A file
-    newer than ``launched`` is the child's and stays, since a report it wrote is never overwritten."""
+    """Write ``FAILED: <code>: <message>`` to ``report`` for a ``run`` or ``start`` that ends
+    without one. The code is the child's terminal state and its ``last_task_error`` code, else the
+    launcher's own: ``interrupted``, ``not-started``, ``timeout``, ``blocked`` on a prompt,
+    ``unreachable``. A file newer than ``launched`` is the child's and stays, since a report it
+    wrote is never overwritten; an earlier launch's ``FAILED:`` line is replaced by this one's."""
     try:
-        if report.stat().st_mtime_ns > (launched if launched is not None else -1):
+        mtime = report.stat().st_mtime_ns
+        if mtime > (launched if launched is not None else -1) and not launcher_failed(report):
             return
     except FileNotFoundError:
         pass
@@ -3869,7 +3872,8 @@ def main(argv: list[str] | None = None) -> int:
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
     unreported: tuple[Path, int | None] | None = None
     stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
-    handlers = {s: signal.signal(s, interrupt) for s in stops} if args.cmd == "run" else {}
+    launches = args.cmd in ("run", "start")
+    handlers = {s: signal.signal(s, interrupt) for s in stops} if launches else {}
     try:
         owed = {s: r.resolve() for s, r in map(pair, getattr(args, "owed", []))}
         if args.cmd == "supervise" and not (owed or args.registry):
@@ -4076,7 +4080,7 @@ def main(argv: list[str] | None = None) -> int:
             if here and report.exists() and not launcher_failed(report)
             else None
         )
-        if args.cmd == "run" and here:  # what ends it without a report writes FAILED there
+        if launches and here:  # what ends it without a report writes FAILED there
             unreported = (report, launched)
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:

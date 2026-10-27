@@ -175,8 +175,9 @@ included; a prefix several sessions share fails, listing them.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
-on. A `run` that ends without a report, failed or stopped by SIGTERM, SIGINT or SIGHUP, writes
-`FAILED: <code>: <message>` to the report path unless the child already wrote there (`<code>` is
+on. A `run` that ends without a report, or a `start` whose launch fails, failed or stopped by
+SIGTERM, SIGINT or SIGHUP, writes `FAILED: <code>: <message>` to the report path unless the
+child already wrote there; a later launch's line replaces an earlier one's (`<code>` is
 the child's state and its `last_task_error` code, else `interrupted`, `timeout`, `blocked` or
 `not-started`), so a wait on that file wakes; `wait`, `send`, `start` and the supervisor never
 take that line as a report. Read the child's status first (the session id is the first line `run` printed, else

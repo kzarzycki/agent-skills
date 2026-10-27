@@ -2321,6 +2321,49 @@ def test_a_run_stopped_by_a_signal_writes_its_failed_line_and_restores_the_handl
     assert signal.getsignal(signal.SIGTERM) == before
 
 
+def test_a_run_process_killed_mid_wait_leaves_its_failed_line_within_one_poll(
+    tmp_path: Path,
+) -> None:
+    # a real run client, its child a session that never reports, stopped as a harness stops it
+    (tmp_path / "b.md").write_text("do X")
+    driver = (
+        f"import sys; sys.path.insert(0, {str(Path(__file__).parent)!r})\n"
+        "import test_omnigent_agent as t\n"
+        "t.omnigent_agent.Omnigent = lambda: t.FakeOmnigent(status='running')\n"
+        "t.omnigent_agent.capacity = lambda: (True, '')\n"  # its real 5 s poll stays
+        "sys.exit(t.omnigent_agent.main(['run', 'claude', 't', 'b.md', 'r.md',"
+        " '--confirm-seconds', '0']))\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", driver], cwd=tmp_path, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert proc.stdout and proc.stdout.readline().strip() == "s0"  # launched: now it waits
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=5.0) == 128 + signal.SIGTERM  # within one POLL_SECONDS
+    finally:
+        proc.kill()
+    assert (tmp_path / "r.md").read_text() == "FAILED: interrupted: interrupted by SIGTERM\n"
+
+
+def test_a_start_that_fails_and_a_rerun_after_a_failure_each_write_their_own_failed_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})  # the brief never lands: the launch fails
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    report = tmp_path / "r.md"
+    assert omnigent_agent.main(["start", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"])
+    first = report.read_text()
+    assert first.startswith("FAILED: ")
+    # a rerun whose child fails replaces the earlier launch's line with its own
+    og.deaf, og.final = set(), "failed"
+    argv = ["run", "claude", "t2", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert report.read_text().startswith("FAILED: failed") and report.read_text() != first
+
+
 def test_a_failed_run_never_overwrites_a_report_its_child_wrote(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

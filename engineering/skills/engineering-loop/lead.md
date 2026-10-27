@@ -299,9 +299,11 @@ Wait on a child or a run by whether it is alive, never on its report file alone:
 status (Omnigent: `omnigent_agent.py status <session>`) or the run's pid and exit code, since a
 child that died, or a `run` killed mid-retry, writes nothing and a file wait polls on for good.
 So one background wait ends on every terminal state (success, failure, the process gone), e.g.
-`while kill -0 <pid>; do sleep 5; done`, keeping each run's pid (or its lock or heartbeat file) and
-checking it each poll, since a watcher that fires only on an outcome reads a dead run as still
-working. On every wake, a session restart included, check that each run you say you wait on is
+`while ps -o args= -p <pid> | grep -q '<its command>'; do sleep 5; done`, keeping each run's pid
+(or its lock or heartbeat file) and checking it each poll, since a watcher that fires only on an
+outcome reads a dead run as still working. Match the pid's command, not the pid alone, since a
+pid the system reused for another process still passes `kill -0`; a pid file that is missing
+or empty means the run is gone. On every wake, a session restart included, check that each run you say you wait on is
 alive before saying so, since a restart kills your background runs. A child still `running` with
 no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
