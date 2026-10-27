@@ -115,10 +115,46 @@ test('a broken state file lets the message through', async ($, on) => {
   expect(seen[0]!.context!.at(-1)!).toMatch(/cannot read leads.state.json/)
 })
 
-test('a hook that throws fails open: the message reaches the model as typed', async ($, on) => {
-  on('clock.now', () => {
-    throw new Error('clock gone')
+test('every event reaches an owner message once: none capped, none lost to its second or to a failed read', async ($, on) => {
+  mock.clock(on, { now: NOW * 1000 })
+  const log: string[] = Array.from({ length: 60 }, (_, i) => EVENT(NOW, `event ${i}`))
+  let readable = true
+  on('fs.read', (_, e) => {
+    if (e.path.endsWith('/leads.state.json')) return { value: JSON.stringify(STATE) } as never
+    if (!readable) throw new Error('EAGAIN')
+    return { value: log.map(l => l + '\n').join('') + '{"at": 1' } as never // the last line is still being written
   })
+  on('ui.status', () => ({ value: undefined }) as never)
+  const seen = context(on)
+  const delivered = () => seen.flatMap(s => s.context!.at(-1)!.match(/^- (event \d+|no line).*$/gm) ?? [])
+
+  await submit($, 'one') // all 60, the half-written line held back
+  log.push(EVENT(NOW, 'event 60')) // the same second as the message before
+  readable = false
+  await submit($, 'two') // the log cannot be read: nothing counts as seen
+  readable = true
+  log.push(JSON.stringify({ at: NOW, kind: 'no line' }))
+  await submit($, 'three')
+
+  expect(seen[1]!.context!.at(-1)!).toMatch(/cannot read the event log/)
+  expect(delivered()).toEqual([...Array.from({ length: 61 }, (_, i) => `- event ${i} → record`), '- no line'])
+})
+
+test('a state file whose leads are null shows as unreadable', async ($, on) => {
+  mock.clock(on, { now: NOW * 1000 })
+  files(on, { 'leads.state.json': JSON.stringify({ ...STATE, leads: null }), 'leads.events.jsonl': '' })
+  const seen = context(on)
+
+  await submit($, 'status?')
+
+  expect(seen[0]!.context!.at(-1)!).toMatch(/cannot read leads.state.json.*\n- no state/)
+})
+
+test('a hook that throws fails open: the message reaches the model as typed', async ($, on) => {
+  mock.clock(on, { now: NOW * 1000 })
+  // An event log read that answers a number: splitting it throws inside the hook.
+  on('fs.read', (_, e) => ({ value: e.path.endsWith('.events.jsonl') ? 42 : JSON.stringify(STATE) }) as never)
+  on('ui.status', () => ({ value: undefined }) as never)
   const seen = context(on)
 
   await submit($, 'status?')
