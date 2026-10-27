@@ -6111,6 +6111,10 @@ def test_relay_send_status_and_report_take_a_unique_session_id_prefix(
     assert omnigent_agent.main(["relay", "abc12", "x"]) == 1
     err = capsys.readouterr().err
     assert f"abc12: 2 sessions match: {a} t-abc123; {b} t-abc124" in err
+    for n in range(11):
+        og.sessions[f"abe{n:02d}" + "0" * 27] = []
+    assert omnigent_agent.main(["status", "abe"]) == 1
+    assert capsys.readouterr().err.rstrip().endswith("; and 1 more")  # ten named, then a count
     for cmd in (["relay", "fff0", "x"], ["send", "fff0", "x", "r.md"], ["report", "fff0", "r.md"]):
         assert omnigent_agent.main(cmd) == 1
         assert "fff0: no session matches" in capsys.readouterr().err
