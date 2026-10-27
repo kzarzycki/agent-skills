@@ -127,7 +127,10 @@ with `wait <session> <report> --pr <n>`. A `--role` path names the role file by 
 the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
 worker two facts about the VM: its checkout is the branch checked out in the workspace the
 session started from, not necessarily the PR's, and a foreground command stops at 10 minutes,
-so a long one runs detached and is polled within the same turn. A host without the cloud
+so a long one runs detached and is polled within the same turn. It forbids an interactive
+question tool and a published page, since each waits on a prompt nobody in the cloud answers,
+and ends each commit message with the co-author line and no session link, since the commit
+reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
 
