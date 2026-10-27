@@ -292,7 +292,9 @@ session, its state (`turn ended`, its running status, `blocked on a prompt: <wha
 the brief or an injected reminder): one call
 for what a subscription notice names, in place of session info plus history. It is a
 snapshot: a native Claude session reads idle while quiet mid-turn, so an idle look reads as
-`turn ended`, which a notice has already confirmed.
+`turn ended`, which a notice has already confirmed. A session Omnigent reports running whose only
+live background tasks are `monitor`s (a published Artifact's live updates), its last item a
+finished reply, reads idle here and to the supervisor; a shell task keeps it running.
 
 **Reading a report.** `python3 scripts/omnigent_agent.py report <session> [<path>]` prints a
 file of a session's workspace through Omnigent's file API, from any host, so a lead's report on

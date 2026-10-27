@@ -704,8 +704,27 @@ class Omnigent:
         return self.call("GET", f"/v1/sessions/{sid}/items?limit=100&order=desc{cursor}")
 
     def info(self, sid: str) -> dict:
-        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads)."""
-        return self.call("GET", f"/v1/sessions/{sid}")
+        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads).
+        A session whose live background tasks are all ``monitor`` ones (the live updates a published
+        Artifact arms) reads ``running`` after its turn ended; with its last item a completed
+        assistant message it is ``idle`` here, since nothing that monitor does ends a turn. Any other
+        task, a shell, keeps it running."""
+        info = self.call("GET", f"/v1/sessions/{sid}")
+        tasks = info.get("background_tasks") or []
+        if (
+            str(info.get("status")) in RUNNING
+            and tasks
+            and all(t.get("type") == "monitor" for t in tasks)
+        ):
+            page = self.call("GET", f"/v1/sessions/{sid}/items?limit=1&order=desc")
+            last = (page.get("data") or [{}])[0]
+            if (last.get("type"), last.get("role"), last.get("status")) == (
+                "message",
+                "assistant",
+                "completed",
+            ):
+                info["status"] = "idle"
+        return info
 
     def read_file(self, sid: str, path: str) -> str:
         """``path`` through ``sid``'s file API, whichever host the session runs on: an absolute
