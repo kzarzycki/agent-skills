@@ -522,8 +522,10 @@ class Omnigent:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
         caller's own (``scope=user``, which ``GET /v1/agents`` leaves out), every page of each.
-        Each upload of one spec registers another agent under its name, and an agent record has
-        no host, so copies whose record and config (``GET /v1/agents/{id}/config``) match apart
+        A name the server's agents hold resolves there, since only a user agent has a config to
+        compare (``GET /v1/agents/{id}/config`` is 404 for the server's) and the UI registers
+        user copies of the native agents. Each upload of one spec registers another agent under
+        its name, and an agent record has no host, so copies whose record and config match apart
         from identity and bookkeeping (``IDENTITY``) can't be told
         apart: the name resolves to the newest by ``created_at``. The record carries policies,
         skills and terminals, the config instructions and model, so both are compared. Agents
@@ -531,6 +533,8 @@ class Omnigent:
         name = AGENTS.get(name, name)
         named: dict[str, dict] = {}
         for path in ("/v1/agents", "/v1/agents?scope=user"):
+            if named:
+                break
             after = ""
             while True:
                 sep = "&" if "?" in path else "?"

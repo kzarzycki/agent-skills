@@ -79,8 +79,9 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
-(`scope=user`). Several agents can share a name, since each upload of one spec registers another
-agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
+(`scope=user`). A name the server's agents hold resolves there, though the UI may register a user
+copy of a native agent under it, since only a user agent has a config to compare. Several user
+agents can share a name, since each upload of one spec registers another agent under it. When their records and configs (`GET /v1/agents/{id}/config`) match apart from
 identity and bookkeeping (`id`, `version`, `created_at`, `updated_at`, `object`), the name starts the newest by `created_at`: copies of one spec can't be told
 apart, and an agent record has no host (`--host` picks that per session), so an id in project
 config would only be wrong on another server. Both are compared since each holds fields the other
