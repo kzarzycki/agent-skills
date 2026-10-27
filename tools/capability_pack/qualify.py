@@ -834,10 +834,11 @@ def _inventory(stage: Path, managed: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(name for name in managed if (stage / "skills" / name / "SKILL.md").is_file())
 
 
-def _timeout() -> int:
-    """Seconds an upstream fetch or a vendir sync may take: ``QUALIFY_TIMEOUT``, else 120. Their time
-    follows the host's load, so a loaded host raises it rather than failing on a fixed limit."""
-    raw = os.environ.get(TIMEOUT_VARIABLE, "120")
+def _timeout(default: int = 120) -> int:
+    """Seconds an upstream fetch, a vendir sync or the staged package tests may take:
+    ``QUALIFY_TIMEOUT``, else ``default``. Their time follows the host's load, so a loaded host
+    raises it rather than failing on a fixed limit."""
+    raw = os.environ.get(TIMEOUT_VARIABLE, str(default))
     if not raw.isdigit() or int(raw) == 0:
         raise ConfigurationError(
             f"{TIMEOUT_VARIABLE} must be a whole number of seconds, not {raw!r}"
@@ -874,7 +875,8 @@ def _mirror_sources(config: dict, root: Path, timeout: int) -> None:
                 except (OSError, subprocess.SubprocessError) as error:
                     raise QualificationError(f"fetching {url} failed: {error}") from error
                 mirrors[url] = str(mirror)
-            git["url"] = mirrors[url]
+            # A copy, since the manifest's YAML aliases share one mapping between directories.
+            content["git"] = {**git, "url": mirrors[url]}
 
 
 def _sync_manifest(stage: Path, mode: Literal["update", "locked"]) -> None:
@@ -1001,14 +1003,17 @@ def _run_package_tests(stage: Path) -> tuple[str, str]:
         return command_text, "NOT RUN (no package tests)"
     env = os.environ.copy()
     env["CAPABILITY_PACK_QUALIFICATION_STAGE_ROOT"] = str(stage.resolve())
+    timeout = _timeout(300)
     try:
         subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "-m", "not live_agent", "tests"],
             cwd=stage,
             env=env,
             check=True,
-            timeout=300,
+            timeout=timeout,
         )
+    except subprocess.TimeoutExpired as error:
+        raise _timed_out("non-live package tests", timeout) from error
     except (OSError, subprocess.SubprocessError) as error:
         raise QualificationError(f"non-live package tests failed: {error}") from error
     return command_text, "PASS"
