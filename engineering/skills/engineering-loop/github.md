@@ -46,7 +46,7 @@ leading line when it reads the heading.
 
 ## Labels
 
-`uv run scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
+`uv run <this skill's folder>/scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
 prints the same plan and writes nothing. The project's `mise run setup:github` runs it; run
 it by hand, `--dry-run` first, only to resync between setups. Its docstring says what it does, in order. The calls it makes:
 
@@ -60,13 +60,13 @@ it by hand, `--dry-run` first, only to resync between setups. Its docstring says
 
 ## Assignee
 
-The calls behind issues.md, Assignee. `uv run scripts/approvals.py check build <pr>` reads
+The calls behind issues.md, Assignee. `uv run <this skill's folder>/scripts/approvals.py check build <pr>` reads
 who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
 assigned to anyone else, and, once every build proof holds, assigns the approver where no
 one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
 on the issue as the record that the loop made the assignment; when that comment is refused
 it says so and leaves the issue unassigned. When you park an issue (`needs-owner`) or drop
-it, run `uv run scripts/approvals.py release <issue>`: it removes an assignee that record
+it, run `uv run <this skill's folder>/scripts/approvals.py release <issue>`: it removes an assignee that record
 names, unless someone assigned them again after the loop did, and keeps any other. Assign by hand
 only a person: `gh issue edit <number> --add-assignee <login>`.
 
@@ -75,7 +75,7 @@ only a person: `gh issue edit <number> --add-assignee <login>`.
 The calls behind SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
 from the remote.
 
-- Post a pass: `uv run scripts/approvals.py verdict <pr> <report>`. It posts one review
+- Post a pass: `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`. It posts one review
   on the report's `Head:` commit, event `COMMENT`, because GitHub refuses
   `REQUEST_CHANGES` and `APPROVE` on your own PR. One comment whose path or line is outside
   the PR's diff at that commit refuses the whole review (422, `Path could not be resolved`
@@ -96,7 +96,7 @@ from the remote.
 
 A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
 `utilities` plugin creates one, with an Epics view and the Parent issue and Sub-issues
-progress fields shown). `uv run scripts/board.py <issue> <column>` adds the
+progress fields shown). `uv run <this skill's folder>/scripts/board.py <issue> <column>` adds the
 issue when it is missing and sets its column, so the board's built-in workflows stay off, as
 they are on a board created through the API, except "Item closed", which sets the column
 `Done` shows in: GitHub closes an issue on a PR's `Closes` without the loop moving it, and a
@@ -106,7 +106,7 @@ column is named `Closed`, mapped from `Done` (below), since a closed issue may b
 not planned or a duplicate, and the card's icon says which. Its views show the Assignees field next to Status, so the board
 shows whose each ticket is. Where the project ranks work, the board's `Priority` single-select
 field holds it, since it takes one value per item, in its options' order, where an item can carry
-several labels; the gate never reads it. `uv run scripts/board.py column <issue>` prints the later of the
+several labels; the gate never reads it. `uv run <this skill's folder>/scripts/board.py column <issue>` prints the later of the
 loop column the issue's board column shows and the one its labels give, so an issue with `approved:spec` reads
 `Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
 
