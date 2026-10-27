@@ -1915,8 +1915,9 @@ def wait(
         before = set(baseline or [])
         if left := [line for line in tracked_changes(Path(workspace)) if line not in before]:
             raise Fail(
-                f"session {sid} reported, but left tracked changes in {workspace}: "
-                + ", ".join(line[3:] for line in left)
+                f"session {sid} reported, but tracked files in {workspace} changed while it ran: "
+                + ", ".join(line[3:].split("\t")[0] for line in left)
+                + " (its own mutation, or another edit in that tree since it started)"
                 + f"\nreport: {report}"
             )
     return str(report)
@@ -1984,15 +1985,25 @@ def carry_files(body: str, report: Path) -> None:
 
 def tracked_changes(workspace: Path) -> list[str]:
     """``git status --porcelain --untracked-files=no`` of ``workspace``, a line per changed tracked
-    path; none outside a checkout. Untracked files are a verifier's repro files and gate staging,
-    not a mutation it left."""
+    path with a tab and its content's hash, so a further edit to a file already changed at the
+    start shows; none outside a checkout. Untracked files are a verifier's repro files and gate
+    staging, not a mutation it left."""
     out = subprocess.run(
         ["git", "-C", str(workspace), "status", "--porcelain", "--untracked-files=no"],
         capture_output=True,
         text=True,
         check=False,
     )
-    return out.stdout.splitlines() if out.returncode == 0 else []
+    lines = out.stdout.splitlines() if out.returncode == 0 else []
+    changed = []
+    for line in lines:
+        path = workspace / line[3:].split(" -> ")[-1]  # a rename's new path
+        try:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        except OSError:  # deleted, a directory, or a quoted name
+            digest = "-"
+        changed.append(f"{line}\t{digest}")
+    return changed
 
 
 def wait_until(cmd: list[str], every: float, limit: float) -> int:

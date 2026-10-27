@@ -181,8 +181,11 @@ included; a prefix several sessions share fails, listing them.
 
 **A child that leaves its tree dirty fails the wait.** When a child on this host reports, `run`
 and `wait` fail, naming each path, while its workspace has a tracked change (`git status
---porcelain --untracked-files=no`) that was not there when `run` started it or `send` sent it its follow-up; a standalone
-`wait` has no start listing, so any tracked change counts. Untracked files (a verifier's
+--porcelain --untracked-files=no`, with each file's content hash, so a further edit to a file
+already changed shows) that was not there when `run` started it or `send` sent it its
+follow-up; a standalone `wait` has no start listing, so any tracked change counts. The failure
+says the change may be another edit in that tree since the child started, a lead's own in a
+shared worktree among them. Untracked files (a verifier's
 repros, gate staging) don't count, nor does a cloud child (`--pr`) or one on another host,
 whose report says whether its tree was clean.
 

@@ -321,10 +321,15 @@ def test_a_host_child_that_reports_with_a_tracked_change_fails_the_wait_naming_i
     assert omnigent_agent.wait(og, sid, report) == str(report)  # clean: unchanged
 
     (repo / "a.txt").write_text("mutated\n")
-    with pytest.raises(omnigent_agent.Fail, match=r"left tracked changes in .*: a\.txt"):
+    with pytest.raises(omnigent_agent.Fail, match=r"changed while it ran: a\.txt \(its own"):
         omnigent_agent.wait(og, sid, report)
     # a change already there when run started the child is not its own
-    assert omnigent_agent.wait(og, sid, report, baseline=[" M a.txt"]) == str(report)
+    start = omnigent_agent.tracked_changes(repo)
+    assert omnigent_agent.wait(og, sid, report, baseline=start) == str(report)
+    # but the child editing that file further is
+    (repo / "a.txt").write_text("mutated again\n")
+    with pytest.raises(omnigent_agent.Fail, match=r"changed while it ran: a\.txt"):
+        omnigent_agent.wait(og, sid, report, baseline=start)
     # a cloud child's tree is not this one
     monkeypatch.setattr(omnigent_agent, "pr_report", lambda said, pr, since=None: "from the PR")
     og.reply = "https://github.com/o/r/pull/7#issuecomment-1"
