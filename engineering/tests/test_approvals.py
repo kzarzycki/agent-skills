@@ -60,6 +60,7 @@ TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
+COMMENT = approvals.comment
 
 
 @pytest.fixture(autouse=True)
@@ -1618,6 +1619,110 @@ def test_a_report_whose_verifier_line_names_a_signature_becomes_the_headings_fam
     report = tmp_path / "r.md"
     report.write_text(REPORT.replace("claude, same-family, pass 2", "codex/terra-6.1/med, pass 5"))
     assert approvals.parse_report(report)[0] == "Verifier (codex/terra-6.1/med), pass 5"
+
+
+def test_a_qualifier_after_the_pass_number_is_posted_in_the_reviews_first_line(
+    reviewing: list[tuple[Any, ...]], tmp_path: Path
+) -> None:
+    """Text after `pass <n>` on the `Verifier:` line is accepted and posted, so a qualifier the project asks for needs
+    no line or comment of its own; the heading the gate reads stays `Verifier (<family>), pass <n>`."""
+    report = tmp_path / "report.md"
+    report.write_text(
+        REPORT.replace(
+            "Verifier: claude, same-family, pass 2",
+            "Verifier: claude, same-family, pass 2 (merge of main; the other family is out of quota)",
+        )
+    )
+    assert approvals.main(["verdict", "7", str(report)]) == 0
+    (_, _asked), (_, _pr, review) = reviewing
+    first = review["body"].splitlines()[0]
+    assert first == (
+        f"Verifier (claude, same-family), pass 2 on {HEAD[:7]}: (merge of main; the other family is out of quota)."
+    )
+    assert approvals.PASS.match(review["body"]).groups() == ("claude, same-family", "2")
+    assert review["comments"][0]["body"].startswith(
+        "**Verifier (claude, same-family), pass 2 · C1**"
+    )
+
+
+@pytest.mark.parametrize("qualifier", [": note, pass 12", "(redoes Verifier (other), pass 12)"])
+def test_a_qualifier_naming_another_pass_never_changes_the_pass(
+    tmp_path: Path, qualifier: str
+) -> None:
+    report = tmp_path / "report.md"
+    line = "Verifier: claude, same-family, pass 2"
+    report.write_text(REPORT.replace(line, f"{line} {qualifier}"))
+    heading, *_rest, said = approvals.parse_report(report)
+    assert approvals.PASS.match(heading).groups() == ("claude, same-family", "2")
+    assert said == qualifier.lstrip(": ")
+
+
+def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The base is the merge-base with the default branch, the head the PR's, the pass one after the newest verdict
+    review's, whose commit is the previous report's head; loop.md's `## Verifier brief` is appended."""
+    earlier = "c" * 40
+    reviews = (
+        verdict_on(earlier, heading="Verifier (codex), pass 1"),
+        verdict_on(earlier, heading="Verifier (codex), pass 2"),
+    )
+    pr = pull(body="Closes #12.\n\n## Evidence\n\nlog\n", reviews=reviews)
+    asked: list[tuple[str, str]] = []
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(
+        approvals, "merge_base", lambda base, head: asked.append((base, head)) or BASE
+    )
+    monkeypatch.setattr(
+        approvals,
+        "project",
+        lambda: (
+            None,
+            LOOP + "\n## Verifier brief\n\n- Run the full gate bare.\n    indented snippet  \n\n",
+        ),
+    )
+    priorities, proof, stale = tmp_path / "p.md", tmp_path / "gate.log", tmp_path / "old.log"
+    priorities.write_text("- the revert path\n")
+    proof.write_text(f"{HEAD}\nok\n")
+    stale.write_text(f"{earlier}\nok\n")
+    assert (
+        approvals.main(["brief", "7", "--priorities", str(priorities), "--proof", str(proof)]) == 0
+    )
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("Review PR #7 as the verifier, pass 3, following ")
+    assert out[0].endswith("verifier.md.")
+    assert out[1:] == [
+        f"- Base: {BASE}",
+        f"- Reviewed head: {HEAD}",
+        "- Spec: #12",
+        "- Report: tmp/loop/pr7-v3.md",
+        f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
+        f"- Proof log: {proof} (its first line is the head)",
+        "",
+        "Priorities:",
+        "- the revert path",
+        "",
+        "- Run the full gate bare.",
+        "    indented snippet  ",
+    ]
+    assert asked == [("main", HEAD)]
+    assert approvals.main(["brief", "7", "--proof", str(proof), "--proof", str(stale)]) == 1
+    assert (
+        capsys.readouterr().out
+        == f"PR #7: stale proof, its first line isn't the head {HEAD}: {stale}; rerun it\n"
+    )
+    # the first line exactly: a trailing space or a CR is not the head; a missing log is named, not a traceback
+    for line in (f"{HEAD} ", f"{HEAD}\r"):
+        stale.write_bytes(f"{line}\nok\n".encode())
+        assert approvals.main(["brief", "7", "--proof", str(stale)]) == 1
+        assert "stale proof" in capsys.readouterr().out
+    assert approvals.main(["brief", "7", "--proof", str(tmp_path / "absent.log")]) == 1
+    assert capsys.readouterr().out == f"PR #7: no proof log at {tmp_path / 'absent.log'}\n"
+    pr["reviews"] = {"nodes": []}
+    assert approvals.main(["brief", "7"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "- Report: tmp/loop/pr7-v1.md" in out
+    assert not [line for line in out if line.startswith("- Previous report")]
 
 
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
@@ -3770,12 +3875,27 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
             7,
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n"
-                f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+                f"From the recorded run at {record['time']}, not run again.\n"
             ),
         )
     ]
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
+    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
+
+
+def test_a_local_ci_comment_names_no_host(
+    checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run and recorded on a host named for its owner, the pass is posted without it, and still proves the head."""
+    sent = posts(monkeypatch)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    record = json.loads(approvals.recorded(HEAD).read_text())
+    assert record["host"] == "owner-MacBook.local"  # the local record keeps it
+    assert approvals.main(["local-ci", "7"]) == 0
+    [body] = sent
+    assert "owner-MacBook" not in body and "/Users/owner" not in body
+    merged = pull(reviews=(VERDICT,), comments=(body,), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
 
 
@@ -3851,7 +3971,7 @@ def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
                 "Env: GATE_SCOPE=changed GATE_UI_TESTS=0\n"
-                f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+                f"From the recorded run at {record['time']}, not run again.\n"
             ),
         )
     ]
@@ -4847,7 +4967,7 @@ def batched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 def batch_note(head: str, merge: str, batch: str, exit: int = 0, env: str = "default") -> str:
     return (
         f"{approvals.BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch}\nExit: {exit}\nEnv: {env}\n"
-        "Gated: 2026-01-01T00:00:00Z on host\nLog: /tmp/gate.log\n"
+        "Gated: 2026-01-01T00:00:00Z\nLog: /tmp/gate.log\n"
     )
 
 
@@ -5061,6 +5181,57 @@ def test_batch_posts_the_proof_check_merge_reads(
     )
     assert "gate: green" in body and "line 12\n" in body and "line 11\n" not in body
     assert queued_merge(batched["head"], body) == []
+
+
+def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every body comment() hands gh, from a fake host whose name and home name its owner."""
+    sent: list[str] = []
+    monkeypatch.setattr(approvals, "comment", COMMENT)
+    monkeypatch.setattr(approvals, "gh", lambda *args, data=None: sent.append(data) or "")
+    monkeypatch.setattr(approvals.socket, "gethostname", lambda: "owner-MacBook.local")
+    monkeypatch.setenv("HOME", "/Users/owner")
+    return sent
+
+
+def test_posted_comments_name_no_host_or_home(
+    batched: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A queue gate comment quoting build notes under the home directory, from a host named for its owner."""
+    sent = posts(monkeypatch)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    # a gate env naming a path under the home directory, posted as `~` and still matching the head's record
+    env = {"CACHE": "/Users/owner/cache"}
+    monkeypatch.setattr(approvals, "local_ci_env", lambda: env)
+    gated_head(batched["head"], env)
+    record = approvals.recorded(batched["head"])
+    record.write_text(record.read_text().replace('"host": "host"', '"host": "owner-MacBook.local"'))
+    log = tmp_path / "gate.log"
+    log.write_text(
+        "note: cached at /Users/owner/Library/Caches/x\nhome /Users/owner\ngate: green\n"
+    )
+    args = ["batch", "7", "--merge", batched["merge"], "--batch", batched["batch"], "--exit", "0"]
+    assert approvals.main([*args, "--log", str(log)]) == 0
+    [body] = sent
+    assert "owner-MacBook" not in body and "/Users/owner" not in body
+    assert "note: cached at ~/Library/Caches/x\nhome ~\n" in body and "Env: CACHE=~/cache\n" in body
+    assert queued_merge(batched["head"], body) == []
+
+
+def test_a_posted_review_names_no_home_however_it_is_spelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A review goes as JSON: a non-ASCII home is replaced as GitHub decodes it, in the body and inline comments."""
+    sent = posts(monkeypatch)
+    monkeypatch.setenv("HOME", "/home/é")
+    approvals.post_review(
+        7,
+        {
+            "body": "cache /home/é/cache",
+            "comments": [{"path": "a.py", "line": 1, "body": "at /home/é"}],
+        },
+    )
+    review = json.loads(sent[0])
+    assert (review["body"], review["comments"][0]["body"]) == ("cache ~/cache", "at ~")
 
 
 @pytest.fixture

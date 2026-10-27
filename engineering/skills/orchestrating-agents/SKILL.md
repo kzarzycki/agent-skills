@@ -31,7 +31,10 @@ message to many sessions at once (`broadcast`). A `scripts/` path is relative to
   report path once, at the end: whoever waits takes that file as the final report, so
   progress notes go to another file. Text left in
   its own session reaches nobody. A report names each agent's model, and returns only
-  what the next step needs; the agent cleans up what it created first.
+  what the next step needs; the agent cleans up what it created first, and only that: a
+  process it stops by the pid or process group it saved at launch, or by a pattern holding its
+  own worktree path once each match's working directory is checked, never by a `pkill -f` or
+  `killall` pattern other agents share, since that kills their runs too.
 - **Questions are files.** A child never asks the owner, who is not watching it: it
   writes its question to `<report>.question`, replies with that path and stops. Whoever
   started it answers from the brief, the spec and the owner's stated intent, asks the owner
