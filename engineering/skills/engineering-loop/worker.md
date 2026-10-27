@@ -34,6 +34,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    with its log, pid and exit code in files, and is polled, since a foreground call times out
    and Claude Code's low-memory reaper stops in-session background shells; never end a turn
    saying you are waiting, since nothing wakes you and the lead reads silence as work.
+   A pending condition (a queued run, a free device, an unlocked screen) is waited on the same
+   way, in the foreground, with orchestrating-agents' `scripts/omnigent_agent.py wait-until
+   --every <s> --limit <s> -- <check>` or a sleep loop, each call under the tool timeout: the
+   turn goes on once it holds, and past the limit you state it ends with a report naming the
+   condition, since a background command's exit does not wake an idle session.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the
    push, reply on each finding's thread with its commit SHA and resolve it, reason
    `ADDRESSED` (github.md, Review trail). Resolve only a thread you fixed: deferring or

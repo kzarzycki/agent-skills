@@ -161,6 +161,12 @@ lock per lead (the runner's primary session, which a lead's workers and their ch
 take one heavy slot between them (worker.md, Gates and push); a session gets no environment from
 its starter, so the path rides in the brief.
 
+**Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
+<s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
+each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
+passes; keep a call's `--limit` under the harness's tool timeout, so the call returns rather
+than being cut off, and call it again while the budget lasts.
+
 **Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
 share over about a second and its available memory, and exits 0 when it has room for another
 session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads
@@ -177,6 +183,16 @@ own posts, which read no history, still count a timeout as a failure and try aga
 `relay`, `send`, `status` and `report` take a session id or a unique prefix of one (the six
 characters other tools print), looked up among every session you can see, archived ones
 included; a prefix several sessions share fails, listing them.
+
+**A child that leaves its tree dirty fails the wait.** When a child on this host reports, `run`
+and `wait` fail, naming each path, while its workspace has a tracked change (`git status
+--porcelain --untracked-files=no`, with each file's content hash, so a further edit to a file
+already changed shows) that was not there when `run` started it or `send` sent it its
+follow-up; a standalone `wait` has no start listing, so any tracked change counts. The failure
+says the change may be another edit in that tree since the child started, a lead's own in a
+shared worktree among them. Untracked files (a verifier's
+repros, gate staging) don't count, nor does a cloud child (`--pr`) or one on another host,
+whose report says whether its tree was clean.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
