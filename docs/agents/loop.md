@@ -36,7 +36,9 @@ and the owner sees only what no automated check can settle (#330). The verifier 
 change's risk (`verifier`); CI, code owners and this file's own approval rules always reach
 the owner, which under `spec: auto` means their spec does. Also waiting for the owner: a
 spec opened by an account without write access, `risk:high` on a PR or issue, and the
-verifier's cap reached with a blocker or major open.
+verifier's cap reached with a blocker or major open. A `risk:high` PR into a feature branch
+lands on the chief of staff's `approved:merge` (`approvals.py delegate`), so a stream of
+dependent work doesn't stall behind it; the branch's merge to main waits for the owner.
 
 ## Cloud worker
 

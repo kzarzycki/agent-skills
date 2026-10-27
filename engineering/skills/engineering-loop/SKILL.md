@@ -322,7 +322,13 @@ matches (unless under `spec.auto: true`, where it held the spec, but for its `ve
 covered by policy is still built and PR'd; its merge waits for the owner's
 `approved:merge` label on the PR, asked for once `check` is green on the head: it counts
 only when added after that head's push, and a push removes it, so it never covers code the
-owner did not see. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
+owner did not see. On a PR into a feature branch (any base but the default branch), that
+label may be the delegated approver's, where loop.md names one: once the gate is green and a
+satisfied verdict from the verifier's top model covers the head, it runs `approvals.py
+delegate <pr>`, which adds the label and a record naming it the delegate's. So dependent work
+can go on landing behind a high-risk change. `land` refuses such a label on a PR into the default branch, and the branch's own
+merge to the default branch is high risk while any PR merged into the branch carries
+`risk:high`: the owner approves the stream once, as a whole. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
 the merge approval is the gates themselves: every verifier review on the newest pass's
 commit satisfied with no blocker or major open, that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks
