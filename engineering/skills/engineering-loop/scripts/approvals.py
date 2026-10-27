@@ -143,7 +143,8 @@ differ), and every path either touches has at the PR's merge base the mode it ha
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
 only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
-label where the change is high risk.
+label where the change is high risk, which for a revert also means `risk:high` on an issue it names or on #n, or #n's
+last verdict judging it high, since undoing a high-risk change changes as much as making it.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 A spec or plan approval is a person's: a comment `approve --by owner` writes on the owner's word, which the gate
@@ -665,6 +666,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := pull.get("reverted"):
+        return why
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
         if why := ruled(labels, paths(pull), loop, judged(pull, loop)):
@@ -2236,12 +2239,29 @@ def project() -> tuple[str | None, str | None]:
 def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Every missing proof at `point`, and the issues the PR names (none for an exact revert)."""
+    """Every missing proof at `point`, and the issues the PR names (none for an exact revert, whose risk reverted()
+    reads instead)."""
     revert, found = reverts(pull)
-    issues = [] if revert else closing_issues(pull)
-    if not revert:
-        found += problems(issues, None if tracker is None else label_names(tracker))
+    if revert:
+        pull["reverted"] = reverted(pull, revert)
+        return found + proofs(point, pull, [], loop, revert), []
+    issues = closing_issues(pull)
+    found += problems(issues, None if tracker is None else label_names(tracker))
     return found + proofs(point, pull, issues, loop, revert), issues
+
+
+def reverted(pull: dict[str, Any], number: int) -> str | None:
+    """Why an exact revert of #number is high risk, or None: `risk:high` on an issue it names or on #number, or
+    #number's last verdict judging it high (judged), since undoing a high-risk change (or re-landing one, a revert of
+    its revert) changes as much as making it."""
+    original = pull_request(number)
+    marked = [f"#{issue['number']}" for issue in closing_issues(pull) if RISK_LABEL in names(issue)]
+    marked += [f"#{number}, which it reverts"] * (RISK_LABEL in names(original))
+    if marked:
+        return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := judged(original):
+        return f"it reverts #{number}, and {why}"
+    return None
 
 
 def check(point: str, pr: int | None, head: str | None = None) -> int:

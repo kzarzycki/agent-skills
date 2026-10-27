@@ -1252,6 +1252,52 @@ def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
     )
 
 
+def held_revert(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    revert: dict[str, Any],
+    original: dict[str, Any],
+) -> tuple[int, list[str]]:
+    """check merge on an exact revert of `original` (#1) under a loop.md with no risk rule, so only the risk of what
+    it reverts can hold it."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, BARE))
+    monkeypatch.setattr(approvals, "pull_request", lambda n: original if n == 1 else revert)
+    code = approvals.main(["check", "merge", str(revert["number"])])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_label(
+    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The risk of the change a revert undoes (or re-lands) carries over: `risk:high` on an issue the revert closes,
+    on the PR it reverts, or that PR's last verdict saying `Risk: high`."""
+    low = {**pull(), "number": 1}
+    held = "PR #2 waits for the owner's `approved:merge` label, since it is high risk: "
+    closing = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    closing["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug", "risk:high")]}
+    assert held_revert(monkeypatch, capsys, closing, low) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #71"],
+    )
+    high = {**pull(labels=("risk:high",)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), high) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #1, which it reverts"],
+    )
+    said = "Verifier (codex), pass 2\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — CI permissions\n"
+    judged = {**pull(reviews=(verdict_on(HEAD) | {"body": said},)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), judged) == (
+        approvals.WAITING,
+        [
+            held
+            + "it reverts #1, and the verifier's pass 2 on aaaaaaa says `Risk: high — CI permissions`"
+        ],
+    )
+    # the owner's label clears each, and a revert of a low-risk PR lands without it
+    assert held_revert(monkeypatch, capsys, revert_pr(labels=OWNED), high) == (0, [])
+    assert held_revert(monkeypatch, capsys, revert_pr(), low) == (0, [])
+
+
 @pytest.mark.parametrize(
     ("line", "why"),
     [
