@@ -3675,6 +3675,13 @@ def checkout(
             return state["head"] + "\n"
         if args[0] == "ls-files":
             return "H app.py\n"
+        if args[0] in (
+            "merge-base",
+            "ls-remote",
+            "rev-list",
+            "diff",
+        ):  # no origin: no wait, no stale-base warning
+            raise subprocess.CalledProcessError(128, ["git", *args])
         assert args == (
             "status",
             "--porcelain",
@@ -4008,6 +4015,137 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     monkeypatch.chdir(repo)
     assert approvals.reusable(head)["head"] == head
     assert approvals.reusable("c" * 40) is None
+
+
+def test_local_ci_output_starts_with_the_head_and_command_and_a_reuse_says_which_record(
+    github: list[tuple[Any, ...]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A teed log is a proof log: its first lines are the head and `CMD` with the env; a reused pass names its head,
+    time and command instead of exiting silently."""
+    repo = tmp_path / "repo"
+    head = committed(repo)
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "local_ci_env", lambda: {"TIER": "smoke", "UNSET": None})
+    monkeypatch.setattr(approvals, "publish", lambda _record: None)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
+    monkeypatch.chdir(repo)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert capsys.readouterr().out.splitlines()[:2] == [head, "CMD TIER=smoke true"]
+    when = json.loads(approvals.recorded(head).read_text())["time"]
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        head,
+        "CMD TIER=smoke true",
+        f"Reused the recorded pass on {head} at {when} (true): not run again",
+    ]
+
+
+@pytest.fixture
+def just_pushed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A clone whose `feature` branch is pushed to origin at its HEAD, one commit past the head GitHub reports first;
+    each read of the PR answers from `heads`, and the clock moves only by approvals' own sleeps."""
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    old = committed(clone)
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "commit", "-q", "--allow-empty", "-m", "fix")
+    new = git_in(clone, "rev-parse", "HEAD").strip()
+    git_in(clone, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    state: dict[str, Any] = {"old": old, "new": new, "heads": [], "clock": 0.0}
+
+    def sleep(seconds: float) -> None:
+        state["clock"] += seconds
+
+    monkeypatch.setattr(approvals.time, "sleep", sleep)
+    monkeypatch.setattr(approvals.time, "monotonic", lambda: state["clock"])
+    monkeypatch.setattr(
+        approvals, "pull_request", lambda _n: {**pull(), "headRefOid": state["heads"].pop(0)}
+    )
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "publish", lambda _record: None)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(clone)
+    return state
+
+
+def test_local_ci_just_after_a_push_waits_for_the_prs_head(
+    github: list[tuple[Any, ...]], just_pushed: dict[str, Any]
+) -> None:
+    just_pushed["heads"] = [just_pushed["old"], just_pushed["old"], just_pushed["new"]]
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert github[0][2].splitlines()[1] == f"Head: {just_pushed['new']}"
+    assert just_pushed["clock"] == 2 * approvals.PUSHED_POLL
+
+
+def test_local_ci_refuses_a_checkout_the_prs_head_never_reaches(
+    github: list[tuple[Any, ...]], just_pushed: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    just_pushed["heads"] = [just_pushed["old"]] * 20
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert just_pushed["clock"] >= approvals.PUSHED_WAIT
+    assert (
+        f"the checkout is at {just_pushed['new']}, PR #7's head is {just_pushed['old']}"
+        in capsys.readouterr().out
+    )
+    assert github == []
+
+
+def test_a_checkout_not_on_origin_is_refused_without_waiting(
+    github: list[tuple[Any, ...]], just_pushed: dict[str, Any]
+) -> None:
+    git_in(Path.cwd(), "commit", "-q", "--allow-empty", "-m", "unpushed")
+    just_pushed["heads"] = [just_pushed["new"]]
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (just_pushed["clock"], github) == (0.0, [])
+
+
+@pytest.mark.parametrize(
+    ("args", "warned"),
+    [([], True), (["--no-stale-check"], False), (["--stale-after", "60"], False)],
+    ids=["behind", "skipped", "under-the-threshold"],
+)
+def test_a_head_far_behind_a_base_that_changed_a_test_warns_before_the_gate(
+    github: list[tuple[Any, ...]],
+    just_pushed: dict[str, Any],
+    capfd: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    warned: bool,
+) -> None:
+    clone = Path.cwd()
+    git_in(clone, "checkout", "-q", "-b", "base", just_pushed["old"])
+    for n in range(49):
+        git_in(clone, "commit", "-q", "--allow-empty", "-m", f"base {n}")
+    (clone / "tests").mkdir()
+    (clone / "tests" / "test_flaky.py").write_text("def test_it():\n    pass\n")
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-q", "-m", "fix the flake")
+    git_in(clone, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(clone, "fetch", "-q", "origin")
+    git_in(clone, "checkout", "-q", just_pushed["new"])
+    just_pushed["heads"] = [just_pushed["new"]]
+    monkeypatch.setattr(approvals, "LOCAL_CI", [sys.executable, "-c", "print('GATE RAN')"])
+    assert approvals.main(["local-ci", "7", *args]) == 0
+    out = capfd.readouterr().out.splitlines()
+    warning = (
+        f"origin/main is 50 commits ahead of {just_pushed['new'][:7]} and changed 1 test files since: tests/test_flaky.py."
+        " Merge it first, so the gate doesn't fail on a flake it fixed (--no-stale-check skips this)."
+    )
+    assert out[2:] == ([warning] if warned else []) + ["GATE RAN"]
+
+
+def test_an_up_to_date_head_gets_no_stale_base_warning(
+    github: list[tuple[Any, ...]], just_pushed: dict[str, Any], capfd: pytest.CaptureFixture[str]
+) -> None:
+    git_in(Path.cwd(), "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(Path.cwd(), "fetch", "-q", "origin")
+    just_pushed["heads"] = [just_pushed["new"]]
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert len(capfd.readouterr().out.splitlines()) == 2
 
 
 @pytest.fixture

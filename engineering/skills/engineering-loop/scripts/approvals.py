@@ -106,6 +106,12 @@ check that reads them may run a different tier under each. When the record for t
 same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
 check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
+`local-ci` prints first the head and `CMD <env> <command>`, so its teed output is a proof log verifier.md accepts, and a
+reused record prints its head, time and command. Run seconds after a push, it reads the PR's head again for up to a
+minute while the checkout descends from the head GitHub reports and the PR's branch on origin already points at the
+checkout. Before a run it warns, naming the files, when origin's base is more than 25 commits ahead (`--stale-after
+<n>`) and changed a test file since the head branched, since a long gate on a stale head fails on flakes the base
+fixed; `--no-stale-check` skips it.
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
@@ -2692,6 +2698,69 @@ LOCAL_CI = ["mise", "run", "check:all"]
 PUBLISHED = "local-ci"
 # GitHub's limit on a commit status's description: the gate's digest and as much of the host as fits
 DESCRIBED = 140
+# local-ci: how long a just-pushed head may take to reach the PR, read every PUSHED_POLL seconds (pushed_head)
+PUSHED_WAIT, PUSHED_POLL = 60, 5
+# local-ci: a base this many commits ahead that changed a test file is worth merging before a long gate (stale_base)
+STALE_AFTER = 25
+TEST_FILE = re.compile(r"(^|/)(tests?/|test_[^/]*$|[^/]*_test\.[^/]+$|[^/]*\.test\.[^/]+$)")
+
+
+def header(head: str, command: str, env: dict[str, str | None]) -> str:
+    """A proof log's first two lines, as verifier.md reads one: the head as `git rev-parse HEAD` prints it, then `CMD`
+    with the gate's env (unset names left out) and command."""
+    named = [f"{name}={value}" for name, value in env.items() if value is not None]
+    return f"{head}\nCMD {' '.join([*named, command])}"
+
+
+def pushed_head(pr: int, pull: dict[str, Any]) -> str:
+    """The PR's head, read again for up to PUSHED_WAIT seconds while the checkout's HEAD descends from it and the PR's
+    branch on origin already points at HEAD, since GitHub updates a PR's head a few seconds after a push; any other
+    checkout gets the head as read, which run_local_ci refuses."""
+    head, local = pull["headRefOid"], git("rev-parse", "HEAD").strip()
+    if head == local or pull.get("isCrossRepository"):
+        return head
+    try:
+        git("merge-base", "--is-ancestor", head, local)
+        remote = git("ls-remote", "origin", f"refs/heads/{pull['headRefName']}").split()[:1]
+    except subprocess.CalledProcessError:
+        return head
+    deadline = time.monotonic() + PUSHED_WAIT
+    while remote == [local] and head != local and time.monotonic() < deadline:
+        time.sleep(PUSHED_POLL)
+        head = pull_request(pr)["headRefOid"]
+    return head
+
+
+def stale_base(base: str | None, head: str, after: int) -> str | None:
+    """A warning when origin/<base>, as last fetched, is more than `after` commits ahead of `head` and changed a test
+    file since they parted, naming the files: a long gate on a stale head fails on a flake the base already fixed.
+    None otherwise, or when git can't tell."""
+    if base is None:
+        return None
+    try:
+        ahead = int(git("rev-list", "--count", f"{head}..origin/{base}").strip())
+        changed = (
+            git("diff", "--name-only", f"{head}...origin/{base}").splitlines()
+            if ahead > after
+            else []
+        )
+    except subprocess.CalledProcessError:
+        return None
+    if not (tests := [path for path in changed if TEST_FILE.search(path)]):
+        return None
+    return (
+        f"origin/{base} is {ahead} commits ahead of {head[:7]} and changed {len(tests)} test files since:"
+        f" {', '.join(tests)}. Merge it first, so the gate doesn't fail on a flake it fixed (--no-stale-check skips"
+        " this)."
+    )
+
+
+def default_base() -> str | None:
+    """The default branch origin's HEAD names, None when the clone doesn't know it."""
+    try:
+        return git("rev-parse", "--abbrev-ref", "origin/HEAD").strip().removeprefix("origin/")
+    except subprocess.CalledProcessError:
+        return None
 
 
 def recorded(head: str) -> Path:
@@ -2855,20 +2924,31 @@ def green_pass(record: Any, head: str) -> bool:
     )
 
 
-def local_ci(pr: int | None) -> int:
+def local_ci(pr: int | None, stale_after: int | None = STALE_AFTER) -> int:
     """With a PR: post a pass on its head, from a recorded run on that head and command or from a run now. Without
-    one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
+    one: run the check on HEAD and record it, for `local-ci <pr>` to reuse. The output starts with header()'s two
+    lines, so a teed log is a proof log; a reused record says so; a run first warns of a stale base (stale_base),
+    unless `stale_after` is None."""
     if pr is None:
-        record = run_local_ci(None, None)
-        print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
-        return 0
-    head = pull_request(pr)["headRefOid"]
-    record = reusable(head)
+        head, base = git("rev-parse", "HEAD").strip(), default_base()
+    else:
+        pull = pull_request(pr)
+        head, base = pushed_head(pr, pull), pull["baseRefName"]
+    print(header(head, " ".join(LOCAL_CI), local_ci_env()), flush=True)
+    record = reusable(head) if pr is not None else None
     if record:
+        print(
+            f"Reused the recorded pass on {head} at {record['time']} ({record['command']}): not run again"
+        )
         source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
     else:
-        record = run_local_ci(pr, head)
+        if stale_after is not None and (warning := stale_base(base, head, stale_after)):
+            print(warning, flush=True)
+        record = run_local_ci(pr, head if pr is not None else None)
         source = ""
+    if pr is None:
+        print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
+        return 0
     comment(
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
@@ -2906,6 +2986,8 @@ def main(argv: list[str]) -> int:
     recording = commands.add_parser("local-ci")
     recording.add_argument("pr", type=int, nargs="?")
     recording.add_argument("--record", action="store_true")
+    recording.add_argument("--stale-after", type=int, default=STALE_AFTER)
+    recording.add_argument("--no-stale-check", action="store_true")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
@@ -2935,7 +3017,7 @@ def main(argv: list[str]) -> int:
                 raise Refused(
                     "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
                 )
-            return local_ci(args.pr)
+            return local_ci(args.pr, None if args.no_stale_check else args.stale_after)
         if args.command == "land":
             return land(args.pr, args.wait)
         if args.command == "release":
