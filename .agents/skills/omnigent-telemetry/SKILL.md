@@ -9,7 +9,7 @@ description: Report Omnigent spend, tokens by model, session trees, scheduled-ta
 python3 scripts/omnigent_telemetry.py [--days N] [--server URL] [--json] [--html PATH] [--db-container NAME]
 ```
 
-`scripts/omnigent_telemetry.py` is relative to this skill's folder. The window is the last
+`scripts/omnigent_telemetry.py` is relative to this skill's folder. `scripts/__pycache__` is a file, not a folder, so running it leaves no bytecode in an installed copy. The window is the last
 `N` UTC days, today included (default 7), counted as `GET /v1/usage` counts its 7 and 30.
 Outside an Omnigent session on a machine with several logins,
 `--server URL` names the server the API sections are read from; without it they are left out

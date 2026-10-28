@@ -4,8 +4,8 @@ The loop's issue conventions, the same in every project and on every tracker. Ho
 is done on a tracker is its realization file, read in place: [github.md](github.md) for
 GitHub, with the issue-batch protocol `to-tickets` and `wayfinder` publish through. The
 project's `docs/agents/issue-tracker.md` names that file in one line,
-`Tracker: GitHub (engineering-loop's github.md)`, and adds only its own facts: Components,
-Never on GitHub, and optionally Extra labels, Extra categories and Renamed labels.
+`Tracker: GitHub (engineering-loop's github.md)`, and adds only its own facts: its settings block
+(SKILL.md, Settings: components, extra categories and labels, renames, board columns) and Never on GitHub.
 
 ## States
 
@@ -51,27 +51,28 @@ read as approved.
   approval), added by them once `check` is green on the head and removed by a push.
 - **Risk**, `risk:high` on an issue or PR: its consequences need the owner at merge (money,
   data, security, another team's contract). A person sets it, or the lead at
-  triage, and `approvals.py` adds it to a PR when a loop.md `risk:` rule matches or the cap
+  triage, and `approvals.py` adds it to a PR when loop.md's `risk` rule matches or the cap
   was reached with a core finding open. It names consequences, not urgency: how soon a
-  thing matters is a `priority:` label, which the gate never reads.
+  thing matters is the tracker's priority (its realization file says where it lives), which the
+  gate never reads.
 
 A wayfinder map or ticket carries its `wayfinder:` label instead of a category, and no
 component or size: it resolves a decision, not a change.
 
 Label names are the loop's fixed set here plus the project's `docs/agents/issue-tracker.md`
-(Components, Extra categories, Extra labels); the scripts read them from these two places only
-(`scripts/approvals.py`, `label_names`). The tracker file and loop.md's conditions name a
-component or category bare (`billing`) or in full (`area:billing`); both mean the label.
+(its settings' `components`, `categories`, `labels`); the scripts read them from these two places only
+(`scripts/approvals.py`, `label_names`). The tracker file names a component or category
+bare (`billing`) or in full (`area:billing`); both mean the label. loop.md's settings name
+a label in full, as GitHub shows it.
 
 The repo's labels are synced from the same two places (github.md, Labels): every listed
 label exists, an unlisted one goes once nothing carries it, and a renamed one is renamed in
-place, so every issue keeps it. Renamed labels in the tracker file is the rename map, one
-list item per label, its old name then its new, both in backticks:
+place, so every issue keeps it. The tracker file's `renames` is the rename map, one
+`old: new` line per label:
 
-```markdown
-## Renamed labels
-
-- `frontend` becomes `area:web`
+```yaml
+renames:
+  frontend: area:web
 ```
 
 The loop's own renames need no line: `bug`, `enhancement`, `chore` and `documentation`
@@ -110,7 +111,7 @@ under its epic.
 
 The board shows every ticket in its loop stage with its assignee, and every epic with its progress; the
 realization file says how a ticket moves. A project whose board has other names, or one column for
-several of these, maps them in `docs/agents/issue-tracker.md` § Board ([github.md](github.md), Board). The labels stay the state: when a move fails,
+several of these, maps them in `docs/agents/issue-tracker.md`'s `board` settings ([github.md](github.md), Board). The labels stay the state: when a move fails,
 report it and carry on.
 
 | Column | The ticket is here when | Moved by |
@@ -125,13 +126,13 @@ report it and carry on.
 
 ## Sign-off
 
-Where loop.md has `signoff:` rules and they, or the spec's `Sign-off: owner` line, ask for
+Where loop.md has a `signoff` rule and it, or the spec's `Sign-off: owner` line, ask for
 it, a person
 checks the merged change in the running product before its issue counts as done, since
 gates and the verifier prove the code, not how it feels in use. The PR links the issue with
 `Implements #<n>` (SKILL.md, Approvals and proof), so the merge leaves it open; the
 lead moves it to `Sign-off` with a comment naming the merge and the spec's
-acceptance examples to try. Without a `signoff:` line nothing waits for a sign-off, and
+acceptance examples to try. Without a `signoff` section nothing waits for a sign-off, and
 `Implements` is a link like `Part of`. The owner signs off by closing it (`Done`). What they find
 wrong is a new intent with a `Found while #<n>` line, or a revert when the change itself is
 wrong (SKILL.md, Revert first). An epic stays open while any sub-issue waits for its
