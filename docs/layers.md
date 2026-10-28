@@ -91,7 +91,7 @@ skills:
   update-delta-audit: {layer: tooling}
 
 exceptions:
-  omnigent-agents -> engineering-loop: {reason: "the runner starts the loop's roles and reads its deny list and gate-slot directory", removed_by: "a story that moves those names into the brief"}
+  omnigent-agents -> engineering-loop: {reason: "the runner starts the loop's roles and reads its deny list and gate-slot directory", removed_by: "#631"}
 ```
 
 ## Package map
