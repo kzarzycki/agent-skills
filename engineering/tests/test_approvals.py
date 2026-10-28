@@ -61,6 +61,8 @@ VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
 HEAD_PUSHED = approvals.head_pushed
+# the writes the autouse fixtures below replace, for the tests that plug in an adapter instead
+REAL = {name: getattr(approvals, name) for name in ("comment", "label", "assign")}
 COMMENT = approvals.comment
 PROVE = approvals.prove
 
@@ -6349,11 +6351,14 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
 
 def memory(pulls: dict[int, dict[str, Any]], issues: dict[int, dict[str, Any]]) -> Any:
     """An in-memory tracker, forge and evidence, as another tool's adapter would plug in: every operation of
-    approvals.PORTS, the reads served from `pulls` and `issues`, the writes kept in `written`, and any other call a
-    failure, since check merge on a proven PR makes none."""
+    approvals.PORTS, the reads served from `pulls` and `issues`, the proofs kept in a store of their own (`proofs`,
+    `reviews`, by item) that the tracker and forge nodes never see, the other writes in `written`, and any other call
+    a failure."""
     from types import SimpleNamespace
 
     written: list[tuple[Any, ...]] = []
+    proofs: dict[int, list[dict[str, Any]]] = {}
+    reviews: dict[int, list[dict[str, Any]]] = {}
 
     def unasked(name: str) -> Callable[..., Any]:
         def call(*args: Any, **kwargs: Any) -> Any:
@@ -6366,8 +6371,15 @@ def memory(pulls: dict[int, dict[str, Any]], issues: dict[int, dict[str, Any]]) 
         "issues": lambda numbers: [issues[n] for n in numbers if n in issues],
         "label": lambda number, name, add: written.append(("label", number, name, add)),
         "comment": lambda number, body: written.append(("comment", number, body)),
-        "record": lambda number, body: written.append(("record", number, body)),
+        "record": lambda number, body: proofs.setdefault(number, []).append(note(body)),
+        "post_review": lambda number, review: reviews.setdefault(number, []).append(
+            verdict_on(review["commit_id"]) | {"body": review["body"]}
+        ),
+        "approvals": lambda item: {"nodes": proofs.get(item["number"], [])},
+        "checks": lambda item: {"nodes": proofs.get(item["number"], [])},
+        "verdicts": lambda item: {"nodes": reviews.get(item["number"], [])},
         "pull_request": pulls.__getitem__,
+        "diff_lines": lambda _base, _head: {},
         "preflight": lambda: None,
         "viewer": lambda: "loop",
         "writer": lambda login: login == "loop",
@@ -6379,13 +6391,13 @@ def memory(pulls: dict[int, dict[str, Any]], issues: dict[int, dict[str, Any]]) 
         name: SimpleNamespace(**{op: served.get(op, unasked(op)) for op in operations})
         for name, operations in approvals.PORTS.items()
     }
-    return SimpleNamespace(**ports, written=written)
+    return SimpleNamespace(**ports, written=written, proofs=proofs, reviews=reviews)
 
 
-def test_check_merge_runs_end_to_end_on_in_memory_adapters_with_no_gh(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The policy names its adapters; the gate reads the PR, its issue and its proofs through them alone."""
+@pytest.fixture
+def in_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., Any]:
+    """A project whose policy names the `memory` adapters for every port, with no gh on PATH to fall back on; called
+    as memory() is, it plugs that adapter in."""
     for name, real in (
         ("viewer", VIEWER),
         ("required_checks", REQUIRED),
@@ -6393,8 +6405,10 @@ def test_check_merge_runs_end_to_end_on_in_memory_adapters_with_no_gh(
         ("head_pushed", HEAD_PUSHED),
     ):
         monkeypatch.setattr(approvals, name, real)
+    for name, real in REAL.items():
+        monkeypatch.setattr(approvals, name, real)
     (tmp_path / "bin").mkdir()
-    monkeypatch.setenv("PATH", str(tmp_path / "bin"))  # no gh to fall back on
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
@@ -6403,11 +6417,27 @@ def test_check_merge_runs_end_to_end_on_in_memory_adapters_with_no_gh(
         "  evidence: memory\n```\n"
     )
     monkeypatch.chdir(tmp_path)
+
+    def plug(*args: Any, **kwargs: Any) -> Any:
+        adapter = memory(*args, **kwargs)
+        monkeypatch.setitem(approvals.ADAPTERS, "memory", adapter)
+        return adapter
+
+    return plug
+
+
+def test_check_merge_runs_end_to_end_on_in_memory_adapters_with_no_gh(
+    in_memory: Callable[..., Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The policy names its adapters; the gate reads the PR, its issue and its proofs through them alone."""
     spec = approved(1, "area:web", "kind:enhancement")
-    pr = pull(body="Closes #1\n\n## Evidence\n\nlog line\n", reviews=(VERDICT,))
-    unreviewed = {**pr, "number": 8, "reviews": {"nodes": []}}
-    adapter = memory({7: pr, 8: unreviewed}, {1: spec})
-    monkeypatch.setitem(approvals.ADAPTERS, "memory", adapter)
+    pr = pull(body="Closes #1\n\n## Evidence\n\nlog line\n")
+    unreviewed = {**pr, "number": 8}
+    adapter = in_memory({7: pr, 8: unreviewed}, {1: spec})
+    adapter.proofs[1] = spec["comments"]["nodes"]
+    adapter.reviews[7] = [VERDICT]
     assert approvals.main(["check", "merge", "7"]) == 0
     assert capsys.readouterr().out == ""
     assert approvals.main(["check", "merge", "8"]) == 1
@@ -6419,6 +6449,38 @@ def test_check_merge_runs_end_to_end_on_in_memory_adapters_with_no_gh(
     assert capsys.readouterr().out == (
         "gatekeeper.md's `adapters.tracker` names 'memory', which no adapter implements: github\n"
     )
+
+
+def test_proofs_recorded_in_a_separate_evidence_store_are_the_ones_check_merge_reads(
+    in_memory: Callable[..., Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The tracker and forge hold no proof: the owner's approval and the verdict land in the evidence store, and
+    check merge passes on what it reads back from there."""
+    spec = issue(1, "size:S", "approved:spec", "area:web", "kind:enhancement")
+    pr = pull(body="Closes #1\n\n## Evidence\n\nlog line\n")
+    adapter = in_memory({7: pr}, {1: spec})
+    assert approvals.main(["check", "merge", "7"]) == 1
+    capsys.readouterr()
+    report = tmp_path / "pr7-v1.md"
+    report.write_text(
+        f"Verifier: claude, pass 1\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n"
+        "Risk: low — a test fixture\n"
+    )
+    assert approvals.main(["record", "approval", "spec", "1", "--by", "owner"]) == 0
+    assert approvals.main(["record", "verdict", "7", str(report)]) == 0
+    assert [n["body"] for n in adapter.proofs[1]] == [
+        f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"
+    ]
+    assert [(r["commit"]["oid"], r["body"].split("\n", 1)[0]) for r in adapter.reviews[7]] == [
+        (HEAD, f"Verifier (claude), pass 1 on {HEAD[:7]}.")
+    ]
+    assert adapter.written == [
+        ("label", 1, "approved:spec", True),
+        ("label", 1, "needs-owner", False),
+    ]
+    assert spec["comments"]["nodes"] == pr["comments"]["nodes"] == pr["reviews"]["nodes"] == []
+    assert approvals.main(["check", "merge", "7"]) == 0
+    assert capsys.readouterr().out == ""
 
 
 # --- the gatekeeper CLI ---

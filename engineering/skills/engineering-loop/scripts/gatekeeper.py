@@ -310,9 +310,11 @@ PORTS = {
         "run",  # (run id) -> the CI run as {status, url}, or None
         "rerun",  # (run id) -> runs it again
     ),
-    # approval records, check passes and batch proofs (record), an outdated record (supersede), a verdict (post_review);
-    # they are read back among the item's comments and reviews
-    "evidence": ("record", "supersede", "post_review"),
+    # writes: approval records, check passes and batch proofs (record), an outdated record (supersede), a verdict
+    # (post_review); reads, each of the item the tracker or forge returned, as a connection of comment or review nodes:
+    # its approval records (approvals), its verdicts, each on the head it reviewed (verdicts), and its check passes
+    # and batch proofs, each naming its head (checks)
+    "evidence": ("record", "supersede", "post_review", "approvals", "verdicts", "checks"),
 }
 github = sibling("github_adapter")
 ADAPTERS: dict[str, Any] = {"github": github}
@@ -1023,9 +1025,10 @@ def names(node: dict[str, Any]) -> set[str]:
     return {label["name"] for label in node["labels"]["nodes"]}
 
 
-def notes(node: dict[str, Any]) -> list[dict[str, Any]]:
-    """Its comments; refused past one page, where an approval or a spec could be among those not read."""
-    comments = node["comments"]
+def notes(node: dict[str, Any], comments: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Its comments, or those of `comments` (an evidence read of it); refused past one page, where an approval or a
+    spec could be among those not read."""
+    comments = node["comments"] if comments is None else comments
     # ponytail: one page of 100; page with `before:` cursors when a spec or PR outgrows it.
     if (comments.get("totalCount") or 0) > len(comments["nodes"]):
         where = f"#{node['number']}"
@@ -1036,8 +1039,9 @@ def notes(node: dict[str, Any]) -> list[dict[str, Any]]:
     return found
 
 
-def bodies(node: dict[str, Any]) -> list[str]:
-    return [note["body"] for note in notes(node)]
+def evidenced(node: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+    """The item's proof comments of `kind`, `approvals` or `checks`, read from the evidence store."""
+    return notes(node, getattr(port("evidence"), kind)(node))
 
 
 def headed(
@@ -1073,7 +1077,11 @@ def parsed(body: str, point: str) -> dict[str, str] | None:
 
 def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
     """The approval records for `point` among a node's comments."""
-    return [found for body in bodies(node) if (found := parsed(body, point)) is not None]
+    return [
+        found
+        for note in evidenced(node, "approvals")
+        if (found := parsed(note["body"], point)) is not None
+    ]
 
 
 def current(node: dict[str, Any], point: str, key: str, value: str, by: str) -> bool:
@@ -1318,7 +1326,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
     A string names why none can be read."""
-    reviews = pull["reviews"]
+    reviews = port("evidence").verdicts(pull)
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
@@ -1593,7 +1601,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
         if any(
             [line.strip() for line in note["body"].strip().splitlines()[:3]] == head
             and trusted(pull, note)
-            for note in notes(pull)
+            for note in evidenced(pull, "checks")
         ):
             found = []
         else:
@@ -1613,7 +1621,7 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    for note in notes(pull):
+    for note in evidenced(pull, "checks"):
         lines = note["body"].strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
             continue
@@ -1897,7 +1905,7 @@ def owner_waits(
         )
     elif default(pull) and any(
         (parsed(note["body"], "merge") or {}).get("by") == DELEGATE and note["createdAt"] >= added
-        for note in notes(pull)
+        for note in evidenced(pull, "approvals")
     ):
         found.append(
             f"{where}: `{MERGE_LABEL}` is the delegated approval, which covers a PR into a feature branch, not into"
@@ -2668,7 +2676,9 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
         )
     record = f"{point.capitalize()}: {value}\n"
     earlier = [
-        (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
+        (note, found)
+        for note in evidenced(issue, "approvals")
+        if (found := parsed(note["body"], point)) is not None
     ]
     if any(found.get("by") == "owner" and found.get(point) != value for _, found in earlier):
         record += CHANGED[point]

@@ -441,5 +441,13 @@ forge = SimpleNamespace(
     run=run,
     rerun=rerun,
 )
-# a proof is a comment and a verdict a review, read back with the item that holds them
-evidence = SimpleNamespace(record=comment, supersede=minimize, post_review=post_review)
+# a proof is a comment and a verdict a review, so each is read from the item's node, which the ISSUE and PULL queries
+# read with them: no call of its own
+evidence = SimpleNamespace(
+    record=comment,
+    supersede=minimize,
+    post_review=post_review,
+    approvals=lambda item: item["comments"],
+    verdicts=lambda pull: pull["reviews"],
+    checks=lambda pull: pull["comments"],
+)
