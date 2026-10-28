@@ -18,7 +18,9 @@ names no item, or a cycle. Exit 1 with the reason.
   (the caller's label map); with none it is `ready-for-agent`, the label the tickets always carried.
 - `local` writes one file per item, `<DIR>/<NN>-<slug>.md`, numbered from 01 in dependency order, in the local
   ticket template, and prints each path. `--out` defaults to `issues/` beside the manifest; `--status` is the
-  Status line (default `ready-for-agent`). The spec's `## What to build`, `## Acceptance criteria` and
+  Status line (default `ready-for-agent`). It refuses, writing nothing, when `DIR` already holds a numbered
+  file this manifest would renumber, drop or change (a revised split, or a ticket whose Status moved on);
+  an unchanged rerun rewrites identical files. The spec's `## What to build`, `## Acceptance criteria` and
   `## Blocked by` sections fill the template; a spec without them becomes the "What to build" text.
 
 Stdlib only.
@@ -191,8 +193,21 @@ def main(argv: list[str] | None = None) -> int:
         else:
             tickets = tickets_from_manifest(args.manifest, [])
             out = args.out or args.manifest.parent / "issues"
+            files = local_files(tickets, args.status)
+            # An earlier apply's numbered file that this one would renumber, drop or change is refused,
+            # not overwritten: it may carry a ticket's progress, and a leftover would duplicate a ticket.
+            stale = sorted(
+                path.name
+                for path in out.glob("[0-9][0-9]-*.md")
+                if files.get(path.name) != path.read_text()
+            )
+            if stale:
+                raise BatchError(
+                    f"{out} holds files of an earlier apply that this manifest would renumber, drop "
+                    f"or change: {', '.join(stale)}; move them away or choose another --out"
+                )
             out.mkdir(parents=True, exist_ok=True)
-            for name, content in local_files(tickets, args.status).items():
+            for name, content in files.items():
                 (out / name).write_text(content)
                 print(out / name)
     except BatchError as error:

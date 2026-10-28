@@ -1,6 +1,6 @@
 ---
 name: github-tracker
-description: The GitHub tracker and forge conventions the engineering loop and the gatekeeper run on - issue, label, assignee, review-trail and board operations with gh, label sync (labels.py) and board moves (board.py). Use when a project's docs/agents/issue-tracker.md names GitHub as its tracker, or when syncing a repo's labels or moving an issue on its board.
+description: The GitHub tracker and forge conventions the engineering loop and the gatekeeper run on - issue, label, assignee, review-trail and board operations with gh, label sync (labels.py) and board moves (board.py), and the apply step that turns a split manifest into a GitHub issue batch or into local ticket files (issue_batch.py, local.md). Use when a project's docs/agents/issue-tracker.md names GitHub or local files as its tracker, when applying a split manifest, or when syncing a repo's labels or moving an issue on its board.
 metadata:
   requires: "gh uv"
 ---

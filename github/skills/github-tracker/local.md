@@ -31,5 +31,9 @@ file per item at `<dir>/<NN>-<slug>.md`, never one combined file:
 - [ ] Acceptance criterion 2
 ```
 
-`Status` is `ready-for-agent` unless `--status` names another. A rerun overwrites the same
-files, so it is safe to repeat.
+`Status` is `ready-for-agent` unless `--status` names another. An unchanged rerun rewrites
+identical files, so it is safe to repeat. If `<dir>` already holds a numbered file the
+manifest would renumber, drop or change (a revised split renumbers its items, and a ticket's
+Status may have moved on), the script exits 1 naming those files and writes nothing: a
+leftover would duplicate a ticket under an obsolete blocker graph, and an overwrite would
+lose progress. Move the old files away or pick another `--out`, then apply again.

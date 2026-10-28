@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -753,3 +754,88 @@ def test_local_files_apply_writes_numbered_tickets_in_the_local_template(tmp_pat
         "**Blocked by:** 01 Expose account status\n\n**Status:** ready-for-agent\n\n"
         "- [ ] One\n- [ ] Two\n"
     )
+
+
+# Canonical bytes and hash written out by hand, independent of prepare(): sorted keys, compact
+# separators and UTF-8 text unescaped are what github.md's marker identity rests on.
+DOCUMENTED_CANONICAL = (
+    '[{"blockers":[],"body":"Return the current account status from the API.",'
+    '"labels":["ready-for-agent"],"order":1,"title":"Expose account status"},'
+    '{"blockers":["Expose account status"],"body":"Show the account status in the dashboard.",'
+    '"labels":["ready-for-agent"],"order":2,"title":"Render account status"}]'
+)
+DOCUMENTED_SHA256 = "711d6c8da7819e1f4d3e6e8c0a63d2b7c10aef42068a122ef156ddc37bd0e49a"
+UNICODE_ITEM = {
+    "title": "Überwache Größe",
+    "spec": "Zeige den Status: Größe, 状態.",
+    "blocked_by": ["Expose account status"],
+}
+UNICODE_CANONICAL = (
+    DOCUMENTED_CANONICAL[:-1]
+    + ',{"blockers":["Expose account status"],"body":"Zeige den Status: Größe, 状態.",'
+    '"labels":["ready-for-agent"],"order":3,"title":"Überwache Größe"}]'
+)
+UNICODE_SHA256 = "7fa81b9549895e98e76d5d875cec73b652e60b6c18d8ddd1fe09e07235b77143"
+
+
+def test_batch_sha256_matches_a_fixed_vector_of_canonical_bytes(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    document = json.loads(manifest.read_text())
+
+    documented = issue_batch.prepare(issue_batch.tickets_from_manifest(manifest, ["ready-for-agent"]))
+    assert hashlib.sha256(DOCUMENTED_CANONICAL.encode()).hexdigest() == DOCUMENTED_SHA256
+    assert documented["batch_sha256"] == DOCUMENTED_SHA256
+
+    document["items"].append(UNICODE_ITEM)
+    manifest.write_text(json.dumps(document, ensure_ascii=False))
+    unicode_batch = issue_batch.prepare(
+        issue_batch.tickets_from_manifest(manifest, ["ready-for-agent"])
+    )
+    assert hashlib.sha256(UNICODE_CANONICAL.encode()).hexdigest() == UNICODE_SHA256
+    assert unicode_batch["batch_sha256"] == UNICODE_SHA256
+
+
+def test_local_apply_refuses_a_revised_manifest_over_an_earlier_apply(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    script = str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py")
+    run = lambda: subprocess.run(  # noqa: E731
+        ["python3", script, "local", str(manifest)], check=False, capture_output=True, text=True
+    )
+    assert run().returncode == 0
+    issues = tmp_path / "issues"
+    before = {path.name: path.read_text() for path in issues.iterdir()}
+    assert run().returncode == 0
+    assert {path.name: path.read_text() for path in issues.iterdir()} == before
+
+    document = json.loads(manifest.read_text())
+    document["items"].insert(0, {"title": "Audit account status", "spec": "Log it.", "blocked_by": []})
+    manifest.write_text(json.dumps(document))
+    refused = run()
+
+    assert refused.returncode == 1
+    assert "01-expose-account-status.md" in refused.stderr
+    assert "02-render-account-status.md" in refused.stderr
+    assert {path.name: path.read_text() for path in issues.iterdir()} == before
+
+    unrelated = issues / "notes.md"
+    unrelated.write_text("mine")
+    (issues / "02-render-account-status.md").write_text(before["02-render-account-status.md"])
+    manifest.write_text(json.dumps(json.loads(_documented_manifest(tmp_path).read_text())))
+    assert run().returncode == 0
+    assert unrelated.read_text() == "mine"
+
+
+def test_local_apply_refuses_to_overwrite_a_ticket_whose_status_moved_on(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    script = str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py")
+    subprocess.run(["python3", script, "local", str(manifest)], check=True, capture_output=True)
+    started = tmp_path / "issues" / "01-expose-account-status.md"
+    started.write_text(started.read_text().replace("ready-for-agent", "in-progress"))
+
+    refused = subprocess.run(
+        ["python3", script, "local", str(manifest)], check=False, capture_output=True, text=True
+    )
+
+    assert refused.returncode == 1
+    assert "01-expose-account-status.md" in refused.stderr
+    assert "in-progress" in started.read_text()
