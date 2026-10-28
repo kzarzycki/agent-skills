@@ -7,7 +7,9 @@ written) first.
 
 The steps are the method. The project's own instructions give its values, one per slot
 below, since branch names, gates and landing differ by project. A slot the project leaves
-empty is skipped.
+empty is skipped. `<base>` is the remote-tracking ref of the project's default
+branch as Setup fetched it (such as `origin/main`), never a local branch: a fetch doesn't
+move a local branch, and a stale one reads changes already released as new.
 
 - **Setup**: what a fresh host runs before step 1 (fetch tags, sync the environment, the
   tools that must be on `PATH`) and the credentials it needs.
@@ -35,7 +37,7 @@ In order, and start nothing new while any of these is open:
 
 ## 2. Intake
 
-From a fresh default branch, run the intake command and branch on its exit code:
+From a checkout of `<base>`, run the intake command and branch on its exit code:
 
 - **0 with a clean `git status`:** upstream has nothing new. Stop.
 - **0 with changes:** go to step 3.
@@ -77,9 +79,9 @@ session) gets:
 
 - the deltas for the whole range: in a clone of upstream, `git diff <old>..<new> --
   <source_path>` for each tuned skill, with `old` and `new` the `source_commit` in
-  `<pack>/provenance.yml` on the default branch and on the run's branch, and
+  `<pack>/provenance.yml` at `<base>` and on the run's branch, and
   `source_path` from its `source_mappings`;
-- `git diff <default branch>...HEAD -- <pack>/`;
+- `git diff <base>...HEAD -- <pack>/`;
 - the pack's tuning contract.
 
 It checks each delta: its intent is carried, or the decline is sound. No load-bearing
@@ -91,15 +93,15 @@ review again. If it still isn't PASS after two revisions, you're blocked.
 
 ## 6. Release or not
 
-Decide after the last rerun, from `git diff --quiet <default branch>...HEAD -- <pack>/skills/`:
+Decide after the last rerun, from `git diff --quiet <base>...HEAD -- <pack>/skills/`:
 
 - **Skills changed:** a release. The tool already set the version, one bump past the
   newest release (minor when a skill was added). Record it as the release slot says, with
   the upstream range, each ported or declined delta in one line, and any newly tuned
   skill.
 - **Skills unchanged** (every delta declined, or upstream touched only files outside
-  the pack's skills): no release. Restore the release slot's version files from the
-  default branch.
+  the pack's skills): no release. Restore the release slot's version files from
+  `<base>`.
 
 Commit, push and rerun the gates.
 

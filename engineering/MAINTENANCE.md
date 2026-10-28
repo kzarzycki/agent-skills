@@ -2,7 +2,7 @@
 
 This repository keeps `engineering/` current by running the `vendoring` skill's
 [ROUTINE.md](../vendoring/skills/vendoring/ROUTINE.md) with `<pack>` = `engineering`,
-upstream `mattpocock/skills`, default branch `main`, and these values for its slots. The
+upstream `mattpocock/skills`, default branch `main` (`<base>` is `origin/main`), and these values for its slots. The
 tuning contract is in [CLAUDE.md](CLAUDE.md).
 
 - **Setup:** `git fetch origin --tags`, then `uv sync --frozen`. The tools in `mise.toml`

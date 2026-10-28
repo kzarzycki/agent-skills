@@ -27,3 +27,12 @@ def test_this_repository_fills_every_slot_of_the_routine() -> None:
     assert len(slots) == 8
     values = re.findall(r"^- \*\*(.+?)(?::\*\*|\*\*)", VALUES.read_text(), flags=re.MULTILINE)
     assert [slot for slot in slots if slot not in values] == []
+
+
+def test_the_routine_compares_against_the_fetched_remote_ref() -> None:
+    # Setup only fetches, so a local default branch can be stale: every comparison and
+    # restore names `<base>`, the remote-tracking ref, and this repository sets it.
+    text = ROUTINE.read_text()
+    assert "<default branch>" not in text
+    assert "git diff <base>...HEAD" in text and "git diff --quiet <base>...HEAD" in text
+    assert "`<base>` is `origin/main`" in VALUES.read_text()
