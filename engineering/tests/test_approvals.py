@@ -5709,3 +5709,13 @@ def test_the_model_is_the_first_rule_matching_the_issue_or_the_prs_risk() -> Non
     ):
         with pytest.raises(approvals.Refused, match=re.escape(refusal)):
             approvals.settings(loop_md(broken))
+
+
+def test_a_tier_loop_md_prose_names_resolves_only_within_the_lineup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(approvals, "project", lambda: (None, MODELS))
+    assert approvals.model("worker", 1, "codex", "mid") == 0
+    assert capsys.readouterr().out == "gpt-6.1-terra\n"
+    with pytest.raises(approvals.Refused, match=re.escape("`tiers.codex` has no tier `small`")):
+        approvals.model("worker", 1, "codex", "small")

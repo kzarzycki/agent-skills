@@ -616,7 +616,8 @@ or the owner's private network.
   silently.
 - **Models.** Never pick a model, since cost and quality are the owner's trade: pass one
   only as the owner names it or as `scripts/approvals.py model <role> <issue|pr> --family
-  <family>` prints it from loop.md's `tiers` and `models`, nothing meaning the default. A launch that fails on
+  <family>` prints it from loop.md's `tiers` and `models`, nothing meaning the default; for a
+  judgment no rule reads, loop.md's prose may name a tier, passed as `--tier`. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork

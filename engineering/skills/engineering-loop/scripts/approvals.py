@@ -17,7 +17,7 @@
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
-    uv run scripts/approvals.py model <role> <issue|pr> --family <f>  # the model loop.md's `models` picks; none: default
+    uv run scripts/approvals.py model <role> <issue|pr> --family <f> [--tier <t>]  # loop.md's pick; none: default
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
@@ -170,7 +170,9 @@ the block. `loop` holds `cap`, `ci`, `opt_out` and `local_ci_env`; `spec` holds 
 every family's lineup. `model` prints the first matching rule's model for the family, or nothing (the harness default)
 without a match or a lineup for that family. On a PR, `labels` read the PR and its issues, `paths` its files, and
 `risk: high` holds where `check merge` rates it high or the risk rule matches it, so a high-risk PR never resolves to a
-rule meant for a low one; on an issue only its labels are read.
+rule meant for a low one; on an issue only its labels are read. `--tier` takes a tier loop.md's prose names for a case
+no rule can read (a judgment), and prints that tier's model from the lineup, refusing a tier the lineup lacks, so prose
+chooses among the project's models and never adds one.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -747,8 +749,14 @@ def model_for(
     return None
 
 
-def model(role: str, number: int, family: str) -> int:
+def model(role: str, number: int, family: str, tier: str | None = None) -> int:
     _, loop = project()
+    if tier is not None:
+        lineup = settings(loop).get("tiers", {}).get(family, {})
+        if tier not in lineup:
+            raise Refused(f"loop.md's `tiers.{family}` has no tier `{tier}`")
+        print(lineup[tier])
+        return 0
     kind = gh("api", f"repos/{{owner}}/{{repo}}/issues/{number}", "--jq", ".pull_request != null")
     if kind.strip() == "true":
         pull = pull_request(number)
@@ -2986,6 +2994,7 @@ def main(argv: list[str]) -> int:
     choosing.add_argument("role")
     choosing.add_argument("number", type=int)
     choosing.add_argument("--family", required=True)
+    choosing.add_argument("--tier")
     args = parser.parse_args(argv)
     try:
         if args.command == "report":  # reads a local file only, so no remote needs choosing
@@ -3018,7 +3027,7 @@ def main(argv: list[str]) -> int:
         if args.command == "release":
             return release(args.issue)
         if args.command == "model":
-            return model(args.role, args.number, args.family)
+            return model(args.role, args.number, args.family, args.tier)
         return verdict(args.pr, args.report)
     except Refused as exc:
         print(exc)
