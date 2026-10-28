@@ -324,6 +324,49 @@ def test_an_issue_without_approved_spec_is_not_ready() -> None:
     ]
 
 
+def test_check_build_before_the_pr_judges_the_issue(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no PR yet, `check build --issue <n>` (or the issue the branch is named for) applies the PR's build proofs
+    to the issue alone, so an unapproved spec is not built."""
+    spec: dict[int, dict[str, Any]] = {
+        2: issue(2, "kind:chore", "area:agents", "size:XS", "risk:high"),
+        3: approved(3, "kind:chore", "area:agents"),
+    }
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    branch, changed = ["loop/3-fix"], [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "".join(f"{path}\0" for path in changed[0].split())
+        return ("origin/main" if args[-1] == "origin/HEAD" else branch[0]) + "\n"
+
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(*args: str) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", *args])
+        return code, capsys.readouterr().out.splitlines()
+
+    unapproved = [
+        "#2 has no `Approved: spec` record by the owner",
+        "#2 lacks the `approved:spec` label",
+    ]
+    assert build("--issue", "2") == (1, unapproved)
+    assert build("--issue", "3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert build() == (0, ["#3: every build proof holds; no PR yet"])
+    branch[0] = "loop/2-fix"
+    assert build() == (1, unapproved)
+    branch[0] = "spike"
+    assert build()[0] == 1
+    assert build("7", "--issue", "2") == (1, ["--issue goes with check build and no PR number"])
+
+
 def test_every_closing_issue_specced_lands() -> None:
     assert (
         problems([specced(1, "kind:ops", "triaged-by-bot"), specced(2, "kind:bug", "area:api")])
@@ -3778,14 +3821,24 @@ def test_a_run_from_a_subdirectory_reads_the_checkouts_loop_files(
 # --- check end to end, GitHub stubbed ---
 
 
-def test_check_without_a_pr_has_nothing_to_gate(
+def test_check_without_a_pr_or_an_issue_has_nothing_to_gate(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A merge has nothing to gate before its PR; a build on a branch naming no issue is refused, since it needs an
+    approved spec."""
     monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", lambda *_args: "spike\n")
     monkeypatch.chdir(PROJECT)
-    assert (approvals.main(["check", "build"]), capsys.readouterr().out) == (
+    assert (approvals.main(["check", "merge"]), capsys.readouterr().out) == (
         0,
         "no PR for this branch yet: nothing to gate\n",
+    )
+    assert (approvals.main(["check", "build"]), capsys.readouterr().out) == (
+        1,
+        (
+            "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build needs an"
+            " approved spec\n"
+        ),
     )
 
 
@@ -4333,6 +4386,76 @@ AUTO = loop_md(
 
 def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
     return {**found, "author": {"login": author}}
+
+
+def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
+    writers: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no PR, a `paths` risk rule under `spec.auto` reads the files the branch changed since it left the default
+    branch, as it reads a PR's: a protected file holds the spec for the owner, and files git can't list hold too."""
+    spec = {
+        1: by("worker", specced(1, "kind:enhancement")),
+        2: by("worker", approved(2, "kind:enhancement", "area:web", "size:S")),
+    }
+    changed: list[str | None] = [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "".join(f"{path}\0" for path in changed[0].split())
+        return "origin/main\n" if args[-1] == "origin/HEAD" else "loop/1-fix\n"
+
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, AUTO))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(number: int) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", "--issue", str(number)])
+        return code, capsys.readouterr().out.splitlines()
+
+    assert build(1) == (0, ["#1: every build proof holds; no PR yet"])
+    changed[0] = "app.py\nbilling/a.py\n"
+    assert build(1) == (
+        1,
+        [
+            (
+                "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path"
+                " `billing/**`)"
+            ),
+            "#1 has no `Approved: spec` record by the owner",
+            "#1 lacks the `approved:spec` label",
+        ],
+    )
+    assert build(2)[0] == 0  # the owner approved it
+    changed[0] = None
+    code, out = build(1)
+    assert code == 1 and "the gate can't read every file the PR changes" in out[0]
+
+
+def test_the_branch_files_check_build_reads_are_its_real_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-ASCII name, which git quotes in its plain output, and one with spaces reach the risk rules as committed."""
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    committed(clone)
+    git_in(clone, "branch", "-M", "main")
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "push", "-q", "origin", "main")
+    git_in(clone, "remote", "set-head", "origin", "main")
+    git_in(clone, "checkout", "-q", "-b", "loop/1-fix")
+    names = [".github/workflows/contrôle.yml", "docs/decision notes.md"]
+    for name in names:
+        (clone / name).parent.mkdir(parents=True, exist_ok=True)
+        (clone / name).write_text("x\n")
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-qm", "files")
+    monkeypatch.chdir(clone)
+    assert sorted(approvals.paths(approvals.unopened())) == sorted(names)
 
 
 def test_spec_auto_is_its_own_policy() -> None:
