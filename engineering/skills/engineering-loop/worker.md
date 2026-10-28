@@ -33,7 +33,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    leaves its work on the branch. The lead merges your branch and opens the PR: a
    brief that asks for a PR means push the branch and report it. A spec or plan the brief
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
-   posts it, since the spec lives on the issue. Your job ends at the push: don't wait for
+   posts it, since the spec lives on the issue. Your job ends at the push, and once the head is handed to the queue or for approval the branch is frozen: PR events (review comments, checks) are read-only to you, and a follow-up goes in a new PR. Don't wait for
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
    the worktree you are given, then `mise run check` and push the same way. A command that
    may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),

@@ -61,7 +61,10 @@ time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default (Codex: `~/.codex/config.toml`), a
-verifier included. Pass `--model` only when the owner asked for that model or the project's instructions
+verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
+(`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
+`claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load:
+Omnigent launches an unlisted id on the harness default with no error. Pass `--model` only when the owner asked for that model or the project's instructions
 name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
 tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
 its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
@@ -156,8 +159,11 @@ reviewer must be of the other family is the caller's policy.
 elsewhere.
 
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
-runs in, read from the harness at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
-however the session started. The `AGENT_SIGNATURE=` line `start` puts atop a brief knows only the launch arguments.
+runs in, read at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
+however the session started. It reads the session's Omnigent record first (`llm_model` once the harness has
+reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
+`AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
+`model_override`, `?` for the harness default), never the id asked for.
 Below it, a child on this host that is not a top-level lead gets `LOOP_HEAVY_LOCK=<path>`, one
 lock per lead (the runner's primary session, which a lead's workers and their children share;
 `$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
