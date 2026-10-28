@@ -795,6 +795,11 @@ def test_a_demo_linked_instead_of_embedded_fails_check_merge_naming_demo_sh(
     assert approvals.proofs("build", pull(comments=(linked,)), issues, LOOP) == failed
     stranger = note(linked, author={"login": "drive-by"})
     assert merge(pull(comments=(embedded, stranger), **done), issues) == []
+    # nor does a stranger's later demo clear a linked one; a demo minimized as outdated is skipped
+    cleared = note(embedded, author={"login": "drive-by"})
+    assert merge(pull(comments=(linked, cleared), **done), issues) == failed
+    outdated = note(linked, isMinimized=True)
+    assert merge(pull(comments=(embedded, outdated), **done), issues) == []
 
 
 def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(

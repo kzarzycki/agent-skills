@@ -936,14 +936,17 @@ def bodies(node: dict[str, Any]) -> list[str]:
     return [note["body"] for note in notes(node)]
 
 
-def headed(node: dict[str, Any], heading: str) -> dict[str, Any] | None:
-    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`.
-    A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
+def headed(
+    node: dict[str, Any], heading: str, keep: Callable[[dict[str, Any]], bool] = lambda _note: True
+) -> dict[str, Any] | None:
+    """The last comment whose first line is `heading`, among those `keep` takes: `## Specification notes` is no
+    `## Spec`. A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
     found = [
         note
         for note in notes(node)
         if re.sub(r"\A\s*> 🤖 AI[ \t]*\n\s*", "", note["body"]).strip().split("\n", 1)[0].rstrip()
         == heading
+        and keep(note)
     ]
     return found[-1] if found else None
 
@@ -1118,10 +1121,12 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
 
 
 def demo_form(pull: dict[str, Any]) -> list[str]:
-    """A line when the PR's newest `## Demo` comment, by a trusted author, links a video (a release asset, any URL
-    but a user-attachments one) instead of embedding it, or embeds none; a PR with no demo has none."""
-    demo = headed(pull, "## Demo") if "comments" in pull else None
-    if demo is None or not trusted(pull, demo):
+    """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video
+    (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR with no
+    demo has none. A stranger's demo neither holds nor clears the merge."""
+    shown = lambda note: not note.get("isMinimized") and trusted(pull, note)
+    demo = headed(pull, "## Demo", shown) if "comments" in pull else None
+    if demo is None:
         return []
     urls = URL.findall(demo["body"])
     linked = [url for url in urls if not url.startswith(ATTACHMENT)]
