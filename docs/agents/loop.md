@@ -1,8 +1,7 @@
 # Loop facts
 
-The engineering loop's values for this repo. The gatekeeper's policy is
-[gatekeeper.md](gatekeeper.md); `engineering/skills/engineering-loop/SKILL.md` (Approvals and
-proof) defines what each setting approves and what still waits for the owner.
+The engineering loop's values for this repo. `engineering/skills/engineering-loop/SKILL.md`
+(Approvals and proof) defines what each setting approves and what still waits for the owner.
 
 Orchestration backend: omnigent
 
@@ -11,6 +10,20 @@ Worker model: mid for size:S or smaller
 A mid worker costs about half a top one per item, and a small item needs no more.
 
 Verifier model: mid for not risk:high
+
+## Settings
+
+```yaml
+spec:
+  auto: true
+
+risk:
+  verifier: true
+  paths:
+    - .github/**
+    - CODEOWNERS
+    - docs/agents/loop.md
+```
 
 ## Approvals
 
