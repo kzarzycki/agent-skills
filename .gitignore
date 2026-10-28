@@ -18,7 +18,6 @@ content/content
 engineering/engineering
 experimental/experimental
 research/research
-workflow/workflow
 
 # APM dependencies
 apm_modules/
