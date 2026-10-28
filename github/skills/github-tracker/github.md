@@ -139,18 +139,24 @@ issue.
 ### Input: the split manifest
 
 The batch is a split manifest (docs/layers.md, Split manifest): the JSON file a split
-stage's skill writes, with `items` of `title`, `spec` and
-`blocked_by`. The apply step reads the file and never edits it. Each item becomes one
-issue of the batch below:
+stage's skill writes, with `items` of `title`, `spec` and `blocked_by`. The apply step
+never edits it. Run `uv run <this skill's folder>/scripts/issue_batch.py github <manifest>
+[--label <name>]...` from the checkout: it refuses the file before anything is rendered
+(unreadable, a `version` other than 1, a missing or non-string field, a duplicate title,
+a blocker that names no item, a cycle) and otherwise prints the canonical batch below as
+JSON, with `batch_sha256` and each issue's marker and marked body. Do not derive the hash
+or the order by hand. Each item becomes one issue:
 
 - `title` is the issue's title and identity; `spec` is its `body` byte-for-byte;
   `blocked_by` is its `blockers`.
 - `labels` come from the caller, one list for every issue (the project's label map,
-  issues.md, Labels), since the manifest holds none. The caller also names the parent
-  issue (the epic), which each issue joins as a sub-issue in the relationships phase.
-- Stop before anything is rendered on an unreadable file, a `version` other than 1, a
-  missing or non-string field, a duplicate title, a blocker that names no item, or a
-  cycle. A flow engine applies the same file with its own checks instead.
+  issues.md, Labels), since the manifest holds none: each `--label` is one. With none, the
+  script labels every issue `ready-for-agent`, as the ticket-splitting skill did before the
+  manifest, so an apply with no label list ends with the same label on GitHub. A project
+  whose ready label differs passes its own.
+- The caller also names the parent issue (the epic), which each issue joins as a
+  sub-issue in the relationships phase.
+- A flow engine applies the same file with its own checks instead.
 
 ### Canonical batch
 

@@ -12,14 +12,22 @@ conventions are done with `gh`. A project whose `docs/agents/issue-tracker.md` s
 `Tracker: GitHub (github-tracker's github.md)`, or `engineering-loop's github.md` as before
 this package split, follows it in place.
 
-Two scripts, each run with `uv run <this skill's folder>/scripts/<name>.py` from the
-checkout, read the label names and the tracker settings through the `gatekeeper` skill's
-`gatekeeper.py`, found where the host installed that skill (the package depends on
-`gatekeeper`), and exit naming that skill when it is missing:
+Three scripts, each run with `uv run <this skill's folder>/scripts/<name>.py` from the
+checkout:
 
-- `scripts/labels.py` syncs the repo's labels with the loop's fixed set and the project's
+- `scripts/labels.py` (reads the label names and tracker settings through the `gatekeeper`
+  skill's `gatekeeper.py`, found where the host installed that skill, and exits naming it when
+  it is missing) syncs the repo's labels with the loop's fixed set and the project's
   components and categories (github.md, Labels).
 - `scripts/board.py` moves an issue to a board column, or prints the loop's column for it
-  (github.md, Board).
+  (github.md, Board); it reads them the same way.
+- `scripts/issue_batch.py` validates a split manifest and prints the canonical issue batch with
+  its `batch_sha256` and markers (`github`), or writes the manifest as numbered ticket files
+  (`local`). Run `github` whenever github.md's Publish an issue batch starts from a manifest;
+  it is stdlib only and calls no tracker.
+
+[local.md](local.md) is the realization for a project that keeps tickets as local files: read
+it when `docs/agents/issue-tracker.md` names local files as the tracker, to apply a split
+manifest with `issue_batch.py local`.
 
 Each docstring is its manual.

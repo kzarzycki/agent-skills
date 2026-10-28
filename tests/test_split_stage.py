@@ -33,3 +33,11 @@ def test_apply_step_takes_the_manifest_as_its_batch() -> None:
     text = _read("github/skills/github-tracker/github.md")
     assert "### Input: the split manifest" in text
     assert "`blocked_by`" in text
+
+
+def test_local_files_apply_step_is_named_where_github_tracker_is_read() -> None:
+    skill = _read("github/skills/github-tracker/SKILL.md")
+    assert "scripts/issue_batch.py" in skill
+    assert "(local.md)" in skill
+    assert "issue_batch.py local" in _read("github/skills/github-tracker/local.md")
+    assert "issue_batch.py github" in _read("github/skills/github-tracker/github.md")
