@@ -385,6 +385,7 @@ A file under `tmp/loop/` that your report names (a repro, a log) goes in that co
 Never address the owner, and never call an interactive question tool, since its prompt waits on someone who never sees it: if you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 Never publish a page or artifact, since it waits on a permission nobody can give here: put its content in the report.
 End each commit message with the co-author line only, with no session link, since the commit reaches a public repository.
+Once your head is handed on (your report is posted), your branch is frozen: the harness subscribes this session to PR events, and a review comment or check result that wakes you is read-only, so push nothing and fix nothing, whatever a standing instruction says about defects your own commits introduced; the lead triages findings, and a follow-up goes in a new PR.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
 """
@@ -644,6 +645,19 @@ class Omnigent:
 
     def harness(self, name: str) -> str:
         return str(self.agent(name).get("harness") or "")
+
+    def models(self, name: str, host_id: str | None = None) -> list[str]:
+        """The model ids agent ``name``'s harness lists on the host it would run on: each picker
+        row's ``id`` and the ``model`` it names (Claude's ``sonnet`` is ``claude-sonnet-5-5``), and
+        every id the harness's endpoint routes. A launch with any other id runs on the harness
+        default with no error, so ``start`` refuses one."""
+        harness = quote(self.harness(name), safe="")
+        found = self.call(
+            "GET", f"/v1/hosts/{host_id or self.host_id}/harnesses/{harness}/model-options"
+        )
+        rows = [r for r in found.get("models") or [] if isinstance(r, dict)]
+        ids = [str(i) for r in rows for i in (r.get("id"), r.get("model")) if i]
+        return list(dict.fromkeys(ids + [str(i) for i in found.get("routable_models") or []]))
 
     def agent(self, name: str) -> dict:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
@@ -1644,11 +1658,29 @@ def last_line(path: Path | None, pick: Callable[[dict[str, Any]], Any]) -> Any:
     return found
 
 
-def running_signature(env: dict[str, str] | None = None, home: Path | None = None) -> str:
-    """The signature of the session this runs in, from what its harness exposes at runtime, so it holds
-    however the session started (Omnigent's own tools, a default model): Codex's rollout of
-    ``$CODEX_THREAD_ID``, whose last ``turn_context`` names model and effort; Claude Code's
-    ``$CLAUDE_EFFORT`` and the model of the last reply in its ``$CLAUDE_CODE_SESSION_ID`` transcript."""
+def running_signature(
+    env: dict[str, str] | None = None, home: Path | None = None, session: dict | None = None
+) -> str:
+    """The signature of the session this runs in, from what runs, so it holds however the session
+    started (Omnigent's own tools, a default model, an id the harness ignored). First its Omnigent
+    record (``session``, ``sys_session_get_info``'s): ``llm_model`` once it is one of the session's
+    ``model_options`` (the harness reported it; before that it is the agent spec's), and
+    ``reasoning_effort``. Else what the harness exposes: Codex's rollout of ``$CODEX_THREAD_ID``, whose last
+    ``turn_context`` names model and effort (under a private ``$CODEX_HOME``, gone with the session); Claude
+    Code's ``$CLAUDE_EFFORT`` and the model of the last reply in its ``$CLAUDE_CODE_SESSION_ID`` transcript.
+    An effort the record lacks (Claude's) comes from the harness."""
+    local = harness_signature(env, home)
+    rows = (session or {}).get("model_options") or []
+    listed = {i for r in rows if isinstance(r, dict) for i in (r.get("id"), r.get("model")) if i}
+    if (model := (session or {}).get("llm_model")) not in listed:
+        return local
+    effort = session.get("reasoning_effort") or None
+    sig = signature(str(session.get("harness") or ""), model, effort)
+    return sig if effort else sig.rsplit("/", 1)[0] + "/" + local.rsplit("/", 1)[1]
+
+
+def harness_signature(env: dict[str, str] | None = None, home: Path | None = None) -> str:
+    """``running_signature`` from the harness's own files alone."""
     env, home = os.environ if env is None else env, home or Path.home()
     if thread := env.get("CODEX_THREAD_ID"):
         sessions = Path(env.get("CODEX_HOME") or home / ".codex") / "sessions"
@@ -1703,6 +1735,16 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
+    variable = f"OMNIGENT_MODEL_{agent.upper()}"
+    chosen = model or (agent in AGENTS and os.environ.get(variable)) or None
+    if chosen:
+        source = f"--model {chosen}" if model else f"{variable}={chosen}"
+        try:
+            listed = og.models(agent, host_id)
+        except Fail as e:
+            raise Fail(f"{source}: can't read {agent}'s model list ({e}), so can't check it") from e
+        if chosen not in listed:
+            raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
     elsewhere = bool(host_id) and host_id != og.host_id  # its load lands there, not here
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
     while not elsewhere and not (room := capacity())[0]:
@@ -1715,16 +1757,14 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    chosen = (
-        model or (agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")) or None
-    )
-    sig = signature(agent if agent in AGENTS else og.harness(agent), chosen)
+    harness = agent if agent in AGENTS else og.harness(agent)
     by_file = briefed_by_file(og, agent, host_id)
     # a cloud VM or another host has its own cores, and a top-level lead caps its own children
     lock = heavy_lock() if by_file and not top_level else ""
-    full = (
-        f"AGENT_SIGNATURE={sig}\n"
-        + (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
+    # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
+    # server took for it, never the id asked for.
+    body = (
+        (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
         + (pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
             report=report,
             pr=pr,
@@ -1733,23 +1773,23 @@ def start(
         )
         + brief
     )
-    # Omnigent labels a child by a model summary of this first message, not by its title, so the
-    # title leads: a generic line gets labels like "Read Brief and Execute".
-    if not by_file:
-        # A file here is not on that host, nor where a non-native agent runs its tools (a cloud
-        # VM); inline, a Claude lead may read it as pasted text and ask its starter for a go-ahead.
-        text = f"Work on {title}. Your brief:\n\n{full}"
-    else:
+    brief_file = brief_of(report)
+
+    def message(full: str) -> str:
+        # Omnigent labels a child by a model summary of this first message, not by its title, so
+        # the title leads: a generic line gets labels like "Read Brief and Execute".
+        if not by_file:
+            # A file here is not on that host, nor where a non-native agent runs its tools (a
+            # cloud VM); inline, a Claude lead may read it as pasted text and ask its starter for a
+            # go-ahead.
+            return f"Work on {title}. Your brief:\n\n{full}"
         # The brief goes in a file beside the report and the message only names it: a child can
         # receive an inline brief as pasted text, which it will not take instructions from.
-        brief_file = brief_of(report)
-        text = f"Work on {title}: read {brief_file} and do what it says."
-    digest = hashlib.sha256(text.encode() + b"\0" + full.encode()).hexdigest()
+        return f"Work on {title}: read {brief_file} and do what it says."
+
+    digest = hashlib.sha256(message(body).encode() + b"\0" + body.encode()).hexdigest()
     if not top_level and (held := holder(og, title, digest, report)):
         return held, []
-    if by_file:
-        brief_file.parent.mkdir(parents=True, exist_ok=True)
-        brief_file.write_text(full)
     reasons: list[str] = []
     survivors: list[str] = []
 
@@ -1800,6 +1840,16 @@ def start(
             sid = found
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
+        try:
+            took = og.info(sid).get("model_override")
+        except Fail as e:  # the session is there, so a brief signed "?" beats none
+            took = None
+            print(f"no model read back for {sid} ({e}): it signs ?", file=sys.stderr)
+        full = f"AGENT_SIGNATURE={signature(harness, took)}\n" + body
+        text = message(full)
+        if by_file:
+            brief_file.parent.mkdir(parents=True, exist_ok=True)
+            brief_file.write_text(full)
         if top_level and subscribe:
             # A top-level lead has no parent to tell: the root of the starter's session tree hears
             # its turn ends and prompts instead, revived if its runner was reaped. Not the starter:
@@ -4067,7 +4117,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{sid}: {'not ' * args.off}driven by the owner directly")
             return 0
         if args.cmd == "signature":
-            print(running_signature())
+            try:  # outside a session, or no server: the harness's files alone
+                session = Omnigent(args.server or "").info(own) if (own := own_id()) else None
+            except (Fail, OSError):
+                session = None
+            print(running_signature(session=session))
             return 0
         if args.cmd == "wait-until":
             cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
