@@ -22,7 +22,7 @@ Run in the project's checkout, from the installed engineering-loop skill, `--dry
   deleted or folded, since its carriers can't be counted. Dependabot's are kept, since it recreates them and its PRs use them.
 
 A second run changes nothing. `--dry-run` reads the same and writes nothing. Without docs/agents/issue-tracker.md it
-refuses, since nothing would say which labels are the repo's. Exit 1 with gh's reason. Stdlib, and PyYAML through approvals.py.
+refuses, since nothing would say which labels are the repo's. Exit 1 with gh's reason. Stdlib, and PyYAML through gatekeeper.py.
 """
 
 from __future__ import annotations
@@ -33,9 +33,9 @@ import subprocess
 import sys
 from urllib.parse import quote
 
-# importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
+# importing gatekeeper.py would cache its bytecode in the installed skill folder, an untracked change there
 sys.dont_write_bytecode = True
-from approvals import (  # the label names, defined once
+from gatekeeper import (  # the label names, defined once
     BUG,
     EPIC,
     MERGE_LABEL,

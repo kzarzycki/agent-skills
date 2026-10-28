@@ -29,10 +29,10 @@ import subprocess
 import sys
 from typing import Any
 
-# importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
+# importing gatekeeper.py would cache its bytecode in the installed skill folder, an untracked change there
 sys.dont_write_bytecode = True
 # the label names and the docs' reading, defined once
-from approvals import (
+from gatekeeper import (
     NEEDS_OWNER,
     READY,
     TRACKER,

@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
-SPEC = importlib.util.spec_from_file_location("approvals", SCRIPTS / "approvals.py")
+SPEC = importlib.util.spec_from_file_location("gatekeeper", SCRIPTS / "gatekeeper.py")
 assert SPEC and SPEC.loader
 approvals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(approvals)
