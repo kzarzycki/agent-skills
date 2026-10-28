@@ -4,10 +4,13 @@ Codex with the skills of the packages it depends on beside its own."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -149,6 +152,38 @@ COPIES = [f"{name}/{script}" for name, scripts in RESOLVER.items() for script in
 def test_every_copy_of_the_resolver_is_the_same() -> None:
     copies = {copy: resolver(REPOSITORY / copy) for copy in COPIES}
     assert len(set(copies.values())) == 1, sorted(copies)
+
+
+@pytest.mark.parametrize("copy", COPIES)
+def test_the_resolver_finds_a_skill_in_claude_codes_cache(copy: str, tmp_path: Path) -> None:
+    """Claude Code installs each plugin at `<marketplace>/<plugin>/<version>/` in its cache and marks a version an
+    update replaced with `.orphaned_at`: the newest version that isn't orphaned wins, and with none the script exits
+    naming the skill."""
+    package, script = copy.split("/", 1)
+    marketplace = tmp_path / "cache" / "kzarzycki-agent-skills"
+    copied = marketplace / package / "0.1.0" / script
+    copied.parent.mkdir(parents=True)
+    for version, age in (("0.1.0", 300), ("0.2.0", 200), ("0.3.0", 100)):
+        skill = marketplace / "gatekeeper" / version / "skills" / "gatekeeper"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("gatekeeper")
+        os.utime(skill, (time.time() - age,) * 2)
+    (marketplace / "gatekeeper" / "0.3.0" / ".orphaned_at").write_text("0")
+    # the resolver alone, at the copy's path: the script itself would resolve its dependencies on import
+    copied.write_text("import sys\nfrom pathlib import Path\n\n\n" + resolver(REPOSITORY / copy))
+    spec = importlib.util.spec_from_file_location("resolver", copied)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert (
+        module.installed("gatekeeper")
+        == (marketplace / "gatekeeper" / "0.2.0" / "skills" / "gatekeeper" / "scripts").resolve()
+    )
+    for version in ("0.1.0", "0.2.0"):
+        (marketplace / "gatekeeper" / version / ".orphaned_at").write_text("0")
+    with pytest.raises(SystemExit, match="needs the `gatekeeper` skill"):
+        module.installed("gatekeeper")
 
 
 def test_a_project_pinned_to_engineering_keeps_the_old_script_paths(tmp_path: Path) -> None:
