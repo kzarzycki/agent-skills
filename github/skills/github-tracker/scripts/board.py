@@ -8,7 +8,7 @@
     uv run scripts/board.py <issue> <column>
     uv run scripts/board.py column <issue>
 
-The columns are the loop's stages (the skill's issues.md, Board), each shown in the board column of its own name unless
+The columns are the loop's stages (engineering-loop's issues.md, Board), each shown in the board column of its own name unless
 the `board` section of docs/agents/issue-tracker.md's settings block maps it to another, one key per loop column
 (`Build = "In progress"`), several loop columns to one board column allowed. A name that is
 no loop column is taken as a board column. Adds the issue to the board when it is not there yet,

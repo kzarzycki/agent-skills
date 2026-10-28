@@ -1022,7 +1022,8 @@ def _run_package_tests(stage: Path) -> tuple[str, str]:
 def _sibling_dependencies(package: Path) -> list[Path]:
     """The packages beside `package` that its apm.yml pulls in by git (`<owner>/<repo>/<name>`), and theirs."""
     found: list[Path] = []
-    manifest = yaml.safe_load((package / "apm.yml").read_text()) or {}
+    path = package / "apm.yml"
+    manifest = (yaml.safe_load(path.read_text()) if path.is_file() else None) or {}
     for item in (manifest.get("dependencies") or {}).get("apm") or []:
         name = str(item.get("git", "")).rsplit("/", 1)[-1] if isinstance(item, dict) else ""
         if name and (sibling := package.parent / name).joinpath("apm.yml").is_file():
