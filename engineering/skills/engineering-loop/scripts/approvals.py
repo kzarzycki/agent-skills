@@ -111,7 +111,9 @@ check again; a record without env is never reused. The host stays in the record:
 it, and posted text writes the home directory `~` (public), since a public board would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
-full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
+full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
+loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
+no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
 with CI, the checks `check merge` waits for passed, and the change is not high risk and has no `approved:merge`, since the
@@ -170,7 +172,7 @@ changed, and `approve` minimizes as outdated each earlier record, which it super
 
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `loop` holds `cap`, `ci`, `opt_out` and `local_ci_env`; `spec` holds `auto`.
+the block. `loop` holds `cap`, `ci`, `opt_out`, `local_ci_env` and `batch_queue`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -392,6 +394,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "ci": bool,
         "opt_out": bool,
         "local_ci_env": list,
+        "batch_queue": bool,
     },
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
@@ -1306,6 +1309,12 @@ def waits(
     return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
 
 
+def batch_queue(loop: str | None) -> bool:
+    """Whether loop.md opts into a batching merge queue (`batch_queue: true` under `loop`), without which no batch
+    proof stands in for the CI wait: a project that never set one up gets no second way to satisfy it."""
+    return settings(loop).get("batch_queue") is True
+
+
 def no_ci(loop: str | None) -> bool:
     return settings(loop).get("ci") is False
 
@@ -1436,7 +1445,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
     `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
-    if queued(pull) is None:
+    if batch_queue(loop) and queued(pull) is None:
         return []
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
@@ -1645,6 +1654,12 @@ def fetched(sha: str) -> bool:
 def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | None) -> int:
     """check queue: exit 0 when `head` may enter a batching merge queue, else one line per reason and exit 1."""
     where, found = f"PR #{pull['number']}", []
+    if not batch_queue(loop):
+        print(
+            f"{where}: loop.md doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+            " through `land`"
+        )
+        return 1
     if pull["state"] != "OPEN":
         found.append(f"{where} is {pull['state'].lower()}: nothing to queue")
     if pull["headRefOid"].lower() != head.lower():
