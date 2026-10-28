@@ -44,6 +44,14 @@ evidence and anything this skill already states go in the PR or issue that set t
 
 ### Settings
 
+The gatekeeper is `scripts/gatekeeper.py`: `check build|queue|merge`, `record
+approval|verdict|checks`, `land [--wait]`, `report [--json]`, `batch` and `delegate`, exit 0
+allowed, 1 refused, 3 waiting; its docstring is the manual. It reaches the tracker, the forge
+and the evidence store only through ports, each an adapter the policy's `adapters` names;
+`scripts/github_adapter.py` is GitHub's, the only one, loaded by `gatekeeper.py`.
+`scripts/approvals.py`, its former name, runs it with today's verbs (`approve`, `verdict`,
+`local-ci`) for one release line, so every `approvals.py` command below works either way.
+
 gatekeeper.md holds the gatekeeper's policy, a fenced `yaml` block under `## Policy`, which
 `approvals.py` reads, so a team that takes only the gatekeeper writes no loop file; loop.md
 keeps the prose for people and agents: why a path is critical, how to judge a finding, the
@@ -125,8 +133,13 @@ land:
 
 checks:
   changed: mise run test:changed
-  check: mise run check
-  all: mise run check:all   # what `local-ci` runs and records
+  check: mise run check     # what `record checks` runs and records
+  all: mise run check:all   # what `local-ci` (`record checks --all`) runs and records
+
+adapters:   # each port's adapter; github is the one there is
+  tracker: github
+  forge: github
+  evidence: github
 
 carry_over_main:
   # a clean merge of main keeps the head's verdict unless either side changed one of these
@@ -149,7 +162,8 @@ carry_over_main:
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
-| `checks` | `changed`, `check`, `all`, each a shell command | the project's checks: while iterating, before every push, and the full merge check, which `local-ci` runs and records | `local-ci` runs `mise run check:all` |
+| `checks` | `changed`, `check`, `all`, each a shell command | the project's checks: while iterating, before every push (`record checks`), and the full merge check, which `local-ci` runs and records | `record checks` runs `mise run check`, `local-ci` `mise run check:all` |
+| `adapters` | `tracker`, `forge`, `evidence`, each an adapter's name | the tool behind each of the gatekeeper's ports; a name with no adapter is refused | `github` |
 | `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): a clean merge of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own

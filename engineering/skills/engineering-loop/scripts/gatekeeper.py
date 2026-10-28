@@ -3,21 +3,26 @@
 # requires-python = ">=3.9"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
-"""Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
+"""Gatekeeper (engineering-loop): every step leaves proof on the forge, and this checks it before the loop moves on.
 
-    uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
-    uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
-    uv run scripts/approvals.py check queue <pr> --head <sha>  # may that head enter a batching merge queue; exit 0 or 1
-    uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # the queue's proof
-    uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
-    uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
-    uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
-    uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
-    uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
-    uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
-    uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `checks.all` on the PR head
-    uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
-    uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
+    uv run scripts/gatekeeper.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    uv run scripts/gatekeeper.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
+    uv run scripts/gatekeeper.py check queue <pr> --head <sha>  # may that head enter a batching merge queue; exit 0 or 1
+    uv run scripts/gatekeeper.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # the queue's proof
+    uv run scripts/gatekeeper.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
+    uv run scripts/gatekeeper.py record approval <spec|plan> <issue> --by owner   # on the owner's word
+    uv run scripts/gatekeeper.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
+    uv run scripts/gatekeeper.py record verdict <pr> <report>  # post a verifier report as a PR review
+    uv run scripts/gatekeeper.py report [--json] <report>   # read a verifier report as verdict does; posts nothing
+    uv run scripts/gatekeeper.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
+    uv run scripts/gatekeeper.py record checks [--all] <pr>  # run `checks.check` (`checks.all`) on the PR head, post it
+    uv run scripts/gatekeeper.py record checks [--all]      # the same on HEAD before a PR; `record checks <pr>` reuses it
+    uv run scripts/gatekeeper.py release <issue>            # parked or dropped: remove the assignee the loop added
+
+Today's verbs stay for one release line, as does scripts/approvals.py, which runs this file: `approve` is `record
+approval`, `verdict` is `record verdict`, and `local-ci <pr>` and `local-ci --record` are `record checks --all <pr>`
+and `record checks --all`. Exit codes, for every verb: 0 allowed or done, 1 refused (one line per missing proof), 3
+waiting (run it again).
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
 `## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
@@ -108,7 +113,8 @@ label or a local-ci record holds it, which GitHub never supplies; auto-merge tur
 without a merge is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs the policy's `checks.all`, a shell command, else `mise run check:all`, only on a clean checkout at
-the PR head, and records nothing if the check fails or changes the tree.
+the PR head, and records nothing if the check fails or changes the tree. `record checks` does the same with
+`checks.check`, else `mise run check`, and with `--all` is `local-ci`; a record is reused only for the same command.
 A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
 `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
@@ -148,6 +154,10 @@ predicate, or why the head carries nothing. A git error, a second merge base or 
 nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
 variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
+`report --json` prints, as one JSON object, the facts of a report `verdict` would post: `head`, `counts` (`blocker`,
+`major`, `minor`), `satisfied` (true for `SATISFIED: yes`), `risk` (`level` `low`, else `high` as the gate reads any
+other word, and its `reason`), `findings` (each `id`, `severity`, `path`, `line`, `title`, `body`) and `question`,
+the text of `<report>.question` beside it, else null; a report `verdict` would refuse is refused the same way, exit 1.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
@@ -216,8 +226,13 @@ comment saying so, and the gate takes the label off once a later pass says `Risk
 after that comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says.
 The spec is the issue body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the keys of its settings block's
-`components` and `categories` (tracker_settings). Reads and writes through `gh`. Stdlib, and PyYAML for the settings
-block (SKILL.md § Settings says how it is delivered).
+`components` and `categories` (tracker_settings).
+It reads and writes the tracker, the forge and the evidence only through their ports (PORTS), each an adapter the
+policy's `adapters` section names (`tracker`, `forge`, `evidence`), `github` for one it doesn't: github_adapter.py,
+through `gh`. A name no adapter has is refused, naming it. The status the approvals workflow posts may be named
+`loop:approvals` or `gatekeeper` (the template posts both for one release line): `check merge` never waits for
+either, and `land` reruns either's run. Stdlib, and PyYAML for the settings block (SKILL.md § Settings says how it
+is delivered).
 """
 
 from __future__ import annotations
@@ -418,6 +433,8 @@ GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
 # the commit status the project's approvals workflow posts; its target is the Actions run that posted it
 APPROVALS = "loop:approvals"
+# the gate's own status, posted under both names for one release line (the project template's workflow)
+STATUSES = {APPROVALS, "gatekeeper"}
 RUN = re.compile(r"/actions/runs/(\d+)")
 # a URL in a `## Demo` comment; gh's --attach embeds a video as a bare user-attachments one, which plays inline
 URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
@@ -1584,7 +1601,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     else:
         if required is None:
             # the approvals status is check merge's own output: waiting for it never ends
-            required = required_checks(pull["baseRefName"]) - {APPROVALS} or None
+            required = required_checks(pull["baseRefName"]) - STATUSES or None
         found = ci(where, pull, required)
     return found
 
@@ -2575,7 +2592,7 @@ def landing(
             pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
             or {"contexts": {"nodes": []}}
         )["contexts"]["nodes"]
-        if node.get("__typename") == "StatusContext" and node.get("context") == APPROVALS
+        if node.get("__typename") == "StatusContext" and node.get("context") in STATUSES
     ]
     # Resolving a review thread starts no workflow, so the FAILURE the approvals workflow posted while one was open
     # stays on the head. When every proof holds and that status is all that waits, run its workflow again.
@@ -2584,10 +2601,12 @@ def landing(
         and not owner
         and not no_ci(loop)
         and required <= {name for name, _ in checks}
-        and [name for name, _ in red] == [APPROVALS]
-        and red[0][1] in RED
+        and red
+        and {name for name, _ in red} <= STATUSES
+        and all(state in RED for _, state in red)
     ):
-        stale = f"{where}: every proof holds but `{APPROVALS}` is {red[0][1]} on the head commit"
+        said = " and ".join(f"`{name}` is {state}" for name, state in sorted(red))
+        stale = f"{where}: every proof holds but {said} on the head commit"
         found = RUN.search(max(statuses, key=started).get("targetUrl") or "")
         if found is None:
             print(
@@ -2772,11 +2791,49 @@ def parse_report(
     return heading, heads[-1].lower(), found, closing, qualifier
 
 
-def report_check(report: Path) -> int:
-    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
-    parse_report(report)
-    print(f"{report} reads as a verdict")
+def report_check(report: Path, as_json: bool = False) -> int:
+    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying;
+    with `as_json`, print its facts (facts) instead of the line saying it reads."""
+    parsed = parse_report(report)
+    print(
+        json.dumps(facts(report, *parsed), ensure_ascii=False)
+        if as_json
+        else f"{report} reads as a verdict"
+    )
     return 0
+
+
+def facts(
+    report: Path,
+    _heading: str,
+    head: str,
+    found: list[tuple[str, str, str, str, str, str]],
+    closing: list[str],
+    _qualifier: str,
+) -> dict[str, Any]:
+    """A parsed report's facts, read as the gate reads its review (held, judged): the head, the counts, whether it is
+    satisfied, the risk (`low`, else `high`, as any other word or none reads) and its reason, each finding, and the
+    question the verifier left beside it (`<report>.question`), or None."""
+    verdict_line, satisfied, judgment = closing
+    said = judgment.partition(":")[2].strip()
+    low = re.match(r"low\b", said, re.IGNORECASE)
+    question = report.with_name(report.name + ".question")
+    return {
+        "head": head,
+        "counts": dict(
+            zip(("blocker", "major", "minor"), map(int, COUNTED.fullmatch(verdict_line).groups()))
+        ),
+        "satisfied": satisfied.partition(":")[2].strip().lower().split()[:1] == ["yes"],
+        "risk": {
+            "level": "low" if low else "high",
+            "reason": re.sub(r"^\S+\s*[—–:-]?\s*", "", said),
+        },
+        "findings": [
+            dict(zip(("id", "severity", "path", "line", "title", "body"), finding))
+            for finding in found
+        ],
+        "question": read(question) if question.is_file() else None,
+    }
 
 
 def verdict(pr: int, report: Path) -> int:
@@ -2813,13 +2870,18 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
-# the check local-ci runs without the policy's `checks.all`
-LOCAL_CI = "mise run check:all"
+# the checks `record checks` runs without the policy's `checks.check`, and with --all (local-ci) its `checks.all`
+CHECK, LOCAL_CI = "mise run check", "mise run check:all"
 
 
 def local_ci_command() -> str:
     """The policy's `checks.all`, else LOCAL_CI: the command local-ci runs and records."""
     return settings(project()[1]).get("checks", {}).get("all", LOCAL_CI)
+
+
+def check_command() -> str:
+    """The policy's `checks.check`, else CHECK: the command `record checks` runs without --all."""
+    return settings(project()[1]).get("checks", {}).get("check", CHECK)
 
 
 def recorded(head: str) -> Path:
@@ -2829,8 +2891,8 @@ def recorded(head: str) -> Path:
     return common / "approvals" / "local-ci" / f"{head}.json"
 
 
-def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
-    """Run the project's full check (local_ci_command) on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
+def run_local_ci(pr: int | None, head: str | None, command: str | None = None) -> dict[str, Any]:
+    """Run `command`, else the project's full check (local_ci_command), on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
     check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
 
     def state() -> tuple[str, str]:
@@ -2851,7 +2913,7 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command, env = local_ci_command(), local_ci_env()
+    command, env = command or local_ci_command(), local_ci_env()
     code = subprocess.run(command, shell=True, check=False).returncode
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
@@ -2890,8 +2952,8 @@ def env_line(env: dict[str, str | None]) -> str:
     return f"Env: {' '.join(named) or 'default'}\n"
 
 
-def reusable(head: str) -> dict[str, Any] | None:
-    """A recorded pass on exactly `head` with today's command and environment, or None. A record without `env` (0.23.1
+def reusable(head: str, command: str | None = None) -> dict[str, Any] | None:
+    """A recorded pass on exactly `head` with `command` (else today's local_ci_command) and environment, or None. A record without `env` (0.23.1
     wrote none) never matches, since nothing says what tier it ran."""
     try:
         record = json.loads(recorded(head).read_text())
@@ -2904,26 +2966,26 @@ def reusable(head: str) -> dict[str, Any] | None:
         return None
     same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
         head,
-        local_ci_command(),
+        command or local_ci_command(),
         0,
         local_ci_env(),
     )
     return record if same else None
 
 
-def local_ci(pr: int | None) -> int:
-    """With a PR: post a pass on its head, from a recorded run on that head and command or from a run now. Without
-    one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
+def local_ci(pr: int | None, command: str | None = None) -> int:
+    """With a PR: post a pass on its head, from a recorded run on that head and `command` (else local_ci_command) or
+    from a run now. Without one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
     if pr is None:
-        record = run_local_ci(None, None)
+        record = run_local_ci(None, None, command)
         print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
         return 0
     head = pull_request(pr)["headRefOid"]
-    record = reusable(head)
+    record = reusable(head, command)
     if record:
         source = f"From the recorded run at {record['time']}, not run again.\n"
     else:
-        record = run_local_ci(pr, head)
+        record = run_local_ci(pr, head, command)
         source = ""
     prove(
         pr,
@@ -3001,21 +3063,27 @@ def main(argv: list[str]) -> int:
     batching.add_argument("--batch", required=True)
     batching.add_argument("--exit", type=int, required=True)
     batching.add_argument("--log", type=Path, required=True)
-    approving = commands.add_parser("approve")
-    approving.add_argument("point", choices=POINTS)
-    approving.add_argument("number", type=int)
-    # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest
-    approving.add_argument("--by", choices=("owner",), required=True)
+    recording = commands.add_parser("record").add_subparsers(dest="proof", required=True)
+    # today's verbs, each the same as its `record` form, for one release line
+    for approving in (commands.add_parser("approve"), recording.add_parser("approval")):
+        approving.add_argument("point", choices=POINTS)
+        approving.add_argument("number", type=int)
+        # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest
+        approving.add_argument("--by", choices=("owner",), required=True)
+    for posting in (commands.add_parser("verdict"), recording.add_parser("verdict")):
+        posting.add_argument("pr", type=int)
+        posting.add_argument("report", type=Path)
+    checking = recording.add_parser("checks")
+    checking.add_argument("pr", type=int, nargs="?")
+    checking.add_argument("--all", action="store_true")
     delegating = commands.add_parser("delegate")
     delegating.add_argument("pr", type=int)
-    posting = commands.add_parser("verdict")
-    posting.add_argument("pr", type=int)
-    posting.add_argument("report", type=Path)
     reading = commands.add_parser("report")
     reading.add_argument("report", type=Path)
-    recording = commands.add_parser("local-ci")
-    recording.add_argument("pr", type=int, nargs="?")
-    recording.add_argument("--record", action="store_true")
+    reading.add_argument("--json", action="store_true")
+    local = commands.add_parser("local-ci")
+    local.add_argument("pr", type=int, nargs="?")
+    local.add_argument("--record", action="store_true")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
@@ -3030,7 +3098,7 @@ def main(argv: list[str]) -> int:
     using = None  # the policy's adapters, read at the first port call
     try:
         if args.command == "report":  # reads a local file only, so no remote needs choosing
-            return report_check(args.report)
+            return report_check(args.report, args.json)
         one_repo()
         if args.command == "check":
             if args.point == "queue" and (args.pr is None or args.head is None):
@@ -3044,7 +3112,9 @@ def main(argv: list[str]) -> int:
             return check(args.point, args.pr, args.head, args.issue)
         if args.command == "batch":
             return batch(args.pr, args.merge, args.batch, args.exit, args.log)
-        if args.command == "approve":
+        if args.command == "record" and args.proof == "checks":
+            return local_ci(args.pr, local_ci_command() if args.all else check_command())
+        if args.command == "approve" or args.command == "record" and args.proof == "approval":
             return approve(args.point, args.number)
         if args.command == "delegate":
             return delegate(args.pr)

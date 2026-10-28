@@ -5905,7 +5905,9 @@ def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[s
     )
     landing["records"] = {HEAD}
     monkeypatch.setattr(
-        approvals, "reusable", lambda head: {"head": head} if head in landing["records"] else None
+        approvals,
+        "reusable",
+        lambda head, _command=None: {"head": head} if head in landing["records"] else None,
     )
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     return landing
@@ -6133,11 +6135,13 @@ def posting(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     `ran` each head the check would run on, which it never does here."""
     state: dict[str, Any] = {"posted": [], "ran": [], "loop": CARRY}
 
-    def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
+    def run_local_ci(
+        pr: int | None, head: str | None, _command: str | None = None
+    ) -> dict[str, Any]:
         state["ran"].append(head)
         raise approvals.Refused("the check would run")
 
-    monkeypatch.setattr(approvals, "comment", lambda _number, body: state["posted"].append(body))
+    monkeypatch.setattr(approvals, "prove", lambda _number, body: state["posted"].append(body))
     monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
     monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
@@ -6413,4 +6417,156 @@ def test_check_merge_runs_end_to_end_on_in_memory_adapters_with_no_gh(
     assert approvals.main(["check", "merge", "7"]) == 1
     assert capsys.readouterr().out == (
         "gatekeeper.md's `adapters.tracker` names 'memory', which no adapter implements: github\n"
+    )
+
+
+# --- the gatekeeper CLI ---
+
+
+def test_report_json_prints_the_reports_facts_as_the_gate_reads_them(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "pr7-v2.md"
+    report.write_text(REPORT)
+    assert approvals.main(["report", "--json", str(report)]) == 0
+    facts = json.loads(capsys.readouterr().out)
+    assert {key: facts[key] for key in ("head", "counts", "satisfied", "risk", "question")} == {
+        "head": HEAD,
+        "counts": {"blocker": 1, "major": 0, "minor": 2},
+        "satisfied": False,
+        "risk": {"level": "low", "reason": "a test fixture"},
+        "question": None,
+    }
+    assert [(f["id"], f["severity"], f["path"], f["line"]) for f in facts["findings"]] == [
+        ("C1", "blocker", "app.py", "12"),
+        ("C2", "minor", "app.py", "40"),
+        ("S1", "minor", "docs/old.md", "3"),
+    ]
+    assert facts["findings"][0]["title"] == "a draft merges on its skipped checks"
+    assert facts["findings"][0]["body"] == "- Failing input: a draft."
+    # any word but `low` reads as high, and a question beside the report is carried
+    report.write_text(REPORT.replace("Risk: low — a test fixture", "Risk: medium-ish"))
+    (tmp_path / "pr7-v2.md.question").write_text("Run the proof on a host with a GPU?\n")
+    assert approvals.main(["report", "--json", str(report)]) == 0
+    facts = json.loads(capsys.readouterr().out)
+    assert (facts["risk"], facts["question"]) == (
+        {"level": "high", "reason": ""},
+        "Run the proof on a host with a GPU?\n",
+    )
+
+
+def test_report_json_refuses_what_report_refuses_with_the_same_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(REPORT.replace("SATISFIED: no\n", ""))
+    assert approvals.main(["report", str(report)]) == 1
+    said = capsys.readouterr().out
+    assert approvals.main(["report", "--json", str(report)]) == 1
+    assert (
+        capsys.readouterr().out
+        == said
+        == (f"{report} has no `VERDICT:` or `SATISFIED:` line: the report is unfinished\n")
+    )
+
+
+@pytest.mark.parametrize(
+    ("argv", "command"),
+    [
+        (["record", "checks", "7"], "make check"),
+        (["record", "checks", "--all", "7"], "make all"),
+        (["local-ci", "7"], "make all"),
+    ],
+)
+def test_record_checks_runs_the_policys_check_and_with_all_its_full_check(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    command: str,
+) -> None:
+    checkout["loop"] = add(LOOP, "checks", "check: make check\nall: make all\n")
+    ran: list[str] = []
+    monkeypatch.setattr(
+        approvals.subprocess,
+        "run",
+        lambda command, **_kw: ran.append(command) or subprocess.CompletedProcess(command, 0),
+    )
+    assert approvals.main(argv) == 0
+    assert ran == [command]
+    assert github == [
+        ("comment", 7, f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: {command}\nEnv: default\n")
+    ]
+    # the record is reused for the same command only
+    github.clear()
+    assert approvals.main(argv) == 0
+    assert ran == [command]
+    other = (
+        ["record", "checks", "7"] if "make all" == command else ["record", "checks", "--all", "7"]
+    )
+    assert approvals.main(other) == 0
+    assert len(ran) == 2
+
+
+def test_record_checks_without_a_pr_records_head_for_the_pr_to_reuse(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[str] = []
+    monkeypatch.setattr(
+        approvals.subprocess,
+        "run",
+        lambda command, **_kw: ran.append(command) or subprocess.CompletedProcess(command, 0),
+    )
+    assert approvals.main(["record", "checks"]) == 0
+    assert approvals.main(["record", "checks", "7"]) == 0
+    assert ran == [approvals.CHECK]
+    assert "From the recorded run at" in github[0][2]
+
+
+def test_record_approval_and_record_verdict_are_approve_and_verdict(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: specced(1, "kind:bug", "needs-owner"))
+    assert approvals.main(["record", "approval", "spec", "1", "--by", "owner"]) == 0
+    recorded = list(github)
+    github.clear()
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
+    assert github == recorded
+    calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "verdict", lambda pr, report: calls.append((pr, report)) or 0)
+    assert approvals.main(["record", "verdict", "7", "r.md"]) == 0
+    assert approvals.main(["verdict", "7", "r.md"]) == 0
+    assert calls == [(7, Path("r.md"))] * 2
+
+
+def test_check_merge_never_waits_for_the_gates_own_status_under_either_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        approvals, "required_checks", lambda _base: {"check", "loop:approvals", "gatekeeper"}
+    )
+    pr = pull(reviews=(VERDICT,))
+    assert approvals.waits(pr, [approved(1, "area:web")], LOOP) == []
+
+
+@pytest.mark.parametrize("names", [["gatekeeper"], ["loop:approvals", "gatekeeper"]])
+def test_land_reruns_the_gates_status_run_under_its_new_name_or_both(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], names: list[str]
+) -> None:
+    pr = approvals_red(landing)
+    landing["rulesets"] = ["check", *names]
+    contexts = pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+    status = contexts.pop()
+    contexts += [{**status, "context": name} for name in names]
+    said = " and ".join(f"`{name}` is FAILURE" for name in sorted(names))
+    assert landed(capsys, landing) == (
+        approvals.WAITING,
+        [
+            (
+                f"PR #7: every proof holds but {said} on the head commit: reran run 12345,"
+                " since resolving a review thread starts no workflow; run land again"
+            )
+        ],
+        [("run", "view", "12345"), ("run", "rerun", "12345")],
     )
