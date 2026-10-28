@@ -35,7 +35,7 @@ question for the owner, not a guess:
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
 | `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
-| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
+| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (github-tracker's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
 Every agent reads loop.md on every step, like a system prompt, so it holds only what agents act
@@ -44,13 +44,15 @@ evidence and anything this skill already states go in the PR or issue that set t
 
 ### Settings
 
-The gatekeeper is `scripts/gatekeeper.py`: `check build|queue|merge`, `record
+The gatekeeper is the `gatekeeper` skill's `scripts/gatekeeper.py`: `check build|queue|merge`, `record
 approval|verdict|checks`, `land [--wait]`, `report [--json]`, `batch` and `delegate`, exit 0
 allowed, 1 refused, 3 waiting; its docstring is the manual. It reaches the tracker, the forge
 and the evidence store only through ports, each an adapter the policy's `adapters` names;
-`scripts/github_adapter.py` is GitHub's, the only one, loaded by `gatekeeper.py`.
+`scripts/github_adapter.py` beside it is GitHub's, the only one, loaded by `gatekeeper.py`.
 `scripts/approvals.py`, its former name, runs it with today's verbs (`approve`, `verdict`,
 `local-ci`) for one release line, so every `approvals.py` command below works either way.
+This skill's own `scripts/loop.py` runs the loop's two operations that decide nothing, `brief`
+(a verifier pass's brief) and `release` (removes the assignee the loop added).
 
 gatekeeper.md holds the gatekeeper's policy, a fenced `yaml` block under `## Policy`, which
 `approvals.py` reads, so a team that takes only the gatekeeper writes no loop file; loop.md
@@ -73,7 +75,7 @@ wrong type, and refuses a policy file without the block, so a mistyped setting i
 a rule nobody wrote.
 
 The scripts read the block with PyYAML, the one package they need beyond the standard
-library. Each declares it inline (PEP 723), so `uv run <this skill's folder>/scripts/approvals.py` installs it
+library. Each declares it inline (PEP 723), so `uv run <gatekeeper>/scripts/approvals.py` installs it
 into uv's cache on first use and nothing is installed by hand; uv comes with the project's
 mise. Run with a bare `python3` that lacks PyYAML, a script exits with one line saying to
 run it with `uv run`. They need Python 3.9 or later. Every key is optional:
@@ -155,7 +157,7 @@ carry_over_main:
 |---|---|---|---|
 | `spec` | `auto` | a list of `bug`, `follow-up` and `sub-issue`, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
 | `loop` | `cap` | a whole number (The cap) | the default |
-| | `ci` | `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
+| | `ci` | `false` for a project without CI, whose merge proof is then `uv run <gatekeeper>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `local_ci_env` | the environment variables that local check reads (Adopting the loop) | none |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
@@ -229,7 +231,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   says GitHub enforces nothing, since its proofs are the only gate. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
   leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
-  labels with `scripts/labels.py` (github.md, Labels).
+  labels with `<github-tracker>/scripts/labels.py` (github.md, Labels).
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
@@ -242,7 +244,7 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
 draft, `mise run check` before each push is its check. With `ci: false` in gatekeeper.md, the
-check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
+check on a head you push for review is `uv run <gatekeeper>/scripts/approvals.py local-ci --record`
 instead, committed and clean: it runs the merge check, gatekeeper.md's `checks.all` (else
 `mise run check:all`), and records
 the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
@@ -253,12 +255,16 @@ posted comment names those values.
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
-in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
-does them on GitHub. A
+in [issues.md](issues.md), so every project's board looks the same; the `github-tracker` skill's github.md
+does them on GitHub, and github.md below means that file (a project whose tracker line still
+says `engineering-loop's github.md` means the same file). A
 `scripts/` path is relative to this skill's folder, not the repo root: in a project that
 installs the skill it is under the install, such as
-`.agents/skills/engineering-loop/scripts/board.py`. Run it from the worktree with `uv run`,
-which installs what its inline header declares. `scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
+`.agents/skills/engineering-loop/scripts/loop.py`. `<gatekeeper>`, `<github-tracker>` and
+`<browsing>` stand for those skills' folders: the first two come in packages the loop's package
+pulls in, `browsing` in `engineering`, and each sits wherever the host installed it (`.agents/skills/<skill>/` under APM,
+`skills/<skill>/` in its plugin under Claude Code). Run a script from the worktree with `uv run`,
+which installs what its inline header declares. `<browsing>/scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
 asked, and screenshots it (worker.md, Report; its docstring has the flags).
 
 ### Practice
@@ -286,11 +292,11 @@ Only people approve: the owner, or a teammate where loop.md asks for one. No age
 an approval record, since an agent approving its own work is no approval; where nobody
 was asked, the authority is the owner's standing policy in gatekeeper.md, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
-`uv run <this skill's folder>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
+`uv run <gatekeeper>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
 owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
 a later edit needs approving again, plus the `approved:<point>` label. A re-approval says
 what changed and minimizes the records it supersedes as outdated. The verifier only gives
-the verdict, which `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>` posts as a PR
+the verdict, which `uv run <gatekeeper>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
 
 gatekeeper.md's policy (Settings) holds:
@@ -369,7 +375,7 @@ green. A pass counts whichever model family wrote it (Independent verification).
 When a spec or plan needs the owner, add `needs-owner`, comment what to approve, and stop:
 a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
 on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`uv run
-<this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
+<github-tracker>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
 which records their word, adds the label and removes `needs-owner`. With `owner: <login>`
 under gatekeeper.md's `loop`, `check` and `land` do that themselves for a label that login added
 after the spec's last edit, since nothing in it needs an agent's judgment. Changing an
@@ -378,9 +384,9 @@ body, comment briefly what changed and why, remove `approved:spec`, add `needs-o
 until they approve. A spec the owner approved and then edited for wording needs their
 `approve` again, since `approvals.py` can't tell wording from scope; one covered by policy
 needs nothing. `mise run loop:approvals build` before building and `mise run
-loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
+loop:approvals merge` before merging check every proof (`<gatekeeper>/scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
-is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land <pr>` (the
+is missing. An agent merges only with `uv run <gatekeeper>/scripts/approvals.py land <pr>` (the
 project's `loop:land` task): it runs every merge proof, refuses a head in conflict with its
 base, or behind a base that requires no merge queue, marks a draft ready and waits for the CI that starts, and on a ready
 PR merges it pinned to its head, or turns on auto-merge while only required checks are
@@ -403,7 +409,7 @@ A project may instead land a base through a batching merge queue of its own, opt
 `batch_queue: true` under gatekeeper.md's `loop` (without it no batch proof counts): it merges every
 waiting PR's verified head onto the base, runs the full gate once on the result and pushes
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
-`uv run <this skill's folder>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
+`uv run <gatekeeper>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
 it: every merge proof but the CI wait, the head's own `local-ci --record` pass under the
 current environment and, with CI, its `check`, and nothing high risk or
 owner-approved, since the owner's label covers one head landing alone, through `land`. The
@@ -452,8 +458,8 @@ it, a PR with no trail fails the gate.
 - **Verifier** ([verifier.md](verifier.md)): reviews the PR, drives its instance, and
   leaves the tree as it found it.
 
-Agents are started, messaged, watched and closed with the `orchestrating-agents` skill
-(`../orchestrating-agents/SKILL.md`), which picks the backend and holds its rules, reports
+Agents are started, messaged, watched and closed with the `orchestrating-agents` skill,
+which picks the backend and holds its rules, reports
 and questions as files among them. Inside a worker or
 verifier, review angles run as native subagents, never as full harness sessions.
 
@@ -483,7 +489,7 @@ or the owner's private network.
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
   `GH_TOKEN` can expire 10 to 20 min in, its reply is `UNPOSTED REPORT` and then the body
-  verbatim, and the backend's `wait --pr` posts it from the host. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
+  verbatim, and the backend's `wait --pr` posts it from the host. omnigent-agents' `--pr` (Cloud
   workers) has the worker post it and writes it to the report path on the host, so the lead
   reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
   The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
@@ -731,9 +737,9 @@ A rejected finding is not real, so it gets no issue.
 
 ## The cap
 
-The cap is 5 passes, unless the project's gatekeeper.md sets its own with `cap` under `loop` in its policy.
-Every other file says "the cap", so this is the one place to change it, and
-`approvals.py` reads the same value. Pass 1 reviews the PR's full diff; each later pass
+The cap is the gatekeeper's: 5 passes by default (the `gatekeeper` skill, The cap, the one
+place to change it), unless the project's gatekeeper.md sets its own with `cap` under `loop`
+in its policy. Every other file here says "the cap". Pass 1 reviews the PR's full diff; each later pass
 up to the cap reviews the diff since the previous report and reruns its repros. No fix
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of

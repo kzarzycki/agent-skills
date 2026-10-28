@@ -4,7 +4,7 @@ The ask is in the chief's repo, or across it and a sibling repo, which the lead 
 parent directory. Live: it needs a logged-in Omnigent with a local host for both native harnesses,
 and runs only with OMNIGENT_E2E=1 (about three minutes and two agent sessions per case):
 
-    OMNIGENT_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e/test_live_chief_of_staff.py
+    OMNIGENT_E2E=1 uv run pytest -q -m live_agent chief-of-staff/tests/test_live_chief_of_staff.py
 """
 
 from __future__ import annotations
@@ -21,8 +21,13 @@ import pytest
 
 pytestmark = pytest.mark.live_agent
 
-SKILLS = Path(__file__).resolve().parents[2] / "skills"
-SCRIPT = SKILLS / "orchestrating-agents" / "scripts" / "omnigent_agent.py"
+REPOSITORY = Path(__file__).resolve().parents[2]
+SKILLS = {
+    "chief-of-staff": REPOSITORY / "chief-of-staff" / "skills" / "chief-of-staff",
+    "omnigent-agents": REPOSITORY / "omnigent" / "skills" / "omnigent-agents",
+    "orchestrating-agents": REPOSITORY / "engineering" / "skills" / "orchestrating-agents",
+}
+SCRIPT = SKILLS["omnigent-agents"] / "scripts" / "omnigent_agent.py"
 NATIVE = {"claude": "claude-native", "codex": "codex-native"}
 
 
@@ -70,9 +75,9 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
     repo, sibling = parent / "project", parent / "lib"
     repo.mkdir()
     # A native child is prompted for a read outside its workspace, so the skills live inside it.
-    for name in ("chief-of-staff", "orchestrating-agents"):
+    for name, folder in SKILLS.items():
         for target in (".claude", ".agents"):
-            shutil.copytree(SKILLS / name, repo / target / "skills" / name)
+            shutil.copytree(folder, repo / target / "skills" / name)
     (repo / ".gitignore").write_text(".claude/\n.agents/\ntmp/\n")
     _init(repo)
     repos = [repo]
@@ -92,7 +97,7 @@ def test_chief_of_staff_has_a_lead_of_the_other_family_do_an_ask(
     brief.write_text(
         f"You are this project's chief of staff: read and follow "
         f"{skills / 'chief-of-staff' / 'SKILL.md'}. Its `<script>` is "
-        f"{skills / 'orchestrating-agents' / 'scripts' / 'omnigent_agent.py'}.\n\n"
+        f"{skills / 'omnigent-agents' / 'scripts' / 'omnigent_agent.py'}.\n\n"
         "The owner, in the session that started you:\n\n"
         f"> Have a {lead.capitalize()} lead add a file NOTES.md to {where} containing exactly "
         f"the line `{line}`, committed on main. Tell me when it's done.\n\n"

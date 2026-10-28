@@ -1,11 +1,18 @@
-"""The engineering loop is method: a project's facts live in its own docs/agents/ files, never in the skill."""
+"""The engineering loop is method: a project's facts live in its own docs/agents/ files, never in the skill, nor in
+the gatekeeper and GitHub skills that came out of it."""
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
+REPOSITORY = Path(__file__).resolve().parents[2]
 LOOP = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop"
+METHOD = (
+    LOOP,
+    REPOSITORY / "gatekeeper" / "skills" / "gatekeeper",
+    REPOSITORY / "github" / "skills" / "github-tracker",
+)
 # Terms of the project the loop was ported from; `ta/` only as a path start, so `data/` is no hit.
 PROJECT_TERMS = re.compile(r"(?<![\w.-])ta/|bin/dev|IBKR|trinity", re.IGNORECASE)
 
@@ -21,7 +28,8 @@ def hits(root: Path) -> list[str]:
 
 
 def test_the_loop_names_no_project() -> None:
-    assert LOOP.is_dir() and hits(LOOP) == []
+    for root in METHOD:
+        assert root.is_dir() and hits(root) == []
 
 
 def test_the_check_catches_each_term_but_not_a_lookalike(tmp_path: Path) -> None:

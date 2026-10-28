@@ -12,7 +12,7 @@ from urllib.parse import unquote
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
+SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "github-tracker" / "scripts"
 sys.path.insert(
     0, str(SCRIPTS)
 )  # as when run: labels.py reads the label names from gatekeeper.py beside it

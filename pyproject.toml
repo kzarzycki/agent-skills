@@ -8,7 +8,7 @@ dependencies = ["PyYAML==6.0.3"]
 dev = ["pytest==9.1.1", "ruff==0.16.0"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "engineering/tests"]
+testpaths = ["tests", "engineering/tests", "gatekeeper/tests", "github/tests", "loop/tests", "chief-of-staff/tests", "omnigent/tests"]
 pythonpath = ["."]
 markers = ["live_agent: tests that require a live agent runtime"]
 
@@ -16,4 +16,4 @@ markers = ["live_agent: tests that require a live agent runtime"]
 target-version = "py314"
 line-length = 100
 # Shipped scripts run on a consumer's own `python3`; macOS ships 3.9.
-per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39" }
+per-file-target-version = { "*/skills/*/scripts/*.py" = "py39" }

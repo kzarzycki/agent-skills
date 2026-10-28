@@ -1,10 +1,10 @@
 # Issues and the board
 
 The loop's issue conventions, the same in every project and on every tracker. How each
-is done on a tracker is its realization file, read in place: [github.md](github.md) for
+is done on a tracker is its realization file, read in place: the `github-tracker` skill's github.md for
 GitHub, with the issue-batch protocol `to-tickets` and `wayfinder` publish through. The
 project's `docs/agents/issue-tracker.md` names that file in one line,
-`Tracker: GitHub (engineering-loop's github.md)`, and adds only its own facts: its settings block
+`Tracker: GitHub (github-tracker's github.md)`, and adds only its own facts: its settings block
 (SKILL.md, Settings: components, extra categories and labels, renames, board columns) and Never on GitHub.
 
 ## States
@@ -61,7 +61,7 @@ component or size: it resolves a decision, not a change.
 
 Label names are the loop's fixed set here plus the project's `docs/agents/issue-tracker.md`
 (its settings' `components`, `categories`, `labels`); the scripts read them from these two places only
-(`scripts/approvals.py`, `label_names`). The tracker file names a component or category
+(the `gatekeeper` skill's `scripts/gatekeeper.py`, `label_names`). The tracker file names a component or category
 bare (`billing`) or in full (`area:billing`); both mean the label. gatekeeper.md's policy name
 a label in full, as GitHub shows it.
 
@@ -111,7 +111,7 @@ under its epic.
 
 The board shows every ticket in its loop stage with its assignee, and every epic with its progress; the
 realization file says how a ticket moves. A project whose board has other names, or one column for
-several of these, maps them in `docs/agents/issue-tracker.md`'s `board` settings ([github.md](github.md), Board). The labels stay the state: when a move fails,
+several of these, maps them in `docs/agents/issue-tracker.md`'s `board` settings (github.md, Board). The labels stay the state: when a move fails,
 report it and carry on.
 
 | Column | The ticket is here when | Moved by |

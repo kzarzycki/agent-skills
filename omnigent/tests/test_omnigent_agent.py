@@ -24,7 +24,7 @@ spec = importlib.util.spec_from_file_location(
     "omnigent_agent",
     Path(__file__).resolve().parents[1]
     / "skills"
-    / "orchestrating-agents"
+    / "omnigent-agents"
     / "scripts"
     / "omnigent_agent.py",
 )
@@ -1983,7 +1983,9 @@ def test_worker_md_s_heavy_lock_command_waits_for_the_lock_and_passes_the_exit_t
 ) -> None:
     import fcntl
 
-    text = (Path(__file__).resolve().parents[1] / "skills/engineering-loop/worker.md").read_text()
+    text = (
+        Path(__file__).resolve().parents[2] / "loop/skills/engineering-loop/worker.md"
+    ).read_text()
     command = re.search(r"`(perl -MFcntl=:flock .*?)\s+<path> mise run check`", text, re.DOTALL)
     assert command, "worker.md's gate step names the lock command"
     lock = tmp_path / "heavy.lock"

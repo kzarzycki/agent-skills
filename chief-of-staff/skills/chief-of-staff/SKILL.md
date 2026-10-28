@@ -20,8 +20,8 @@ and the owner may open any lead's session and talk to it directly. That keeps a 
 without a chief of staff working the same way.
 
 Agents are started, messaged, watched and closed through the backend that
-the `orchestrating-agents` skill (`../orchestrating-agents/SKILL.md`) chooses. The commands below are
-the Omnigent backend's (`../orchestrating-agents/scripts/omnigent_agent.py`, run from the
+the `orchestrating-agents` skill chooses. The commands below are
+the Omnigent backend's (the `omnigent-agents` skill's `scripts/omnigent_agent.py`, run from the
 directory you run in: the home the project's instructions name, else the project's main
 checkout).
 
@@ -82,7 +82,7 @@ its landing order.
   brief naming the PR it waits on, since the order is all they share.
 - **Follow.** Run one detached supervisor, `python3 <script> --server $RUNNER_SERVER_URL supervise --registry <file>
   --console --decisions <board> --notify <your session id>`
-  (`../orchestrating-agents/backends/omnigent.md`, Running the supervisor detached; `<board>` is
+  (`omnigent-agents`, Running the supervisor detached; `<board>` is
   your handover file, whose `## Standing decisions` section the supervisor's routing reads), and
   start and reap leads with `OMNIGENT_SUPERVISE_REGISTRY=<file>`. `start --top-level` then arms
   the lead with `follow` and subscribes you to nothing. Under `--console` the supervisor settles
@@ -105,7 +105,7 @@ its landing order.
   message, in place of the history and info the notice names. When `start` prints `not subscribed`, the subscribe failed (a server without
   subscriptions, a cycle, the 1,000-per-session cap, or a shell that does not name its
   Omnigent session, as a native Codex one did not before Omnigent 567625d35): follow that lead with a background
-  `watch <session>...` (`../orchestrating-agents/backends/omnigent.md`, Watching sessions). A
+  `watch <session>...` (`omnigent-agents`, Watching sessions). A
   lead you took over, or started some other way, you subscribe to with Omnigent's
   `sys_session_subscribe(session_id=<its id>)` tool call. Never poll, since a notice reaches you anyway.
 - **Page.** `scripts/cos_page.py --registry <file> --board <board> --omnigent <url>` serves

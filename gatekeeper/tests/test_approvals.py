@@ -1,4 +1,4 @@
-"""scripts/approvals.py: each loop step leaves proof on GitHub; the gate checks it, and `approve`/`verdict` write it."""
+"""scripts/gatekeeper.py (and its former name, approvals.py): each loop step leaves proof on GitHub; the gate checks it, and `approve`/`verdict` write it."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from typing import Any
 
 import pytest
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
+REPOSITORY = Path(__file__).resolve().parents[2]
+SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "gatekeeper" / "scripts"
 SPEC = importlib.util.spec_from_file_location("gatekeeper", SCRIPTS / "gatekeeper.py")
 assert SPEC and SPEC.loader
 approvals = importlib.util.module_from_spec(SPEC)
@@ -593,7 +594,7 @@ def test_a_tracker_name_yaml_reads_as_a_boolean_is_refused_naming_it() -> None:
 
 def test_skill_mds_settings_examples_pass_their_schema() -> None:
     """SKILL.md § Settings shows loop.md's block, then issue-tracker.md's: each is what the scripts read."""
-    skill = (SCRIPTS.parent / "SKILL.md").read_text()
+    skill = (REPOSITORY / "loop" / "skills" / "engineering-loop" / "SKILL.md").read_text()
     loop, tracker = re.findall(
         r"^```yaml\n(.*?)^```$", skill[skill.index("### Settings") :], re.DOTALL | re.MULTILINE
     )[:2]
@@ -2112,82 +2113,6 @@ def test_a_qualifier_naming_another_pass_never_changes_the_pass(
     heading, *_rest, said = approvals.parse_report(report)
     assert approvals.PASS.match(heading).groups() == ("claude, same-family", "2")
     assert said == qualifier.lstrip(": ")
-
-
-def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The base is the merge-base with the default branch, the head the PR's, the pass one after the newest verdict
-    review's, whose commit is the previous report's head; loop.md's `## Verifier brief` is appended."""
-    earlier = "c" * 40
-    reviews = (
-        verdict_on(earlier, heading="Verifier (codex), pass 1"),
-        verdict_on(earlier, heading="Verifier (codex), pass 2"),
-    )
-    pr = pull(body="Closes #12.\n\n## Evidence\n\nlog\n", reviews=reviews)
-    asked: list[tuple[str, str]] = []
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
-    monkeypatch.setattr(
-        approvals, "merge_base", lambda base, head: asked.append((base, head)) or BASE
-    )
-    monkeypatch.setattr(
-        approvals,
-        "project",
-        lambda: (
-            None,
-            LOOP + "\n## Verifier brief\n\n- Run the full gate bare.\n    indented snippet  \n\n",
-        ),
-    )
-    priorities, proof, stale = tmp_path / "p.md", tmp_path / "gate.log", tmp_path / "old.log"
-    priorities.write_text("- the revert path\n")
-    proof.write_text(f"{HEAD}\nok\n")
-    stale.write_text(f"{earlier}\nok\n")
-    assert (
-        approvals.main(["brief", "7", "--priorities", str(priorities), "--proof", str(proof)]) == 0
-    )
-    out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith("Review PR #7 as the verifier, pass 3, following ")
-    assert out[0].endswith("verifier.md.")
-    assert out[1:] == [
-        f"- Base: {BASE}",
-        f"- Reviewed head: {HEAD}",
-        "- Spec: #12",
-        "- Report: tmp/loop/pr7-v3.md",
-        f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
-        f"- Proof log: {proof} (its first line is the head)",
-        "",
-        "Priorities:",
-        "- the revert path",
-        "",
-        "- Run the full gate bare.",
-        "    indented snippet  ",
-    ]
-    assert asked == [("main", HEAD)]
-    assert approvals.main(["brief", "7", "--proof", str(proof), "--proof", str(stale)]) == 1
-    assert (
-        capsys.readouterr().out
-        == f"PR #7: stale proof, its first line isn't the head {HEAD}: {stale}; rerun it\n"
-    )
-    # the first line exactly: a trailing space or a CR is not the head; a missing log is named, not a traceback
-    for line in (f"{HEAD} ", f"{HEAD}\r"):
-        stale.write_bytes(f"{line}\nok\n".encode())
-        assert approvals.main(["brief", "7", "--proof", str(stale)]) == 1
-        assert "stale proof" in capsys.readouterr().out
-    assert approvals.main(["brief", "7", "--proof", str(tmp_path / "absent.log")]) == 1
-    assert capsys.readouterr().out == f"PR #7: no proof log at {tmp_path / 'absent.log'}\n"
-    pr["reviews"] = {"nodes": []}
-    assert approvals.main(["brief", "7"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert "- Report: tmp/loop/pr7-v1.md" in out
-    assert not [line for line in out if line.startswith("- Previous report")]
-    # a policy in gatekeeper.md leaves the Verifier brief in loop.md, the loop's prose
-    agents = tmp_path / "docs" / "agents"
-    agents.mkdir(parents=True)
-    (agents / "loop.md").write_text("## Verifier brief\n\n- Read the loop file's brief.\n")
-    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
-    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(gatekeeper_md())))
-    assert approvals.main(["brief", "7"]) == 0
-    assert capsys.readouterr().out.splitlines()[-1] == "- Read the loop file's brief."
 
 
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
@@ -5215,39 +5140,8 @@ def test_a_refused_record_leaves_the_issue_unassigned_and_says_so(
     assert assigned == []  # no assignment release would read as a person's
 
 
-def test_parking_removes_only_the_assignee_the_loop_added(
-    monkeypatch: pytest.MonkeyPatch,
-    assigned: list[tuple[Any, ...]],
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    later = "2026-10-01T12:00:00Z"
-    by_loop = note("Assigned: @ann\nBy: loop\nPR: #7\n", createdAt=PUSHED)
-    found = {
-        1: held(issue(1, comments=(by_loop,)), "ann", events=(assigned_event("ann", PUSHED),)),
-        2: held(issue(2), "ann", events=(assigned_event("ann", PUSHED),)),  # the owner's own claim
-        3: held(
-            issue(3, comments=(by_loop,)),
-            "ann",
-            events=(assigned_event("ann", PUSHED), assigned_event("ann", later)),
-        ),  # unassigned, then claimed again by the owner
-        4: held(
-            issue(4, comments=(by_loop,)), "ann", events=(assigned_event("ann", LABELED),)
-        ),  # the loop's assignment, a moment after its record
-    }
-    monkeypatch.setattr(approvals, "issue_node", found.__getitem__)
-    for number in found:
-        assert approvals.main(["release", str(number)]) == 0
-    assert assigned == [(1, "ann", False), (4, "ann", False)]
-    assert capsys.readouterr().out.splitlines() == [
-        "#1: removed @ann, whom the loop assigned",
-        "#2: kept @ann, whose claim it is",
-        "#3: kept @ann, whose claim it is",
-        "#4: removed @ann, whom the loop assigned",
-    ]
-
-
 FORK, THEM = "https://github.com/me/fork.git", "git@github.com:them/fork"
-DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "demo.sh"
+DEMO = REPOSITORY / "engineering" / "skills" / "demo" / "scripts" / "demo.sh"
 
 
 @pytest.mark.parametrize(

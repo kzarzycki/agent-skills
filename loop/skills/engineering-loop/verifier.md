@@ -63,7 +63,7 @@ yourself, keeping standards and spec as separate axes.
   spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
   background shells. A gate the machine allows
   by rule is the exception: run it as the bare command (Gates and repros). A queued run or
-  any other pending condition is waited on the same way, in the foreground (orchestrating-agents'
+  any other pending condition is waited on the same way, in the foreground (omnigent-agents'
   `scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <check>`, each call under
   the tool timeout), and past the limit you state the pass ends with a report naming it, never
   on a run still pending, since nothing wakes an idle session and a run left queued can apply
@@ -134,7 +134,7 @@ Write Markdown to the report path; `approvals.py verdict` parses it into the PR 
 keep these lines exact:
 
 - Near the top, `Verifier: <family>, pass <n>`, such as `Verifier: claude, same-family,
-  pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
+  pass 2` when you are the model family that wrote the diff. Give your signature as the family: what omnigent-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
   (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
   When your brief names your tier (`mid` or `small`, loop.md's `Verifier model:` line), write it after the
@@ -158,6 +158,6 @@ keep these lines exact:
   The merge reads the review as covering that commit only, so a push after your review
   needs its own.
 
-Before replying, run `uv run <this skill's folder>/scripts/approvals.py report <report path>` and fix the
+Before replying, run `uv run <gatekeeper>/scripts/approvals.py report <report path>` and fix the
 report until it exits 0: it reads the report as `verdict` does, without GitHub, so a report
 the lead can't post never costs another turn. Then reply with only the path.

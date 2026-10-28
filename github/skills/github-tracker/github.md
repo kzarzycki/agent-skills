@@ -1,9 +1,12 @@
 # Tracker: GitHub
 
-How the loop's issue conventions ([issues.md](issues.md)) are done on GitHub. A project
-whose `docs/agents/issue-tracker.md` says `Tracker: GitHub (engineering-loop's github.md)`
+How the loop's issue conventions (the `engineering-loop` skill's issues.md) are done on GitHub. A project
+whose `docs/agents/issue-tracker.md` says `Tracker: GitHub (github-tracker's github.md)`, or
+`engineering-loop's github.md` as it did before this file moved here,
 follows this file in place, never a copy, so a fix here reaches every project. Run `gh`
-inside the repository: it infers the repo from the remote.
+inside the repository: it infers the repo from the remote. The loop's files (issues.md, its
+SKILL.md) are the `engineering-loop` skill's; `<gatekeeper>` and `<engineering-loop>` stand for
+those skills' folders, wherever the host installed them.
 
 ## Operations
 
@@ -60,22 +63,22 @@ it by hand, `--dry-run` first, only to resync between setups. Its docstring says
 
 ## Assignee
 
-The calls behind issues.md, Assignee. `uv run <this skill's folder>/scripts/approvals.py check build <pr>` reads
+The calls behind issues.md, Assignee. `uv run <gatekeeper>/scripts/approvals.py check build <pr>` reads
 who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
 assigned to anyone else, and, once every build proof holds, assigns the approver where no
 one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
 on the issue as the record that the loop made the assignment; when that comment is refused
 it says so and leaves the issue unassigned. When you park an issue (`needs-owner`) or drop
-it, run `uv run <this skill's folder>/scripts/approvals.py release <issue>`: it removes an assignee that record
+it, run `uv run <engineering-loop>/scripts/loop.py release <issue>`: it removes an assignee that record
 names, unless someone assigned them again after the loop did, and keeps any other. Assign by hand
 only a person: `gh issue edit <number> --add-assignee <login>`.
 
 ## Review trail
 
-The calls behind SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
+The calls behind the loop's SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
 from the remote.
 
-- Post a pass: `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`. It posts one review
+- Post a pass: `uv run <gatekeeper>/scripts/approvals.py verdict <pr> <report>`. It posts one review
   on the report's `Head:` commit, event `COMMENT`, because GitHub refuses
   `REQUEST_CHANGES` and `APPROVE` on your own PR. One comment whose path or line is outside
   the PR's diff at that commit refuses the whole review (422, `Path could not be resolved`
@@ -84,10 +87,10 @@ from the remote.
 - List the threads, each with the id to resolve it and its first comment's id to reply:
   `gh api graphql -F o='{owner}' -F r='{repo}' -F n=<pr> -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved path line comments(first:1){nodes{databaseId body}}}}}}}'`.
 - Reply on a thread: `gh api 'repos/{owner}/{repo}/pulls/<pr>/comments/<first comment databaseId>/replies' -f body="Fixed in <sha>."`
-- Resolve it with the triage's reason, `ADDRESSED`, `WONT_FIX` or `INVALID` (SKILL.md,
+- Resolve it with the triage's reason, `ADDRESSED`, `WONT_FIX` or `INVALID` (the loop's SKILL.md,
   Review trail on the PR): `gh api graphql -f t=<thread id> -f r=ADDRESSED -f query='mutation($t:ID!,$r:PullRequestReviewThreadResolutionReason){resolveReviewThread(input:{threadId:$t,resolutionReason:$r}){thread{isResolved}}}'`.
   GitHub keeps no readable reason, so the reply says why.
-- Dismiss a review, only as SKILL.md, Review trail on the PR allows:
+- Dismiss a review, only as the loop's SKILL.md, Review trail on the PR allows:
   `gh api -X PUT 'repos/{owner}/{repo}/pulls/<pr>/reviews/<id>/dismissals' -f message="<the owner's ask, quoted>" -f event=DISMISS`.
 - `gh pr create --draft` needs a commit the base lacks: before anything is built, push an
   empty one (`git commit --allow-empty -m "<spec title>"`), which the squash drops.

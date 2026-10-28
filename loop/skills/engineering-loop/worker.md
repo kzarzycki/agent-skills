@@ -41,7 +41,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    and Claude Code's low-memory reaper stops in-session background shells; never end a turn
    saying you are waiting, since nothing wakes you and the lead reads silence as work.
    A pending condition (a queued run, a free device, an unlocked screen) is waited on the same
-   way, in the foreground, with orchestrating-agents' `scripts/omnigent_agent.py wait-until
+   way, in the foreground, with omnigent-agents' `scripts/omnigent_agent.py wait-until
    --every <s> --limit <s> -- <check>` or a sleep loop, each call under the tool timeout: the
    turn goes on once it holds, and past the limit you state it ends with a report naming the
    condition, since a background command's exit does not wake an idle session.
@@ -57,7 +57,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    before the report, which lists each proof log with the SHA it names.
    A change to a web UI gets a rendered check, since passing tests say nothing about what
    the page shows: the project's own browser e2e when it has one, else `uv run
-   <this skill's folder>/scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
+   <browsing>/scripts/browse.py <url> --out <png>` (`--do <file.py>` to click, hover or assert first,
    `--omnigent` to sign in to an Omnigent server; its docstring says what a sandbox needs).
    Every host with Playwright's Chromium in `~/.cache/ms-playwright` can render headless;
    hand over the PNG paths.
@@ -74,7 +74,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    `pkill -f` or `killall` on a pattern other agents share, since on a shared host it kills
    their runs too. Then write your
    report to a file and send the lead its path: the branch and head SHA, the PR, the gate
-   exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
+   exit codes, your signature (what omnigent-agents' `scripts/omnigent_agent.py signature` prints, else
    the `AGENT_SIGNATURE=` line atop your brief), anything left out and why, and what you tried and
    dropped. A follow-up starts fresh from this report, not your transcript. If you're
    blocked, report that and stop. Blocked on a step only the owner can unblock (SKILL.md, Owner

@@ -1019,6 +1019,17 @@ def _run_package_tests(stage: Path) -> tuple[str, str]:
     return command_text, "PASS"
 
 
+def _sibling_dependencies(package: Path) -> list[Path]:
+    """The packages beside `package` that its apm.yml pulls in by git (`<owner>/<repo>/<name>`), and theirs."""
+    found: list[Path] = []
+    manifest = yaml.safe_load((package / "apm.yml").read_text()) or {}
+    for item in (manifest.get("dependencies") or {}).get("apm") or []:
+        name = str(item.get("git", "")).rsplit("/", 1)[-1] if isinstance(item, dict) else ""
+        if name and (sibling := package.parent / name).joinpath("apm.yml").is_file():
+            found += [sibling, *_sibling_dependencies(sibling)]
+    return list(dict.fromkeys(found))
+
+
 def _replace_atomically(package: Path, staged: Path) -> None:
     backup = Path(tempfile.mkdtemp(prefix=f".{package.name}-backup-", dir=package.parent))
     backup.rmdir()
@@ -1091,6 +1102,9 @@ def qualify(
     staged = temporary / package.name
     try:
         shutil.copytree(package, staged, symlinks=True)
+        # the sibling packages it depends on go beside it, as a release tag holds them, so its tests find them
+        for sibling in _sibling_dependencies(package):
+            shutil.copytree(sibling, temporary / sibling.name, symlinks=True)
         for name in retired:
             shutil.rmtree(staged / "skills" / name, ignore_errors=True)
         committed_config = config

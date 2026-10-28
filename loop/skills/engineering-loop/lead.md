@@ -22,7 +22,7 @@ design, wireframes included for a UI, and delegate the rest.
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
    assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
-   you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/approvals.py release
+   you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/loop.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
    labels are the state.
@@ -81,7 +81,7 @@ design, wireframes included for a UI, and delegate the rest.
    main, unless it is a blocker or major that makes this PR wrong: that one goes on this
    PR's branch (SKILL.md, One concern per PR). Cut
    each worker's branch from the PR branch with loop.md § Worktree, run from your own
-   worktree so the worker's sits inside it (../orchestrating-agents/backends/omnigent.md, Permission prompts),
+   worktree so the worker's sits inside it (omnigent-agents, Permission prompts),
    and start it
    with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
@@ -113,7 +113,7 @@ design, wireframes included for a UI, and delegate the rest.
    `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
    workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
    spec number, the priorities for this change, and a report path under `tmp/loop/` in that
-   worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
+   worktree, which the project gitignores. `uv run <this skill's folder>/scripts/loop.py brief
    <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
    own copy of the skill, since the role path it prints follows the script's copy and only
    that one stays inside the verifier's workspace, prints that brief with every fact but the
@@ -133,7 +133,7 @@ design, wireframes included for a UI, and delegate the rest.
    unfinished: never triage or land on it. A verifier's `<report>.question` asking for a
    proof run (verifier.md, A full heavy slot) is answered by filling `proof-run.md` from it
    and sending the logs back. Post each finished report with
-   `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
+   `uv run <gatekeeper>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
@@ -172,7 +172,7 @@ design, wireframes included for a UI, and delegate the rest.
      with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
    - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
-     "Generated with" footer: the worker's from its report, or yours, what orchestrating-agents'
+     "Generated with" footer: the worker's from its report, or yours, what omnigent-agents'
      `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
      (`?` for any part you can't know).
    - Where the project lands this base through a batching merge queue (its own instructions
@@ -180,7 +180,7 @@ design, wireframes included for a UI, and delegate the rest.
      <pr> --head <sha>` exits 0, and go on with the next item: the queue tells you the outcome.
      A PR it evicts comes back with the gate log or the conflict: fix a conflict or a failure of
      its own like any finding, and re-queue a PR evicted for another PR's failure as it is.
-   - Run `uv run <this skill's folder>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
+   - Run `uv run <gatekeeper>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: `mise run check` passed on the head, the
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
@@ -222,7 +222,7 @@ design, wireframes included for a UI, and delegate the rest.
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's label, `land` exits 3 with only that left
-     once CI has passed the head (with `ci: false`, once `uv run <this skill's folder>/scripts/approvals.py local-ci
+     once CI has passed the head (with `ci: false`, once `uv run <gatekeeper>/scripts/approvals.py local-ci
      <pr>` has recorded a pass on it, reusing a `local-ci --record` pass on the same head), so the owner never approves a head CI could still
      reject: give them the PR link, ask for `approved:merge`, and run `land` again once it is on.
      The PR has landed only once `land` exits 0, or `gh pr view <pr> --json state,mergeCommit`

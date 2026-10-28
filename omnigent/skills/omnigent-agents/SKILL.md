@@ -1,4 +1,12 @@
+---
+name: omnigent-agents
+description: The Omnigent backend of orchestrating-agents - start, message, wait on, watch, approve, broadcast, list and close Omnigent sessions with omnigent_agent.py, with reports and questions as files. Use when orchestrating-agents' backend is omnigent, or when a script needs omnigent_agent.py's signature, wait-until or capacity.
+---
+
 # Orchestrating with Omnigent
+
+The Omnigent backend of the `orchestrating-agents` skill, whose rules hold here. A `scripts/`
+path is relative to this skill's folder; run it with `python3` (standard library only).
 
 Start each worker or verifier with its own background command, whose exit wakes you; keep
 working meanwhile:
@@ -66,7 +74,7 @@ verifier included. `start` refuses a model the agent's harness doesn't list on t
 `claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load:
 Omnigent launches an unlisted id on the harness default with no error. Pass `--model` only when the owner asked for that model or the project's instructions
 name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
-tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
+tier the project names resolves against the family's lineup (the `engineering-loop` skill's SKILL.md, Models): Codex lists
 its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
 lead's own instructions name its family's newest models, and `sys_list_models` lists none for Claude. A
 launch that fails on capacity (`server_overloaded`, a rate limit) is retried later with

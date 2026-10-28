@@ -5,7 +5,7 @@
 
 - The Omnigent API (any logged-in host): ``GET /v1/usage`` gives spend today, over 7 and 30
   days, and each top-level session tree's cost by model. Login and token refresh are
-  ``orchestrating-agents``' ``omnigent_agent.py``.
+  ``omnigent-agents``' ``omnigent_agent.py``, a sibling skill in this package.
 - The server's Postgres, through ``docker exec <container> psql`` (default container
   ``omnigent-postgres-1``): daily cost, tokens by model, each root tree's sub-agents, nested
   Codex sub-agents, compactions and items inherited from a fork, live subscriptions and
@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.dont_write_bytecode = True  # no __pycache__ left in the sibling skill's folder
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "orchestrating-agents" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "omnigent-agents" / "scripts"))
 from omnigent_agent import Fail, Omnigent
 
 DB_CONTAINER = "omnigent-postgres-1"
@@ -51,7 +51,7 @@ LIVE = {1: "idle", 2: "running", 3: "waiting", 4: "failed"}
 # Flag thresholds: a flag fires at its threshold and stays quiet below it.
 SUBAGENTS = 25  # sub-agents in one root tree
 NESTED_CODEX = 6  # Codex's own sub-agents (sub_agent_name 'Codex') in one tree
-VERIFIER_PASS = 4  # an early warning, below engineering-loop's default cap of 5
+VERIFIER_PASS = 4  # an early warning, below the loop's default verifier cap of 5
 INHERITED_ITEMS = 500  # items a session created in the window inherited from a fork
 SUBSCRIBERS = 2  # sessions one target wakes when it ends a turn
 CRON_FAILURES = 3  # failed runs of one scheduled task in the window

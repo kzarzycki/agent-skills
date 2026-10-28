@@ -3,7 +3,7 @@
 # requires-python = ">=3.9"
 # dependencies = ["PyYAML==6.0.3"]
 # ///
-"""Gatekeeper (engineering-loop): every step leaves proof on the forge, and this checks it before the loop moves on.
+"""Gatekeeper: every step of a change leaves proof on the forge, and this checks it before the change moves on.
 
     uv run scripts/gatekeeper.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     uv run scripts/gatekeeper.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
@@ -14,10 +14,8 @@
     uv run scripts/gatekeeper.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/gatekeeper.py record verdict <pr> <report>  # post a verifier report as a PR review
     uv run scripts/gatekeeper.py report [--json] <report>   # read a verifier report as verdict does; posts nothing
-    uv run scripts/gatekeeper.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
     uv run scripts/gatekeeper.py record checks [--all] <pr>  # run `checks.check` (`checks.all`) on the PR head, post it
     uv run scripts/gatekeeper.py record checks [--all]      # the same on HEAD before a PR; `record checks <pr>` reuses it
-    uv run scripts/gatekeeper.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Today's verbs stay for one release line, as does scripts/approvals.py, which runs this file: `approve` is `record
 approval`, `verdict` is `record verdict`, and `local-ci <pr>` and `local-ci --record` are `record checks --all <pr>`
@@ -41,7 +39,7 @@ full.
 `check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
 or for a spec the policy approves the account running this), since an assignee says whose the issue is. When every
 build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
-the PR its issues' assignees, reporting a refusal and carrying on. `release` removes an assignee that record names,
+the PR its issues' assignees, reporting a refusal and carrying on. The loop's `loop.py release` removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
@@ -402,7 +400,7 @@ LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
-# the first line of the record claim() leaves when it assigns an issue, which release() reads
+# the first line of the record claim() leaves when it assigns an issue, which assigned_by_loop() reads
 ASSIGNED = "Assigned: @"
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
 # leaves unfinished, and `Implements` for one the owner signs off after landing (`signoff`). ponytail: same-repo `#n`
@@ -950,8 +948,8 @@ def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
 
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
     """Building starts: assign each issue no one holds to its spec's approver, with a record that the loop did
-    (release reads it), and give the PR its issues' assignees. The record comes first, so a refused comment leaves no
-    assignment release would read as a person's. A line when GitHub refuses, never a failure, since an assignee says
+    (assigned_by_loop reads it), and give the PR its issues' assignees. The record comes first, so a refused comment leaves no
+    assignment assigned_by_loop would read as a person's. A line when GitHub refuses, never a failure, since an assignee says
     who the issue belongs to and gates nothing past `check build`."""
     found, held = [], set()
     for issue in issues:
@@ -1002,18 +1000,6 @@ def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
         and (event.get("createdAt") or "") >= max(recorded)  # ISO 8601 in UTC, so it orders as text
     ]
     return len(later) <= 1
-
-
-def release(number: int) -> int:
-    """Parked or dropped: remove each assignee the loop added (assigned_by_loop), and keep a claim a person made."""
-    issue = issue_node(number)
-    for login in sorted(assignees(issue)):
-        if assigned_by_loop(issue, login):
-            assign(number, login, add=False)
-            print(f"#{number}: removed @{login}, whom the loop assigned")
-        else:
-            print(f"#{number}: kept @{login}, whose claim it is")
-    return 0
 
 
 def version(holder: dict[str, Any]) -> str:
@@ -3008,59 +2994,6 @@ def local_ci(pr: int | None, command: str | None = None) -> int:
     return 0
 
 
-def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
-    """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
-    verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
-    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
-    file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. A proof log whose first line isn't the head is refused, since the
-    verifier counts a stale proof as missing and spends the pass on it."""
-    _, loop = project()
-    if isinstance(loop, Policy):
-        loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
-    pull = pull_request(pr)
-    head = pull["headRefOid"]
-    if missing := [str(log) for log in proofs if not log.is_file()]:
-        raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
-    # byte for byte, as lead.md's `head -1 <log> | grep -qx <head>` compares: a trailing space or CR is another line
-    if stale := [
-        str(log) for log in proofs if log.read_bytes().split(b"\n", 1)[0] != head.encode()
-    ]:
-        raise Refused(
-            f"PR #{pr}: stale proof, its first line isn't the head {head}: {', '.join(stale)}; rerun it"
-        )
-    reviewed = passes(pull)
-    if isinstance(reviewed, str):
-        raise Refused(f"PR #{pr} {reviewed}")
-    number = max((n for _, n, _ in reviewed), default=0) + 1
-    base = merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
-    issues = sorted(
-        {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
-        | set(named(pull["body"] or ""))
-    )
-    role = os.path.relpath(Path(__file__).resolve().parents[1] / "verifier.md")
-    lines = [
-        f"Review PR #{pr} as the verifier, pass {number}, following {role}.",
-        f"- Base: {base}",
-        f"- Reviewed head: {head}",
-        f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
-        f"- Report: tmp/loop/pr{pr}-v{number}.md",
-    ]
-    if reviewed:
-        newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
-        lines.append(
-            f"- Previous report: tmp/loop/pr{pr}-v{number - 1}.md, on {newest}: review the diff since that head and"
-            " rerun its repros"
-        )
-    lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
-    if priorities is not None:
-        lines += ["", "Priorities:", priorities.read_text().rstrip()]
-    # as written, but for the blank lines around it: indentation may be a snippet's
-    if (own := section(loop or "", "Verifier brief").strip("\n")).strip():
-        lines += ["", own]
-    print("\n".join(lines))
-    return 0
-
-
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -3101,12 +3034,6 @@ def main(argv: list[str]) -> int:
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
-    briefing = commands.add_parser("brief")
-    briefing.add_argument("pr", type=int)
-    briefing.add_argument("--priorities", type=Path)
-    briefing.add_argument("--proof", type=Path, action="append", default=[])
-    releasing = commands.add_parser("release")
-    releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
     global using
     using = None  # the policy's adapters, read at the first port call
@@ -3140,10 +3067,6 @@ def main(argv: list[str]) -> int:
             return local_ci(args.pr)
         if args.command == "land":
             return land(args.pr, args.wait)
-        if args.command == "brief":
-            return brief(args.pr, args.priorities, args.proof)
-        if args.command == "release":
-            return release(args.issue)
         return verdict(args.pr, args.report)
     except Refused as exc:
         print(exc)

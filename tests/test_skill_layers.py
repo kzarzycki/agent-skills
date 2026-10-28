@@ -34,9 +34,10 @@ def skills(root: Path) -> dict[str, Path]:
 def mention(name: str) -> re.Pattern[str]:
     if "-" in name:
         return re.compile(rf"(?<![\w.-]){re.escape(name)}(?![\w-])")
-    # A one-word name is often a plain word (`pr`, `implement`), so only a reference to the skill counts.
+    # A one-word name is often a plain word (`pr`, `implement`), so only a reference to the skill counts;
+    # a docstring's ``pr`` is a Python literal, a parameter or a key, not a skill.
     word = re.escape(name)
-    return re.compile(rf"`/?{word}`|(?<![\w.-]){word} skill\b|/{word}/")
+    return re.compile(rf"(?<!`)`/?{word}`(?!`)|(?<![\w.-]){word} skill\b|/{word}/")
 
 
 def problems(root: Path, data: dict) -> list[str]:
@@ -143,3 +144,11 @@ def test_a_slash_invocation_of_a_one_word_skill_counts(tmp_path: Path) -> None:
         {"p/skills/loop/SKILL.md": "", "p/skills/craft/SKILL.md": "Use `/loop` to run it."},
     )
     assert problems(tmp_path, MAP) == ["craft -> loop: names a higher layer"]
+
+
+def test_a_docstring_literal_of_a_one_word_name_is_not_a_mention(tmp_path: Path) -> None:
+    tree(
+        tmp_path,
+        {"p/skills/loop/SKILL.md": "", "p/skills/craft/SKILL.md": "With ``loop``, it repeats."},
+    )
+    assert problems(tmp_path, MAP) == []
