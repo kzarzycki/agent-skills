@@ -3762,7 +3762,10 @@ def test_two_approved_prs_enqueue_at_once_and_neither_waits_for_the_others_merge
     )
     landing["pull"] = prs[8]
     assert [approvals.main(["land", str(number)]) for number in prs] == [0, 0]
-    assert capsys.readouterr().out.splitlines() == [f"PR #7 merges at {HEAD}", f"PR #8 merges at {HEAD}"]
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7 merges at {HEAD}",
+        f"PR #8 merges at {HEAD}",
+    ]
     assert landing["calls"] == [MERGE, ("pr", "merge", "8", *MERGE[3:])]
     prs[7] = proven(state="MERGED")
     landing["pull"] = proven(number=8, isInMergeQueue=True, mergeStateStatus="BEHIND")

@@ -2621,8 +2621,10 @@ def landing(
     # GitHub says this as a required check `expected`. A merge queue tests the PR on top of the base and every entry
     # ahead of it, so behind is no reason to stop there: PRs landing at once each stay queued as the others merge.
     stale = STALE_BASE.get(pull["mergeStateStatus"])
-    if stale and pull["mergeStateStatus"] == "BEHIND" and (
-        pull["isInMergeQueue"] or queue_required(pull["baseRefName"])
+    if (
+        stale
+        and pull["mergeStateStatus"] == "BEHIND"
+        and (pull["isInMergeQueue"] or queue_required(pull["baseRefName"]))
     ):
         stale = None
     if stale:
