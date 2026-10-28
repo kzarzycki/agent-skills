@@ -6349,11 +6349,15 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
 # --- ports ---
 
 
-def memory(pulls: dict[int, dict[str, Any]], issues: dict[int, dict[str, Any]]) -> Any:
+def memory(
+    pulls: dict[int, dict[str, Any]],
+    issues: dict[int, dict[str, Any]],
+    children: dict[int, list[dict[str, Any]]] | None = None,
+) -> Any:
     """An in-memory tracker, forge and evidence, as another tool's adapter would plug in: every operation of
-    approvals.PORTS, the reads served from `pulls` and `issues`, the proofs kept in a store of their own (`proofs`,
-    `reviews`, by item) that the tracker and forge nodes never see, the other writes in `written`, and any other call
-    a failure."""
+    approvals.PORTS, the reads served from `pulls` and `issues` (`children`, each issue's sub-issues), the proofs kept
+    in a store of their own (`proofs`, `reviews`, by item) that the tracker and forge nodes never see, the other writes
+    in `written`, and any other call a failure."""
     from types import SimpleNamespace
 
     written: list[tuple[Any, ...]] = []
@@ -6369,6 +6373,7 @@ def memory(pulls: dict[int, dict[str, Any]], issues: dict[int, dict[str, Any]]) 
     served = {
         "issue_node": issues.__getitem__,
         "issues": lambda numbers: [issues[n] for n in numbers if n in issues],
+        "children": lambda number: (children or {}).get(number, []),
         "label": lambda number, name, add: written.append(("label", number, name, add)),
         "comment": lambda number, body: written.append(("comment", number, body)),
         "record": lambda number, body: proofs.setdefault(number, []).append(note(body)),
@@ -6481,6 +6486,30 @@ def test_proofs_recorded_in_a_separate_evidence_store_are_the_ones_check_merge_r
     assert spec["comments"]["nodes"] == pr["comments"]["nodes"] == pr["reviews"]["nodes"] == []
     assert approvals.main(["check", "merge", "7"]) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_the_tracker_reads_an_issues_children_through_the_adapter_the_policy_names(
+    in_memory: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = issue(2, "size:S")
+    in_memory({}, {1: issue(1, "epic")}, children={1: [child]})
+    # as main() starts: resolved at the first port call
+    monkeypatch.setattr(approvals, "using", None)
+    assert approvals.children(1) == [child]
+    assert approvals.children(2) == []
+
+
+def test_githubs_children_are_the_issues_sub_issues(monkeypatch: pytest.MonkeyPatch) -> None:
+    queries: list[str] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        queries.append(next(arg for arg in args if arg.startswith("query=")))
+        nodes = [{"number": 2}, {"number": 3}]
+        return json.dumps({"data": {"repository": {"issue": {"subIssues": {"nodes": nodes}}}}})
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    assert [child["number"] for child in approvals.github.children(1)] == [2, 3]
+    assert "issue(number: $n) { subIssues(first: 100)" in queries[0]
 
 
 # --- the gatekeeper CLI ---

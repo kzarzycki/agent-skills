@@ -209,6 +209,16 @@ def issue_node(number: int) -> dict[str, Any]:
     return node
 
 
+def children(number: int) -> list[dict[str, Any]]:
+    """The issue's native sub-issues, each as SPECCED reads it."""
+    # ponytail: one page of 100; page when an epic outgrows it
+    node: dict[str, Any] = _graphql(
+        _repository(f"issue(number: $n) {{ subIssues(first: 100) {{ nodes {{ {SPECCED} }} }} }}"),
+        n=number,
+    )["issue"]
+    return list(node["subIssues"]["nodes"])
+
+
 def issues(numbers: list[int]) -> list[dict[str, Any]]:
     """The issues among `numbers`, in one read; a number that is a pull request comes back empty and is dropped."""
     if not numbers:
@@ -416,7 +426,12 @@ def rerun(run_id: str) -> None:
 
 # each port as gatekeeper.py's PORTS names its operations
 tracker = SimpleNamespace(
-    issue_node=issue_node, issues=issues, comment=comment, label=label, assign=assign
+    issue_node=issue_node,
+    issues=issues,
+    children=children,
+    comment=comment,
+    label=label,
+    assign=assign,
 )
 forge = SimpleNamespace(
     pull_request=pull_request,

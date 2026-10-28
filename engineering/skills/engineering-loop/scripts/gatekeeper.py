@@ -284,8 +284,9 @@ def sibling(name: str) -> ModuleType:
 # call raises subprocess.CalledProcessError with the tool's reason as its stderr.
 # ponytail: GitHub's node shapes are the data model; give the ports their own when a second adapter needs them.
 PORTS = {
-    # issue_node(n), issues(numbers) (those that are issues), comment(n, body), label(n, name, add), assign(n, login, add)
-    "tracker": ("issue_node", "issues", "comment", "label", "assign"),
+    # issue_node(n), issues(numbers) (those that are issues), children(n) (its sub-issues), comment(n, body),
+    # label(n, name, add), assign(n, login, add)
+    "tracker": ("issue_node", "issues", "children", "comment", "label", "assign"),
     # the PR and its head, files, merged PRs, required checks, merge settings, who may write, and the merge itself
     "forge": (
         "pull_request",  # (pr) -> the PR node, with its reviews, checks, comments and closing issues
@@ -354,6 +355,7 @@ def through(name: str, operation: str) -> Callable[..., Any]:
 
 
 issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "issues")
+children = through("tracker", "children")
 label, assign = through("tracker", "label"), through("tracker", "assign")
 pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
 pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
