@@ -5865,26 +5865,66 @@ def test_check_queue_refuses_a_head_without_a_recorded_pass(
     )
 
 
+def owner_labels(pr: dict[str, Any], labels: tuple[str, ...], at: str) -> None:
+    pr["labels"]["nodes"] = [{"name": name} for name in labels]
+    pr["timelineItems"]["nodes"] += [{"createdAt": at, "label": {"name": name}} for name in labels]
+
+
+def test_an_owner_approved_high_risk_pr_may_enter_the_queue(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The owner's label added after the head's push covers that head, in a batch as through `land`."""
+    owner_labels(queueing["pull"], ("risk:high", "approved:merge"), LABELED)
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
+
+
 @pytest.mark.parametrize(
-    ("labels", "said"),
+    ("labels", "labeled", "said"),
     [
         (
             ("risk:high",),
-            "PR #7 is high risk (`risk:high` is on PR #7): it lands alone through `land`",
+            LABELED,
+            "PR #7 waits for the owner's `approved:merge` label, since it is high risk: `risk:high` is on PR #7",
         ),
         (
-            ("approved:merge",),
-            "PR #7 has the owner's `approved:merge`, which covers its head alone: it lands through `land`",
+            ("risk:high", "approved:merge"),
+            "2026-10-01T09:00:00Z",
+            "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again",
         ),
     ],
 )
-def test_check_queue_keeps_a_high_risk_or_owner_approved_pr_out(
-    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], labels: tuple[str, ...], said: str
+def test_check_queue_keeps_out_a_high_risk_pr_the_owner_has_not_approved_at_its_head(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    labels: tuple[str, ...],
+    labeled: str,
+    said: str,
 ) -> None:
-    queueing["pull"]["labels"]["nodes"] = [{"name": name} for name in labels]
-    code, lines = queue_check(capsys)
-    assert code == 1
-    assert said in lines
+    owner_labels(queueing["pull"], labels, labeled)
+    assert queue_check(capsys) == (1, [said])
+
+
+def test_check_merge_takes_the_batch_proof_of_an_owner_approved_high_risk_pr(
+    batched: dict[str, str],
+) -> None:
+    """Once the queue landed it, the batch stands in for the CI wait, and the label is dated against the landed head
+    again: a head pushed after the label still waits for the owner."""
+    head = batched["head"]
+    gated_head(head)
+    pr = pull(
+        reviews=(verdict_on(head),),
+        comments=(batch_note(head, batched["merge"], batched["batch"]),),
+        labels=("risk:high", "approved:merge"),
+        checks=(),
+    )
+    pr["headRefOid"] = head
+    loop = add(LOOP, "loop", "ci: false\nbatch_queue: true\n")
+    assert merge(pr, [approved(1, "area:web")], loop) == []
+    pr["timelineItems"]["nodes"] = []
+    owner_labels(pr, ("risk:high", "approved:merge"), "2026-10-01T09:00:00Z")
+    assert merge(pr, [approved(1, "area:web")], loop) == [
+        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
+    ]
 
 
 def test_check_queue_refuses_a_missing_merge_proof(

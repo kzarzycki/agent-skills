@@ -380,9 +380,11 @@ waiting PR's verified head onto the base, runs the full gate once on the result 
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
 `uv run <this skill's folder>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
 it: every merge proof but the CI wait, the head's own `local-ci --record` pass under the
-current environment and, with CI, its `check`, and nothing high risk or
-owner-approved, since the owner's label covers one head landing alone, through `land`. The
-queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
+current environment and, with CI, its `check`, and on a high-risk change the owner's
+`approved:merge` added after the head's push, the test `land` applies. The label covers that
+one head, and the queue keeps it: it runs `check queue` again before it merges a PR into a
+batch, evicting one whose head moved, and `check merge` dates the label against the landed
+head again. The queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
 place of the CI wait once git shows the head merged unchanged and without conflict
 resolution into a batch whose gate passed, and the head has its own `local-ci --record` pass
 under the environment the proof names (`approvals.py`'s docstring says how). A batch gate
