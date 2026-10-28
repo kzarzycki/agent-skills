@@ -21,7 +21,10 @@
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
 path of a question the child wrote (``<report>.question``) instead of a report; exit 1 prints the
-reason and the child's last message (for a failed session, its ``last_task_error`` and runner log).
+reason and the child's last message (for a failed session, its ``last_task_error`` and runner log)
+and writes ``FAILED: <code>: <message>`` to the report path, as a SIGTERM, SIGINT or SIGHUP does
+(exit 128 plus its number), when no report is there (the child's, or an earlier pass's); no reader takes that line as a report.
+A ``start`` whose launch fails or is stopped writes it the same way.
 A report already at the path is a pass before: only one written after the launch counts. It counts
 once final (``settled``): the child's turn has ended and the file is unchanged since, since a child
 can rewrite its report until then. The first turn that ends with neither gets one nudge to write
@@ -149,6 +152,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -256,6 +260,9 @@ RELAY_FROM = "[relay from {source}: not the owner's words, and no answer to an o
 # provenance (``owner_said``) never takes for the owner's own message.
 RELAYED = "[relayed by {who}]"
 VERDICT = re.compile(r"^SATISFIED: (yes|no)\b", re.MULTILINE)  # a verifier report's last line
+# What ``run`` writes to its report path when it ends without a report (a failed wait, a kill), so
+# a lead waiting on that file sees the failure. Never a delivered report: whatever replaces it is new.
+FAILED_LINE = re.compile(r"FAILED: \S+: [^\n]*\n?")
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
 AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
@@ -403,6 +410,50 @@ class Fail(Exception):
 
 class Asked(Fail):
     code = ASKED
+
+
+class Interrupted(Fail):
+    """A signal that stops ``run``: SIGTERM, SIGINT or SIGHUP, exiting 128 plus its number."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"interrupted by {signal.Signals(signum).name}")
+        self.code = 128 + signum
+
+
+def interrupt(signum: int, frame: object) -> NoReturn:
+    raise Interrupted(signum)
+
+
+def launcher_failed(report: Path) -> bool:
+    """Whether ``report`` holds only the ``FAILED:`` line ``run`` wrote there, not a child's report."""
+    try:
+        return bool(FAILED_LINE.fullmatch(report.read_text()))
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def write_failed(og: Omnigent, sid: str | None, report: Path, e: Fail) -> None:
+    """Write ``FAILED: <code>: <message>`` to ``report`` for a ``run`` or ``start`` that ends
+    without one. The code is the child's terminal state and its ``last_task_error`` code, else the
+    launcher's own: ``interrupted``, ``not-started``, ``timeout``, ``blocked`` on a prompt,
+    ``unreachable``. Only an absent file or an earlier launch's ``FAILED:`` line is replaced: a
+    report there, the child's or an earlier pass's a fix pass reuses the path of, stays."""
+    if report.exists() and not launcher_failed(report):
+        return
+    code = "interrupted" if isinstance(e, Interrupted) else "not-started"
+    if sid and not isinstance(e, Interrupted):
+        try:
+            info = og.info(sid)
+        except Exception:  # noqa: BLE001 - the line still goes out, without the child's state
+            info = {"status": "unreachable"}
+        status, error = str(info.get("status")), (info.get("last_task_error") or {}).get("code")
+        code = ("blocked" if prompts_of(info) else "timeout") if status in RUNNING else status
+        code += f"/{error}" if error else ""
+    message = str(e).split("\n", 1)[0]
+    try:
+        report.write_text(f"FAILED: {code.replace(' ', '_')}: {message}\n")
+    except OSError as err:
+        print(f"{report}: FAILED line not written: {reason(err)}", file=sys.stderr)
 
 
 class Gone(Fail):
@@ -1772,7 +1823,11 @@ def holder(og: Omnigent, title: str, digest: str, report: Path) -> str | None:
         sid = str(child["id"])
         if sid != held.get("sid") or og.info(sid).get("status") == "failed":
             continue
-        if report.is_file() and report.stat().st_mtime > float(child.get("created_at") or 0):
+        if (
+            report.is_file()
+            and report.stat().st_mtime > float(child.get("created_at") or 0)
+            and not launcher_failed(report)
+        ):
             raise Fail(f"session {sid} already wrote {report} for this brief: read it")
         print(f"session {sid} already holds this brief: attaching to it", file=sys.stderr)
         return sid
@@ -1830,8 +1885,10 @@ def wait(
             mtime = report.stat().st_mtime_ns
         except FileNotFoundError:
             return False
-        return (since is None or mtime > since) and (
-            not verdict or bool(VERDICT.search(report.read_text()))
+        return (
+            (since is None or mtime > since)
+            and not launcher_failed(report)
+            and (not verdict or bool(VERDICT.search(report.read_text())))
         )
 
     while True:
@@ -2349,7 +2406,11 @@ def check(
         del resumed[sid]
 
     def counts() -> bool:
-        return written(report, since) and (not verdict or bool(VERDICT.search(report.read_text())))
+        return (
+            written(report, since)
+            and not launcher_failed(report)
+            and (not verdict or bool(VERDICT.search(report.read_text())))
+        )
 
     if counts():
         if settled(report, info, items, {} if ended is None else ended, sid) and counts():
@@ -3917,6 +3978,10 @@ def main(argv: list[str] | None = None) -> int:
             )
     args = ap.parse_args(argv)
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
+    unreported: Path | None = None
+    stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+    launches = args.cmd in ("run", "start")
+    handlers = {s: signal.signal(s, interrupt) for s in stops} if launches else {}
     try:
         owed = {s: r.resolve() for s, r in map(pair, getattr(args, "owed", []))}
         if args.cmd == "supervise" and not (owed or args.registry):
@@ -4082,6 +4147,8 @@ def main(argv: list[str] | None = None) -> int:
             # the report that answer already produced as the old one.
             since = None
             for path in (question_of(report), report):
+                if launcher_failed(path):  # no report: whatever replaces it is new
+                    continue
                 try:
                     since = path.stat().st_mtime_ns
                     break
@@ -4120,13 +4187,19 @@ def main(argv: list[str] | None = None) -> int:
             )
         # A report already there is a pass before (a fix pass reuses the path): only a newer one counts.
         # `wait` after a separate `start` has no launch time to compare, so `start` refuses it.
-        if args.cmd == "start" and here and report.exists():
+        if args.cmd == "start" and here and report.exists() and not launcher_failed(report):
             raise Fail(
                 f"{report} already exists; wait would return at once (use run, or a new path)"
             )
         # The file's own mtime, never the clock: the kernel stamps files from a coarse clock that
         # lags time.time_ns() by up to a tick, so a report written that soon would read as older.
-        launched = report.stat().st_mtime_ns if here and report.exists() else None
+        launched = (
+            report.stat().st_mtime_ns
+            if here and report.exists() and not launcher_failed(report)
+            else None
+        )
+        if launches and here:  # what ends it without a report writes FAILED there
+            unreported = report
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
@@ -4199,8 +4272,13 @@ def main(argv: list[str] | None = None) -> int:
     except Fail as e:
         if e.code == ASKED and sid:  # the caller has the question
             arm_quietly(registry, sid)
+        elif unreported:
+            write_failed(og, sid, unreported, e)
         print(e, file=sys.stderr)
         return e.code
+    finally:
+        for s, handler in handlers.items():
+            signal.signal(s, handler)
 
 
 if __name__ == "__main__":

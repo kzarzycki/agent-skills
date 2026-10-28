@@ -291,11 +291,26 @@ and for a child that still owes its report a detached `supervise --registry` tha
 session cron, which die with your session and lose every wake they owed.
 Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, then polled: Claude Code's low-memory reaper stops
-in-session background shells.
+in-session background shells. Start each with `exec`, or in its own process group under
+`trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
+you have moved past; count runs with a pattern anchored at the interpreter
+(`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.
+A run started with `exec` leaves no exit file, since nothing runs after it: judge its end by its
+log or report, or use the trap form where its exit code matters.
+Wait on a child or a run by whether it is alive, never on its report file alone: your backend's
+status (Omnigent: `omnigent_agent.py status <session>`) or the run's pid and exit code, since a
+child that died, or a `run` killed mid-retry, writes nothing and a file wait polls on for good.
+So one background wait ends on every terminal state (success, failure, the process gone), e.g.
+`while ps -o args= -p <pid> | grep -q '<its command>'; do sleep 5; done`, keeping each run's pid
+(or its lock or heartbeat file) and checking it each poll, since a watcher that fires only on an
+outcome reads a dead run as still working. Match the pid's command, not the pid alone, since a
+pid the system reused for another process still passes `kill -0`; a pid file that is missing
+or empty means the run is gone. On every wake, a session restart included, check that each run you say you wait on is
+alive before saying so, since a restart kills your background runs. A child still `running` with
+no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
-has left no report and will not wake itself: arm one background wait on its process or log
-that ends on every terminal state (success, failure, the process gone), e.g.
-`while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
+has left no report and will not wake itself: arm such a wait on its process or log, and when it
+fires, ask the child for its report.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return; a report you heard any other way
@@ -308,7 +323,8 @@ process still hung on one is yours to stop and release, since its owner has ende
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
-before then.
+before then, and arms what wakes you then (a detached `sleep` to that time, or a scheduled
+message), since a time named only in text wakes nobody.
 
 A core finding still open at the cap goes to the owner and stops the landing: offer a fix
 with one pass past the cap, scoped to the open items, or leaving the code untouched
