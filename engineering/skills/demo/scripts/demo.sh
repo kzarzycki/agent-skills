@@ -34,7 +34,7 @@ done
 version="$(gh --version | sed -nE '1s/^gh version ([0-9]+)\.([0-9]+).*/\1 \2/p')"
 read -r major minor <<<"${version:-0 0}"
 if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 99 ]; }; then
-  echo "demo: gh $major.$minor cannot attach a video to a comment; upgrade gh to 2.99.0 or later" >&2
+  echo "demo: gh $major.$minor cannot attach a video to a comment; upgrade gh to 2.99.0 or later, else stop and report: a video posted another way (a release asset, a link) downloads instead of playing, and check merge refuses it" >&2
   exit 1
 fi
 if [ "$tapes" = 1 ] && ! command -v ttyd >/dev/null; then

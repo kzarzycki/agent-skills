@@ -776,6 +776,32 @@ def test_a_pr_with_every_proof_passes_merge() -> None:
     assert merge(done, [approved(1, "area:web")]) == []
 
 
+def test_a_demo_linked_instead_of_embedded_fails_check_merge_naming_demo_sh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "loop")
+    embedded = (
+        "## Demo\n\nthe preview, on aaaaaaa.\nhttps://github.com/user-attachments/assets/0b1c-2d\n"
+    )
+    asset = "https://github.com/kzarzycki/omnigent/releases/download/demo-190/check-1.mp4"
+    linked = f"## Demo\n\n- [check 1]({asset})\n"
+    issues = [approved(1, "area:web")]
+    done = {"reviews": (VERDICT,), "labels": OWNED}
+    assert merge(pull(comments=(embedded,), **done), issues) == []
+    failed = merge(pull(comments=(embedded, linked), **done), issues)
+    assert len(failed) == 1 and asset in failed[0] and "`scripts/demo.sh`" in failed[0]
+    assert "embeds no video" in merge(pull(comments=("## Demo\n\nsee the PR",), **done), issues)[0]
+    # at build too, once a demo is posted; a stranger's demo comment holds nothing
+    assert approvals.proofs("build", pull(comments=(linked,)), issues, LOOP) == failed
+    stranger = note(linked, author={"login": "drive-by"})
+    assert merge(pull(comments=(embedded, stranger), **done), issues) == []
+    # nor does a stranger's later demo clear a linked one; a demo minimized as outdated is skipped
+    cleared = note(embedded, author={"login": "drive-by"})
+    assert merge(pull(comments=(linked, cleared), **done), issues) == failed
+    outdated = note(linked, isMinimized=True)
+    assert merge(pull(comments=(embedded, outdated), **done), issues) == []
+
+
 def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

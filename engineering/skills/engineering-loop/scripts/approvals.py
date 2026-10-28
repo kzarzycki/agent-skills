@@ -46,7 +46,8 @@ pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit 
 commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
 one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
 only for a change it rates low; no unresolved
-review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
+author posted one, that embeds its videos as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
@@ -325,6 +326,9 @@ RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP
 # the commit status the project's approvals workflow posts; its target is the Actions run that posted it
 APPROVALS = "loop:approvals"
 RUN = re.compile(r"/actions/runs/(\d+)")
+# a URL in a `## Demo` comment; gh's --attach embeds a video as a bare user-attachments one, which plays inline
+URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
+ATTACHMENT = "https://github.com/user-attachments/"
 # land --wait: seconds between reads of the PR, and how long it waits in all before it exits 3
 POLL, CEILING = 30, 2 * 60 * 60
 # what land --wait polls for: CI on the head, GitHub's auto-merge, or its merge state
@@ -932,14 +936,17 @@ def bodies(node: dict[str, Any]) -> list[str]:
     return [note["body"] for note in notes(node)]
 
 
-def headed(node: dict[str, Any], heading: str) -> dict[str, Any] | None:
-    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`.
-    A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
+def headed(
+    node: dict[str, Any], heading: str, keep: Callable[[dict[str, Any]], bool] = lambda _note: True
+) -> dict[str, Any] | None:
+    """The last comment whose first line is `heading`, among those `keep` takes: `## Specification notes` is no
+    `## Spec`. A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
     found = [
         note
         for note in notes(node)
         if re.sub(r"\A\s*> 🤖 AI[ \t]*\n\s*", "", note["body"]).strip().split("\n", 1)[0].rstrip()
         == heading
+        and keep(note)
     ]
     return found[-1] if found else None
 
@@ -1113,6 +1120,27 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     return found
 
 
+def demo_form(pull: dict[str, Any]) -> list[str]:
+    """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video
+    (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR with no
+    demo has none. A stranger's demo neither holds nor clears the merge."""
+    shown = lambda note: not note.get("isMinimized") and trusted(pull, note)
+    demo = headed(pull, "## Demo", shown) if "comments" in pull else None
+    if demo is None:
+        return []
+    urls = URL.findall(demo["body"])
+    linked = [url for url in urls if not url.startswith(ATTACHMENT)]
+    if not linked and urls:
+        return []
+    what = f"links {linked[0]}" if linked else "embeds no video"
+    return [
+        (
+            f"PR #{pull['number']}: its `## Demo` comment {what}: post the demo with the demo skill's"
+            " `scripts/demo.sh`, which embeds each video as an attachment that plays inline"
+        )
+    ]
+
+
 def proofs(
     point: str,
     pull: dict[str, Any],
@@ -1146,6 +1174,7 @@ def proofs(
                 found += approvals(where, issue, "plan", version(plan))
         elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
+    found += demo_form(pull)
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
