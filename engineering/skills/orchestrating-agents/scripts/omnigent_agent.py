@@ -72,7 +72,8 @@ exiting with that code (with ``--pid``, a log last written before that run start
 run's, so its line does not count); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
 ``--until`` condition settled (``checks``, the default: all done, exit 0 green, 1 red naming them;
 ``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged); else ``still running``
-(exit 6). ``--notify`` also runs ``$LOOP_NOTIFY <outcome>`` once it ends, unset nothing, so a
+(exit 6; a run's own 6 prints ``exit 6`` and is an end). ``--notify`` also runs ``$LOOP_NOTIFY
+<outcome>`` once it ends, unset nothing, so a
 detached run's wrapper tells the session that started it (e.g. ``LOOP_NOTIFY="python3
 <this script> relay --from gate <session>"``) and that session can end its turn instead of waiting. ``run`` and ``wait`` fail, naming
 the paths, when a host child reports with a tracked change in its workspace that ``run`` did not see
@@ -2342,10 +2343,11 @@ def pr_outcome(pr: int, until: str) -> tuple[int, str] | None:
 
 def wait_for(
     log: Path | None, pid: str | None, pr: int | None, until: str, budget: float
-) -> tuple[int, str]:
+) -> tuple[int, str] | None:
     """Block up to ``budget`` seconds on a run's log exit line, its pid, or PR ``pr``'s ``until``
     condition, printing nothing meanwhile; return the exit code and the outcome text: the run's own
-    code (0 or 1 for a PR, 1 for a pid gone with no exit line) and ``LIMIT`` with ``still running``."""
+    code (0 or 1 for a PR, 1 for a pid gone with no exit line), or None once the budget passes,
+    since a run may itself exit ``LIMIT``."""
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
     bare = run_start(pid) if pid and pid.isdigit() else None  # a process's start is read once
@@ -2367,7 +2369,7 @@ def wait_for(
             return 0, f"pid {pid} ended"
         left = deadline - time.monotonic()
         if left <= 0:
-            return LIMIT, "still running"
+            return None
         time.sleep(min(every, left))
 
 
@@ -4331,9 +4333,13 @@ def main(argv: list[str] | None = None) -> int:
                 usage = Fail("wait-for needs --log and/or --pid, or --pr")
                 usage.code = 2
                 raise usage
-            code, outcome = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
+            ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
+            if ended is None:
+                print("still running")
+                return LIMIT
+            code, outcome = ended
             print(outcome)
-            if args.notify and code != LIMIT:
+            if args.notify:
                 notify(outcome)
             return code
         if args.cmd == "capacity":

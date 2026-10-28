@@ -609,9 +609,13 @@ def test_a_detached_gate_tells_the_session_that_started_it_once(tmp_path: Path) 
     env = {**os.environ, "LOOP_NOTIFY": f"{tell} session-1"}
     subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
     assert told.read_text() == "session-1|exit 3\n4 passed\n"  # the red run's last lines too
+    # a run's own exit 6 is an outcome, not wait-for's budget passing
+    six = wrapper.replace("exit 3", "exit 6")
+    subprocess.run(["sh", "-c", six], env=env, check=False, capture_output=True, timeout=30)
+    assert told.read_text().endswith("session-1|exit 6\n4 passed\n")
     del env["LOOP_NOTIFY"]  # unset: the outcome is only printed
     subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
-    assert told.read_text().count("session-1|") == 1
+    assert told.read_text().count("session-1|") == 2
 
 
 def test_verifier_wait_returns_only_after_the_verdict(tmp_path: Path) -> None:
