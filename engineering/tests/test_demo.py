@@ -128,7 +128,7 @@ RECORDED = ("vhs ", "ffmpeg ", "gh pr comment")
         ({"pr_head": "b" * 40}, 3, "record from a clean checkout of the head"),
         ({"status": " M tool.py\n"}, 3, "uncommitted or untracked"),
         ({"status": "?? helper.py\n"}, 3, "uncommitted or untracked"),
-        ({"gh_version": "2.87.0"}, 1, "upgrade gh to 2.99.0"),
+        ({"gh_version": "2.87.0"}, 1, "upgrade gh to 2.99.0 or later, else stop and report"),
         ({"ttyd": False}, 1, "needs ttyd"),
     ],
 )
