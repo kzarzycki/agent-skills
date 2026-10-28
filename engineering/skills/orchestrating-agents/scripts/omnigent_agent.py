@@ -1688,7 +1688,7 @@ def start(
     pr: int | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
-    lead subscribes its starter (``subscriber`` when given) unless ``subscribe`` is false: a
+    lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
     session on another host is not held back by this host's load."""
@@ -1801,11 +1801,13 @@ def start(
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
         if top_level and subscribe:
-            # A top-level lead has no parent to tell: the session starting it hears its turn ends
-            # and prompts instead, revived for them if its runner was reaped.
+            # A top-level lead has no parent to tell: the root of the starter's session tree hears
+            # its turn ends and prompts instead, revived if its runner was reaped. Not the starter:
+            # a lead's helper child goes idle or is closed long before then.
             try:
                 if not (me := subscriber or own_id()):
                     raise Fail("this shell does not name its Omnigent session")
+                me = subscriber or og.info(me).get("root_conversation_id") or me
                 og.subscribe(me, sid)
             except Fail as e:
                 print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)

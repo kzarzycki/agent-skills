@@ -60,6 +60,7 @@ class FakeOmnigent:
         self.workspaces: list[str | None] = []
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
+        self.roots: dict[str, str] = {}  # a session's root_conversation_id, when not its own
         self.resolved: list[tuple[str, str, str, dict | None]] = []
         self.host_id = "h"  # this host
         self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
@@ -162,6 +163,8 @@ class FakeOmnigent:
         ]
         status = "running" if pending else self.final
         info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        if sid in self.roots:
+            info["root_conversation_id"] = self.roots[sid]
         if sid in self.archived:
             info["archived"] = True
         if sid[1:].isdigit() and int(sid[1:]) < len(self.workspaces):
@@ -1970,6 +1973,21 @@ def test_a_top_level_start_subscribes_its_starter_to_the_lead(
     )
     assert og.subscriptions == [("chief", lead)]
     assert f"not subscribed to {last}" in capsys.readouterr().err
+
+
+def test_a_top_level_start_from_a_leads_helper_subscribes_the_lead_not_the_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lead's host helper, a child on a runner of its own, starts a worker on another host and
+    goes idle; the lead parks. The worker's turn end must reach the lead, the helper's root."""
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "helper")
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "helper")
+    og = FakeOmnigent()
+    og.roots["helper"] = "lead"
+    worker, _ = omnigent_agent.start(
+        og, "claude", "acceptance", "do X", tmp_path / "a.md", None, 0, top_level=True
+    )
+    assert og.subscriptions == [("lead", worker)]
 
 
 def test_run_refuses_top_level_before_a_session_exists(

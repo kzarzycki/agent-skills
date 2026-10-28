@@ -374,7 +374,7 @@ turn (completed|cancelled|failed). Read it with sys_session_get_history.]` or `[
 <title> (<id>) is waiting on a prompt. Read it with sys_session_get_info.]` into it, once per
 turn or prompt, reviving the subscriber's runner when it was reaped. A notice carries no text
 of the target's, so read what it names. It is how a top-level lead's starter hears it, since
-only a sub-agent's parent is told; `start --top-level` subscribes the session it runs in
+only a sub-agent's parent is told; `start --top-level` subscribes the root of its session's tree, its lead
 (`not subscribed` on stderr when the subscribe fails: a server without subscriptions answers
 404, a cycle or the 1,000-per-session cap 409, and a shell that does not name its session
 (`OMNIGENT_SESSION_ID`, `OMNIGENT_TERMINAL_LAUNCH_SESSION_ID` or
