@@ -2588,7 +2588,8 @@ def landing(
     """Every merge proof; a draft is then marked ready and waits (exit 3) for the CI that starts. A ready PR merges
     pinned to the head: at once when nothing waits, else auto-merge while only the base's required checks are pending
     and the repo allows it; exit 3 while anything else waits. When a red `loop:approvals` status is all that
-    waits, its Actions run is rerun: exit 3. A head behind its base, or in conflict, is refused first.
+    waits, its Actions run is rerun: exit 3. A head in conflict with its base, or behind one that requires no
+    merge queue while the PR is not in its queue, is refused first.
     With `reran` (land --wait), also what a wait would poll for (ON_CI, ON_MERGE, ON_STATE), else None: it ends
     here. Then auto-merge already on, or the merge queue, is watched rather than merged again, `merging` says this wait
     merged or turned auto-merge on, and each approvals run is rerun once."""

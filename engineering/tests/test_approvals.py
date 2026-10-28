@@ -3779,6 +3779,27 @@ def test_two_approved_prs_enqueue_at_once_and_neither_waits_for_the_others_merge
     assert len(landing["calls"]) == 2
 
 
+def test_land_wait_follows_a_queued_head_behind_its_base_without_reading_the_queue_rule(
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PR already in the queue is tested there on top of the base, whatever the base's rules say."""
+
+    def unread(_base: str) -> bool:
+        raise AssertionError("read the queue rule of a PR already in the queue")
+
+    monkeypatch.setattr(approvals, "queue_required", unread)
+    landing["pull"] = proven(isInMergeQueue=True, mergeStateStatus="BEHIND")
+    later += [landing["pull"], proven(state="MERGED")]
+    assert waited(capsys, landing) == (
+        0,
+        [f"PR #7: in the merge queue at {HEAD}", "PR #7 is merged"],
+        [],
+    )
+
+
 @pytest.mark.parametrize(
     ("status", "stale"), [("BEHIND", "is behind"), ("DIRTY", "conflicts with")]
 )
