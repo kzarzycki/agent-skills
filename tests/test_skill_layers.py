@@ -36,7 +36,7 @@ def mention(name: str) -> re.Pattern[str]:
         return re.compile(rf"(?<![\w.-]){re.escape(name)}(?![\w-])")
     # A one-word name is often a plain word (`pr`, `implement`), so only a reference to the skill counts.
     word = re.escape(name)
-    return re.compile(rf"`{word}`|(?<![\w.-]){word} skill\b|/{word}/")
+    return re.compile(rf"`/?{word}`|(?<![\w.-]){word} skill\b|/{word}/")
 
 
 def problems(root: Path, data: dict) -> list[str]:
@@ -57,17 +57,19 @@ def problems(root: Path, data: dict) -> list[str]:
     for skill, folder in found.items():
         if skill not in rank:
             continue
-        allowed = set(entries[skill].get("implements", []))
-        above = [
-            name
-            for name in found
-            if name in rank and rank[name] > rank[skill] and name not in allowed
-        ]
+        above = [name for name in found if name in rank and rank[name] > rank[skill]]
         for file in folder.rglob("*"):
             if not file.is_file() or "__pycache__" in file.parts:
                 continue
             text = file.read_text(errors="ignore")
             upward |= {f"{skill} -> {name}" for name in above if mention(name).search(text)}
+    implemented = {
+        f"{name} -> {port}"
+        for name, entry in entries.items()
+        for port in entry.get("implements", [])
+    }
+    out += [f"{pair}: stale implements, remove it" for pair in sorted(implemented - upward)]
+    upward -= implemented
     exceptions = data.get("exceptions") or {}
     out += [f"{pair}: names a higher layer" for pair in sorted(upward - exceptions.keys())]
     out += [f"{pair}: stale exception, remove it" for pair in sorted(exceptions.keys() - upward)]
@@ -130,3 +132,14 @@ def test_an_adapter_names_the_port_it_implements(tmp_path: Path) -> None:
     assert problems(tmp_path, data) == []
     data["skills"]["adapter"] = {"layer": 0}
     assert problems(tmp_path, data) == ["adapter -> craft: names a higher layer"]
+    tree(tmp_path, {"p/skills/adapter/SKILL.md": ""})
+    data["skills"]["adapter"] = {"layer": 0, "implements": ["craft"]}
+    assert problems(tmp_path, data) == ["adapter -> craft: stale implements, remove it"]
+
+
+def test_a_slash_invocation_of_a_one_word_skill_counts(tmp_path: Path) -> None:
+    tree(
+        tmp_path,
+        {"p/skills/loop/SKILL.md": "", "p/skills/craft/SKILL.md": "Use `/loop` to run it."},
+    )
+    assert problems(tmp_path, MAP) == ["craft -> loop: names a higher layer"]

@@ -19,14 +19,16 @@ map below and enforces the rule.
 A skill names only skills of its own layer or below, so a team can take a layer and
 everything under it without the layers above. An adapter also names the skill that
 defines the port it implements, since an adapter depends on its port, not the other way
-round; the map records that as `implements:`, not as an exception. Tooling serves the repo,
+round; the map records that as `implements:`, not as an exception, and an `implements:`
+entry no mention needs any more fails the test, as a stale exception does. Tooling serves the repo,
 not a team, so it names nothing in the stack, and any skill may name it.
 
 The test flags, in any file of a skill folder, a mention of a skill the rule forbids. A
 hyphenated name counts as a whole word, which also catches a relative path into that skill
 (`../engineering-loop/scripts`). A one-word name is often a plain word (`pr`, `implement`,
 `playwright` the Python package), so it counts only as a reference to the skill: in
-backticks, followed by `skill`, or as a path segment (`skills/retro/`).
+backticks (`retro`, or invoked as `/retro`), followed by `skill`, or as a path segment
+(`skills/retro/`).
 
 ### Layer map
 
