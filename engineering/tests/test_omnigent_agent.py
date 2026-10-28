@@ -536,22 +536,36 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
     views = iter(
         [
             {"state": "OPEN", "statusCheckRollup": []},
-            {"state": "OPEN", "statusCheckRollup": [{"name": "test", "status": "IN_PROGRESS"}]},
+            # a check still running has no conclusion yet: the wait goes on past it
+            {"state": "OPEN", "statusCheckRollup": [{"name": "build", "status": "IN_PROGRESS"}]},
             {
                 "state": "OPEN",
                 "statusCheckRollup": [
+                    {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
                     {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
                     {"context": "lint", "state": "SUCCESS"},
                 ],
             },
         ]
     )
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a: json.dumps(next(views)))
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(next(views)))
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "30"]) == 1
     assert capsys.readouterr().out == "PR #7 checks red: test\n"
+    assert next(views, None) is None  # it read the settled view, not the one still running
 
-    monkeypatch.setattr(omnigent_agent, "gh", lambda *a: '{"state": "CLOSED"}')
+    green = {
+        "state": "OPEN",
+        "statusCheckRollup": [
+            {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"context": "lint", "state": "SUCCESS"},
+        ],
+    }
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(green))
+    assert omnigent_agent.main(["wait-for", "--pr", "7"]) == 0
+    assert capsys.readouterr().out == "PR #7 checks green (2)\n"
+
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: '{"state": "CLOSED"}')
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "merged"]) == 1
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "closed"]) == 0
 
