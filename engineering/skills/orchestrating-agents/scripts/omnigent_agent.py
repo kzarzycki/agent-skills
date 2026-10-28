@@ -2311,10 +2311,12 @@ def log_outcome(log: Path, code: int) -> str:
     return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
 
 
-def pr_outcome(pr: int, until: str) -> tuple[int, str] | None:
+def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
     """PR ``pr``'s ``until`` condition, once it is settled: 0 and a line when it holds, 1 and a line
-    when it never will (closed unmerged, a check red); None while it is pending."""
-    data = json.loads(gh("pr", "view", str(pr), "--json", "state,statusCheckRollup"))
+    when it never will (closed unmerged, a check red); None while it is pending. The query gets
+    ``timeout`` seconds."""
+    view = gh("pr", "view", str(pr), "--json", "state,statusCheckRollup", timeout=timeout)
+    data = json.loads(view)
     state = data["state"]
     if until in ("merged", "closed") and state != "OPEN":
         held = state == "MERGED" or until == "closed"
@@ -2356,8 +2358,10 @@ def wait_for(
         if log and (code := fresh_exit(log, since)) is not None:
             return code, log_outcome(log, code)
         if pr is not None:
-            try:
-                if outcome := pr_outcome(pr, until):
+            if (left := deadline - time.monotonic()) <= 0:
+                return None
+            try:  # a query may not outlast the budget
+                if outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
                     return outcome
             except Fail:  # a GitHub blip: the next poll asks again
                 pass
@@ -2440,11 +2444,11 @@ def denied(text: str) -> None:
                 )
 
 
-def gh(*args: str) -> str:
+def gh(*args: str, timeout: float = HTTP_SECONDS) -> str:
     """``gh``'s output, run in this checkout with its login; a failure is a ``Fail``."""
     try:
         return subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=HTTP_SECONDS, check=True
+            ["gh", *args], capture_output=True, text=True, timeout=timeout, check=True
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()

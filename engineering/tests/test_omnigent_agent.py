@@ -594,6 +594,19 @@ def test_wait_for_a_pr_waits_until_its_checks_settle(
     assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "closed"]) == 0
 
 
+def test_wait_for_a_pr_keeps_its_budget_when_github_is_slow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slow = tmp_path / "gh"
+    slow.write_text('#!/bin/sh\nsleep 2\necho \'{"state": "OPEN", "statusCheckRollup": []}\'\n')
+    slow.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    began = time.monotonic()
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "0.2"]) == 6
+    assert time.monotonic() - began < 1.5  # the query is cut at the budget, not gh's own timeout
+    assert capsys.readouterr().out == "still running\n"
+
+
 def test_a_detached_gate_tells_the_session_that_started_it_once(tmp_path: Path) -> None:
     told = tmp_path / "told"
     tell = tmp_path / "tell"
