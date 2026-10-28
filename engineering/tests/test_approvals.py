@@ -5946,8 +5946,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
     app.py's first line. `merged(files)` commits `files` on a branch off that `main` (`base`) and merges it into the
     head as git would (`merge`, the head its first parent): `resolve` writes what a conflict leaves, `extra` adds a
     file the merge alone has, `crossed` first has each side merge the other's commit (a criss-cross, so the head is
-    that merge and the two have two merge bases). The test runs in a clone made before any of them was pushed, so
-    the gate must fetch."""
+    that merge and the two have two merge bases), `onto` merges into that commit instead of the head and `main` moves
+    main from that commit, `then` commits `then` on top of the merge as a PR commit after it (`merge`). The test runs
+    in a clone made before any of them was pushed, so the gate must fetch."""
     origin, work, checker = (tmp_path / name for name in ("origin.git", "work", "checker"))
     sh("git", "init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
     sh("git", "clone", "-q", str(origin), str(work), cwd=tmp_path)
@@ -5975,12 +5976,15 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         resolve: dict[str, str] | None = None,
         extra: dict[str, str] | None = None,
         crossed: bool = False,
+        onto: str | None = None,
+        main: str = "main",
+        then: dict[str, str] | None = None,
     ) -> dict[str, str]:
         n = next(cases)
-        git("switch", "-qc", f"base{n}", "main")
+        git("switch", "-qc", f"base{n}", main)
         write(files)
         git("commit", "-qm", f"main moved {n}")
-        first = head
+        first = onto or head
         if crossed:
             moved = git("rev-parse", "HEAD")
             git("merge", "-q", "--no-ff", "-m", f"main takes the feature {n}", head)
@@ -5998,6 +6002,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         )
         write({**(resolve or {}), **(extra or {})})
         git("commit", "-qm", f"Merge main {n}")
+        if then:
+            write(then)
+            git("commit", "-qm", f"the feature after main {n}")
         merge = git("rev-parse", "HEAD")
         git(
             "push",
@@ -6231,4 +6238,56 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
     )
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
+    ]
+
+
+def test_two_clean_merges_of_main_carry_the_verdict_from_before_both(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Main merged in twice since the verdict: each merge carries its first parent's, down to the verified head."""
+    first = carrying({"other.txt": "main moved\n"})
+    second = carrying({"more.txt": "main moved again\n"}, onto=first["merge"], main=first["base"])
+    pr = carried_pull(first)
+    pr.update(headRefOid=second["merge"], baseRefOid=second["base"])
+    assert merge(pr, [approved(1, "area:web")], CARRY) == [NO_LOCAL_CHECK]
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {carries(first['merge'], first['head'], first['base'], first['since'])}",
+        f"PR #7: {carries(second['merge'], first['merge'], second['base'], first['base'])}",
+    ]
+
+
+def test_a_pr_commit_after_a_clean_merge_carries_nothing(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The commit on top of the merge is the PR's own, never reviewed: the head needs its own verdict. A rebased or
+    amended head is the same case, a commit of one parent where the walk looks for a merge."""
+    case = carrying(
+        {"other.txt": "main moved\n"}, then={"app.py": APP.replace("line 5\n", "line 5, new\n")}
+    )
+    assert merge(carried_pull(case), [approved(1, "area:web")], CARRY)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {case['merge']} carries nothing from {case['head']}: it is no merge of two parents"
+    ]
+
+
+def test_a_pr_commit_between_two_clean_merges_carries_nothing(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clean merge on top hides no PR commit under it: the walk meets that commit before the verified one."""
+    first = carrying({"other.txt": "main moved\n"})
+    rewritten = carrying(
+        {"more.txt": "main moved again\n"}, then={"app.py": APP.replace("line 2\n", "line 2!\n")}
+    )
+    case = carrying(
+        {"third.txt": "main moved a third time\n"}, onto=rewritten["merge"], main=first["base"]
+    )
+    pr = carried_pull(first)
+    pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
+    assert merge(pr, [approved(1, "area:web")], CARRY)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {case['merge']} carries nothing from {first['head']}: {rewritten['merge']} is no merge of two parents"
     ]
