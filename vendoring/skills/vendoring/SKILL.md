@@ -19,10 +19,13 @@ Paths are relative to the pack's folder.
 
 - `vendir.yml` and `vendir.lock.yml`: which upstream folders land under `skills/`, and the
   commit they come from.
-- `upstream.yml`: the upstream repo and tracked ref, the skills the pack writes itself
-  (`owned_skills`), each tuned skill's overlay (`owned_overlays`, a folder under
-  `overlays/skills/` that replaces the upstream text whole), substitutions for an untuned
-  skill, and exclusions.
+- `upstream.yml`: the upstream repo (`repository`) and tracked ref (`tracked_ref`), the
+  upstream folder whose every skill the pack imports (`skills_path`, so a skill new there
+  joins on `update`), the skills the pack writes itself (`owned_skills`), each tuned
+  skill's overlay (`owned_overlays`, a folder under `overlays/skills/` that replaces the
+  upstream text whole), substitutions for an untuned skill, and exclusions. Every Git
+  source in `vendir.yml` must be `repository`, at `tracked_ref` or an exact commit, so the
+  lock can only come from the upstream the pack declares.
 - `provenance.yml`: written by the tool. The upstream commit and the hash of every
   imported and overlaid file, so an upstream change under a tuned skill stays visible
   though its text no longer ships.
@@ -56,7 +59,13 @@ Exit codes:
   `artifacts/<pack>-deltas/deltas/<skill>.diff` beside the pack; port or decline it,
   record the decision in `upstream-intake.yml` and rerun.
 
-<!-- ponytail: the tool still names the engineering pack's upstream and its policy in places; a second pack generalises them -->
+## Vendoring from this repository
+
+A fork pulls a package from here the same way this repo pulls `engineering` from its
+upstream: a pack folder whose `upstream.yml` names this repository as `repository`, with
+`skills_path: engineering/skills` (or another package's `skills/`), a `vendir.yml` leaf per
+skill it takes, and its own overlays. A first `vendir sync --chdir <pack>` writes the
+lock; from then on `update` and `check` keep it, and an overlay survives every update.
 
 ## Maintenance routine
 

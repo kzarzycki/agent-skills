@@ -111,7 +111,10 @@ def _install_noop_vendir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(
         qualify_module,
         "_reconcile_inventory",
-        lambda _stage, config, _owned, _candidate=None, _exclusions=(): (config, _candidate),
+        lambda _stage, config, _owned, _candidate=None, _exclusions=(), _root=None: (
+            config,
+            _candidate,
+        ),
     )
 
 

@@ -27,6 +27,7 @@ def test_inventory_is_derived_from_provenance_and_policy() -> None:
         "tracked_ref",
         "stable_tag_pattern",
         "removal_policy",
+        "skills_path",
         "substitutions",
         "exclusions",
         "aliases",
