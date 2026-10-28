@@ -3952,6 +3952,33 @@ def test_a_parked_lead_has_no_deadline(
     assert state_of(registry)["leads"]["a"]["wait"] == "parked"
 
 
+@pytest.mark.parametrize("task", ["monitor", "shell"])
+def test_a_lead_that_ended_with_only_a_monitor_live_has_no_deadline_and_a_shell_keeps_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: str
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    reply = {**ending("DONE: the page is published", 60), "status": "completed"}
+    og = Lead(told("brief", 120), reply)
+    og.snap = {"status": "running", "background_tasks": [{"type": task, "status": "running"}]}
+    at = {1: 1300.0, 2: 5000.0}
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, at[poll]),
+        notify="cos",
+        console=True,
+        fyi="post",
+    )
+    firsts = [p.split("\n")[0] for p in fyis(og)]
+    if task == "monitor":  # its turn ended: told once, then it waits on its follower
+        assert firsts == ["Supervisor: a t-a: turn ended"]
+    else:  # a shell is work in flight: watched as running, so the deadline still holds
+        assert firsts and all("no progress" in f for f in firsts)
+
+
 def test_a_live_child_is_progress_and_the_deadline_counts_from_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5952,6 +5979,41 @@ def _agent_server(monkeypatch: pytest.MonkeyPatch, pages: dict[str, object]) -> 
     )
     monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", raising=False)
     return calls
+
+
+def test_a_turn_ended_with_only_an_artifact_monitor_reads_idle_and_a_shell_keeps_it_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = {"type": "monitor", "status": "running", "description": "live updates for artifact"}
+    shell = {"type": "shell", "status": "running", "command": "sleep 120"}
+    old = time.time() - omnigent_agent.IDLE_GRACE_SECONDS - 1
+    reply = {"id": "i2", "type": "message", "role": "assistant", "status": "completed"}
+    reply["created_at"] = old
+    fresh = {**reply, "created_at": time.time()}  # narration a running turn persisted just now
+    call = {"id": "i3", "type": "function_call", "status": "completed", "created_at": old}
+    for tasks, last, status in (
+        ([monitor], reply, "idle"),
+        ([monitor], fresh, "running"),  # its tool call is still to land
+        ([monitor, shell], reply, "running"),
+        ([shell], reply, "running"),
+        ([monitor], call, "running"),  # mid-turn: a tool call is the last item
+        ([], reply, "running"),
+    ):
+        _agent_server(
+            monkeypatch,
+            {
+                "/v1/sessions/m": {"status": "running", "title": "t", "background_tasks": tasks},
+                "/v1/sessions/m/items?limit=100&order=desc": {"data": [last]},
+            },
+        )
+        og = omnigent_agent.Omnigent()
+        # the snapshot stays as the server says, so wait and reap, which a long foreground tool
+        # misread as ended would end or archive, never take it
+        assert og.info("m")["status"] == "running"
+        _, line = omnigent_agent.observe(og, "m", {})
+        assert line.startswith("m t: turn ended" if status == "idle" else "m t: running")
+        # the supervisor's deadline rule reads this state: an idle lead that ended its turn waits
+        assert omnigent_agent.lead_status(og.info("m"), [last])["state"] == status, (tasks, last)
 
 
 def test_a_users_own_agent_is_found_after_the_server_s_pages_and_gets_its_id(
