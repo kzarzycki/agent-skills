@@ -530,6 +530,30 @@ def test_wait_for_a_pid_ends_when_the_run_is_gone(
     assert omnigent_agent.main(["wait-for", "--budget", "1"]) == 2
 
 
+def test_wait_for_ignores_an_exit_line_older_than_the_run_it_waits_on(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    log, pid = tmp_path / "gate.log", tmp_path / "pid"
+    log.write_text("old successful run\nexit 0\n")
+    os.utime(log, (time.time() - 60, time.time() - 60))  # the previous run's, before this pid file
+    run = subprocess.Popen(["sleep", "30"])
+    try:
+        pid.write_text(f"{run.pid}\n")
+        argv = ["wait-for", "--log", str(log), "--pid", str(pid), "--budget", "0.05"]
+        assert omnigent_agent.main(argv) == 6
+        assert capsys.readouterr().out == "still running\n"
+        argv[4] = str(run.pid)  # a bare pid: the process's own start dates the run
+        assert omnigent_agent.main(argv) == 6
+        assert capsys.readouterr().out == "still running\n"
+    finally:
+        run.kill()
+        run.wait()
+    # the run died before it rewrote the log: gone, not the old run's success
+    assert omnigent_agent.main(argv[:4] + [str(pid), "--budget", "30"]) == 1
+    assert capsys.readouterr().out.startswith("gone: ")
+
+
 def test_wait_for_a_pr_waits_until_its_checks_settle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

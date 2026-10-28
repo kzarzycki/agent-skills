@@ -68,7 +68,8 @@ seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
 call), prints nothing meanwhile, and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
-exiting with that code; the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
+exiting with that code (with ``--pid``, a log last written before that run started is a previous
+run's, so its line does not count); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
 ``--until`` condition settled (``checks``, the default: all done, exit 0 green, 1 red naming them;
 ``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged); else ``still running``
 (exit 6). ``--notify`` also runs ``$LOOP_NOTIFY <outcome>`` once it ends, unset nothing, so a
@@ -2275,6 +2276,32 @@ def exit_of(log: Path) -> int | None:
     return int(ends[-1][1]) if ends else None
 
 
+def run_start(pid: str | None) -> float | None:
+    """When the run ``--pid`` names started, in epoch seconds: its pid file's mtime, else its live
+    process's start, early by ``PID_SLACK``; None when neither is known."""
+    if not pid:
+        return None
+    if not pid.isdigit():
+        try:
+            return Path(pid).stat().st_mtime
+        except OSError:
+            return None
+    age = elapsed(int(pid)) if alive(int(pid)) else None
+    return None if age is None else time.time() - age - PID_SLACK
+
+
+def fresh_exit(log: Path, since: float | None) -> int | None:
+    """``exit_of(log)``, but None for a log last written before ``since``: a previous run's, its
+    path reused by a run that has not rewritten it yet."""
+    code = exit_of(log)
+    if code is None or since is None:
+        return code
+    try:
+        return code if log.stat().st_mtime >= since else None
+    except OSError:
+        return None
+
+
 def log_outcome(log: Path, code: int) -> str:
     """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
     ``LOG_TAIL`` lines."""
@@ -2321,8 +2348,10 @@ def wait_for(
     code (0 or 1 for a PR, 1 for a pid gone with no exit line) and ``LIMIT`` with ``still running``."""
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
+    bare = run_start(pid) if pid and pid.isdigit() else None  # a process's start is read once
     while True:
-        if log and (code := exit_of(log)) is not None:
+        since = bare if pid and pid.isdigit() else run_start(pid)
+        if log and (code := fresh_exit(log, since)) is not None:
             return code, log_outcome(log, code)
         if pr is not None:
             try:
@@ -2331,7 +2360,7 @@ def wait_for(
             except Fail:  # a GitHub blip: the next poll asks again
                 pass
         elif pid and pid_of(pid) is None:
-            if log and (code := exit_of(log)) is not None:  # it wrote the line on its way out
+            if log and (code := fresh_exit(log, since)) is not None:  # written on its way out
                 return code, log_outcome(log, code)
             if log:
                 return 1, f"gone: pid {pid} ended with no exit line in {log}"
