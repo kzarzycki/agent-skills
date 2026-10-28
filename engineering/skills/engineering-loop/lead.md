@@ -86,7 +86,7 @@ design, wireframes included for a UI, and delegate the rest.
    with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
-   both are yours (worker.md, Gates and push). Its model is what `approvals.py model worker <issue>` prints (SKILL.md, Models).
+   both are yours (worker.md, Gates and push). Its model is what `approvals.py model worker <issue> --family <family>` prints (SKILL.md, Models).
    With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.

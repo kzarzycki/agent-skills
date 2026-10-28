@@ -1006,6 +1006,7 @@ def test_a_high_risk_change_needs_a_verdict_on_the_model_models_picks(
     judged = add(
         loop_md(
             "spec:\n  auto: true\ntiers:\n  codex:\n    top: gpt-6.1-sol\n    mid: gpt-6.1-terra\n"
+            "  claude:\n    top: claude-opus-5-5\n    mid: claude-sonnet-5-5\n"
             "models:\n  verifier:\n    - when:\n        risk: high\n      tier: top\n    - tier: mid\n"
         ),
         "risk",
@@ -1037,6 +1038,8 @@ def test_a_high_risk_change_needs_a_verdict_on_the_model_models_picks(
     assert gate(said("codex/terra-6.1/med", 1, "low — a fixture")) == []
     assert gate(said("codex", 1, "high")) == []
     assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
+    assert gate(said("cc/sonnet-5.5/high, same-family", 1, "high"))
+    assert gate(said("cc/sonnet-5.5/high", 1, "high"), said("cc/opus-5.5/high", 2, "high")) == []
 
 
 def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
@@ -5977,6 +5980,12 @@ def test_the_model_is_the_first_rule_matching_the_issue_or_the_prs_risk() -> Non
     )
     assert pick("verifier", "claude", MODELS, judged_high) == "claude-opus-5-5"
     assert pick("lead", "claude", MODELS, pull()) is None
+    # under spec.auto the risk rule holds the spec, not the merge, yet still picks the high-risk model
+    auto = add(MODELS, "spec", "auto: true\n")
+    assert pick("verifier", "claude", auto, pull(files=(".github/ci.yml",))) == "claude-opus-5-5"
+    # the verifier's own `Risk: high` counts without the risk rule's `verifier` term
+    unjudged = MODELS.replace("risk:\n  verifier: true\n", "risk:\n")
+    assert pick("verifier", "claude", unjudged, judged_high) == "claude-opus-5-5"
     for broken, refusal in (
         ("models:\n  worker:\n    - tier: huge\n", "names tier `huge`, which `tiers` lacks"),
         (
@@ -5994,6 +6003,24 @@ def test_the_model_is_the_first_rule_matching_the_issue_or_the_prs_risk() -> Non
             "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - when:\n        risk: low\n      tier: top\n",
             "`models.worker[1].when.risk` must be `high`",
         ),
+        ("tiers:\n  claude: [x]\n", "`tiers.claude` must be a section"),
+        ("tiers:\n  claude:\n    top: 5\n", "`tiers.claude.top` must be a string"),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    tier: top\n",
+            "`models.worker` must be a list",
+        ),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - when: [x]\n      tier: top\n",
+            "`models.worker[1].when` must be a section",
+        ),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - when:\n        labels: size:S\n      tier: top\n",
+            "`models.worker[1].when.labels` must be a list of strings",
+        ),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - when:\n        labels: [a]\n",
+            "`models.worker[1]` lacks `tier`",
+        ),
     ):
         with pytest.raises(approvals.Refused, match=re.escape(refusal)):
             approvals.settings(loop_md(broken))
@@ -6007,3 +6034,19 @@ def test_a_tier_loop_md_prose_names_resolves_only_within_the_lineup(
     assert capsys.readouterr().out == "gpt-6.1-terra\n"
     with pytest.raises(approvals.Refused, match=re.escape("`tiers.codex` has no tier `small`")):
         approvals.model("worker", 1, "codex", "small")
+
+
+def test_model_reads_a_pr_as_a_pr_and_an_issue_by_its_labels(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(approvals, "project", lambda: (None, MODELS))
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull(labels=("risk:high",)))
+    monkeypatch.setattr(approvals, "closing_issues", lambda _pull: [])
+    monkeypatch.setattr(approvals, "issue_node", lambda n: issue(n, "size:S"))
+    for kind, role, picked in (
+        ("true", "verifier", "claude-opus-5-5"),
+        ("false", "worker", "claude-sonnet-5-5"),
+    ):
+        monkeypatch.setattr(approvals, "gh", lambda *_args, kind=kind: kind + "\n")
+        assert approvals.model(role, 7, "claude") == 0
+        assert capsys.readouterr().out == picked + "\n"
