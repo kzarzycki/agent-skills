@@ -8,7 +8,6 @@ Tracker: GitHub (engineering-loop's github.md)
 
 ```yaml
 components:
-  workflow: the workflow plugin, the Spec → Tech Design pipeline (workflow/)
   content: the content plugin, writing-voice skills (content/)
   engineering: the engineering capability pack, its owned and imported skills (engineering/)
   research: the research plugin, multi-source research orchestration (research/)

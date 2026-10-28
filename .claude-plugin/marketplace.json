@@ -14,13 +14,6 @@
       "tags": ["playwright", "browser", "automation", "mcp", "scraping", "e2e", "scripting"]
     },
     {
-      "name": "workflow",
-      "description": "Durable, human-gated engineering workflows for Claude Code: a Spec → Tech Design pipeline where each phase converges through a format gate and independent reviewers before a human approval gate, plus subagent orchestration and learning consolidation.",
-      "source": "./workflow",
-      "category": "workflow",
-      "tags": ["orchestration", "workflow-engine", "review-gates", "spec", "tech-design"]
-    },
-    {
       "name": "utilities",
       "description": "Standalone utility skills independent of any one workflow: searching past Claude Code sessions by topic; running a GitHub Projects v2 board as the single home for a repo's milestones, epics and stories, with ticket templates.",
       "source": "./utilities",

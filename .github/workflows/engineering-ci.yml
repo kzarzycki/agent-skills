@@ -18,8 +18,6 @@ on:
       - content/**
       - experimental/**
       - research/**
-      - workflow/**
-      - omp-workflow/**
       - playwright/**
       - utilities/**
       - tools/capability_pack/**
