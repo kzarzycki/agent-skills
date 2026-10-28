@@ -2429,6 +2429,23 @@ def test_a_brief_with_an_empty_backtick_span_is_refused_before_a_session_exists(
     omnigent_agent.start(og, "claude", "t", "```sh\nls\n```", tmp_path / "r.md", None, 0)
 
 
+def test_start_refuses_a_frontier_model_on_model_but_not_from_the_owners_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.delenv("OMNIGENT_MODEL_CLAUDE", raising=False)
+    for model in ("claude-fable-5-1", "Astra"):
+        with pytest.raises(omnigent_agent.Fail, match="frontier model above top.*Models"):
+            omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0, model=model)
+    assert og.sessions == {}
+    for model in ("sonnet", "claude-opus-5-5", None):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0, model=model)
+    monkeypatch.setenv("OMNIGENT_MODEL_CLAUDE", "claude-fable-5-1")
+    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert "AGENT_SIGNATURE=cc/fable-5.1/?" in (tmp_path / "r.md.brief").read_text()
+    assert len(og.sessions) == 4
+
+
 def test_a_failed_session_reports_its_last_task_error_and_runner_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -205,6 +205,7 @@ TRANSIENT = (
 )
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
+FRONTIER = re.compile(r"fable|astra", re.IGNORECASE)  # a family's model above its top tier
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
 NO_REPORT = "Your turn ended without the report."
@@ -1610,6 +1611,12 @@ def start(
         raise Fail(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
+        )
+    # Only --model: OMNIGENT_MODEL_<AGENT> is the owner's own configuration.
+    if model and FRONTIER.search(model):
+        raise Fail(
+            f"--model {model} is a frontier model above top, which never runs"
+            " (engineering-loop SKILL.md, Models); the owner sets it with OMNIGENT_MODEL_<AGENT>"
         )
     elsewhere = bool(host_id) and host_id != og.host_id  # its load lands there, not here
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
