@@ -4648,14 +4648,9 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     assert approvals.reusable("c" * 40) is None
 
 
-def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_env(
-    github: list[tuple[Any, ...]],
-    hub: dict[str, list[dict[str, Any]]],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Host A records and publishes; host B, a clone made before the head was pushed, fetches it, finds the
-    published pass and posts it without running the check, which would fail there."""
+def published_on_a(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Host A records and publishes a pass of `true` on a pushed head; the test then runs in host B, a clone made
+    before that head was pushed, with no record of it. Returns the head."""
     origin = tmp_path / "origin.git"
     git_in(tmp_path, "init", "-q", "--bare", str(origin))
     a, b = tmp_path / "a", tmp_path / "b"
@@ -4672,8 +4667,20 @@ def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_
     monkeypatch.chdir(a)
     monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
     assert approvals.main(["local-ci", "--record"]) == 0
-    assert [s["description"] for s in hub[head]] == [f"Tree {approvals.tree_of(head)} on {head}"]
     monkeypatch.chdir(b)
+    return head
+
+
+def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_env(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host B fetches the head, finds A's published pass and posts it without running the check, which would fail
+    there."""
+    head = published_on_a(tmp_path, monkeypatch)
+    assert [s["description"] for s in hub[head]] == [f"Tree {approvals.tree_of(head)} on {head}"]
 
     def never(*_args: Any) -> Any:
         raise AssertionError("host B ran the check")
@@ -4684,6 +4691,36 @@ def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_
     [(_, _, body)] = github
     assert f"Reused by tree from the pass recorded on {head} at 2026-01-01T00:00:00Z" in body
     assert len(hub[head]) == 1  # already published: not again
+
+
+def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host B has no record to compare the command with, so the published status's key alone must tell: a gate whose
+    command changed since A's pass runs again, and check merge waits for that run."""
+    head = published_on_a(tmp_path, monkeypatch)
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    posted = note(f"{approvals.CHECKED}\nHead: {head}\nCommand: true\nEnv: default\n")
+    merged = {
+        **pull(reviews=(verdict_on(head),), comments=(posted,), labels=OWNED, checks=()),
+        "headRefOid": head,
+    }
+    assert merge(merged, [approved(1, "area:web")], no_ci) == []
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true", "--another-tier"])
+    ran: list[str | None] = []
+
+    def run_local_ci(pr: int | None, at: str | None) -> dict[str, Any]:
+        ran.append(at)
+        raise approvals.Refused("the check would run")
+
+    monkeypatch.setattr(approvals, "run_local_ci", run_local_ci)
+    assert approvals.reusable(head) is None
+    assert merge(merged, [approved(1, "area:web")], no_ci) == [NO_LOCAL_CHECK]
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (ran, github) == ([head], [])
 
 
 @pytest.mark.parametrize(
