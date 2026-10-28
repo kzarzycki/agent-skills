@@ -211,6 +211,9 @@ import yaml
 
 stage = Path(sys.argv[sys.argv.index("--chdir") + 1])
 upstream = Path(os.environ["FAKE_VENDIR_UPSTREAM"])
+# An upstream ahead of the lock, which only an unlocked sync reaches.
+if (ahead := os.environ.get("FAKE_VENDIR_AHEAD")) and "--locked" not in sys.argv:
+    upstream = Path(ahead)
 config = yaml.safe_load((stage / "vendir.yml").read_text())
 refs = {
     content["git"]["ref"]
@@ -243,10 +246,8 @@ if "--locked" not in sys.argv:
         else os.environ.get("FAKE_VENDIR_COMMIT", "2" * 40)
     )
     lock = stage / "vendir.lock.yml"
-    lock.write_text(lock.read_text().replace(
-        "1111111111111111111111111111111111111111",
-        commit,
-    ))
+    # Every locked commit moves, so a second unlocked sync can move the lock again.
+    lock.write_text(re.sub(r"\\b[0-9a-f]{40}\\b", commit, lock.read_text()))
 """
     )
     vendir.chmod(0o755)

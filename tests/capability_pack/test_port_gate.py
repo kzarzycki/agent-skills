@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import os
 import subprocess
 from pathlib import Path
@@ -165,9 +166,17 @@ def test_regenerate_ships_an_overlay_edit_at_the_lock_with_upstream_ahead(
     qualify(package, "update")
     lock = (package / "vendir.lock.yml").read_text()
     (package / "overlays" / "skills" / "alpha" / "SKILL.md").write_text("# Alpha, tuned again\n")
+    ahead = tmp_path / "upstream-ahead"
+    shutil.copytree(upstream, ahead)
+    (ahead / "skills" / "engineering" / "alpha" / "SKILL.md").write_text("# Alpha v2\n")
+    monkeypatch.setenv("FAKE_VENDIR_AHEAD", str(ahead))
+    monkeypatch.setenv("FAKE_VENDIR_COMMIT", "3" * 40)  # where an unlocked sync moves
+
+    # The same edit through update still meets upstream's change, as before.
+    with pytest.raises(PortRequiredError):
+        qualify(package, "update")
     argv = tmp_path / "vendir-argv.log"
     monkeypatch.setenv("FAKE_VENDIR_ARGV_LOG", str(argv))
-    monkeypatch.setenv("FAKE_VENDIR_COMMIT", "3" * 40)  # where an unlocked sync would move
 
     qualify(package, "regenerate")
 
