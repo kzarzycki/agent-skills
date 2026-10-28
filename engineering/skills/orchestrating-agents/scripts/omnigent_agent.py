@@ -376,7 +376,9 @@ Your checkout is a clone of the branch checked out in the workspace this session
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
-Never address the owner. If you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
+Never address the owner, and never call an interactive question tool, since its prompt waits on someone who never sees it: if you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
+Never publish a page or artifact, since it waits on a permission nobody can give here: put its content in the report.
+End each commit message with the co-author line only, with no session link, since the commit reaches a public repository.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
 """
