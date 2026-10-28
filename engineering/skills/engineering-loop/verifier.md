@@ -63,7 +63,12 @@ yourself, keeping standards and spec as separate axes.
   every call re-reads the whole context. A blocker that is only your own call timing out
   spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
   background shells. A gate the machine allows
-  by rule is the exception: run it as the bare command (Gates and repros).
+  by rule is the exception: run it as the bare command (Gates and repros). A queued run or
+  any other pending condition is waited on the same way, in the foreground (orchestrating-agents'
+  `scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <check>`, each call under
+  the tool timeout), and past the limit you state the pass ends with a report naming it, never
+  on a run still pending, since nothing wakes an idle session and a run left queued can apply
+  its mutation after you have gone.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
@@ -77,8 +82,10 @@ yourself, keeping standards and spec as separate axes.
   (`git diff <base> HEAD -- <file> > <patch>`). Undo it with `git apply -R <patch>`, run
   the test, and redo it with `git apply <patch>`; undo and redo are symmetric, so this
   also restores a file the change added or deleted. A test that still passes guards
-  nothing: report it as a major. Then check that `git status --porcelain` matches what it
-  showed at the start.
+  nothing: report it as a major. Before the report, `git status --porcelain` must match what
+  it showed at the start: revert any mutation of yours still applied, and report a tree you
+  cannot clean as a finding naming its paths, since the lead's next gate and push run in it
+  (`wait` fails a host verifier that leaves a tracked change).
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
@@ -119,6 +126,8 @@ keep these lines exact:
   pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
   (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
+  Text after the pass number is a qualifier the posted review's first line carries, such as
+  `Verifier: claude, same-family, pass 2 (merge of main)`.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR

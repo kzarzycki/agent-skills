@@ -1,0 +1,17 @@
+{
+  "name": "cos-console",
+  "version": "0.1.0",
+  "description": "A chief of staff's live lead status in Claude Code: a status line, a /leads pane, and the leads' status and the supervisor's events attached to the owner's messages. Drops nothing.",
+  "author": {
+    "name": "Krzysztof Zarzycki"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "registry": {
+      "type": "string",
+      "title": "Supervisor registry",
+      "description": "The registry the supervisor runs with --console on; its state file and event log sit beside it",
+      "default": "leads.registry"
+    }
+  }
+}

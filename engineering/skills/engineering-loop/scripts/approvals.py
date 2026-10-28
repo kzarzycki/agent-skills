@@ -14,6 +14,7 @@
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
+    uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -46,7 +47,8 @@ commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
-`ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
+`ci: false` in loop.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
+writer, instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
@@ -102,8 +104,9 @@ A pass also leaves a record keyed by commit under the git common dir (`approvals
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
 `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
 check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
-same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
-check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
+same command and the same env, `local-ci <pr>` posts the pass from it, naming its time, instead of running the
+check again; a record without env is never reused. The host stays in the record: nothing `approvals.py` posts names
+it, and posted text writes the home directory `~` (public), since a public board would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
@@ -133,7 +136,8 @@ record: H' runs its own gate, as CI would run on it. `check merge` and `land` pr
 predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
 nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
-one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
+one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
+(a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
 headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
 inline comment per finding, moved to the nearest line of the diff when its
@@ -146,7 +150,8 @@ differ), and every path either touches has at the PR's merge base the mode it ha
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
 only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
-label where the change is high risk.
+label where the change is high risk, which for a revert also means `risk:high` on an issue it names or on #n, or #n's
+last verdict judging it high, since undoing a high-risk change changes as much as making it.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 A spec or plan approval is a person's: a comment `approve --by owner` writes on the owner's word, which the gate
@@ -657,7 +662,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
     `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
     was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
-    blocker or major open (capped)."""
+    blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
+    issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
@@ -668,6 +674,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := pull.get("reverted"):
+        return why
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
         if why := ruled(labels, paths(pull), loop, judged(pull, loop)):
@@ -1393,8 +1401,9 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
         if any(
-            [line.strip() for line in body.strip().splitlines()[:2]] == head
-            for body in bodies(pull)
+            [line.strip() for line in note["body"].strip().splitlines()[:2]] == head
+            and trusted(pull, note)
+            for note in notes(pull)
         ):
             found = []
         else:
@@ -1414,7 +1423,6 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    me: list[str | None] = []  # viewer(), asked once and only when a batch proof is found
     for note in notes(pull):
         lines = note["body"].strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
@@ -1425,17 +1433,23 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
         fields = {
             key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
         }
-        if fields.get("Head", "").lower() != head:
-            continue
-        login = (note.get("author") or {}).get("login")
-        if not me:
-            me.append(viewer())
-        if login is None or (login != me[0] and not writer(login)):
+        if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
             continue
         if (why := unproven(head, fields)) is None:
             return None
         found.append(f"{where}: {why}")
     return found
+
+
+def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> bool:
+    """Whether a proof comment's author counts: the account running this, a writer (writer), and with `author` the
+    PR's author, as passes() reads verifier reviews, since anyone can comment on a public repo."""
+    login = (note.get("author") or {}).get("login")
+    if login is None:
+        return False
+    if author and login == (pull.get("author") or {}).get("login"):
+        return True
+    return login == viewer() or writer(login)
 
 
 def unproven(head: str, fields: dict[str, str]) -> str | None:
@@ -1448,7 +1462,8 @@ def unproven(head: str, fields: dict[str, str]) -> str | None:
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
     if (record := reusable(head)) is None:
         return f"the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    if (env := env_line(record["env"])[len("Env: ") :].strip()) != fields.get("Env"):
+    # the comment names the env as posted, its home written `~` (public)
+    if (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
         return (
             f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
         )
@@ -1637,7 +1652,7 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
         tail = []
     body = (
         f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n{env_line(record['env'])}"
-        f"Gated: {record['time']} on {record['host']}\nLog: {log}\n"
+        f"Gated: {record['time']}\nLog: {log}\n"
     )
     if tail:
         body += (
@@ -2107,6 +2122,13 @@ def assign(number: int, login: str, add: bool) -> None:
     )
 
 
+def public(text: str) -> str:
+    """`text` as posted: the home directory written `~`, since a path under it (a log's, a cache's) names the person
+    whose machine posted it, and GitHub's edit history keeps a comment's first text for good."""
+    home = str(Path.home()).rstrip("/")
+    return re.sub(re.escape(home) + r"(?![\w.-])", "~", text) if home else text
+
+
 def comment(number: int, body: str) -> None:
     gh(
         "api",
@@ -2114,7 +2136,7 @@ def comment(number: int, body: str) -> None:
         "-F",
         "body=@-",
         "--silent",
-        data=body,
+        data=public(body),
     )
 
 
@@ -2239,12 +2261,27 @@ def project() -> tuple[str | None, str | None]:
 def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Every missing proof at `point`, and the issues the PR names (none for an exact revert)."""
+    """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
+    reads its issues from `named` and the reverted PR's risk from `reverted` instead)."""
     revert, found = reverts(pull)
-    issues = [] if revert else closing_issues(pull)
-    if not revert:
-        found += problems(issues, None if tracker is None else label_names(tracker))
+    if revert:
+        pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
+        return found + proofs(point, pull, [], loop, revert), []
+    issues = closing_issues(pull)
+    found += problems(issues, None if tracker is None else label_names(tracker))
     return found + proofs(point, pull, issues, loop, revert), issues
+
+
+def reverted(number: int) -> str | None:
+    """Why an exact revert of #number is high risk for what it reverts, or None: `risk:high` on #number, or #number's
+    last verdict judging it high (judged), since undoing a high-risk change (or re-landing one, a revert of its
+    revert) changes as much as making it."""
+    original = pull_request(number)
+    if RISK_LABEL in names(original):
+        return f"`{RISK_LABEL}` is on #{number}, which it reverts"
+    if why := judged(original):
+        return f"it reverts #{number}, and {why}"
+    return None
 
 
 def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
@@ -2641,15 +2678,17 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
         "--input",
         "-",
         "--silent",
-        data=json.dumps(review),
+        # unescaped, so public() finds a non-ASCII home as GitHub will decode it
+        data=public(json.dumps(review, ensure_ascii=False)),
     )
 
 
 def parse_report(
     report: Path,
-) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str]]:
-    """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings and its closing
-    `VERDICT:`, `SATISFIED:` and `Risk:` lines. Refused, naming the fix, when `verdict` couldn't post it whole."""
+) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
+    """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
+    `VERDICT:`, `SATISFIED:` and `Risk:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
+    none). Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
     verdicts = [line for line in lines if line.startswith("VERDICT:")]
@@ -2668,7 +2707,12 @@ def parse_report(
     passes = [
         found
         for line in lines
-        if (found := re.fullmatch(r"Verifier:[ \t]*(.+),[ \t]*pass[ \t]+(\d+)", line))
+        # free text after the pass number is a qualifier the review's first line carries
+        if (
+            found := re.fullmatch(
+                r"Verifier:[ \t]*(.+?),[ \t]*pass[ \t]+(\d+)\b[ \t]*[:,;]?[ \t]*(.*)", line
+            )
+        )
     ]
     if not passes:
         raise Refused(f"{report} has no `Verifier: <family>, pass <n>` line")
@@ -2684,9 +2728,10 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
-    family, number = passes[-1].groups()
+    family, number, qualifier = passes[-1].groups()
     closing = [verdicts[-1], satisfied[-1], judgments[-1]]
-    return f"Verifier ({family}), pass {number}", heads[-1].lower(), found, closing
+    heading = f"Verifier ({family}), pass {number}"
+    return heading, heads[-1].lower(), found, closing, qualifier
 
 
 def report_check(report: Path) -> int:
@@ -2699,7 +2744,7 @@ def report_check(report: Path) -> int:
 def verdict(pr: int, report: Path) -> int:
     """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
     line of the diff when its line is outside it, in the review's body when its file is."""
-    heading, head, found, closing = parse_report(report)
+    heading, head, found, closing, qualifier = parse_report(report)
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
@@ -2717,7 +2762,8 @@ def verdict(pr: int, report: Path) -> int:
         comments.append(
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
-    summary = "\n\n".join([f"{heading} on {head[:7]}.", *outside, "\n".join(closing)])
+    first = f"{heading} on {head[:7]}" + (f": {qualifier}" if qualifier else "") + "."
+    summary = "\n\n".join([first, *outside, "\n".join(closing)])
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
     )
@@ -2829,7 +2875,7 @@ def local_ci(pr: int | None) -> int:
     head = pull_request(pr)["headRefOid"]
     record = reusable(head)
     if record:
-        source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+        source = f"From the recorded run at {record['time']}, not run again.\n"
     else:
         record = run_local_ci(pr, head)
         source = ""
@@ -2837,6 +2883,57 @@ def local_ci(pr: int | None) -> int:
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
     )
+    return 0
+
+
+def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
+    """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
+    verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
+    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    file as is and loop.md's `## Verifier brief`. A proof log whose first line isn't the head is refused, since the
+    verifier counts a stale proof as missing and spends the pass on it."""
+    _, loop = project()
+    pull = pull_request(pr)
+    head = pull["headRefOid"]
+    if missing := [str(log) for log in proofs if not log.is_file()]:
+        raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
+    # byte for byte, as lead.md's `head -1 <log> | grep -qx <head>` compares: a trailing space or CR is another line
+    if stale := [
+        str(log) for log in proofs if log.read_bytes().split(b"\n", 1)[0] != head.encode()
+    ]:
+        raise Refused(
+            f"PR #{pr}: stale proof, its first line isn't the head {head}: {', '.join(stale)}; rerun it"
+        )
+    reviewed = passes(pull)
+    if isinstance(reviewed, str):
+        raise Refused(f"PR #{pr} {reviewed}")
+    number = max((n for _, n, _ in reviewed), default=0) + 1
+    base = merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
+    issues = sorted(
+        {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
+        | set(named(pull["body"] or ""))
+    )
+    role = os.path.relpath(Path(__file__).resolve().parents[1] / "verifier.md")
+    lines = [
+        f"Review PR #{pr} as the verifier, pass {number}, following {role}.",
+        f"- Base: {base}",
+        f"- Reviewed head: {head}",
+        f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
+        f"- Report: tmp/loop/pr{pr}-v{number}.md",
+    ]
+    if reviewed:
+        newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
+        lines.append(
+            f"- Previous report: tmp/loop/pr{pr}-v{number - 1}.md, on {newest}: review the diff since that head and"
+            " rerun its repros"
+        )
+    lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
+    if priorities is not None:
+        lines += ["", "Priorities:", priorities.read_text().rstrip()]
+    # as written, but for the blank lines around it: indentation may be a snippet's
+    if (own := section(loop or "", "Verifier brief").strip("\n")).strip():
+        lines += ["", own]
+    print("\n".join(lines))
     return 0
 
 
@@ -2874,6 +2971,10 @@ def main(argv: list[str]) -> int:
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int)
     merging.add_argument("--wait", action="store_true")
+    briefing = commands.add_parser("brief")
+    briefing.add_argument("pr", type=int)
+    briefing.add_argument("--priorities", type=Path)
+    briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
@@ -2905,6 +3006,8 @@ def main(argv: list[str]) -> int:
             return local_ci(args.pr)
         if args.command == "land":
             return land(args.pr, args.wait)
+        if args.command == "brief":
+            return brief(args.pr, args.priorities, args.proof)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)
