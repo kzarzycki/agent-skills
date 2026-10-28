@@ -6377,6 +6377,7 @@ def memory(
         "label": lambda number, name, add: written.append(("label", number, name, add)),
         "comment": lambda number, body: written.append(("comment", number, body)),
         "record": lambda number, body: proofs.setdefault(number, []).append(note(body)),
+        "supersede": lambda comment_id: written.append(("minimize", comment_id)),
         "post_review": lambda number, review: reviews.setdefault(number, []).append(
             verdict_on(review["commit_id"]) | {"body": review["body"]}
         ),
@@ -6402,7 +6403,7 @@ def memory(
 @pytest.fixture
 def in_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., Any]:
     """A project whose policy names the `memory` adapters for every port, with no gh on PATH to fall back on; called
-    as memory() is, it plugs that adapter in."""
+    as memory() is, it plugs that adapter in, and a `policy` keyword adds its YAML to the policy."""
     for name, real in (
         ("viewer", VIEWER),
         ("required_checks", REQUIRED),
@@ -6417,13 +6418,13 @@ def in_memory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Callable[..., 
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
-    (agents / "gatekeeper.md").write_text(
-        "# Gatekeeper\n\n## Policy\n\n```yaml\nadapters:\n  tracker: memory\n  forge: memory\n"
-        "  evidence: memory\n```\n"
-    )
     monkeypatch.chdir(tmp_path)
 
-    def plug(*args: Any, **kwargs: Any) -> Any:
+    def plug(*args: Any, policy: str = "", **kwargs: Any) -> Any:
+        (agents / "gatekeeper.md").write_text(
+            "# Gatekeeper\n\n## Policy\n\n```yaml\nadapters:\n  tracker: memory\n  forge: memory\n"
+            f"  evidence: memory\n{policy}```\n"
+        )
         adapter = memory(*args, **kwargs)
         monkeypatch.setitem(approvals.ADAPTERS, "memory", adapter)
         return adapter
@@ -6486,6 +6487,71 @@ def test_proofs_recorded_in_a_separate_evidence_store_are_the_ones_check_merge_r
     assert spec["comments"]["nodes"] == pr["comments"]["nodes"] == pr["reviews"]["nodes"] == []
     assert approvals.main(["check", "merge", "7"]) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_a_local_check_pass_in_the_evidence_store_is_the_merge_proof_without_ci(
+    in_memory: Callable[..., Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    pr = pull(body="Closes #1\n\n## Evidence\n\nlog line\n", checks=())
+    spec = approved(1, "area:web", "kind:enhancement")
+    adapter = in_memory({7: pr}, {1: spec}, policy="loop:\n  ci: false\n")
+    adapter.proofs[1], spec["comments"]["nodes"] = spec["comments"]["nodes"], []
+    adapter.reviews[7] = [VERDICT]
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert "no local check passed on the head" in capsys.readouterr().out
+    adapter.proofs[7] = [
+        note(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: {approvals.LOCAL_CI}\n")
+    ]
+    assert approvals.main(["check", "merge", "7"]) == 0
+    assert capsys.readouterr().out == ""
+    assert pr["comments"]["nodes"] == []
+
+
+def test_a_batch_proof_in_the_evidence_store_is_the_one_queued_reads(
+    in_memory: Callable[..., Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A red batch, since it fails before any git lookup: queued() names it only when it read the proof."""
+    pr = pull(checks=())
+    adapter = in_memory({7: pr}, {})
+    monkeypatch.setattr(approvals, "using", None)
+    assert approvals.queued(pr) == []
+    adapter.proofs[7] = [note(batch_note(HEAD, "c" * 40, "d" * 40, exit=1))]
+    assert approvals.queued(pr) == [f"PR #7: the merge queue's gate on batch {'d' * 40} exited 1"]
+    assert pr["comments"]["nodes"] == []
+
+
+def test_a_delegated_approval_in_the_evidence_store_is_refused_into_the_default_branch(
+    in_memory: Callable[..., Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    pr = pull(body="Closes #1\n\n## Evidence\n\nlog line\n", labels=("risk:high", "approved:merge"))
+    spec = approved(1, "area:web", "kind:enhancement")
+    adapter = in_memory({7: pr}, {1: spec})
+    adapter.proofs[1], spec["comments"]["nodes"] = spec["comments"]["nodes"], []
+    adapter.reviews[7] = [VERDICT]
+    assert approvals.main(["check", "merge", "7"]) == 0
+    capsys.readouterr()
+    adapter.proofs[7] = [DELEGATED]
+    assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
+    assert "`approved:merge` is the delegated approval" in capsys.readouterr().out
+    assert pr["comments"]["nodes"] == []
+
+
+def test_a_re_approval_supersedes_the_records_in_the_evidence_store(
+    in_memory: Callable[..., Any],
+) -> None:
+    agents = note(record("spec", "coordinator", spec=AS_WRITTEN))
+    owners = note(record("spec", "owner", spec=AS_WRITTEN))
+    edited = specced(1, "kind:bug")
+    edited["lastEditedAt"] = "2026-10-02T14:35:27Z"
+    adapter = in_memory({}, {1: edited})
+    adapter.proofs[1] = [agents, owners]
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
+    assert adapter.proofs[1][-1]["body"] == (
+        "Approved: spec\nBy: owner\nSpec: as edited 2026-10-02 14:35:27 UTC\n"
+        "The spec changed after the last approval, so it was checked again.\n"
+    )
+    assert adapter.written[:2] == [("minimize", agents["id"]), ("minimize", owners["id"])]
+    assert edited["comments"]["nodes"] == []
 
 
 def test_the_tracker_reads_an_issues_children_through_the_adapter_the_policy_names(
