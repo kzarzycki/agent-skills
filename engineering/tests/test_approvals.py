@@ -950,7 +950,7 @@ def test_a_branchs_merge_to_the_default_branch_carries_its_high_risk_prs(
     assert asked == ["feature"]
     monkeypatch.undo()
     calls: list[tuple[str, ...]] = []
-    monkeypatch.setattr(approvals, "gh", lambda *args: calls.append(args) or "12\n15\n")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args: calls.append(args) or "12\n15\n")
     assert approvals.merged_high("feature") == [12, 15]
     assert calls == [
         (
@@ -977,7 +977,7 @@ def test_the_head_was_pushed_when_the_branchs_activity_last_names_it(
 ) -> None:
     calls: list[tuple[str, ...]] = []
     monkeypatch.undo()  # the autouse fixture's stub of head_pushed
-    monkeypatch.setattr(approvals, "gh", lambda *args: calls.append(args) or f"{PUSHED}\n")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args: calls.append(args) or f"{PUSHED}\n")
     assert approvals.head_pushed(pull()) == PUSHED
     assert calls == [
         (
@@ -987,7 +987,7 @@ def test_the_head_was_pushed_when_the_branchs_activity_last_names_it(
             f'[.[] | select(.after == "{HEAD}") | .timestamp] | first // ""',
         )
     ]
-    monkeypatch.setattr(approvals, "gh", lambda *args: "\n")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args: "\n")
     assert approvals.head_pushed(pull()) is None
 
 
@@ -1355,7 +1355,7 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             return json.loads(found.read_text())["merge_base_commit"]["sha"] + "\n"
         return found.read_text()
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.chdir(PROJECT)
     return asked
 
@@ -2453,7 +2453,7 @@ def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
     patch = "@@ -1,3 +1,4 @@\n one\n-two\n+2\n+2b\n three\n@@ -20 +21,2 @@\n+x\n y"
     files = [{"filename": "a.py", "patch": patch}, {"filename": "logo.png", "patch": None}]
     monkeypatch.setattr(
-        approvals,
+        approvals.github,
         "gh",
         lambda *args, data=None: "".join(json.dumps(entry) + "\n" for entry in files),
     )
@@ -2672,7 +2672,7 @@ def test_without_a_user_token_the_prs_author_and_writers_reviews_count(
             1, "gh", stderr="gh: Resource not accessible by integration (HTTP 403)\n"
         )
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "viewer", VIEWER)
     assert approvals.viewer() is None
     assert verified(verdict_on(HEAD, author="worker")) == []
@@ -2900,7 +2900,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return f"{str(state['auto']).lower()}\n"
         raise AssertionError(args)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     monkeypatch.setattr(approvals, "required_checks", REQUIRED)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
     monkeypatch.chdir(tmp_path)
@@ -3556,14 +3556,14 @@ def test_land_wait_reads_a_branchs_high_risk_prs_again_on_every_poll(
     monkeypatch.setattr(
         approvals, "merged_high", MERGED_HIGH
     )  # the real one, asking GitHub each time
-    github = approvals.gh
+    github = approvals.github.gh
 
     def gh(*args: str, data: str | None = None) -> str:
         if args[:2] == ("pr", "list"):
             return "12\n" if landing["pull"] is ready else ""
         return github(*args, data=data)
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     code, lines, calls = waited(capsys, landing)
     assert (code, calls) == (approvals.WAITING, [])
     assert lines[-1] == HELD + "`risk:high` is on #12, merged into feature"
@@ -4771,7 +4771,7 @@ def test_spec_policy_covers_a_bug_a_follow_up_and_a_writers_story_of_an_approved
 ) -> None:
     assert approvals.spec_policy(spec, set(approvals.SPEC_KINDS)) is covered
     assert not approvals.spec_policy(spec, set())
-    assert "parent {" in approvals.ISSUE and "author { login }" in approvals.ISSUE
+    assert "parent {" in approvals.github.ISSUE and "author { login }" in approvals.github.ISSUE
 
 
 def test_spec_policy_covers_only_the_kinds_auto_names(writers: list[str]) -> None:
@@ -5082,7 +5082,7 @@ def test_write_access_is_githubs_collaborator_permission(
             raise subprocess.CalledProcessError(1, "gh", stderr="gh: Not Found (HTTP 404)\n")
         return answer
 
-    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals.github, "gh", gh)
     assert approvals.writer("worker") is can
     assert asked == [
         ("api", "repos/{owner}/{repo}/collaborators/worker/permission", "--jq", ".permission")
@@ -5511,7 +5511,7 @@ def test_report_reads_a_report_as_verdict_would_without_github(
     def offline(*args: object, **kwargs: object) -> None:
         raise AssertionError(f"report reached out: {args}")
 
-    monkeypatch.setattr(approvals, "gh", offline)
+    monkeypatch.setattr(approvals.github, "gh", offline)
     monkeypatch.setattr(approvals, "one_repo", offline)
     report = tmp_path / "report.md"
     report.write_text(REPORT.replace(*change) if change[0] else REPORT)
@@ -5846,7 +5846,7 @@ def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every body comment() hands gh, from a fake host whose name and home name its owner."""
     sent: list[str] = []
     monkeypatch.setattr(approvals, "comment", COMMENT)
-    monkeypatch.setattr(approvals, "gh", lambda *args, data=None: sent.append(data) or "")
+    monkeypatch.setattr(approvals.github, "gh", lambda *args, data=None: sent.append(data) or "")
     monkeypatch.setattr(approvals.socket, "gethostname", lambda: "owner-MacBook.local")
     monkeypatch.setenv("HOME", "/Users/owner")
     return sent

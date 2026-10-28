@@ -226,6 +226,7 @@ import argparse
 import contextlib
 import fnmatch
 import functools
+import importlib.util
 import io
 import itertools
 import json
@@ -239,6 +240,7 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 try:
@@ -247,6 +249,46 @@ except ImportError:  # run as `python3 approvals.py` where PyYAML isn't installe
     sys.exit(
         f"{Path(sys.argv[0]).name} needs PyYAML: run it with `uv run {sys.argv[0]}`, which installs it"
     )
+
+
+def sibling(name: str) -> ModuleType:
+    """The module `<name>.py` beside this file, loaded by path, so two copies of the gatekeeper in one process (a
+    project's and an installed one) each load their own and none is found on sys.path by accident."""
+    spec = importlib.util.spec_from_file_location(
+        f"{__name__}.{name}", Path(__file__).with_name(f"{name}.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+github = sibling("github_adapter")
+# the GitHub reads and writes the policy code calls by name
+pull_request, pr_changes, merged_pull, merge_base = (
+    github.pull_request,
+    github.pr_changes,
+    github.merged_pull,
+    github.merge_base,
+)
+required_checks, queue_required, auto_merge_allowed = (
+    github.required_checks,
+    github.queue_required,
+    github.auto_merge_allowed,
+)
+tree, head_pushed, current_pr, diff_lines = (
+    github.tree,
+    github.head_pushed,
+    github.current_pr,
+    github.diff_lines,
+)
+issue_node, label, assign, minimize = (
+    github.issue_node,
+    github.label,
+    github.assign,
+    github.minimize,
+)
+viewer, writer, github_repo = github.viewer, github.writer, github.github_repo
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
@@ -265,8 +307,6 @@ DELEGATE = "delegate"
 MERGE_LABEL = "approved:merge"
 # a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
-# the collaborator permissions that can write; GitHub's `permission` field reads `maintain` as `write`
-WRITE = {"admin", "maintain", "write"}
 # a follow-up an agent raised: SKILL.md § Triage puts this line on every issue an agent files
 FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.IGNORECASE)
 # check merge's exit while it waits for `check` or the owner; argparse's usage error is 2
@@ -279,28 +319,8 @@ LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
-NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
-SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
-ASSIGNEES = "assignees(first: 10) { nodes { login } }"
-# who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
-EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT]) { nodes { __typename
-  ... on LabeledEvent { createdAt actor { __typename login } label { name } }
-  ... on AssignedEvent { createdAt assignee { ... on User { login } ... on Bot { login } } } } }"""
-# an issue with its author and its native parent (an epic), which spec_policy() reads, its assignees and events
-ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue mergeQueueEntry {{ state enqueuedAt headCommit {{ checkSuites {{ totalCount }} }} }} body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
-  files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
-  reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
-  authored: commits(first: 100) {{ totalCount nodes {{ commit {{ authors(first: 5) {{ totalCount nodes {{ user {{ login }} }} }} committer {{ user {{ login }} }} }} }} }}
-  timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
-    ... on LabeledEvent {{ createdAt label {{ name }} }} ... on ReadyForReviewEvent {{ createdAt }} }} }}
-  commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
-    __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
-    ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
-  closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
 # leaves unfinished, and `Implements` for one the owner signs off after landing (`signoff`). ponytail: same-repo `#n`
 # only, add owner/repo#n and issue URLs when a PR here uses one.
@@ -346,7 +366,6 @@ ON_STATE = "GitHub to compute its merge state"
 # GitHub sometimes builds a merge-group commit and never tells Actions: the entry then waits for the queue's own check
 # timeout. ponytail: a fixed 10 minutes with no check suite; a loop.md setting if a project's CI is slower to start.
 STUCK = 10 * 60
-DEQUEUE = "mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }"
 # GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
 STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
@@ -735,28 +754,6 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
 def default(pull: dict[str, Any]) -> bool:
     """Whether the PR's base is its repository's default branch; any other base is a feature branch."""
     return pull["baseRefName"] == pull["baseRepository"]["defaultBranchRef"]["name"]
-
-
-def merged_high(branch: str) -> list[int]:
-    """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
-    # ponytail: one page of 100; page when a feature branch takes more high-risk PRs than that
-    found = gh(
-        "pr",
-        "list",
-        "--base",
-        branch,
-        "--state",
-        "merged",
-        "--label",
-        RISK_LABEL,
-        "--limit",
-        "100",
-        "--json",
-        "number",
-        "--jq",
-        ".[].number",
-    )
-    return [int(number) for number in found.split()]
 
 
 def signoff(
@@ -2113,188 +2110,12 @@ def texts(data: str) -> list[str]:
     return strings
 
 
-def gh(*args: str, data: str | None = None) -> str:
-    if data is not None:  # every comment and review approvals.py posts goes as `data`
-        for text in texts(data):
-            denied(text)
-    return subprocess.run(
-        ["gh", *args], input=data, check=True, capture_output=True, text=True
-    ).stdout
-
-
-def _graphql(query: str, **fields: object) -> Any:
-    args = [arg for key, value in fields.items() for arg in ("-F", f"{key}={value}")]
-    # gh fills {owner} and {repo} from the current checkout
-    out = gh(
-        "api", "graphql", "-f", f"query={query}", "-F", "owner={owner}", "-F", "name={repo}", *args
-    )
-    return json.loads(out)["data"]["repository"]
-
-
-def _repository(fields: str) -> str:
-    return f"query($owner: String!, $name: String!, $n: Int!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
-
-
-def pull_request(pr: int) -> dict[str, Any]:
-    pull: dict[str, Any] = _graphql(_repository(f"pullRequest(number: $n) {{ {PULL} }}"), n=pr)[
-        "pullRequest"
-    ]
-    return pull
-
-
-def pr_changes(number: int) -> list[dict[str, Any]]:
-    """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{{owner}}/{{repo}}/pulls/{number}/files?per_page=100",
-        "--jq",
-        ".[]",
-    )
-    return [json.loads(line) for line in out.splitlines()]
-
-
-def merged_pull(number: int) -> dict[str, Any] | None:
-    """PR #number as GitHub's REST API returns it, when it was merged; None for an open or closed PR, or an issue."""
-    try:
-        found: dict[str, Any] = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/pulls/{number}"))
-    except subprocess.CalledProcessError as exc:
-        if "Not Found" in exc.stderr:
-            return None
-        raise
-    return found if found.get("merged") else None
-
-
-def merge_base(base: str, head: str) -> str:
-    """The commit GitHub diffs a PR's head against: where it branched from its base."""
-    return gh(
-        "api", f"repos/{{owner}}/{{repo}}/compare/{base}...{head}", "--jq", ".merge_base_commit.sha"
-    ).strip()
-
-
-# GitHub's answer to a rules read on a private repo of a free plan
-PLAN_LIMIT = "Upgrade to GitHub Pro"
-
-
-def required_checks(base: str) -> set[str]:
-    """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's. A private
-    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises."""
-    try:
-        rulesets = gh(
-            "api",
-            "--paginate",
-            f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
-            "--jq",
-            '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context',
-        )
-    except subprocess.CalledProcessError as error:
-        if "(HTTP 403)" not in (error.stderr or "") or PLAN_LIMIT not in error.stderr:
-            raise
-        print(
-            f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
-        )
-        rulesets = ""
-    protection = gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/branches/{base}",
-        "--jq",
-        ".protection.required_status_checks.contexts // [] | .[]",
-    )
-    return set((rulesets + protection).split())
-
-
-def queue_required(base: str) -> bool:
-    """Whether the base branch's rules require a merge queue; an error reads as none, so land refuses as without one."""
-    try:
-        rules = gh(
-            "api",
-            "--paginate",
-            f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
-            "--jq",
-            '.[] | select(.type == "merge_queue") | .type',
-        )
-    except subprocess.CalledProcessError:
-        return False
-    return bool(rules.split())
-
-
-def auto_merge_allowed() -> bool:
-    return gh("api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge").strip() == "true"
-
-
-def tree(sha: str) -> dict[str, tuple[str, str]] | None:
-    """The (mode, blob SHA) of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
-    ponytail: one recursive read, up to GitHub's 100,000 entries; read each touched directory when a repo outgrows it."""
-    found = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/git/trees/{sha}?recursive=1"))
-    if found["truncated"]:
-        return None
-    return {
-        entry["path"]: (entry["mode"], entry["sha"])
-        for entry in found["tree"]
-        if entry["type"] != "tree"
-    }
-
-
-def head_pushed(pull: dict[str, Any]) -> str | None:
-    """When the head commit was last pushed to the PR's branch, from GitHub's repository activity (pushes, force
-    pushes, the branch's creation); None when it lists none. ponytail: the newest 100 activities of a same-repo branch;
-    page further, or read a fork's, when a PR here needs it."""
-    out = gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/activity?ref=refs/heads/{pull['headRefName']}&per_page=100",
-        "--jq",
-        f'[.[] | select(.after == "{pull["headRefOid"]}") | .timestamp] | first // ""',
-    ).strip()
-    return out or None
-
-
-def issue_node(number: int) -> dict[str, Any]:
-    node: dict[str, Any] = _graphql(_repository(f"issue(number: $n) {{ {ISSUE} }}"), n=number)[
-        "issue"
-    ]
-    return node
-
-
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
     """GitHub's closing references plus every `#n` after a closing keyword, `Part of` or `Implements` in the body: GitHub sometimes
     never links a closing line, and has no API to set the link."""
     issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
     unlinked = sorted(set(named(pull["body"] or "")) - {issue["number"] for issue in issues})
-    if unlinked:  # a `#n` that is a pull request comes back empty and is dropped
-        aliases = " ".join(
-            f"i{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ {ISSUE} }} }}"
-            for n in unlinked
-        )
-        found = _graphql(
-            f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
-        )
-        issues = issues + [issue for issue in found.values() if issue]
-    return issues
-
-
-def label(number: int, name: str, add: bool) -> None:
-    """Add (GitHub creates a missing label) or remove a label on an issue or PR; removing an absent one is fine."""
-    path = f"repos/{{owner}}/{{repo}}/issues/{number}/labels"
-    if add:
-        gh("api", path, "-f", f"labels[]={name}", "--silent")
-        return
-    try:
-        gh("api", "-X", "DELETE", f"{path}/{name}", "--silent")
-    except subprocess.CalledProcessError as exc:
-        if "Label does not exist" not in exc.stderr:
-            raise
-
-
-def assign(number: int, login: str, add: bool) -> None:
-    """Add or remove an assignee of an issue or PR; GitHub ignores an absent one."""
-    gh(
-        "api",
-        *(() if add else ("-X", "DELETE")),
-        f"repos/{{owner}}/{{repo}}/issues/{number}/assignees",
-        "-f",
-        f"assignees[]={login}",
-        "--silent",
-    )
+    return issues + github.issues(unlinked)
 
 
 def public(text: str) -> str:
@@ -2305,61 +2126,31 @@ def public(text: str) -> str:
 
 
 def comment(number: int, body: str) -> None:
-    gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/issues/{number}/comments",
-        "-F",
-        "body=@-",
-        "--silent",
-        data=public(body),
-    )
+    """Comment on an issue or PR, as posted (public), refused first when it names a term of the deny list."""
+    body = public(body)
+    for text in texts(body):
+        denied(text)
+    github.comment(number, body)
 
 
-def minimize(comment_id: str) -> None:
-    """Collapse a comment on GitHub as outdated; it stays readable, and the gate still reads it."""
-    gh(
-        "api",
-        "graphql",
-        "-f",
-        "query=mutation($id: ID!) { minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) { clientMutationId } }",
-        "-f",
-        f"id={comment_id}",
-        "--silent",
-    )
+def post_review(pr: int, review: dict[str, Any]) -> None:
+    """Post a PR review, every text in it as posted (public), refused first when one names a term of the deny list."""
+    # unescaped, so public() finds a non-ASCII home as GitHub will decode it
+    data = public(json.dumps(review, ensure_ascii=False))
+    for text in texts(data):
+        denied(text)
+    github.post_review(pr, json.loads(data))
 
 
-def viewer() -> str | None:
-    """The login of the account `gh` runs as; None for a token `GET /user` refuses, such as a workflow's installation
-    token (`github.token`), where the PR's author and the repo's writers are the ones trusted (passes)."""
-    try:
-        return gh("api", "user", "--jq", ".login").strip()
-    except subprocess.CalledProcessError:
-        return None
+def one_repo() -> None:
+    """Refuse a checkout gh can't tell the repo of (github.one_repo)."""
+    if why := github.one_repo():
+        raise Refused(why)
 
 
-def writer(login: str) -> bool:
-    """Whether `login` can write to the repo, by GitHub's collaborator permission; an account GitHub refuses to look
-    up can't. ponytail: a bot's GraphQL login lacks the `bot` REST needs, so a bot author fails closed; add the
-    suffix when a project's bot opens sub-issues."""
-    try:
-        permission = gh(
-            "api",
-            f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission",
-            "--jq",
-            ".permission",
-        )
-    except subprocess.CalledProcessError:
-        return False
-    return permission.strip() in WRITE
-
-
-def current_pr() -> int | None:
-    try:
-        return int(gh("pr", "view", "--json", "number", "--jq", ".number"))
-    except subprocess.CalledProcessError as exc:
-        if "no pull requests found" in exc.stderr:
-            return None
-        raise
+def merged_high(branch: str) -> list[int]:
+    """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
+    return github.merged_labelled(branch, RISK_LABEL)
 
 
 class Refused(Exception):
@@ -2379,44 +2170,6 @@ def toplevel() -> Path:
         return Path(git("rev-parse", "--show-toplevel").strip())
     except subprocess.CalledProcessError as exc:
         raise Refused("not in a git checkout: run from the repo's checkout") from exc
-
-
-# a remote URL's host and `owner/repo`: `scheme://[user@]host[:port]/owner/repo` or scp-like `[user@]host:owner/repo`,
-# its path maybe led by extra slashes as gh allows, matched once trailing slashes and `.git` are cut (post_demo.sh
-# parses it the same way)
-REMOTE_URL = re.compile(
-    r"(?:[a-z][a-z0-9+.-]*://)?(?:[^@/]*@)?([^/:]+)(?::\d+)?[:/]/*([^/]+/[^/]+)", re.IGNORECASE
-)
-
-
-def github_repo(url: str) -> str | None:
-    """The `owner/repo` a GitHub remote URL names, lowercased; None for another host."""
-    found = REMOTE_URL.fullmatch(re.sub(r"(?:\.git)?/*$", "", url.rstrip("/")))
-    return found[2].lower() if found and found[1].lower() == "github.com" else None
-
-
-def one_repo() -> None:
-    """Refuse a checkout whose remotes name several GitHub repos while none is gh's default (`gh repo set-default`,
-    kept as `remote.<name>.gh-resolved`): gh then reads `{owner}/{repo}` and every `gh pr` as `upstream`, and a
-    review or label lands on a repo nobody chose. Outside a checkout it passes, and gh says why it can't run."""
-    remotes = subprocess.run(["git", "remote", "-v"], capture_output=True, text=True, check=False)
-    repos = sorted(
-        {
-            repo
-            for line in remotes.stdout.splitlines()
-            if len(fields := line.split()) > 1 and (repo := github_repo(fields[1]))
-        }
-    )
-    chosen = subprocess.run(
-        ["git", "config", "--get-regexp", r"^remote\..*\.gh-resolved$"],
-        capture_output=True,
-        check=False,
-    )
-    if len(repos) > 1 and chosen.returncode:
-        raise Refused(
-            f"this checkout's remotes name {', '.join(repos)} and gh has no default among them, so gh would pick one"
-            " itself: run `gh repo set-default <owner>/<repo>` once, naming the repo the PRs live in"
-        )
 
 
 def project() -> tuple[str | None, str | None]:
@@ -2684,9 +2437,6 @@ def landing(
         print(line)
     required = required_checks(pull["baseRefName"])
     checking, owner = ran(pull, loop, required), owner_waits(pull, issues, loop)
-    # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the repo's
-    # delete_branch_on_merge removes the remote one. Add it when a repo lacks that setting.
-    merge = ["pr", "merge", str(pr), "--squash", "--match-head-commit", head]
     checks = head_checks(pull, required)[0]  # ran() already waits for a draft-only skip
     red = [(name, state) for name, state in checks if state not in GREEN]
     # GitHub merges once the required checks pass; a red one it never merges past. The owner's label and a local-ci
@@ -2695,7 +2445,7 @@ def landing(
         if not RED.intersection(state for _, state in red):
             if stuck(pull):
                 try:
-                    gh("api", "graphql", "-f", f"query={DEQUEUE}", "-f", f"id={pull['id']}")
+                    github.dequeue(pull["id"])
                 except subprocess.CalledProcessError as error:
                     print(
                         f"{where}: dequeueing its stuck merge-queue entry failed: {error.stderr.strip()}"
@@ -2721,7 +2471,7 @@ def landing(
         return WAITING, ON_STATE
     if pull["isDraft"]:
         # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
-        gh("pr", "ready", str(pr))
+        github.ready(pr)
         print(f"{where} is ready now: CI starts on ready, run land again")
         return WAITING, ON_CI
     if not checking + owner and local:
@@ -2729,7 +2479,7 @@ def landing(
         print(f"{where} landed in {pull['baseRefName']} as {commit}, signed by a key in {local[1]}")
         return 0, None
     if not checking + owner:
-        gh(*merge)
+        github.merge(pr, head)
         print(f"{where} merges at {head}")
         # on a base that requires a merge queue, GitHub queues it instead: a wait follows it to MERGED
         return 0, ON_MERGE
@@ -2742,7 +2492,7 @@ def landing(
     )
     # GitHub's auto-merge would sign the squash with GitHub's key: a signed landing waits for the checks instead
     if pending and required and not local and auto_merge_allowed():
-        gh(*merge, "--auto")
+        github.merge(pr, head, auto=True)
         print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
         return 0, ON_MERGE
     statuses = [
@@ -2773,10 +2523,7 @@ def landing(
             )
             return WAITING, None
         # gh resolves the id in this checkout's repo; a target naming another repo's run, or one that is gone, fails
-        try:
-            run = json.loads(gh("run", "view", found[1], "--json", "status,url"))
-        except subprocess.CalledProcessError:
-            run = None
+        run = github.run(found[1])
         if run is None or not RUN.search(run.get("url") or ""):
             print(
                 f"{stale}, and its target names no Actions run of this repo:"
@@ -2793,7 +2540,7 @@ def landing(
             return WAITING, None
         # ponytail: a status forged to name another workflow's run reruns that run; whoever can post statuses
         # can rerun runs anyway. Pin the context to the approvals app in the ruleset to close it.
-        gh("run", "rerun", found[1])
+        github.rerun(found[1])
         if reran is not None:
             reran.add(found[1])
         print(
@@ -2899,40 +2646,6 @@ def findings(text: str, report: Path) -> list[tuple[str, str, str, str, str, str
         if body is not None:
             body.append(line)
     return [(*finding[:5], "\n".join(finding[5]).strip()) for finding in found]
-
-
-def diff_lines(base: str, head: str) -> dict[str, list[int]]:
-    """The lines a review at `head` can comment on, per file: the new side of GitHub's diff of base...head (added and
-    context lines). ponytail: one compare, up to the 300 files it lists."""
-    out = gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/compare/{base}...{head}",
-        "--jq",
-        ".files[] | {filename, patch}",
-    )
-    found: dict[str, list[int]] = {}
-    for entry in (json.loads(line) for line in out.splitlines()):
-        lines, number = found.setdefault(entry["filename"], []), 0
-        for line in (entry.get("patch") or "").split("\n"):
-            hunk = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)", line)
-            if hunk:
-                number = int(hunk.group(1))
-            elif line[:1] in (" ", "+"):
-                lines.append(number)
-                number += 1
-    return found
-
-
-def post_review(pr: int, review: dict[str, Any]) -> None:
-    gh(
-        "api",
-        f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
-        "--input",
-        "-",
-        "--silent",
-        # unescaped, so public() finds a non-ASCII home as GitHub will decode it
-        data=public(json.dumps(review, ensure_ascii=False)),
-    )
 
 
 def parse_report(

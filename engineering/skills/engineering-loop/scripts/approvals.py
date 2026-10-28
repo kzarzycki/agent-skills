@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gatekeeper import *  # noqa: E402, F403  the names older importers read from approvals
-from gatekeeper import main  # noqa: E402
+from gatekeeper import *  # the names older importers read from approvals
+from gatekeeper import main
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))
