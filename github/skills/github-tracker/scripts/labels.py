@@ -76,7 +76,7 @@ from gatekeeper import (  # the label names, defined once
     tracker_settings,
 )
 
-# the loop's fixed set (issues.md, Labels): name -> (colour, description)
+# the loop's fixed set (engineering-loop's issues.md, Labels): name -> (colour, description)
 LOOP_LABELS = {
     NEEDS_OWNER: (
         "d93f0b",

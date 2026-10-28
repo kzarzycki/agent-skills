@@ -16,7 +16,7 @@ then sets its Status. Ids are looked up by name on every call: GitHub changes op
 Exit 1 with gh's reason or the valid columns; the labels, not the board, are an issue's state, so a failed move never
 blocks a ticket. Needs the `project` token scope (`gh auth refresh -s project`).
 
-`column` prints the loop's column: the later of the one its board column shows (the earliest loop column mapped to it) and the one its labels give (issues.md, Board:
+`column` prints the loop's column: the later of the one its board column shows (the earliest loop column mapped to it) and the one its labels give (engineering-loop's issues.md, Board:
 `needs-owner` is `Needs owner`, `approved:spec` is `Ready`, neither is `Intent`), since the labels are the state and a
 board move may have failed. A board column no loop column maps to and the loop does not name is printed as is. `Sign-off` is a landed change
 whose issue stays open for the owner's check in use (`Implements #n`), so it comes after `Verify` and before `Done`.
@@ -135,7 +135,7 @@ def move(issue: int, column: str) -> None:
     _graphql(SET, project=project, item=item, field=field, option=option)
 
 
-# the loop's columns in stage order (issues.md, Board)
+# the loop's columns in stage order (engineering-loop's issues.md, Board)
 COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Sign-off", "Done"]
 
 

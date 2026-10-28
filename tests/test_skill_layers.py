@@ -77,8 +77,61 @@ def problems(root: Path, data: dict) -> list[str]:
     return out
 
 
+# a file name a script mentions, outside a path (`docs/agents/loop.md` is the project's)
+FILE = re.compile(r"(?<![\w./-])([\w-]+\.md)\b")
+
+
+def unnamed(root: Path) -> list[str]:
+    """A script's mention of a file another skill ships, without that skill's name, since a bare
+    `verifier.md` reads as the script's own and leads nowhere once the packages install apart."""
+    found = skills(root)
+    owners: dict[str, set[str]] = {}
+    for skill, folder in found.items():
+        for file in folder.rglob("*.md"):
+            owners.setdefault(file.name, set()).add(skill)
+    out = []
+    for skill, folder in found.items():
+        for script in sorted(folder.glob("scripts/**/*.py")):
+            text = script.read_text(errors="ignore")
+            for name in sorted(set(FILE.findall(text))):
+                others = owners.get(name, set()) - {skill}
+                if skill in owners.get(name, set()) or not others:
+                    continue
+                for other in others:
+                    named = rf"`?{re.escape(other)}`?(?: skill)?'s `?{re.escape(name)}"
+                    text = re.sub(named, "", text)
+                if name in FILE.findall(text):
+                    where = script.relative_to(root)
+                    out.append(
+                        f"{where}: {name} names no skill ({', '.join(sorted(others))} ships it)"
+                    )
+    return out
+
+
 def test_no_skill_names_a_layer_above_its_own() -> None:
     assert problems(REPOSITORY, layer_map(NOTE)) == []
+
+
+def test_a_script_names_the_skill_of_another_skills_file() -> None:
+    assert unnamed(REPOSITORY) == []
+
+
+def test_a_bare_file_of_another_skill_is_flagged(tmp_path: Path) -> None:
+    tree(
+        tmp_path,
+        {
+            "p/skills/loop/SKILL.md": "",
+            "p/skills/loop/verifier.md": "",
+            "p/skills/loop/scripts/brief.py": "# verifier.md, its own",
+            "p/skills/gate/SKILL.md": "",
+            "p/skills/gate/scripts/gate.py": "# the format of verifier.md; docs/agents/loop.md",
+        },
+    )
+    assert unnamed(tmp_path) == [
+        "p/skills/gate/scripts/gate.py: verifier.md names no skill (loop ships it)"
+    ]
+    tree(tmp_path, {"p/skills/gate/scripts/gate.py": "# `loop`'s verifier.md, loop's verifier.md"})
+    assert unnamed(tmp_path) == []
 
 
 def test_the_check_sees_the_plugins() -> None:
