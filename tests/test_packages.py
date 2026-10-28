@@ -55,7 +55,9 @@ def test_both_formats_publish_the_same_package(name: str) -> None:
     assert apm["description"] == plugin["description"]
     assert apm["targets"] == ["claude", "codex"]
     assert skills(REPOSITORY / name)
-    assert list((REPOSITORY / name / "changelog.d").glob("*.md")), "each package keeps its own changelog.d"
+    assert list((REPOSITORY / name / "changelog.d").glob("*.md")), (
+        "each package keeps its own changelog.d"
+    )
 
 
 @pytest.mark.parametrize("name", (*PACKAGES, "engineering"))
@@ -84,7 +86,10 @@ def test_every_scripts_folder_with_python_has_a_pycache_file(name: str) -> None:
     """Without the file an importer writes bytecode there, which an installed skill's lock counts (#428)."""
     package = REPOSITORY / name
     folders = {path.parent for path in package.glob("skills/**/*.py")}
-    assert sorted(str(f.relative_to(package)) for f in folders if not (f / "__pycache__").is_file()) == []
+    assert (
+        sorted(str(f.relative_to(package)) for f in folders if not (f / "__pycache__").is_file())
+        == []
+    )
 
 
 def test_every_copy_of_the_resolver_is_the_same() -> None:
