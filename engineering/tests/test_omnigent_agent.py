@@ -297,7 +297,7 @@ def test_start_refuses_a_model_the_harness_does_not_list(
 
 def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_path: Path) -> None:
     class Dropping(FakeOmnigent):  # the server kept no override: the harness default runs
-        def create(self, agent: str, title: str, model: str | None = None, *rest: Any) -> str:
+        def create(self, agent: str, title: str, model: str | None = None, *rest: object) -> str:
             sid = super().create(agent, title, model, *rest)
             self.overrides[sid] = None
             return sid
