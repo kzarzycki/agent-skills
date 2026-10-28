@@ -1129,8 +1129,10 @@ def demo_form(pull: dict[str, Any]) -> list[str]:
         return []
     what = f"links {linked[0]}" if linked else "embeds no video"
     return [
-        f"PR #{pull['number']}: its `## Demo` comment {what}: post the demo with the demo skill's"
-        " `scripts/demo.sh`, which embeds each video as an attachment that plays inline"
+        (
+            f"PR #{pull['number']}: its `## Demo` comment {what}: post the demo with the demo skill's"
+            " `scripts/demo.sh`, which embeds each video as an attachment that plays inline"
+        )
     ]
 
 
