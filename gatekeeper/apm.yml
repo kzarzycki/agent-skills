@@ -1,0 +1,12 @@
+name: gatekeeper
+version: 0.1.0
+description: "The gatekeeper CLI: may this change be built, enter a merge queue or merge, decided from proof on the forge and the team's policy."
+author: Krzysztof Zarzycki
+targets:
+- claude
+- codex
+dependencies:
+  apm: []
+  mcp: []
+includes: auto
+scripts: {}

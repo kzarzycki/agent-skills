@@ -6,7 +6,12 @@ targets:
 - claude
 - codex
 dependencies:
-  apm: []
+  apm:
+  - path: ../gatekeeper
+  - path: ../loop
+  - path: ../github
+  - path: ../chief-of-staff
+  - path: ../omnigent
   mcp: []
 includes: auto
 scripts: {}

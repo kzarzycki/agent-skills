@@ -4,5 +4,12 @@
   "description": "Project-scoped engineering workflows for design, implementation, testing, review, and maintenance.",
   "author": {
     "name": "Krzysztof Zarzycki"
-  }
+  },
+  "dependencies": [
+    "gatekeeper",
+    "loop",
+    "github",
+    "chief-of-staff",
+    "omnigent"
+  ]
 }

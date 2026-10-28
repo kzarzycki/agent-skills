@@ -1,0 +1,13 @@
+name: github
+version: 0.1.0
+description: "The GitHub tracker and forge conventions the loop and the gatekeeper run on: issue and label operations, the review trail, label sync and board moves."
+author: Krzysztof Zarzycki
+targets:
+- claude
+- codex
+dependencies:
+  apm:
+  - path: ../gatekeeper
+  mcp: []
+includes: auto
+scripts: {}
