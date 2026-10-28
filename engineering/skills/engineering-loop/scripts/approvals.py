@@ -139,6 +139,8 @@ verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line include
 record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line naming H, H' and the
 predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
 nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
+Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
+variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
@@ -2015,7 +2017,53 @@ def started(node: dict[str, Any]) -> str:
     return node.get("startedAt") or node.get("createdAt") or ""
 
 
+# the environment variable naming the local deny list (denied), a file kept outside the repo
+DENY_LIST = "LOOP_DENY_LIST"
+
+
+def denied(text: str) -> None:
+    """Refuse to post `text` when it names a term of the local deny list: the file `LOOP_DENY_LIST` names, one term per
+    line (a name, a repo slug, a hostname; `#` starts a comment), matched ignoring case at word boundaries, since a
+    public repo's comment keeps its first text in GitHub's edit history for good. Without the variable nothing is
+    checked; a list it names that can't be read refuses, since an unread list would let every post through."""
+    if not (where := os.environ.get(DENY_LIST)):
+        return
+    try:
+        listed = Path(where).expanduser().read_text().splitlines()
+    except OSError as exc:
+        raise Refused(
+            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
+        ) from exc
+    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
+    for number, line in enumerate(text.splitlines(), 1):
+        for term in terms:
+            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
+                raise Refused(
+                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
+                )
+
+
+def texts(data: str) -> list[str]:
+    """The text GitHub will publish from a post's `data`: every string a JSON payload holds, decoded (a review's body
+    and its inline comments), else the data itself (a comment's body)."""
+    try:
+        found: list[Any] = [json.loads(data)]
+    except ValueError:
+        return [data]
+    strings = []
+    while found:
+        value = found.pop()
+        if isinstance(value, str):
+            strings.append(value)
+        elif isinstance(value, dict | list):
+            found.extend(value.values() if isinstance(value, dict) else value)
+    return strings
+
+
 def gh(*args: str, data: str | None = None) -> str:
+    if data is not None:  # every comment and review approvals.py posts goes as `data`
+        for text in texts(data):
+            denied(text)
     return subprocess.run(
         ["gh", *args], input=data, check=True, capture_output=True, text=True
     ).stdout
@@ -2854,6 +2902,7 @@ def verdict(pr: int, report: Path) -> int:
     """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
     line of the diff when its line is outside it, in the review's body when its file is."""
     heading, head, found, closing, qualifier = parse_report(report)
+    denied(report.read_text())  # before any read of GitHub, not only at the post
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:

@@ -2197,6 +2197,63 @@ def test_a_cloud_worker_that_could_not_post_its_report_has_it_posted_from_the_ho
     assert len(calls) == posted  # posts nothing again
 
 
+def test_with_a_deny_list_a_cloud_worker_replies_with_its_report_and_the_host_checks_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The worker can't read the host's list, so it never posts: its reply carries the report, which wait checks
+    before posting, and a listed term posts nothing."""
+    deny = tmp_path / "deny.txt"
+    deny.write_text("Acme-Widgets\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    body = "Branch: claude/x at abc\nSeen in acme-widgets.\n"
+    og = FakeOmnigent(reply=f"UNPOSTED REPORT\n{body}")
+    calls = fake_gh(monkeypatch, {"comments": "https://github.com/o/r/pull/7#issuecomment-9"})
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "which you don't post: reply with the line `UNPOSTED REPORT`" in brief
+    assert "gh api" not in brief and "comment's URL" not in brief
+    assert (
+        "<!-- file: tmp/loop/<name> -->" in brief
+    )  # its files still travel in the report it replies with
+    with pytest.raises(omnigent_agent.Fail, match="line 2 names `Acme-Widgets` from the deny list"):
+        omnigent_agent.wait(og, sid, report, pr=7)
+    assert not [call for call in calls if "body=" in " ".join(call)]
+    monkeypatch.delenv("LOOP_DENY_LIST")
+    assert "gh api repos/{owner}/{repo}/issues/7/comments" in omnigent_agent.pr_preamble().format(
+        pr=7, report=report, unposted="U", role=""
+    )
+
+
+def test_with_a_deny_list_a_held_worker_is_never_told_to_post_and_a_posted_report_is_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nudge after a turn without the report keeps the worker held; a report it posted anyway is checked before
+    it or its files land on the host."""
+    deny = tmp_path / "deny.txt"
+    deny.write_text("Acme\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    report = tmp_path / "r.md"
+    og = FakeOmnigent(reply="gate still running")
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    with pytest.raises(omnigent_agent.Fail, match="without"):
+        omnigent_agent.wait(og, sid, report, pr=7)
+    [nudge] = [
+        text
+        for item in og.sessions[sid]
+        if (text := omnigent_agent.text_of(item)).startswith(omnigent_agent.NO_REPORT)
+    ]
+    assert "`UNPOSTED REPORT`" in nudge and "without posting it" in nudge
+    assert "comment's URL" not in nudge
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-9")
+    body = "Head: abc\n<!-- file: tmp/loop/x.py -->\n```\nprint('Acme')\n```\n"
+    fake_gh(monkeypatch, {"9": on_pr(7, body)})
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, pr=7)
+    with pytest.raises(omnigent_agent.Fail, match="names `Acme` from the deny list"):
+        omnigent_agent.wait(og, sid, report, pr=7)
+    assert not report.exists() and not (tmp_path / "tmp").exists()
+
+
 def test_a_cloud_report_brings_the_repro_files_it_carries_and_lists_the_missing_ones(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

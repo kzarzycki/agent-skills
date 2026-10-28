@@ -363,7 +363,14 @@ pending. With `--wait` it is one background command that ends when the PR merges
 someone. Never run `gh pr ready` or `gh pr merge` by hand,
 because `land` is what refuses a PR whose proof is missing. A repo without
 `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
-`approved:spec` and not `needs-owner`, and the PR's own proofs. A rule GitHub can enforce,
+`approved:spec` and not `needs-owner`, and the PR's own proofs. A post that names a private project, its repo or a host can't be taken back, since
+GitHub's edit history keeps a comment's first text: every comment and review `approvals.py`
+posts, and a cloud worker's report (`omnigent_agent.py` then has the worker reply with it
+instead of posting, and checks it on the host before posting it), is first checked against a local deny list, the file the environment variable
+`LOOP_DENY_LIST` names, one name, repo slug or hostname per line, and refused, naming the
+term and the line, when it matches. The list and the variable live outside the repo (the
+project's local, untracked instructions or the shell's environment name its path), since
+listing a private name in a public repo would publish it. A rule GitHub can enforce,
 such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
 which the loop obeys and never overrides.
 

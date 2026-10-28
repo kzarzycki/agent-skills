@@ -226,6 +226,12 @@ PR_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then post the"
     " report as a comment on PR #{pr} as your brief says and reply with only the comment's URL."
 )
+# PR_NUDGE for a worker held from posting (pr_preamble), which never posts
+HELD_NUDGE = (
+    NO_REPORT
+    + " Poll any long run you started detached, then reply with the line `{unposted}` and the report as"
+    " your brief says, without posting it."
+)
 # The claude-cloud bridge's two failures that are no fault of the child (#510): its bootstrap
 # failed before the brief reached the cloud (retried in a fresh session), or the cloud session
 # made no progress past its stall limit and is left as it is (continued with one message).
@@ -382,6 +388,18 @@ End each commit message with the co-author line only, with no session link, sinc
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
 """
+# With a deny list on this host (LOOP_DENY_LIST, as engineering-loop's approvals.py reads it), a cloud worker, which
+# can't read the list, never posts: its report comes back unposted, and wait checks it here before posting it.
+HELD_POST = (
+    "Your final report is one comment on PR #{pr}, which you don't post: reply with the line `{unposted}`, then the"
+    " comment body verbatim, and it is checked and posted for you."
+    " It names no host, path or session, since the PR may be public."
+)
+SELF_POSTED = re.compile(
+    r"Your final report is one comment on PR #\{pr\}, posted once.*?(?=\n(?:A file under|Never address))",
+    re.DOTALL,
+)
+WHEN_POSTED = re.compile(r"When done, reply with only the comment's URL\..*?(?=\n\n)", re.DOTALL)
 # A top-level lead talks to the owner directly, so it asks instead of writing a question; and since
 # anyone may have written its brief, it says whose words approve.
 LEAD_PREAMBLE = """\
@@ -1707,7 +1725,7 @@ def start(
     full = (
         f"AGENT_SIGNATURE={sig}\n"
         + (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
-        + (PR_PREAMBLE if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
+        + (pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
             report=report,
             pr=pr,
             unposted=UNPOSTED,
@@ -1940,6 +1958,7 @@ def wait(
             body = said.lstrip()[marked.end() :].lstrip("\n")
             # a re-attached wait finds the report it already posted
             if not (report.exists() and report.read_text() == body):
+                denied(body)
                 repo = gh("repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner")
                 url = gh(
                     "api",
@@ -1958,6 +1977,7 @@ def wait(
                 carry_files(body, report)
             break
         if turn_ended and pr and (body := pr_report(said, pr, since)) is not None:
+            denied(body)  # posted already, but neither it nor its files land here
             report.parent.mkdir(parents=True, exist_ok=True)
             report.write_text(body)
             carry_files(body, report)
@@ -1993,7 +2013,13 @@ def wait(
                 idle_since = None
                 continue
             if not nudged:  # often a turn ended on a background command: one reminder
-                nudge = PR_NUDGE.format(pr=pr) if pr else NUDGE.format(report=report)
+                nudge = (
+                    (HELD_NUDGE if os.environ.get(DENY_LIST) else PR_NUDGE).format(
+                        pr=pr, unposted=UNPOSTED
+                    )
+                    if pr
+                    else NUDGE.format(report=report)
+                )
                 print(
                     f"session {sid} ended ({status}) without {missing}; nudging once",
                     file=sys.stderr,
@@ -2145,6 +2171,39 @@ def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
         if str(comment.get("issue_url")).lower().endswith(f"/repos/{repo}/issues/{pr}".lower()):
             return comment.get("body") or ""
     return None
+
+
+def pr_preamble() -> str:
+    """PR_PREAMBLE, or with a deny list on this host its held form (HELD_POST): the worker replies with the report."""
+    if not os.environ.get(DENY_LIST):
+        return PR_PREAMBLE
+    held = SELF_POSTED.sub(lambda _found: HELD_POST, PR_PREAMBLE, count=1)
+    return WHEN_POSTED.sub(lambda _found: "When done, reply as above.", held, count=1)
+
+
+# the variable naming the local deny list engineering-loop's approvals.py reads (denied)
+DENY_LIST = "LOOP_DENY_LIST"
+
+
+def denied(text: str) -> None:
+    """A ``Fail`` when ``text`` names a term of the local deny list (``LOOP_DENY_LIST``'s file, one term per line,
+    ``#`` starts a comment), ignoring case at word boundaries, or when the list it names can't be read; the same check
+    as approvals.py's, which ships in another skill, so this script imports nothing of it."""
+    if not (where := os.environ.get(DENY_LIST)):
+        return
+    try:
+        listed = Path(where).expanduser().read_text().splitlines()
+    except OSError as e:
+        raise Fail(
+            f"{DENY_LIST} names {where}, which can't be read ({e.strerror}): nothing posted"
+        ) from e
+    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
+    for number, line in enumerate(text.splitlines(), 1):
+        for term in terms:
+            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
+                raise Fail(
+                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
+                )
 
 
 def gh(*args: str) -> str:
