@@ -82,6 +82,7 @@ loop:
     - GATE_TIER
   opt_out: true
   batch_queue: true   # lands through a batching merge queue of its own (below)
+  owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
 
 practice:
   plan: writing-plans
@@ -344,7 +345,9 @@ When a spec or plan needs the owner, add `needs-owner`, comment what to approve,
 a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
 on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`uv run
 <this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
-which records their word, adds the label and removes `needs-owner`. A change to an
+which records their word, adds the label and removes `needs-owner`. With `owner: <login>`
+under loop.md's `loop`, `check` and `land` do that themselves for a label that login added
+after the spec's last edit, since nothing in it needs an agent's judgment. A change to an
 approved spec's scope or acceptance is a decision the owner never saw: remove
 `approved:spec`, add `needs-owner` with a one-line comment saying what changed, and stop
 until they approve. A spec the owner approved and then edited for wording needs their

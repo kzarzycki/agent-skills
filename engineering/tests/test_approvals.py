@@ -1613,6 +1613,141 @@ def test_the_owners_approval_is_recorded_labelled_and_clears_needs_owner(
     ]
 
 
+@pytest.mark.parametrize(
+    ("actor", "at", "said"),
+    [
+        (
+            "octocat",
+            LABELED,
+            "#1: recorded the owner's `approved:spec`, added after the spec's last edit, as their approval",
+        ),
+        (
+            "octocat",
+            "2026-10-01T08:00:00Z",
+            (
+                f"#1: the owner's `approved:spec` was added before the spec's last edit ({AS_WRITTEN}): the owner"
+                " adds it again"
+            ),
+        ),
+        ("someone", LABELED, None),
+    ],
+    ids=["the owner after the edit", "the owner before it", "another account"],
+)
+def test_the_owners_own_label_after_the_last_edit_is_their_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    actor: str,
+    at: str,
+    said: str | None,
+) -> None:
+    """With loop.md's `owner`, the owner's `approved:spec` added after the spec's last edit is recorded as their word
+    and `needs-owner` comes off, so the gate proceeds; an older label or anyone else's leaves the refusal."""
+    loop = add(LOOP, "loop", "owner: octocat\n")
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": at,
+                "actor": {"__typename": "User", "login": actor},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+
+    def label(number: int, name: str, add: bool) -> None:
+        held = [node for node in spec["labels"]["nodes"] if node["name"] != name]
+        spec["labels"]["nodes"] = held + [{"name": name}] * add
+
+    monkeypatch.setattr(approvals, "label", label)
+    monkeypatch.setattr(
+        approvals, "comment", lambda _n, body: spec["comments"]["nodes"].append(note(body))
+    )
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    pr = pull()
+    pr["closingIssuesReferences"] = {"nodes": [spec]}
+    found, _issues = approvals.gated("merge", pr, TRACKER, loop)
+    if actor == "octocat" and at == LABELED:
+        assert found == ["PR #7: no verifier review posted (approvals.py verdict)"]
+        assert "needs-owner" not in approvals.names(spec)
+    else:
+        assert found[:2] == [
+            "#1 waits for the owner (needs-owner)",
+            "#1 has no `Approved: spec` record by the owner",
+        ]
+    assert capsys.readouterr().out.splitlines() == ([said] if said else [])
+
+
+def test_check_build_before_the_pr_records_the_owners_own_label(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`check build --issue <n>`, before a PR exists, adopts the owner's own label as the PR path does."""
+    loop = add(LOOP, "loop", "owner: octocat\n")
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+
+    def label(number: int, name: str, add: bool) -> None:
+        held = [node for node in spec["labels"]["nodes"] if node["name"] != name]
+        spec["labels"]["nodes"] = held + [{"name": name}] * add
+
+    monkeypatch.setattr(approvals, "label", label)
+    monkeypatch.setattr(
+        approvals, "comment", lambda _n, body: spec["comments"]["nodes"].append(note(body))
+    )
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(
+        approvals, "git", lambda *args: "" if args[0] == "diff" else "origin/main\n"
+    )
+    assert approvals.main(["check", "build", "--issue", "1"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "#1: recorded the owner's `approved:spec`, added after the spec's last edit, as their approval",
+        "#1: every build proof holds; no PR yet",
+    ]
+
+
+def test_an_edit_after_the_owners_label_is_never_recorded_under_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spec is read again to record it: an edit between the check and the record is refused, not approved, and
+    loop.md's owner matches the label's actor whatever its casing, as GitHub's logins do."""
+    loop = add(LOOP, "loop", "owner: Octocat\n")
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+    later = {**spec, "lastEditedAt": "2026-10-01T12:00:00Z"}
+    sent: list[str] = []
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: sent.append("label"))
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: later)
+    with pytest.raises(
+        approvals.Refused, match=r"edited \(as edited 2026-10-01 12:00:00 UTC\) after the owner"
+    ):
+        approvals.adopted([spec], loop)
+    assert sent == []
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    approvals.adopted([spec], loop)
+    assert sent[0] == f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"
+
+
 def test_approve_refuses_the_coordinator(
     github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
 ) -> None:
