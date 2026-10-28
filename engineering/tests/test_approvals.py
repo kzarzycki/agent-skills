@@ -1706,7 +1706,9 @@ def test_check_build_before_the_pr_records_the_owners_own_label(
     monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
     monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
-    monkeypatch.setattr(approvals, "git", lambda *args: "" if args[0] == "diff" else "origin/main\n")
+    monkeypatch.setattr(
+        approvals, "git", lambda *args: "" if args[0] == "diff" else "origin/main\n"
+    )
     assert approvals.main(["check", "build", "--issue", "1"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "#1: recorded the owner's `approved:spec`, added after the spec's last edit, as their approval",
