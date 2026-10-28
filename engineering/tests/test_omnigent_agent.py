@@ -7086,6 +7086,13 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     assert "co-author line only, with no session link, since the commit reaches a" in preamble
 
 
+def test_the_cloud_preamble_freezes_the_branch_once_the_head_is_handed_on() -> None:
+    """The cloud subscribes a worker to its PR's events; a review comment must not wake it to push."""
+    preamble = omnigent_agent.PR_PREAMBLE
+    assert "your branch is frozen" in preamble and "read-only, so push nothing" in preamble
+    assert "a follow-up goes in a new PR" in preamble
+
+
 def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:
     """The launcher the preambles name starts the command in its own session and returns at once."""
     for preamble in (
