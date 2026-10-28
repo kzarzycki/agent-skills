@@ -8,7 +8,6 @@ optional adapters.
 
 | Plugin | What it's for |
 |---|---|
-| **workflow** | Persistent project workspaces, subagent orchestration, a read-only main-thread mode, session search, learning consolidation, and durable human-gated workflows. |
 | **research** | Deep-research orchestration — parallel multi-source web search producing cited reports, plus delegation to hosted research assistants. |
 | **engineering** | The engineering loop (spec, build, gates, proof, an independent verifier, landing), its issue conventions, and the design, testing and review skills it calls. |
 | **content** | Understanding and reproducing a person's writing voice for outreach, content, and proposals. |
@@ -43,7 +42,6 @@ Add the marketplace, then install plugins by name.
 ```bash
 # In Claude Code:
 /plugin marketplace add kzarzycki/agent-skills
-/plugin install workflow@kzarzycki-agent-skills
 /plugin install research@kzarzycki-agent-skills
 /plugin install engineering@kzarzycki-agent-skills
 /plugin install content@kzarzycki-agent-skills
