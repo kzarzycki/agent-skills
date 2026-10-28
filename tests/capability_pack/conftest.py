@@ -279,6 +279,8 @@ if "--locked" not in sys.argv:
             return
         validate_source_policy(package, config, policy)
 
+    # The fake reads FAKE_VENDIR_UPSTREAM, so no source is fetched (test_upstream_fetch.py covers it).
+    monkeypatch.setattr(qualify_module, "_mirror_sources", lambda config, root, timeout: None)
     monkeypatch.setattr(qualify_module, "_reconcile_inventory", reconcile_fixture)
     monkeypatch.setattr(qualify_module, "_validate_source_policy", validate_fixture_source_policy)
     monkeypatch.setenv("FAKE_VENDIR_UPSTREAM", str(upstream))
