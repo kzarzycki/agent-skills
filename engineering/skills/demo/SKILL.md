@@ -2,7 +2,7 @@
 name: demo
 description: Record a short video of a change running and post it to its PR, so a reviewer judges a visible change without checking out the branch. Use when a PR changes what a user sees (a command and its output, a page, a screen, a speed-up), on "record a demo", or when the project's instructions or spec ask for one.
 metadata:
-  requires: "gh>=2.99.0"
+  requires: "gh>=2.99.0 vhs ttyd ffmpeg"
 ---
 
 # Demo
