@@ -356,8 +356,8 @@ needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
 is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land <pr>` (the
-project's `loop:land` task): it runs every merge proof, refuses a head behind or in
-conflict with its base, marks a draft ready and waits for the CI that starts, and on a ready
+project's `loop:land` task): it runs every merge proof, refuses a head in conflict with its
+base, or behind a base that requires no merge queue, marks a draft ready and waits for the CI that starts, and on a ready
 PR merges it pinned to its head, or turns on auto-merge while only required checks are
 pending. With `--wait` it is one background command that ends when the PR merges or needs
 someone. Never run `gh pr ready` or `gh pr merge` by hand,

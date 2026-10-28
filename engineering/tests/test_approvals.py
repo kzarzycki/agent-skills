@@ -2792,7 +2792,7 @@ def test_a_risk_path_rule_asks_for_the_label_only_on_a_pr_touching_its_path() ->
 def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`land` in a checkout with the fixture's tracker and a `merge: path .github/**` rule, against a stubbed GitHub:
     the PR (one approved issue, a verdict on the head, `check` green, a draft), the checks the base's rulesets and
-    branch protection require, whether the repo allows auto-merge; `calls` holds each `gh pr` command."""
+    branch protection require, whether they require a merge queue, whether the repo allows auto-merge; `calls` holds each `gh pr` command."""
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
@@ -2802,6 +2802,7 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     state: dict[str, Any] = {
         "pull": pr,
         "rulesets": ["check"],
+        "queue": False,
         "protection": [],
         "auto": True,
         "calls": [],
@@ -2822,6 +2823,8 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         if args[:2] == ("api", "graphql"):
             state["calls"].append(args[:2] + args[-1:])
             return "{}"
+        if args[:2] == ("api", "--paginate") and "merge_queue" in args[-1]:
+            return "merge_queue\n" if state["queue"] else ""
         if args[:2] == ("api", "--paginate") and args[2].endswith("/rules/branches/main"):
             if isinstance(state["rulesets"], Exception):
                 raise state["rulesets"]
@@ -3740,6 +3743,61 @@ def test_land_wait_rereads_an_unknown_merge_state_before_marking_a_draft_ready(
     code, lines, calls = waited(capsys, landing)
     assert (code, lines[0], calls) == (1, UNKNOWN, [])
     assert lines[1].startswith("PR #7 conflicts with main")
+
+
+def test_two_approved_prs_enqueue_at_once_and_neither_waits_for_the_others_merge(
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Under a base whose rules require a merge queue, both PRs enqueue in one round, #8 even though main already
+    moved past it; once #7 merges, #8, behind main again, stays queued until it merges: the queue tests it on top of
+    #7, so nothing asks for main to be merged in."""
+    landing["queue"] = True
+    prs = {7: proven(), 8: proven(number=8, mergeStateStatus="BEHIND")}
+    # #8 is landing["pull"], which each `land --wait` sleep moves to the next state in `later`
+    monkeypatch.setattr(
+        approvals, "pull_request", lambda number: landing["pull"] if number == 8 else prs[number]
+    )
+    landing["pull"] = prs[8]
+    assert [approvals.main(["land", str(number)]) for number in prs] == [0, 0]
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7 merges at {HEAD}",
+        f"PR #8 merges at {HEAD}",
+    ]
+    assert landing["calls"] == [MERGE, ("pr", "merge", "8", *MERGE[3:])]
+    prs[7] = proven(state="MERGED")
+    landing["pull"] = proven(number=8, isInMergeQueue=True, mergeStateStatus="BEHIND")
+    later += [landing["pull"], proven(number=8, state="MERGED")]
+    assert [approvals.main(["land", "7"]), approvals.main(["land", "8", "--wait"])] == [0, 0]
+    assert capsys.readouterr().out.splitlines() == [
+        "PR #7 is merged",
+        f"PR #8: in the merge queue at {HEAD}",
+        "PR #8 is merged",
+    ]
+    assert len(landing["calls"]) == 2
+
+
+def test_land_wait_follows_a_queued_head_behind_its_base_without_reading_the_queue_rule(
+    landing: dict[str, Any],
+    later: list[dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A PR already in the queue is tested there on top of the base, whatever the base's rules say."""
+
+    def unread(_base: str) -> bool:
+        raise AssertionError("read the queue rule of a PR already in the queue")
+
+    monkeypatch.setattr(approvals, "queue_required", unread)
+    landing["pull"] = proven(isInMergeQueue=True, mergeStateStatus="BEHIND")
+    later += [landing["pull"], proven(state="MERGED")]
+    assert waited(capsys, landing) == (
+        0,
+        [f"PR #7: in the merge queue at {HEAD}", "PR #7 is merged"],
+        [],
+    )
 
 
 @pytest.mark.parametrize(
