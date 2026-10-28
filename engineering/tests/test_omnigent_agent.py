@@ -554,6 +554,26 @@ def test_wait_for_ignores_an_exit_line_older_than_the_run_it_waits_on(
     assert capsys.readouterr().out.startswith("gone: ")
 
 
+def test_wait_for_fails_when_it_cannot_tell_a_pid_is_the_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    denied = tmp_path / "bin" / "ps"
+    denied.parent.mkdir()
+    denied.write_text("#!/bin/sh\necho 'ps: operation not permitted' >&2\nexit 1\n")
+    denied.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{denied.parent}{os.pathsep}{os.environ['PATH']}")
+    run = subprocess.Popen(["sleep", "30"])
+    try:
+        pid = tmp_path / "pid"
+        pid.write_text(f"{run.pid}\n")
+        assert omnigent_agent.main(["wait-for", "--pid", str(pid), "--budget", "0.05"]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == "" and "operation not permitted" in captured.err
+    finally:
+        run.kill()
+        run.wait()
+
+
 def test_wait_for_a_pr_waits_until_its_checks_settle(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

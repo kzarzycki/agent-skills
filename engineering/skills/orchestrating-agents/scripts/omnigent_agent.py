@@ -2240,7 +2240,7 @@ def pid_of(pid: str) -> int | None:
     if not text.isdigit() or not alive(int(text)):
         return None
     age = elapsed(int(text))
-    return int(text) if age is None or age + PID_SLACK >= written else None
+    return int(text) if age is not None and age + PID_SLACK >= written else None
 
 
 def alive(pid: int) -> bool:
@@ -2254,15 +2254,20 @@ def alive(pid: int) -> bool:
 
 
 def elapsed(pid: int) -> float | None:
-    """Seconds since ``pid`` started, from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``), or None."""
+    """Seconds since ``pid`` started, from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``), or None once it
+    is gone. A ``Fail`` when ``ps`` cannot say for a live one, since a pid of unknown age may be
+    another process the system gave it to."""
     try:
-        out = subprocess.run(
+        ps = subprocess.run(
             ["ps", "-o", "etime=", "-p", str(pid)], capture_output=True, text=True, check=False
-        ).stdout.strip()
-    except OSError:
-        return None
+        )
+        out, why = ps.stdout.strip(), ps.stderr.strip() or f"exit {ps.returncode}"
+    except OSError as e:
+        out, why = "", str(e)
     if not (m := re.fullmatch(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", out)):
-        return None
+        if not alive(pid):
+            return None
+        raise Fail(f"cannot tell whether pid {pid} is the run's: ps -o etime= failed: {why}")
     days, hours, minutes, seconds = (int(g or 0) for g in m.groups())
     return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 

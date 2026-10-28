@@ -327,7 +327,8 @@ So one wait ends on every terminal state (success, failure, the process gone), w
 --log <log> --pid <pid>` does, keeping each run's pid (or its lock or heartbeat file), since a
 watcher that fires only on an outcome reads a dead run as still working. Wait on the pid file, not the bare pid: a pid the
 system reused for another process still passes `kill -0`, so `wait-for` reads a process younger
-than its pid file as the run gone, as it does a pid file that is missing or empty. On every wake, a session restart included, check that each run you say you wait on is
+than its pid file as the run gone, as it does a pid file that is missing or empty, and exits 1
+naming `ps` when it cannot read a live process's age, since an unchecked pid may be another's. On every wake, a session restart included, check that each run you say you wait on is
 alive before saying so, since a restart kills your background runs. A child still `running` with
 no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
