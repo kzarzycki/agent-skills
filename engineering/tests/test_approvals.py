@@ -170,7 +170,7 @@ def pull(
     *,
     body: str = "## Evidence\n\nlog line\n",
     files: tuple[str, ...] = (),
-    comments: tuple[str, ...] = (),
+    comments: tuple[str | dict[str, Any], ...] = (),
     labels: tuple[str, ...] = (),
     checks: tuple[tuple[str, str], ...] = (("check", "SUCCESS"),),
     labeled: str = LABELED,
@@ -322,6 +322,49 @@ def test_an_issue_without_approved_spec_is_not_ready() -> None:
         "#2 has no `Approved: spec` record by the owner",
         "#2 lacks the `approved:spec` label",
     ]
+
+
+def test_check_build_before_the_pr_judges_the_issue(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no PR yet, `check build --issue <n>` (or the issue the branch is named for) applies the PR's build proofs
+    to the issue alone, so an unapproved spec is not built."""
+    spec: dict[int, dict[str, Any]] = {
+        2: issue(2, "kind:chore", "area:agents", "size:XS", "risk:high"),
+        3: approved(3, "kind:chore", "area:agents"),
+    }
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    branch, changed = ["loop/3-fix"], [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "".join(f"{path}\0" for path in changed[0].split())
+        return ("origin/main" if args[-1] == "origin/HEAD" else branch[0]) + "\n"
+
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(*args: str) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", *args])
+        return code, capsys.readouterr().out.splitlines()
+
+    unapproved = [
+        "#2 has no `Approved: spec` record by the owner",
+        "#2 lacks the `approved:spec` label",
+    ]
+    assert build("--issue", "2") == (1, unapproved)
+    assert build("--issue", "3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert build() == (0, ["#3: every build proof holds; no PR yet"])
+    branch[0] = "loop/2-fix"
+    assert build() == (1, unapproved)
+    branch[0] = "spike"
+    assert build()[0] == 1
+    assert build("7", "--issue", "2") == (1, ["--issue goes with check build and no PR number"])
 
 
 def test_every_closing_issue_specced_lands() -> None:
@@ -954,6 +997,48 @@ def test_one_job_name_in_two_workflows_is_two_checks() -> None:
     assert approvals.ci("PR #7", pr) == ["PR #7: `check` is FAILURE on the head commit"]
 
 
+def test_a_high_risk_change_needs_a_verdict_on_the_model_models_picks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A satisfied verdict from the low change's model saying `Risk: high` blocks the merge; a pass on the model
+    `models` then picks clears it, and a signature naming no lineup model is not judged."""
+    monkeypatch.setattr(approvals, "writer", lambda _login: False)
+    judged = add(
+        loop_md(
+            "spec:\n  auto: true\ntiers:\n  codex:\n    top: gpt-6.1-sol\n    mid: gpt-6.1-terra\n"
+            "models:\n  verifier:\n    - when:\n        risk: high\n      tier: top\n    - tier: mid\n"
+        ),
+        "risk",
+        "verifier: true\n",
+    )
+
+    def said(family: str, number: int, risk: str) -> dict[str, Any]:
+        heading = f"Verifier ({family}), pass {number}"
+        return verdict_on(HEAD, "0 blocker, 0 major, 0 minor", heading=heading) | {
+            "body": f"{heading} on {HEAD[:7]}.\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: {risk}\n"
+        }
+
+    def gate(*reviews: dict[str, Any]) -> list[str]:
+        return approvals.proofs(
+            "merge",
+            pull(reviews=reviews, labels=OWNED),
+            [approved(1, "kind:bug", "area:web")],
+            judged,
+        )
+
+    assert gate(said("codex/terra-6.1/med", 1, "high — CI permissions")) == [
+        (
+            "PR #7 is high risk (it matches a risk rule's `verifier` term: the verifier's pass 1 on aaaaaaa says"
+            " `Risk: high — CI permissions`), and its newest verdict ran on terra-6.1, not the gpt-6.1-sol"
+            " loop.md's `models` picks: a pass on that first"
+        )
+    ]
+    assert gate(said("codex/terra-6.1/med", 1, "high"), said("codex/sol-6.1/med", 2, "high")) == []
+    assert gate(said("codex/terra-6.1/med", 1, "low — a fixture")) == []
+    assert gate(said("codex", 1, "high")) == []
+    assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
+
+
 def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
     no_ci = add(LOOP, "loop", "ci: false\n")
     missing = [
@@ -975,6 +1060,30 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
         proofs(f"> {approvals.CHECKED}\n> Head: {HEAD}\n"),
         proofs(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
     ) == (missing, missing, missing, missing, missing, [])
+
+
+def test_a_local_check_counts_only_from_the_author_the_runner_or_a_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anyone can comment on a public repo, so a `Local check passed` comment from an account without write access
+    proves nothing."""
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
+    passed = f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
+
+    def proofs(login: str) -> list[str]:
+        merged = pull(
+            reviews=(VERDICT,), comments=(note(passed, author={"login": login}),), labels=OWNED
+        )
+        return merge(merged, [approved(1, "area:web")], no_ci)
+
+    assert proofs("stranger") == [
+        (
+            "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the"
+            " head (approvals.py local-ci)"
+        )
+    ]
+    assert proofs("loop") == proofs("maintainer") == proofs("worker") == []
 
 
 def test_more_checks_than_one_page_is_refused() -> None:
@@ -1251,6 +1360,61 @@ def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
             "PR #3: no verifier review posted (approvals.py verdict)",
         ],
     )
+
+
+def held_revert(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    revert: dict[str, Any],
+    original: dict[str, Any],
+    loop: str = BARE,
+) -> tuple[int, list[str]]:
+    """check merge on an exact revert of `original` (#1), by default under a loop.md with no risk rule, so only the
+    risk of what it reverts can hold it."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    monkeypatch.setattr(approvals, "pull_request", lambda n: original if n == 1 else revert)
+    code = approvals.main(["check", "merge", str(revert["number"])])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_label(
+    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The risk of the change a revert undoes (or re-lands) carries over: `risk:high` on an issue the revert closes,
+    on the PR it reverts, or that PR's last verdict saying `Risk: high`."""
+    low = {**pull(), "number": 1}
+    held = "PR #2 waits for the owner's `approved:merge` label, since it is high risk: "
+    closing = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    closing["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug", "risk:high")]}
+    assert held_revert(monkeypatch, capsys, closing, low) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #71"],
+    )
+    high = {**pull(labels=("risk:high",)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), high) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #1, which it reverts"],
+    )
+    said = "Verifier (codex), pass 2\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — CI permissions\n"
+    judged = {**pull(reviews=(verdict_on(HEAD) | {"body": said},)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), judged) == (
+        approvals.WAITING,
+        [
+            held
+            + "it reverts #1, and the verifier's pass 2 on aaaaaaa says `Risk: high — CI permissions`"
+        ],
+    )
+    # a risk rule reads the labels of the issues a revert names, as for any PR
+    ruled = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    ruled["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug")]}
+    web = add(BARE, "risk", "labels: [area:web]\n")
+    assert held_revert(monkeypatch, capsys, ruled, low, web) == (
+        approvals.WAITING,
+        [held + "it matches a risk rule (label `area:web`)"],
+    )
+    # the owner's label clears each, and a revert of a low-risk PR lands without it
+    assert held_revert(monkeypatch, capsys, revert_pr(labels=OWNED), high) == (0, [])
+    assert held_revert(monkeypatch, capsys, revert_pr(), low) == (0, [])
 
 
 @pytest.mark.parametrize(
@@ -3699,14 +3863,24 @@ def test_a_run_from_a_subdirectory_reads_the_checkouts_loop_files(
 # --- check end to end, GitHub stubbed ---
 
 
-def test_check_without_a_pr_has_nothing_to_gate(
+def test_check_without_a_pr_or_an_issue_has_nothing_to_gate(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A merge has nothing to gate before its PR; a build on a branch naming no issue is refused, since it needs an
+    approved spec."""
     monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", lambda *_args: "spike\n")
     monkeypatch.chdir(PROJECT)
-    assert (approvals.main(["check", "build"]), capsys.readouterr().out) == (
+    assert (approvals.main(["check", "merge"]), capsys.readouterr().out) == (
         0,
         "no PR for this branch yet: nothing to gate\n",
+    )
+    assert (approvals.main(["check", "build"]), capsys.readouterr().out) == (
+        1,
+        (
+            "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build needs an"
+            " approved spec\n"
+        ),
     )
 
 
@@ -4254,6 +4428,76 @@ AUTO = loop_md(
 
 def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
     return {**found, "author": {"login": author}}
+
+
+def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
+    writers: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no PR, a `paths` risk rule under `spec.auto` reads the files the branch changed since it left the default
+    branch, as it reads a PR's: a protected file holds the spec for the owner, and files git can't list hold too."""
+    spec = {
+        1: by("worker", specced(1, "kind:enhancement")),
+        2: by("worker", approved(2, "kind:enhancement", "area:web", "size:S")),
+    }
+    changed: list[str | None] = [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "".join(f"{path}\0" for path in changed[0].split())
+        return "origin/main\n" if args[-1] == "origin/HEAD" else "loop/1-fix\n"
+
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, AUTO))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(number: int) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", "--issue", str(number)])
+        return code, capsys.readouterr().out.splitlines()
+
+    assert build(1) == (0, ["#1: every build proof holds; no PR yet"])
+    changed[0] = "app.py\nbilling/a.py\n"
+    assert build(1) == (
+        1,
+        [
+            (
+                "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path"
+                " `billing/**`)"
+            ),
+            "#1 has no `Approved: spec` record by the owner",
+            "#1 lacks the `approved:spec` label",
+        ],
+    )
+    assert build(2)[0] == 0  # the owner approved it
+    changed[0] = None
+    code, out = build(1)
+    assert code == 1 and "the gate can't read every file the PR changes" in out[0]
+
+
+def test_the_branch_files_check_build_reads_are_its_real_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-ASCII name, which git quotes in its plain output, and one with spaces reach the risk rules as committed."""
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    committed(clone)
+    git_in(clone, "branch", "-M", "main")
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "push", "-q", "origin", "main")
+    git_in(clone, "remote", "set-head", "origin", "main")
+    git_in(clone, "checkout", "-q", "-b", "loop/1-fix")
+    names = [".github/workflows/contrôle.yml", "docs/decision notes.md"]
+    for name in names:
+        (clone / name).parent.mkdir(parents=True, exist_ok=True)
+        (clone / name).write_text("x\n")
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-qm", "files")
+    monkeypatch.chdir(clone)
+    assert sorted(approvals.paths(approvals.unopened())) == sorted(names)
 
 
 def test_spec_auto_is_its_own_policy() -> None:
@@ -4992,10 +5236,29 @@ def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
 NO_LOCAL_CHECK = "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
 
 
+QUEUED = add(
+    LOOP, "loop", "batch_queue: true\n"
+)  # a project that lands through a batching merge queue
+
+
+def test_a_batch_proof_counts_only_where_loop_md_opts_into_a_queue(batched: dict[str, str]) -> None:
+    """A project that never set up a batching merge queue gets no second way past the CI or local-check wait: the
+    same valid batch proof stands in for it only under `batch_queue: true`."""
+    gated_head(batched["head"])
+    proof = batch_note(batched["head"], batched["merge"], batched["batch"])
+    assert queued_merge(batched["head"], proof) == []
+    pr = pull(reviews=(verdict_on(batched["head"]),), comments=(proof,), checks=())
+    pr["headRefOid"] = batched["head"]
+    assert merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == [
+        NO_LOCAL_CHECK
+    ]
+    assert merge(pr, [approved(1, "area:web")]) == ["PR #7: no `check` on the head commit yet"]
+
+
 def queued_merge(head: str, *comments: str) -> list[str]:
     pr = pull(reviews=(verdict_on(head),), comments=comments, checks=())
     pr["headRefOid"] = head
-    return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n"))
+    return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\nbatch_queue: true\n"))
 
 
 def queued_reasons(head: str, *comments: str) -> list[str] | None:
@@ -5084,12 +5347,12 @@ def test_only_a_batch_proof_by_the_running_account_or_a_writer_counts(
     monkeypatch.setattr(approvals, "writer", lambda login: login == "colleague")
     pr = pull(reviews=(verdict_on(head),), comments=(proof,), checks=())
     pr["headRefOid"] = head
-    lines = merge(pr, [approved(1, "area:web")])
+    lines = merge(pr, [approved(1, "area:web")], QUEUED)
     assert lines and all("batch" not in line for line in lines)  # waits on CI, as with no proof
     proof["author"] = {"login": "colleague"}
-    assert merge(pr, [approved(1, "area:web")]) == []
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == []
     proof["author"] = None  # a deleted account
-    assert merge(pr, [approved(1, "area:web")]) == lines
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == lines
 
 
 def test_comments_that_are_no_batch_proof_cost_no_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5120,7 +5383,9 @@ def test_a_red_batch_through_another_pr_leaves_land_alone(
 def test_a_head_evicted_through_another_pr_may_re_enter_the_queue(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     queueing["pull"]["comments"]["nodes"].append(note(RED_BATCH))
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
 
@@ -5129,7 +5394,9 @@ def test_with_ci_check_queue_still_needs_the_heads_own_record(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """batch refuses a head without one, so a head check queue admitted would never get its proof."""
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     queueing["records"] = set()
     assert queue_check(capsys) == (
         1,
@@ -5148,7 +5415,7 @@ def test_the_batch_proof_also_stands_in_for_ci(batched: dict[str, str]) -> None:
         checks=(),
     )
     pr["headRefOid"] = head
-    assert merge(pr, [approved(1, "area:web")]) == []
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == []
 
 
 def test_batch_posts_the_proof_check_merge_reads(
@@ -5240,7 +5507,9 @@ def test_a_posted_review_names_no_home_however_it_is_spelled(
 @pytest.fixture
 def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`landing` with `ci: false`, and a local-ci pass recorded on HEAD under the current env."""
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(add(GITHUB_RULE, "loop", "ci: false\n"))
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "ci: false\nbatch_queue: true\n")
+    )
     landing["records"] = {HEAD}
     monkeypatch.setattr(
         approvals, "reusable", lambda head: {"head": head} if head in landing["records"] else None
@@ -5254,10 +5523,27 @@ def queue_check(capsys: pytest.CaptureFixture[str], head: str = HEAD) -> tuple[i
     return code, capsys.readouterr().out.splitlines()
 
 
+def test_check_queue_refuses_a_project_without_the_setting(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(add(GITHUB_RULE, "loop", "ci: false\n"))
+    assert queue_check(capsys) == (
+        1,
+        [
+            (
+                "PR #7: loop.md doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+                " through `land`"
+            )
+        ],
+    )
+
+
 def test_check_queue_waits_for_the_checks_the_base_branch_requires(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     monkeypatch.setattr(
         approvals, "required_checks", lambda _base: {"qualify", approvals.APPROVALS}
     )
@@ -5327,7 +5613,9 @@ def test_check_queue_refuses_a_missing_merge_proof(
 def test_with_ci_check_queue_needs_the_heads_check_green(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
     queueing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][0][
         "conclusion"

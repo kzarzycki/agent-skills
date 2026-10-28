@@ -83,7 +83,7 @@ design, wireframes included for a UI, and delegate the rest.
    each worker's branch from the PR branch with loop.md § Worktree, run from your own
    worktree so the worker's sits inside it (../orchestrating-agents/backends/omnigent.md, Permission prompts),
    and start it
-   with one message: the spec, the item, worktree, branch, notes path, gates, and "Your
+   with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model is what `approvals.py model worker <issue>` prints (SKILL.md, Models).
@@ -104,34 +104,39 @@ design, wireframes included for a UI, and delegate the rest.
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
    prints the ones to rerun. Then start the verifier on that pushed
-   head (SKILL.md, Independent verification) in
-   your own worktree with the path of `verifier.md`, the base, the reviewed head, the spec
-   number, the priorities for this change, and a report path under `tmp/loop/` in that
-   worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief <pr>
-   --priorities <file> --proof <log>…` prints that brief with every fact but the priorities
-   read from the PR, the previous report and its head from pass 2, and loop.md's
-   `## Verifier brief` (the project's own lines, such as host load rules) appended; it
-   refuses a proof log whose first line isn't the head. The report path matters: outside its workspace a Codex child's sandbox
-   refuses the write and a Claude Code child is prompted for a read (denied in auto mode),
-   which nobody answers. Its model is what `approvals.py model verifier <pr>` prints for its family, resolved
+   head (SKILL.md, Independent verification) in a worktree of its own at that head,
+   `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
+   yours while it reviews and no commit of yours moves the head under review. Copy into its
+   `tmp/loop/` the proof logs and, on a later pass, the previous report (as the
+   `tmp/loop/pr<pr>-v<n>.md` the brief names) and its repros, since a read outside its
+   workspace is prompted. Give it the path of `verifier.md`, the base, the reviewed head, the
+   spec number, the priorities for this change, and a report path under `tmp/loop/` in that
+   worktree, which the project gitignores. `uv run <this skill's folder>/scripts/approvals.py brief
+   <pr> --priorities <file> --proof <log>…`, run from that worktree through that worktree's
+   own copy of the skill, since the role path it prints follows the script's copy and only
+   that one stays inside the verifier's workspace, prints that brief with every fact but the
+   priorities read from the PR, the previous report and its head from pass 2,
+   and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
+   appended; it refuses a proof log whose first line isn't the head. The report path matters:
+   outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
+   prompted for a read (denied in auto mode), which nobody answers. Its model is what `approvals.py model verifier <pr>` prints for its family, resolved
    before each pass (SKILL.md, Models): when a verdict's `Risk: high` changes it, even a satisfied
-   one, the head needs a pass on the new model before landing. Name the family that wrote the diff when the backend takes it
+   one, `check merge` refuses the change until a pass on the new model is posted. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
    brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
-   bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
-   worktree alone until the report arrives. A report without a `SATISFIED:` line is
+   bring your instance up on that head from the verifier's worktree (loop.md § Proof on a branch),
+   so the verifier finds it and its log there and can drive it. A report without a `SATISFIED:` line is
    unfinished: never triage or land on it. Post each finished report with
    `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
-   `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. Only a mixed PR's second
-   verifier, running at the same time, gets a detached worktree at the same head, so the two
-   gate runs don't collide. Triage every finding (SKILL.md) and hand the fixes to a worker,
+   `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
+   verifier, running at the same time, gets its own detached worktree the same way. Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail): the fixer replies on each fixed thread with
    the SHA and resolves it `ADDRESSED`. Resolve each deferred finding's thread yourself,
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
-   `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way, plus
-   the previous report's path and head; reviving the old one re-reads its whole earlier
+   `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
+   worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
    review every turn. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
    concern per PR). Every fix after a verdict needs a verdict on its head, because `land`
@@ -261,7 +266,8 @@ design, wireframes included for a UI, and delegate the rest.
 10. **Clean up** once acceptance has run, pass or fail. Close the agents, and stop only the
    processes you started, as worker.md, Report says, since a shared pattern kills other
    agents' runs too. For every
-   worktree your notes list, children's before yours, since removing yours first leaves
+   worktree your notes list, children's before yours (each verifier's detached one
+   included), since removing yours first leaves
    theirs as stale entries, run its teardown (loop.md § Worktree), then, from the main checkout,
    `git worktree remove --force <path>` and `git branch -D <branch>`, the local branch only
    (a detached verifier's worktree has none): GitHub deleted the merged head branch, and you
@@ -288,11 +294,26 @@ and for a child that still owes its report a detached `supervise --registry` tha
 session cron, which die with your session and lose every wake they owed.
 Your own long runs (a gate, a land, a live check) start detached the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, then polled: Claude Code's low-memory reaper stops
-in-session background shells.
+in-session background shells. Start each with `exec`, or in its own process group under
+`trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
+you have moved past; count runs with a pattern anchored at the interpreter
+(`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.
+A run started with `exec` leaves no exit file, since nothing runs after it: judge its end by its
+log or report, or use the trap form where its exit code matters.
+Wait on a child or a run by whether it is alive, never on its report file alone: your backend's
+status (Omnigent: `omnigent_agent.py status <session>`) or the run's pid and exit code, since a
+child that died, or a `run` killed mid-retry, writes nothing and a file wait polls on for good.
+So one background wait ends on every terminal state (success, failure, the process gone), e.g.
+`while ps -o args= -p <pid> | grep -q '<its command>'; do sleep 5; done`, keeping each run's pid
+(or its lock or heartbeat file) and checking it each poll, since a watcher that fires only on an
+outcome reads a dead run as still working. Match the pid's command, not the pid alone, since a
+pid the system reused for another process still passes `kill -0`; a pid file that is missing
+or empty means the run is gone. On every wake, a session restart included, check that each run you say you wait on is
+alive before saying so, since a restart kills your background runs. A child still `running` with
+no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
-has left no report and will not wake itself: arm one background wait on its process or log
-that ends on every terminal state (success, failure, the process gone), e.g.
-`while kill -0 <pid>; do sleep 5; done`, and when it fires, ask the child for its report.
+has left no report and will not wake itself: arm such a wait on its process or log, and when it
+fires, ask the child for its report.
 Finish a worker or verifier as soon as its report is read or its verdict posted, since an
 idle child keeps its agent process, MCP servers and runner alive. With Omnigent, `run` and
 `wait` already finish the child whose report they return; a report you heard any other way
@@ -305,7 +326,8 @@ process still hung on one is yours to stop and release, since its owner has ende
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
-before then.
+before then, and arms what wakes you then (a detached `sleep` to that time, or a scheduled
+message), since a time named only in text wakes nobody.
 
 A core finding still open at the cap goes to the owner and stops the landing: offer a fix
 with one pass past the cap, scoped to the open items, or leaving the code untouched

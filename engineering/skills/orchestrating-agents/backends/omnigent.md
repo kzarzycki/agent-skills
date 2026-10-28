@@ -138,7 +138,10 @@ with `wait <session> <report> --pr <n>`. A `--role` path names the role file by 
 the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
 worker two facts about the VM: its checkout is the branch checked out in the workspace the
 session started from, not necessarily the PR's, and a foreground command stops at 10 minutes,
-so a long one runs detached and is polled within the same turn. A host without the cloud
+so a long one runs detached and is polled within the same turn. It forbids an interactive
+question tool and a published page, since each waits on a prompt nobody in the cloud answers,
+and ends each commit message with the co-author line and no session link, since the commit
+reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
 
@@ -194,7 +197,13 @@ whose report says whether its tree was clean.
 
 **A failed `run` or `wait` is not a failed child.** Its exit 1 can be the launcher's own
 failure (a timeout on a loaded server, a killed background command) while the child works
-on. Read the child's status first (the session id is the first line `run` printed, else
+on. A `run` that ends without a report, or a `start` whose launch fails, failed or stopped by
+SIGTERM, SIGINT or SIGHUP, writes `FAILED: <code>: <message>` to the report path when no report is
+there: one the child wrote, or an earlier pass's that a fix pass reuses the path of, stays, and
+a later launch's line replaces an earlier one's (`<code>` is
+the child's state and its `last_task_error` code, else `interrupted`, `timeout`, `blocked` or
+`not-started`), so a wait on that file wakes (a wait on a reused path, on status); `wait`, `send`, `start` and the supervisor never
+take that line as a report. Read the child's status first (the session id is the first line `run` printed, else
 its title under your session's children); while it is running, or idle with its report
 still to come, re-attach with `wait <session> <report>`, adding `--verdict` for a verifier
 so a report written in stages does not end it early. `wait` has no launch time, so on a
@@ -329,7 +338,13 @@ session, its state (`turn ended`, its running status, `blocked on a prompt: <wha
 the brief or an injected reminder): one call
 for what a subscription notice names, in place of session info plus history. It is a
 snapshot: a native Claude session reads idle while quiet mid-turn, so an idle look reads as
-`turn ended`, which a notice has already confirmed.
+`turn ended`, which a notice has already confirmed. A session Omnigent reports running whose only
+live background tasks are `monitor`s (a published Artifact's live updates), its last item a
+finished reply at least 30 s old (a running turn persists its narration just before the tool
+call that follows), reads `turn ended` here and idle to the supervisor; a shell task keeps it
+running. A tool call is persisted only once it returns, so a foreground one past 30 s reads so
+too; `wait` and `reap` therefore keep the server's `running`, since there a misread would end
+a wait or archive a working session.
 
 **Reading a report.** `python3 scripts/omnigent_agent.py report <session> [<path>]` prints a
 file of a session's workspace through Omnigent's file API, from any host, so a lead's report on
