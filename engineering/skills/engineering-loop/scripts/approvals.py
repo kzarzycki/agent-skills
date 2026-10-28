@@ -6,6 +6,7 @@
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # may that head enter a batching merge queue; exit 0 or 1
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # the queue's proof
     uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
@@ -42,11 +43,14 @@ reviews, a review counting only when its body starts `Verifier (<family>), pass 
 PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
-commit after a verdict needs one of its own; no unresolved
+commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
+one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
+only for a change it rates low; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
-`ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
+`ci: false` in loop.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
+writer, instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
@@ -57,7 +61,9 @@ default branch) the label may be the delegated approver's: `delegate <pr>` adds 
 `By: delegate`), and refuses a PR into the default branch. There a label no newer than such a record is no approval,
 since only the owner approves a merge to the default branch; and a PR from a branch into the default branch is high
 risk while any PR merged into that branch carries `risk:high`, so a feature branch's merge waits for the owner.
-No PR yet, or every proof held: exit 0.
+Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
+the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
+since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
 `Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
@@ -105,7 +111,9 @@ check again; a record without env is never reused. The host stays in the record:
 it, and posted text writes the home directory `~` (public), since a public board would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
-full gate once on the result, push the batch) instead of one `land` per PR. `check queue <pr> --head <sha>` exits 0
+full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
+loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
+no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
 with CI, the checks `check merge` waits for passed, and the change is not high risk and has no `approved:merge`, since the
@@ -148,7 +156,8 @@ differ), and every path either touches has at the PR's merge base the mode it ha
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
 only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
-label where the change is high risk.
+label where the change is high risk, which for a revert also means `risk:high` on an issue it names or on #n, or #n's
+last verdict judging it high, since undoing a high-risk change changes as much as making it.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 A spec or plan approval is a person's: a comment `approve --by owner` writes on the owner's word, which the gate
@@ -161,11 +170,14 @@ is no approval:
 
 A spec or plan is named by its last edit as GitHub shows it in the edit history (`as written <time>` before any), so
 a person can open the version approved. Every approval is a new comment: a re-approval says the spec or plan
-changed, and `approve` minimizes as outdated each earlier record, which it supersedes.
+changed, and `approve` minimizes as outdated each earlier record, which it supersedes. With `owner: <login>` under
+loop.md's `loop`, `check build`, `check merge` and `land` record an `approved:spec` (or `approved:plan`) label that
+login added after the spec's (plan's) last edit as `approve --by owner` would, removing `needs-owner`, and say so: the
+label is the owner's word. One they added before the last edit is named and changes nothing, nor does anyone else's.
 
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `loop` holds `cap`, `ci`, `opt_out` and `local_ci_env`; `spec` holds `auto`.
+the block. `loop` holds `cap`, `ci`, `opt_out`, `local_ci_env`, `batch_queue` and `owner`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -251,6 +263,9 @@ FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.I
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
+# a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
+# family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
+LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
@@ -384,6 +399,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "ci": bool,
         "opt_out": bool,
         "local_ci_env": list,
+        "batch_queue": bool,
+        "owner": str,
     },
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
@@ -659,7 +676,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
     `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
     was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
-    blocker or major open (capped)."""
+    blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
+    issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
@@ -670,6 +688,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := pull.get("reverted"):
+        return why
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
         if why := ruled(labels, paths(pull), loop, judged(pull, loop)):
@@ -1135,7 +1155,14 @@ def proofs(
     if loop is not None:
         found += linked(pull, issues, loop)
     if revert is None and not exempt(pull, loop):
-        found += reviewed(where, pull, loop)
+        verdicts = passes(pull)
+        found += (unreviewed := reviewed(where, pull, loop, verdicts))
+        # only on a verdict that would land, and tier first, since risk() reads the reviews again
+        if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
+            found.append(
+                f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
+                " default-tier verifier pass on the head first"
+            )
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
         found.append(
@@ -1162,6 +1189,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
+    # the lines read, plus the heading's family, which names the verifier's tier when it ran below the default
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
     others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
     trusted |= {login for login in others if writer(login)}
@@ -1170,14 +1198,36 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
             ((review.get("commit") or {}).get("oid") or "").lower(),
             int(PASS.match(review["body"])[2]),
             {
-                key.strip(): value.strip()
-                for key, _, value in (line.partition(":") for line in review["body"].splitlines())
-                if key.strip() in ("VERDICT", "SATISFIED", "Risk")
+                "Family": PASS.match(review["body"])[1],
+                **{
+                    key.strip(): value.strip()
+                    for key, _, value in (
+                        line.partition(":") for line in review["body"].splitlines()
+                    )
+                    if key.strip() in ("VERDICT", "SATISFIED", "Risk")
+                },
             },
         )
         for review in found
         if (review.get("author") or {}).get("login") in trusted
     ]
+
+
+def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
+    """The tier below the default (LOWER_TIER) the newest verifier pass names in its heading's family, the newest
+    commit's highest pass (a mixed PR's two verifiers share one), or None: a heading naming no tier reads as the
+    default, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
+    if isinstance(verdicts, str) or not verdicts:
+        return None
+    head = verdicts[-1][0]
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    last = max(number for number, _ in on_head)
+    tiers = [
+        found[1]
+        for number, lines in on_head
+        if number == last and (found := LOWER_TIER.search(lines["Family"]))
+    ]
+    return tiers[0].lower() if tiers else None
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
@@ -1213,14 +1263,19 @@ def capped(pull: dict[str, Any], limit: int) -> bool:
     )
 
 
-def reviewed(where: str, pull: dict[str, Any], loop: str | None) -> list[str]:
+def reviewed(
+    where: str,
+    pull: dict[str, Any],
+    loop: str | None,
+    verdicts: list[tuple[str, int, dict[str, str]]] | str | None = None,
+) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried,
     which prints a line either way where loop.md opts in), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
-    needs none (exempt)."""
-    verdicts = passes(pull)
+    needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
+    verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
         return [f"{where} {verdicts}"]
     if not verdicts:
@@ -1258,6 +1313,12 @@ def waits(
 ) -> list[str]:
     """One line per thing the merge waits for: ran()'s checks, and the owner's label (owner_waits)."""
     return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
+
+
+def batch_queue(loop: str | None) -> bool:
+    """Whether loop.md opts into a batching merge queue (`batch_queue: true` under `loop`), without which no batch
+    proof stands in for the CI wait: a project that never set one up gets no second way to satisfy it."""
+    return settings(loop).get("batch_queue") is True
 
 
 def no_ci(loop: str | None) -> bool:
@@ -1390,13 +1451,14 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
     `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass."""
     where = f"PR #{pull['number']}"
-    if queued(pull) is None:
+    if batch_queue(loop) and queued(pull) is None:
         return []
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
         if any(
-            [line.strip() for line in body.strip().splitlines()[:2]] == head
-            for body in bodies(pull)
+            [line.strip() for line in note["body"].strip().splitlines()[:2]] == head
+            and trusted(pull, note)
+            for note in notes(pull)
         ):
             found = []
         else:
@@ -1416,7 +1478,6 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    me: list[str | None] = []  # viewer(), asked once and only when a batch proof is found
     for note in notes(pull):
         lines = note["body"].strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
@@ -1427,17 +1488,23 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
         fields = {
             key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
         }
-        if fields.get("Head", "").lower() != head:
-            continue
-        login = (note.get("author") or {}).get("login")
-        if not me:
-            me.append(viewer())
-        if login is None or (login != me[0] and not writer(login)):
+        if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
             continue
         if (why := unproven(head, fields)) is None:
             return None
         found.append(f"{where}: {why}")
     return found
+
+
+def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> bool:
+    """Whether a proof comment's author counts: the account running this, a writer (writer), and with `author` the
+    PR's author, as passes() reads verifier reviews, since anyone can comment on a public repo."""
+    login = (note.get("author") or {}).get("login")
+    if login is None:
+        return False
+    if author and login == (pull.get("author") or {}).get("login"):
+        return True
+    return login == viewer() or writer(login)
 
 
 def unproven(head: str, fields: dict[str, str]) -> str | None:
@@ -1593,6 +1660,12 @@ def fetched(sha: str) -> bool:
 def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | None) -> int:
     """check queue: exit 0 when `head` may enter a batching merge queue, else one line per reason and exit 1."""
     where, found = f"PR #{pull['number']}", []
+    if not batch_queue(loop):
+        print(
+            f"{where}: loop.md doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+            " through `land`"
+        )
+        return 1
     if pull["state"] != "OPEN":
         found.append(f"{where} is {pull['state'].lower()}: nothing to queue")
     if pull["headRefOid"].lower() != head.lower():
@@ -2292,20 +2365,90 @@ def project() -> tuple[str | None, str | None]:
     return tracker, loop
 
 
+def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, Any]]:
+    """The issues, each read again after recording an `approved:<point>` label the owner (loop.md's `owner`) added
+    after the spec's or plan's last edit as their approval (approve), which also removes `needs-owner`, printing a line
+    for each; a label the owner added before that edit gets a line saying so and changes nothing, nor does anyone
+    else's. Without `owner` nothing is read, since only the owner's own label is their word."""
+    owner = settings(loop).get("owner")
+    if not owner:
+        return issues
+    found = []
+    for issue in issues:
+        number, recorded = issue["number"], False
+        for point in POINTS:
+            holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
+            name = f"approved:{point}"
+            if holder is None or name not in names(issue):
+                continue
+            value = version(holder)
+            if current(issue, point, point, value, "owner"):
+                continue
+            added = [
+                event
+                for event in events(issue, "LabeledEvent")
+                if (event.get("label") or {}).get("name") == name
+            ]
+            # GitHub logins are case-insensitive: `Octocat` in loop.md names the account `octocat`
+            if (
+                not added
+                or (added[-1].get("actor") or {}).get("login", "").lower() != str(owner).lower()
+            ):
+                continue
+            if added[-1]["createdAt"] <= (holder.get("lastEditedAt") or holder["createdAt"]):
+                print(
+                    f"#{number}: the owner's `{name}` was added before the {point}'s last edit ({value}): the"
+                    " owner adds it again"
+                )
+                continue
+            approve(point, number, value)
+            recorded = True
+            print(
+                f"#{number}: recorded the owner's `{name}`, added after the {point}'s last edit, as their approval"
+            )
+        found.append(issue_node(number) if recorded else issue)
+    return found
+
+
 def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Every missing proof at `point`, and the issues the PR names (none for an exact revert)."""
+    """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
+    reads its issues from `named` and the reverted PR's risk from `reverted` instead)."""
     revert, found = reverts(pull)
-    issues = [] if revert else closing_issues(pull)
-    if not revert:
-        found += problems(issues, None if tracker is None else label_names(tracker))
+    if revert:
+        pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
+        return found + proofs(point, pull, [], loop, revert), []
+    issues = adopted(closing_issues(pull), loop)
+    found += problems(issues, None if tracker is None else label_names(tracker))
     return found + proofs(point, pull, issues, loop, revert), issues
 
 
-def check(point: str, pr: int | None, head: str | None = None) -> int:
+def reverted(number: int) -> str | None:
+    """Why an exact revert of #number is high risk for what it reverts, or None: `risk:high` on #number, or #number's
+    last verdict judging it high (judged), since undoing a high-risk change (or re-landing one, a revert of its
+    revert) changes as much as making it."""
+    original = pull_request(number)
+    if RISK_LABEL in names(original):
+        return f"`{RISK_LABEL}` is on #{number}, which it reverts"
+    if why := judged(original):
+        return f"it reverts #{number}, and {why}"
+    return None
+
+
+def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
     tracker, loop = project()
+    if issue is not None:
+        return unbuilt(issue, tracker, loop)
     if pr is None and (pr := current_pr()) is None:
+        if point == "build":
+            if (issue := branch_issue()) is None:
+                print(
+                    "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build"
+                    " needs an approved spec"
+                )
+                return 1
+            return unbuilt(issue, tracker, loop)
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
@@ -2321,6 +2464,39 @@ def check(point: str, pr: int | None, head: str | None = None) -> int:
     for line in holds(pull, issues, loop) + found + waiting + after:
         print(line)
     return 1 if found else WAITING if waiting else 0
+
+
+def unopened() -> dict[str, Any]:
+    """The PR `check build` judges an issue's spec beside before it exists: no labels, and the files the branch has
+    changed since it left origin's default branch, as a PR's would be at `check build`; when git can't tell, more files
+    than it lists (paths() None), so a `paths` risk rule holds rather than reading as unmatched."""
+    try:
+        base = git("rev-parse", "--abbrev-ref", "origin/HEAD").strip()
+        # NUL-separated, since git quotes a non-ASCII name and a name may hold spaces
+        found = git("diff", "--name-only", "-z", f"{base}...HEAD").split("\0")[:-1]
+    except subprocess.CalledProcessError:
+        return {"labels": {"nodes": []}, "files": {"nodes": [], "totalCount": 1}}
+    return {"labels": {"nodes": []}, "files": {"nodes": [{"path": path} for path in found]}}
+
+
+def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
+    """check build on one issue before its PR exists: every build proof a PR's issues need (problems, proofs), judged
+    on the issue and the files the branch changes so far (unopened); it claims nothing, since there is no PR to give
+    the assignee."""
+    issues, pull = adopted([issue_node(number)], loop), unopened()
+    found = problems(issues, None if tracker is None else label_names(tracker))
+    found += proofs("build", pull, issues, loop)
+    for line in holds(pull, issues, loop) + found:
+        print(line)
+    if not found:
+        print(f"#{number}: every build proof holds; no PR yet")
+    return 1 if found else 0
+
+
+def branch_issue() -> int | None:
+    """The issue number the current branch's name starts a segment with (`loop/329-build-issue`), or None."""
+    found = re.search(r"(?:^|/)(\d+)(?:-|$)", git("rev-parse", "--abbrev-ref", "HEAD").strip())
+    return int(found[1]) if found else None
 
 
 def land(pr: int, wait: bool = False) -> int:
@@ -2541,14 +2717,19 @@ def landing(
     return WAITING, ON_CI if pending else None
 
 
-def approve(point: str, number: int) -> int:
+def approve(point: str, number: int, seen: str | None = None) -> int:
     """Record the owner's approval of the issue's current spec or plan, on their word: the record, the label, and
-    `needs-owner` removed. Every earlier record of the point is superseded and minimized."""
+    `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
+    the owner's label was checked against (adopted), an edit since is refused: the label never covered it."""
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
         raise Refused(f"#{number} has no `## Plan` comment to approve")
     value = version(holder)
+    if seen is not None and value != seen:
+        raise Refused(
+            f"#{number}: the {point} was edited ({value}) after the owner's `approved:{point}`: the owner adds it again"
+        )
     record = f"{point.capitalize()}: {value}\n"
     earlier = [
         (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
@@ -2923,6 +3104,7 @@ def main(argv: list[str]) -> int:
     checking.add_argument("point", choices=("build", "merge", "queue"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--head")
+    checking.add_argument("--issue", type=int)
     batching = commands.add_parser("batch")
     batching.add_argument("pr", type=int)
     batching.add_argument("--merge", required=True)
@@ -2965,7 +3147,9 @@ def main(argv: list[str]) -> int:
                 )
             if args.point != "queue" and args.head is not None:
                 raise Refused("--head goes with check queue only")
-            return check(args.point, args.pr, args.head)
+            if args.issue is not None and (args.point != "build" or args.pr is not None):
+                raise Refused("--issue goes with check build and no PR number")
+            return check(args.point, args.pr, args.head, args.issue)
         if args.command == "batch":
             return batch(args.pr, args.merge, args.batch, args.exit, args.log)
         if args.command == "approve":

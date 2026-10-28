@@ -4,9 +4,8 @@ You review code you did not write. You make no commits or pushes, resolve no rev
 thread (resolution follows triage, which is not yours), and leave nothing behind: the
 tree ends as you found it, with `git status --porcelain` and `git diff` unchanged. The
 lead gives you the base, the reviewed head, the spec number, priorities and a
-report path, so ask for nothing. You run in the worktree you were started in, the
-lead's own or a detached one at the same head, so you see the tree the author
-tested. Read no memory (a Hindsight bank or any other store): remembered context carries
+report path, so ask for nothing. You run in the worktree you were started in, a
+detached one at the reviewed head, so you see the tree the author tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
 With loop.md's `Cloud worker:` line, name your evidence files for the PR (SKILL.md, Cloud worker).
@@ -77,15 +76,18 @@ yourself, keeping standards and spec as separate axes.
   looked right. Real data you see may go in your report, never in anything bound for the
   tracker. When the sandbox can't reach the instance or its log, say so.
 - **Run loop.md § Verifier checklist**, when it has one.
-- **Mutation-check the new tests.** For each test that guards a behaviour the spec
-  changes, save the production change it guards as a patch beside your report
-  (`git diff <base> HEAD -- <file> > <patch>`). Undo it with `git apply -R <patch>`, run
-  the test, and redo it with `git apply <patch>`; undo and redo are symmetric, so this
-  also restores a file the change added or deleted. A test that still passes guards
-  nothing: report it as a major. Before the report, `git status --porcelain` must match what
-  it showed at the start: revert any mutation of yours still applied, and report a tree you
-  cannot clean as a finding naming its paths, since the lead's next gate and push run in it
-  (`wait` fails a host verifier that leaves a tracked change).
+- **Mutation-check the new tests.** Undo each production change the spec adds on its own
+  (one condition, branch or value), never the whole diff at once, since a whole-patch revert
+  fails the tests for the wrong reason (a flag gone) and hides a change no test covers. Edit
+  the file back to the base for that one change alone, since a diff hunk can join two
+  changes, even on one line; save the edit as a patch beside your report (`git diff --
+  <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
+  change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
+  also the repro. A change whose undoing leaves every test green is untested: report it as a
+  major. Before the report, `git status --porcelain` must match what it showed at the start:
+  revert any mutation of yours still applied, and report a tree you cannot clean as a finding
+  naming its paths, since the lead's next gate and push run in it (`wait` fails a host
+  verifier that leaves a tracked change).
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
@@ -105,6 +107,15 @@ yourself, keeping standards and spec as separate axes.
   `risk` lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
+- **A full heavy slot.** A gate or mutation run that waits for the host's heavy slot is the
+  one pending run that ends in a question, not a report: wait for it in the foreground as
+  above, with a 30-minute limit. Past it, stop the run (so its mutation can't apply after
+  you), redo any patch you undid so the tree is as you found it, and write
+  `<report>.question` asking the lead for a proof run with the brief in
+  [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
+  the commands that undo and redo it, since the lead fills the brief from the question
+  alone. The lead has the runs made off this host and answers with the head-stamped logs; a
+  verdict without them would be repeated once the logs exist.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run with the exact owner action, since parking it is
   the lead's.
@@ -126,6 +137,9 @@ keep these lines exact:
   pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
   (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
+  When your brief names your tier (`mid` or `small`, loop.md's `Verifier model:` line), write it after the
+  signature, `Verifier: codex/terra-6.1/med mid, pass 1`: `check merge` refuses a high-risk change whose newest
+  verdict names a lower tier, and reads a line without one as the default tier.
   Text after the pass number is a qualifier the posted review's first line carries, such as
   `Verifier: claude, same-family, pass 2 (merge of main)`.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.

@@ -56,6 +56,13 @@
       "tags": ["experimental", "unstable", "preview"]
     },
     {
+      "name": "cos-console",
+      "description": "Optional mod for a chief-of-staff session: a status line and /leads pane over the supervisor's console state, and the leads' status and recent events attached to the owner's messages.",
+      "source": "./cos-console",
+      "category": "workflow",
+      "tags": ["mod", "chief-of-staff", "supervisor", "status-line"]
+    },
+    {
       "name": "google-workspace",
       "description": "Google Workspace skills for Claude Code, sourced upstream from github.com/googleworkspace/cli (tracks upstream, no local copy). Broad coverage across Gmail, Drive, Calendar, Sheets, Docs, Slides and more. Every skill shells out to the locally installed `gws` binary; requires `gws` installed and authenticated (`brew install googleworkspace-cli`).",
       "source": {

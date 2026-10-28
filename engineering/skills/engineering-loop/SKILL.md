@@ -81,6 +81,8 @@ loop:
   local_ci_env:
     - GATE_TIER
   opt_out: true
+  batch_queue: true   # lands through a batching merge queue of its own (below)
+  owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
 
 practice:
   plan: writing-plans
@@ -343,7 +345,9 @@ When a spec or plan needs the owner, add `needs-owner`, comment what to approve,
 a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
 on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`uv run
 <this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
-which records their word, adds the label and removes `needs-owner`. A change to an
+which records their word, adds the label and removes `needs-owner`. With `owner: <login>`
+under loop.md's `loop`, `check` and `land` do that themselves for a label that login added
+after the spec's last edit, since nothing in it needs an agent's judgment. A change to an
 approved spec's scope or acceptance is a decision the owner never saw: remove
 `approved:spec`, add `needs-owner` with a one-line comment saying what changed, and stop
 until they approve. A spec the owner approved and then edited for wording needs their
@@ -370,7 +374,8 @@ listing a private name in a public repo would publish it. A rule GitHub can enfo
 such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
 which the loop obeys and never overrides.
 
-A project may instead land a base through a batching merge queue of its own: it merges every
+A project may instead land a base through a batching merge queue of its own, opting in with
+`batch_queue: true` under loop.md's `loop` (without it no batch proof counts): it merges every
 waiting PR's verified head onto the base, runs the full gate once on the result and pushes
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
 `uv run <this skill's folder>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
@@ -448,7 +453,7 @@ or the owner's private network.
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
   peer's brief is not that; no brief names another push target. Its brief names the role
-  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in the lead's worktree, as verifier.md says.
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
@@ -497,7 +502,9 @@ or the owner's private network.
   dialog, a locked screen, a device, a permission prompt or classifier denial, a
   credential, an approval link that expires) is stopped at its first sign, so a hang
   becomes a failure, and whatever it holds (a gate slot, a lock, an instance) is released.
-  Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, add
+  Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, unless an
+  `Owner step:` for the same action is already there, since a second copy reads as a second
+  ask; add
   `needs-owner`, add a checklist line to the decision-log issue so the owner clears every
   step in one sitting, and move to the next item; ask once, since a retry while they are
   away fails the same way. Before a long or unattended run, try once each owner-only
@@ -546,8 +553,11 @@ or the owner's private network.
   `ci: false` project needs the retry option, since its `local-ci` record runs the whole
   `check`. Each test that passed on the retry has one open
   `kind:bug` issue titled `Flaky: <test id>`: search the open issues for the id before
-  filing, and comment each occurrence on it (head SHA, PR, failure line), so two leads find
-  the same issue and its comments count the occurrences. The third occurrence gets a PR
+  filing, and comment each occurrence on it (head SHA, PR, run, failure line), so two leads find
+  the same issue and its comments count the occurrences. An occurrence is its head SHA plus
+  the failing run (a CI run's id, else the time the local gate started): a report whose pair
+  the issue already has is that occurrence again, not a new one, since two leads reading one
+  run would otherwise count it twice toward the third. The third occurrence gets a PR
   from main that skips the test in the blocking gate, citing the issue, which stays open
   for the fix. A test red on both tries is a real failure: run it on main before blaming
   the PR.
@@ -615,7 +625,8 @@ or the owner's private network.
   on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
   `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
-  its head before it lands, even when the lower-tier verdict is satisfied. It applies within the verifier's own family: it lowers the tier, never the family, which
+  its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
+  reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
   stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
   Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
   and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's

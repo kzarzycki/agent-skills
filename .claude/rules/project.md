@@ -9,7 +9,7 @@ A marketplace of Claude Code plugins. Each local plugin is a top-level directory
 
 ## Layout
 
-- **Local plugins** — `workflow`, `research`, `engineering`, `content`, `playwright`, `experimental`, `utilities`. Each holds `skills/`, and where relevant `agents/`, `commands/`, `contracts/`, `workflows/`.
+- **Local plugins** — `workflow`, `research`, `engineering`, `content`, `playwright`, `experimental`, `utilities`. Each holds `skills/`, and where relevant `agents/`, `commands/`, `contracts/`, `workflows/`. `cos-console` is a mod (a hooks module, no skills): see its README.
 - **Upstream plugins** — tracked from GitHub with no local copy, registered in `marketplace.json` via a `source` ref: `google-workspace`, `dagu`, `goal-creator`, `project-templates`.
 - **Imported engineering skills** — generated leaves under `engineering/skills/`, declared by `engineering/vendir.yml` and reproduced from the lock, the overlays in `engineering/overlays/skills/` and `engineering/provenance.yml`. Edit a tuned skill at its overlay and run `mise run vendor-engineering`; never edit a generated leaf. `engineering/CLAUDE.md` has the package rules.
 - `_attic/` — archived obsolete code, kept out of the live plugins so it stops competing in skill listings. Not loaded. See `_attic/README.md`.

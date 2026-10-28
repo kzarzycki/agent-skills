@@ -6,11 +6,13 @@ import io
 import json
 import os
 import re
+import signal
 import ssl
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -2476,6 +2478,164 @@ def test_run_takes_a_report_written_within_a_clock_tick_of_the_launch(
     assert omnigent_agent.main(argv) == 0
 
 
+def killed_mid_run(og: FakeOmnigent, at: int, kill: Callable[[], None]) -> None:
+    """``og.info`` runs ``kill`` before its ``at``-th look."""
+    info, looks = og.info, [0]
+
+    def look(sid: str) -> dict:
+        looks[0] += 1
+        if looks[0] == at:
+            kill()
+        return info(sid)
+
+    og.info = look  # type: ignore[method-assign]
+
+
+def test_a_child_killed_mid_run_leaves_a_failed_line_at_the_report_within_one_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(status="running")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    polls: list[float] = []  # the poll sleeps after the kill
+    error = {"code": "runner_disconnected", "message": "runner lost"}
+    info = og.info
+    og.info = lambda s: {**info(s), "last_task_error": error} if og.final == "failed" else info(s)  # type: ignore[method-assign]
+
+    def kill() -> None:  # the runner disconnects: the session fails with its error code
+        og.final = "failed"
+        monkeypatch.setattr(omnigent_agent.time, "sleep", polls.append)
+
+    killed_mid_run(og, 4, kill)
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert (tmp_path / "r.md").read_text() == (
+        "FAILED: failed/runner_disconnected: session s0 ended (failed): runner lost\n"
+    )
+    assert len(polls) <= 1
+
+
+def test_a_run_stopped_by_a_signal_writes_its_failed_line_and_restores_the_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(status="running")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    before = signal.getsignal(signal.SIGTERM)
+    killed_mid_run(og, 4, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 128 + signal.SIGTERM
+    assert (tmp_path / "r.md").read_text() == "FAILED: interrupted: interrupted by SIGTERM\n"
+    assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_a_run_process_killed_mid_wait_leaves_its_failed_line_within_one_poll(
+    tmp_path: Path,
+) -> None:
+    # a real run client, its child a session that never reports, stopped as a harness stops it
+    (tmp_path / "b.md").write_text("do X")
+    driver = (
+        f"import sys; sys.path.insert(0, {str(Path(__file__).parent)!r})\n"
+        "import test_omnigent_agent as t\n"
+        "t.omnigent_agent.Omnigent = lambda: t.FakeOmnigent(status='running')\n"
+        "t.omnigent_agent.capacity = lambda: (True, '')\n"  # its real 5 s poll stays
+        "sys.exit(t.omnigent_agent.main(['run', 'claude', 't', 'b.md', 'r.md',"
+        " '--confirm-seconds', '0']))\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", driver], cwd=tmp_path, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert proc.stdout and proc.stdout.readline().strip() == "s0"  # launched: now it waits
+        proc.send_signal(signal.SIGTERM)
+        assert proc.wait(timeout=5.0) == 128 + signal.SIGTERM  # within one POLL_SECONDS
+    finally:
+        proc.kill()
+    assert (tmp_path / "r.md").read_text() == "FAILED: interrupted: interrupted by SIGTERM\n"
+
+
+def test_a_start_that_fails_and_a_rerun_after_a_failure_each_write_their_own_failed_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(deaf={0, 1})  # the brief never lands: the launch fails
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    report = tmp_path / "r.md"
+    assert omnigent_agent.main(["start", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0"])
+    first = report.read_text()
+    assert first.startswith("FAILED: ")
+    # a rerun whose child fails replaces the earlier launch's line with its own
+    og.deaf, og.final = set(), "failed"
+    argv = ["run", "claude", "t2", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert report.read_text().startswith("FAILED: failed") and report.read_text() != first
+
+
+def test_a_failed_run_never_overwrites_a_report_its_child_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("verify X")
+    report = tmp_path / "r.md"
+    killed_mid_run(og, 2, lambda: report.write_text("C1: findings, gate still running\n"))
+    argv = ["run", "claude", "t", "b.md", "r.md", "--role", "verifier.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv + ["--same-family"]) == 1  # no SATISFIED: line, no verdict
+    assert report.read_text() == "C1: findings, gate still running\n"
+    # nor an earlier pass's report a fix pass reuses the path of
+    report.write_text("pass 1 report: C1 major\n")
+    og.final = "failed"
+    argv = ["run", "claude", "t2", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 1
+    assert report.read_text() == "pass 1 report: C1 major\n"
+
+
+def test_a_re_attached_wait_takes_the_child_s_report_over_run_s_failed_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(reply="done")
+    sid = og.create("claude", "t")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    report = tmp_path / "r.md"
+    report.write_text("FAILED: interrupted: interrupted by SIGTERM\n")
+    killed_mid_run(og, 3, lambda: report.write_text("the real report"))
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+    assert capsys.readouterr().out.strip() == str(report)
+    assert report.read_text() == "the real report"
+
+
+def test_a_failed_line_is_no_report_to_the_supervisor_a_start_a_follow_up_or_a_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = tmp_path / "r.md"
+    report.write_text("FAILED: timeout: session a gave no report after 10800s\n")
+    og = Owing([told("brief", 120)], {"status": "idle"})
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert "report written" not in event
+
+    fake = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: fake)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    assert omnigent_agent.main(["start", "claude", "t", "b.md", "r.md"]) == 0
+    # stamped later than the next write: what the kernel's coarse clock can do within one tick
+    os.utime(report, (2**31, 2**31))
+    killed_mid_run(fake, 2, lambda: report.write_text("fixed"))
+    assert omnigent_agent.main(["send", "s0", "b.md", "r.md"]) == 0
+    assert report.read_text() == "fixed"
+
+    report.write_text("FAILED: interrupted: interrupted by SIGTERM\n")
+    os.utime(report, (2**31, 2**31))
+    killed_mid_run(fake, 1, lambda: report.write_text("fixed again"))
+    argv = ["run", "claude", "t2", "b.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+
+
 def test_a_brief_with_an_empty_backtick_span_is_refused_before_a_session_exists(
     tmp_path: Path,
 ) -> None:
@@ -4007,6 +4167,33 @@ def test_a_parked_lead_has_no_deadline(
     ends = ["Supervisor: a t-a: turn ended"] if status == "idle" else []
     assert [p.split("\n")[0] for p in fyis(og)] == ends
     assert state_of(registry)["leads"]["a"]["wait"] == "parked"
+
+
+@pytest.mark.parametrize("task", ["monitor", "shell"])
+def test_a_lead_that_ended_with_only_a_monitor_live_has_no_deadline_and_a_shell_keeps_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: str
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    reply = {**ending("DONE: the page is published", 60), "status": "completed"}
+    og = Lead(told("brief", 120), reply)
+    og.snap = {"status": "running", "background_tasks": [{"type": task, "status": "running"}]}
+    at = {1: 1300.0, 2: 5000.0}
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, at[poll]),
+        notify="cos",
+        console=True,
+        fyi="post",
+    )
+    firsts = [p.split("\n")[0] for p in fyis(og)]
+    if task == "monitor":  # its turn ended: told once, then it waits on its follower
+        assert firsts == ["Supervisor: a t-a: turn ended"]
+    else:  # a shell is work in flight: watched as running, so the deadline still holds
+        assert firsts and all("no progress" in f for f in firsts)
 
 
 def test_a_live_child_is_progress_and_the_deadline_counts_from_it(
@@ -6011,6 +6198,41 @@ def _agent_server(monkeypatch: pytest.MonkeyPatch, pages: dict[str, object]) -> 
     return calls
 
 
+def test_a_turn_ended_with_only_an_artifact_monitor_reads_idle_and_a_shell_keeps_it_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monitor = {"type": "monitor", "status": "running", "description": "live updates for artifact"}
+    shell = {"type": "shell", "status": "running", "command": "sleep 120"}
+    old = time.time() - omnigent_agent.IDLE_GRACE_SECONDS - 1
+    reply = {"id": "i2", "type": "message", "role": "assistant", "status": "completed"}
+    reply["created_at"] = old
+    fresh = {**reply, "created_at": time.time()}  # narration a running turn persisted just now
+    call = {"id": "i3", "type": "function_call", "status": "completed", "created_at": old}
+    for tasks, last, status in (
+        ([monitor], reply, "idle"),
+        ([monitor], fresh, "running"),  # its tool call is still to land
+        ([monitor, shell], reply, "running"),
+        ([shell], reply, "running"),
+        ([monitor], call, "running"),  # mid-turn: a tool call is the last item
+        ([], reply, "running"),
+    ):
+        _agent_server(
+            monkeypatch,
+            {
+                "/v1/sessions/m": {"status": "running", "title": "t", "background_tasks": tasks},
+                "/v1/sessions/m/items?limit=100&order=desc": {"data": [last]},
+            },
+        )
+        og = omnigent_agent.Omnigent()
+        # the snapshot stays as the server says, so wait and reap, which a long foreground tool
+        # misread as ended would end or archive, never take it
+        assert og.info("m")["status"] == "running"
+        _, line = omnigent_agent.observe(og, "m", {})
+        assert line.startswith("m t: turn ended" if status == "idle" else "m t: running")
+        # the supervisor's deadline rule reads this state: an idle lead that ended its turn waits
+        assert omnigent_agent.lead_status(og.info("m"), [last])["state"] == status, (tasks, last)
+
+
 def test_a_users_own_agent_is_found_after_the_server_s_pages_and_gets_its_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6831,6 +7053,14 @@ def test_report_head_keeps_little_of_a_long_report() -> None:
     head = omnigent_agent.report_head(report)
     assert len(head) <= omnigent_agent.REPORT_WAIT_CHARS and head.endswith("- proof detail")
     assert omnigent_agent.wait_of(head) == "verifier"
+
+
+def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() -> None:
+    """Each waits on a prompt nobody in the cloud sees, or leaks a session into a public repo."""
+    preamble = omnigent_agent.PR_PREAMBLE
+    assert "never call an interactive question tool, since its prompt waits on someone" in preamble
+    assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
+    assert "co-author line only, with no session link, since the commit reaches a" in preamble
 
 
 def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:

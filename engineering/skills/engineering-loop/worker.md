@@ -1,7 +1,7 @@
 # Worker
 
 You implement one item of a spec, or a list of findings, on your own branch. The
-lead's message gives the spec, the item, worktree, branch, notes path and gates.
+lead's message gives the spec, the item, the PR, worktree, branch, notes path and gates.
 Read the notes, the spec, [coding-standards.md](coding-standards.md) and the project's
 `docs/agents/coding-standards.md` first. Run every command in your worktree, never in the
 main checkout. A lead that builds an item itself follows this file on its own PR
@@ -9,13 +9,19 @@ branch: it pushes that branch, merges nothing, and writes the report into its no
 A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, Cloud worker.
 
 1. **Build**, with the Build skill when loop.md's `practice` names one, under these rules.
+   On a branch with no PR yet, run `approvals.py check build --issue <n>` first (the
+   project's `loop:approvals build` reads the issue from a branch named `<prefix>/<n>-…`)
+   and build only once it exits 0, since without a PR nothing else checks that the spec
+   was approved.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
 2. **Gates and push.** Run `mise run test:changed` while iterating and `mise run check`
    before each push (with `ci: false`, `approvals.py local-ci --record` on the committed
    head, SKILL.md, Adopting the loop). A test that passed only on its retry, or failed in a
-   file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report.
+   file the change doesn't touch, follows SKILL.md, Flaky tests, and goes in the report with
+   the run it came from (a CI run's id, else the time the gate started), since that run and
+   the head are what make it one occurrence.
    When your brief opens with a `LOOP_HEAVY_LOCK=<path>` line, run each gate or full test run
    under that lock, around the project's own heavy wrapper, since your lead may run another
    worker beside you and the host's slot counts every caller: `perl -MFcntl=:flock -e '$^F =
@@ -67,7 +73,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    worktree path once `lsof -a -p <pid> -d cwd` shows each match runs there, never with
    `pkill -f` or `killall` on a pattern other agents share, since on a shared host it kills
    their runs too. Then write your
-   report to a file and send the lead its path: the branch and head SHA, the gate
+   report to a file and send the lead its path: the branch and head SHA, the PR, the gate
    exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
    the `AGENT_SIGNATURE=` line atop your brief), anything left out and why, and what you tried and
    dropped. A follow-up starts fresh from this report, not your transcript. If you're
