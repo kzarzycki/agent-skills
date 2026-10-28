@@ -139,7 +139,7 @@ issue.
 ### Input: the split manifest
 
 The batch is a split manifest (docs/layers.md, Split manifest): the JSON file a split
-stage's skill (`to-tickets` by default) writes, with `items` of `title`, `spec` and
+stage's skill writes, with `items` of `title`, `spec` and
 `blocked_by`. The apply step reads the file and never edits it. Each item becomes one
 issue of the batch below:
 
