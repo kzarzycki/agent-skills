@@ -347,9 +347,9 @@ on a repo with a board, by moving the issue to `Ready` while it has `needs-owner
 <this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
 which records their word, adds the label and removes `needs-owner`. With `owner: <login>`
 under loop.md's `loop`, `check` and `land` do that themselves for a label that login added
-after the spec's last edit, since nothing in it needs an agent's judgment. A change to an
-approved spec's scope or acceptance is a decision the owner never saw: remove
-`approved:spec`, add `needs-owner` with a one-line comment saying what changed, and stop
+after the spec's last edit, since nothing in it needs an agent's judgment. Changing an
+approved spec's scope or acceptance is a decision the owner never saw: rewrite the issue
+body, comment briefly what changed and why, remove `approved:spec`, add `needs-owner`, stop
 until they approve. A spec the owner approved and then edited for wording needs their
 `approve` again, since `approvals.py` can't tell wording from scope; one covered by policy
 needs nothing. `mise run loop:approvals build` before building and `mise run
