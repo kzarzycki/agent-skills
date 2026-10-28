@@ -997,6 +997,44 @@ def test_one_job_name_in_two_workflows_is_two_checks() -> None:
     assert approvals.ci("PR #7", pr) == ["PR #7: `check` is FAILURE on the head commit"]
 
 
+def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A satisfied lower-tier verdict saying `Risk: high` blocks the merge; a default-tier verdict on the same head
+    clears it, and a heading naming no tier reads as the default."""
+    monkeypatch.setattr(approvals, "writer", lambda _login: False)
+    judged = add(loop_md("spec:\n  auto: true\n"), "risk", "verifier: true\n")
+
+    def said(family: str, number: int, risk: str) -> dict[str, Any]:
+        heading = f"Verifier ({family}), pass {number}"
+        return verdict_on(HEAD, "0 blocker, 0 major, 0 minor", heading=heading) | {
+            "body": f"{heading} on {HEAD[:7]}.\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: {risk}\n"
+        }
+
+    def gate(*reviews: dict[str, Any]) -> list[str]:
+        return approvals.proofs(
+            "merge",
+            pull(reviews=reviews, labels=OWNED),
+            [approved(1, "kind:bug", "area:web")],
+            judged,
+        )
+
+    assert gate(said("codex/terra-6.1/med mid", 1, "high — CI permissions")) == [
+        (
+            "PR #7 is high risk (it matches a risk rule's `verifier` term: the verifier's pass 1 on aaaaaaa says"
+            " `Risk: high — CI permissions`), and its newest verdict came from a lower tier (mid): a default-tier"
+            " verifier pass on the head first"
+        )
+    ]
+    assert (
+        gate(said("codex/terra-6.1/med mid", 1, "high"), said("codex/sol-6.1/med", 2, "high")) == []
+    )
+    assert gate(said("codex/terra-6.1/med mid", 1, "low — a fixture")) == []
+    assert gate(said("codex", 1, "high")) == []
+    # a tier word inside the model id is no tier: only a word of its own after the signature is
+    assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
+    assert gate(said("claude/small-model/?, same-family", 1, "high")) == []
+    assert gate(said("claude, same-family, small", 1, "high"))
+
+
 def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
     no_ci = add(LOOP, "loop", "ci: false\n")
     missing = [
