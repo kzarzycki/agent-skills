@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,11 +29,54 @@ PACKAGES = ("gatekeeper", "loop", "github", "chief-of-staff", "omnigent")
 # The copies of loop.py's resolver for a skill another package ships: each script must run alone, so none imports it.
 RESOLVER = {
     "gatekeeper": [],
-    "loop": ["skills/engineering-loop/scripts/loop.py"],
+    "loop": [
+        "skills/engineering-loop/scripts/loop.py",
+        *(f"skills/engineering-loop/scripts/{name}.py" for name in ("approvals", "gatekeeper")),
+        *(f"skills/engineering-loop/scripts/{name}.py" for name in ("board", "labels", "browse")),
+    ],
     "github": ["skills/github-tracker/scripts/board.py", "skills/github-tracker/scripts/labels.py"],
     "chief-of-staff": ["skills/chief-of-staff/scripts/cos_page.py"],
     "omnigent": [],
+    "engineering": ["skills/orchestrating-agents/scripts/omnigent_agent.py"],
 }
+# Each script path engineering 0.25.0 shipped that moved, an unchanged consumer command on it, and the script it now
+# runs, as a skills directory holds them. The old path stays for one release line (user story 6).
+FORWARDED = [
+    (
+        "engineering-loop/scripts/approvals.py",
+        ["check", "build", "--help"],
+        "gatekeeper/scripts/gatekeeper.py",
+    ),
+    (
+        "engineering-loop/scripts/approvals.py",
+        ["brief", "--help"],
+        "engineering-loop/scripts/loop.py",
+    ),
+    (
+        "engineering-loop/scripts/approvals.py",
+        ["release", "--help"],
+        "engineering-loop/scripts/loop.py",
+    ),
+    # stdin and a refusal's exit code pass through: an unfinished report is refused with 1
+    (
+        "engineering-loop/scripts/approvals.py",
+        ["report", "/dev/stdin"],
+        "gatekeeper/scripts/gatekeeper.py",
+    ),
+    (
+        "engineering-loop/scripts/gatekeeper.py",
+        ["check", "build", "--help"],
+        "gatekeeper/scripts/gatekeeper.py",
+    ),
+    ("engineering-loop/scripts/board.py", ["--help"], "github-tracker/scripts/board.py"),
+    ("engineering-loop/scripts/labels.py", ["--help"], "github-tracker/scripts/labels.py"),
+    ("engineering-loop/scripts/browse.py", ["--help"], "browsing/scripts/browse.py"),
+    (
+        "orchestrating-agents/scripts/omnigent_agent.py",
+        ["--help"],
+        "omnigent-agents/scripts/omnigent_agent.py",
+    ),
+]
 
 
 def manifests(name: str) -> tuple[dict, dict]:
@@ -92,18 +137,55 @@ def test_every_scripts_folder_with_python_has_a_pycache_file(name: str) -> None:
     )
 
 
-def test_every_copy_of_the_resolver_is_the_same() -> None:
-    def resolver(path: Path) -> str:
-        found = re.search(r"^def installed\(.*?(?=^\S)", path.read_text(), re.MULTILINE | re.DOTALL)
-        assert found, f"{path}: no installed()"
-        return found.group()
+def resolver(path: Path) -> str:
+    found = re.search(r"^def installed\(.*?(?=^\S)", path.read_text(), re.MULTILINE | re.DOTALL)
+    assert found, f"{path}: no installed()"
+    return found.group()
 
-    copies = {
-        f"{name}/{script}": resolver(REPOSITORY / name / script)
-        for name, scripts in RESOLVER.items()
-        for script in scripts
-    }
+
+COPIES = [f"{name}/{script}" for name, scripts in RESOLVER.items() for script in scripts]
+
+
+def test_every_copy_of_the_resolver_is_the_same() -> None:
+    copies = {copy: resolver(REPOSITORY / copy) for copy in COPIES}
     assert len(set(copies.values())) == 1, sorted(copies)
+
+
+def test_a_project_pinned_to_engineering_keeps_the_old_script_paths(tmp_path: Path) -> None:
+    """Each old path runs its new script with the same arguments, stdin, output and exit code, after one deprecation
+    line, in both APM targets; the new path prints none, so no forwarder was imported in its place."""
+    env = _isolated_env(tmp_path)
+    source = tmp_path / "source"
+    _copy_package(source)
+    _publish(tmp_path, env, source)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    version = yaml.safe_load((source / "engineering" / "apm.yml").read_text())["version"]
+    _write_manifest(consumer / "apm.yml", {"git": f"{SLUG}/engineering", "ref": f"^{version}"})
+    _run(["apm", "install"], cwd=consumer, env=env)
+
+    def run(path: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(path), *args],
+            cwd=consumer,
+            env=env,
+            input="an unfinished report\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    for target in (".claude", ".agents"):
+        skills = consumer / target / "skills"
+        for old, args, new in FORWARDED:
+            was, now = run(skills / old, args), run(skills / new, args)
+            deprecation = f"{old} is deprecated: run the `{new.split('/')[0]}` skill's {new.split('/', 1)[1]}\n"
+            assert (was.returncode, was.stdout, was.stderr) == (
+                now.returncode,
+                now.stdout,
+                deprecation + now.stderr,
+            ), f"{target}/skills/{old} {' '.join(args)}"
+            assert "deprecated" not in now.stderr
 
 
 @pytest.mark.parametrize("name", PACKAGES)
