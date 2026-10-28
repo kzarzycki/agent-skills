@@ -8,7 +8,7 @@ main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
 A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, Cloud worker.
 
-1. **Build**, with the Build skill when loop.md's `practice` names one, under these rules.
+1. **Build**, with the Build skill when gatekeeper.md's `practice` names one, under these rules.
    On a branch with no PR yet, run `approvals.py check build --issue <n>` first (the
    project's `loop:approvals build` reads the issue from a branch named `<prefix>/<n>-…`)
    and build only once it exits 0, since without a PR nothing else checks that the spec

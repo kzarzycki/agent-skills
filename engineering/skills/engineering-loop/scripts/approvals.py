@@ -15,11 +15,14 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
-    uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
+    uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `checks.all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
-Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
+Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
+`## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
+policy in each is refused, naming both, since two sources of the bar would drift. "loop.md's" setting below means the
+policy's, in whichever file holds it. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
 those tasks.
 
@@ -35,7 +38,7 @@ or for a spec the policy approves the account running this), since an assignee s
 build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. `release` removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
-A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
+A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
 each issue, where loop.md has a `signoff` rule (below); the verifier's PR
@@ -104,7 +107,8 @@ requiring a merge queue queues, it waits for GitHub's merge (exit 0 only once th
 label or a local-ci record holds it, which GitHub never supplies; auto-merge turned off, or the PR out of the queue,
 without a merge is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
 a head CI has passed, and so does a wait of 2 hours.
-`local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
+`local-ci` runs the policy's `checks.all`, a shell command, else `mise run check:all`, only on a clean checkout at
+the PR head, and records nothing if the check fails or changes the tree.
 A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
 `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
@@ -178,9 +182,9 @@ loop.md's `loop`, `check build`, `check merge` and `land` record an `approved:sp
 login added after the spec's (plan's) last edit as `approve --by owner` would, removing `needs-owner`, and say so: the
 label is the owner's word. One they added before the last edit is named and changes nothing, nor does anyone else's.
 
-loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
-section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `loop` holds `cap`, `ci`, `opt_out`, `local_ci_env`, `batch_queue` and `owner`; `spec` holds `auto`.
+The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
+section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
+the block. `checks` holds `changed`, `check` and `all`, the project's check commands. `loop` holds `cap`, `ci`, `opt_out`, `local_ci_env`, `batch_queue` and `owner`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -221,6 +225,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import functools
 import io
 import itertools
 import json
@@ -252,6 +257,8 @@ PREFIXES = {"component": "area:", "category": "kind:"}
 SIZE_ORDER = ["size:XS", "size:S", "size:M", "size:L", "size:XL"]
 SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
+# the gatekeeper's policy, under `## Policy`; loop.md's `## Settings` block is read without it, deprecated
+POLICY = Path("docs/agents/gatekeeper.md")
 POINTS = ("spec", "plan")
 # the `By:` of the delegated approver's merge record (delegate), which owner_waits refuses on the default branch
 DELEGATE = "delegate"
@@ -416,25 +423,38 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "bot": {"paths": list, "branch": str},
     "land": Table(signed_squash_to=str, allowed_signers=str),
     "carry_over_main": Table({"except": list}),
+    # the project's check commands, each a shell command: `all` is what local-ci runs
+    "checks": {"changed": str, "check": str, "all": str},
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
 TRACKED: dict[str, Any] = dict.fromkeys(
     ("components", "categories", "labels", "renames", "board"), str
 )
-# the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` heading
+# the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` (gatekeeper.md: `## Policy`)
+# heading
 SETTINGS = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
 KINDS = {bool: "true or false", int: "a whole number", list: "a list of strings", str: "a string"}
 
 
-def block(text: str, file: str) -> dict[str, Any]:
-    """The file's settings block, parsed as YAML; refused without one under `## Settings`, since a file still on the
+class Policy(str):
+    """docs/agents/gatekeeper.md's text, whose block settings() reads under `## Policy`; a plain str is loop.md's,
+    read under `## Settings`."""
+
+
+def source(policy: str | None) -> str:
+    """The file the policy was read from, as its messages name it."""
+    return "gatekeeper.md" if isinstance(policy, Policy) else "loop.md"
+
+
+def block(text: str, file: str, heading: str = "Settings") -> dict[str, Any]:
+    """The file's settings block, parsed as YAML; refused without one under `## <heading>`, since a file still on the
     line form would otherwise lose its settings unnoticed, or when it is no YAML mapping. Only that section is
     searched, so a YAML example elsewhere in the prose is never read as the settings. A key set twice is refused,
     since YAML would keep the last one silently."""
-    found = SETTINGS.search(section(text, "Settings"))
+    found = SETTINGS.search(section(text, heading))
     if found is None:
         raise Refused(
-            f"{file} has no ```yaml settings block under ## Settings: SKILL.md § Settings has its keys"
+            f"{file} has no ```yaml settings block under ## {heading}: SKILL.md § Settings has its keys"
         )
     try:
         once(yaml.compose(found[1], Loader=yaml.SafeLoader), file)
@@ -508,34 +528,36 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
 
 
 def settings(loop: str | None) -> dict[str, Any]:
-    """loop.md's settings block, checked against SCHEMA: `loop`'s keys at the top level, every other section under
-    its name and `bot` a list of `{login, paths}`; {} without loop.md, which has no rules. A loop.md without the block
-    is refused rather than read as one without rules, since a project still on the line form would otherwise lose its
-    risk rules unnoticed."""
+    """The policy's block (gatekeeper.md's `## Policy`, a Policy, else loop.md's `## Settings`), checked against
+    SCHEMA: `loop`'s keys at the top level, every other section under its name and `bot` a list of `{login, paths}`;
+    {} without either file, which has no rules. A file without the block is refused rather than read as one without
+    rules, since a project still on the line form would otherwise lose its risk rules unnoticed."""
     if loop is None:
         return {}
+    file = source(loop)
     data: dict[str, Any] = {}
-    for name, section in sections(block(loop, "loop.md"), "loop.md").items():
+    parsed = block(loop, file, "Policy" if isinstance(loop, Policy) else "Settings")
+    for name, section in sections(parsed, file).items():
         if name == "bot":
             for login, bot in section.items():
                 where = f"bot.{login}"
                 if not isinstance(login, str):
-                    raise Refused(f"loop.md's `{where}` is no name: quote it")
+                    raise Refused(f"{file}'s `{where}` is no name: quote it")
                 if bot is None:  # a login with nothing under it
                     bot = {}
                 if not isinstance(bot, dict):
-                    raise Refused(f"loop.md's `{where}` must be a section holding `paths`")
+                    raise Refused(f"{file}'s `{where}` must be a section holding `paths`")
                 if "paths" not in bot:
-                    raise Refused(f"loop.md's `{where}` lacks `paths`")
+                    raise Refused(f"{file}'s `{where}` lacks `paths`")
                 data.setdefault("bot", []).append(
-                    {"login": login, **typed(bot, SCHEMA["bot"], where)}
+                    {"login": login, **typed(bot, SCHEMA["bot"], where, file)}
                 )
         elif name == "loop":
-            data.update(typed(section, SCHEMA["loop"], name))
+            data.update(typed(section, SCHEMA["loop"], name, file))
         elif name in SCHEMA:
-            data[name] = typed(section, SCHEMA[name], name)
+            data[name] = typed(section, SCHEMA[name], name, file)
         else:
-            raise Refused(f"loop.md has an unknown settings section `{name}`")
+            raise Refused(f"{file} has an unknown settings section `{name}`")
     return data
 
 
@@ -1372,7 +1394,7 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     if pull["isCrossRepository"]:
         return f"{where} comes from another repository: its branch isn't ours to push, push it to {pull['baseRepository']['nameWithOwner']} first"
     if pull["baseRefName"] != branch:
-        return f"{where} targets {pull['baseRefName']}, but loop.md lands signed squashes only to {branch}"
+        return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
     # the URL as configured, before any `insteadOf` rewrite
@@ -1473,7 +1495,7 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
         if READY in names(issue) or records(issue, "spec"):
             return None
     return (
-        f"PR #{pull['number']} is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
+        f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
         " revert or bot exemption): its author merges it"
     )
 
@@ -1494,7 +1516,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
             found = []
         else:
             found = [
-                f"{where}: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
+                f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head (approvals.py local-ci)"
             ]
     else:
         if required is None:
@@ -1693,7 +1715,7 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
     where, found = f"PR #{pull['number']}", []
     if not batch_queue(loop):
         print(
-            f"{where}: loop.md doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+            f"{where}: {source(loop)} doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
             " through `land`"
         )
         return 1
@@ -2398,17 +2420,35 @@ def one_repo() -> None:
 
 
 def project() -> tuple[str | None, str | None]:
-    """The checkout's docs/agents/issue-tracker.md and loop.md, None for one it lacks: a repo without the loop's
-    files has no rules, and its issues no label shape. Settings off their schema are refused here, before any proof
-    is printed or any PR touched."""
+    """The checkout's docs/agents/issue-tracker.md and its policy, None for one it lacks: a repo without the files has
+    no rules, and its issues no label shape. The policy is gatekeeper.md's (a Policy), else loop.md's `## Settings`
+    block, read with a deprecation line; a project with both is refused, since two sources of the bar would drift.
+    Settings off their schema are refused here, before any proof is printed or any PR touched."""
     root = toplevel()
-    tracker, loop = (
-        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP)
+    tracker, loop, policy = (
+        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP, POLICY)
     )
+    if policy is not None:
+        if loop is not None and SETTINGS.search(section(loop, "Settings")):
+            raise Refused(
+                f"both {POLICY} and {LOOP}'s ## Settings hold a policy: keep it in {POLICY} alone"
+            )
+        loop = Policy(policy)
+    elif loop is not None:
+        deprecated()
     settings(loop)
     if tracker is not None:
         tracker_settings(tracker)
     return tracker, loop
+
+
+@functools.cache
+def deprecated() -> None:
+    """One line per run, however often the policy is read."""
+    print(
+        f"{LOOP}'s ## Settings is deprecated: move the block to {POLICY} under ## Policy (SKILL.md § Settings)",
+        file=sys.stderr,
+    )
 
 
 def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, Any]]:
@@ -2987,7 +3027,13 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
-LOCAL_CI = ["mise", "run", "check:all"]
+# the check local-ci runs without the policy's `checks.all`
+LOCAL_CI = "mise run check:all"
+
+
+def local_ci_command() -> str:
+    """The policy's `checks.all`, else LOCAL_CI: the command local-ci runs and records."""
+    return settings(project()[1]).get("checks", {}).get("all", LOCAL_CI)
 
 
 def recorded(head: str) -> Path:
@@ -2998,7 +3044,7 @@ def recorded(head: str) -> Path:
 
 
 def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
-    """Run `mise run check:all` on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
+    """Run the project's full check (local_ci_command) on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
     check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
 
     def state() -> tuple[str, str]:
@@ -3019,8 +3065,8 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command, env = " ".join(LOCAL_CI), local_ci_env()
-    code = subprocess.run(LOCAL_CI, check=False).returncode
+    command, env = local_ci_command(), local_ci_env()
+    code = subprocess.run(command, shell=True, check=False).returncode
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
     if state() != before:
@@ -3042,11 +3088,12 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
 
 
 def local_ci_env() -> dict[str, str | None]:
-    """The value of each variable loop.md's `local_ci_env` names, None for one unset; {} without the setting."""
-    names = settings(project()[1]).get("local_ci_env", [])
+    """The value of each variable the policy's `local_ci_env` names, None for one unset; {} without the setting."""
+    policy = project()[1]
+    names = settings(policy).get("local_ci_env", [])
     if bad := [name for name in names if not re.fullmatch(r"[A-Za-z_]\w*", name)]:
         raise Refused(
-            f"loop.md's setting `local_ci_env` names {bad[0]!r}, which is no variable name"
+            f"{source(policy)}'s setting `local_ci_env` names {bad[0]!r}, which is no variable name"
         )
     return {name: os.environ.get(name) for name in sorted(names)}
 
@@ -3071,7 +3118,7 @@ def reusable(head: str) -> dict[str, Any] | None:
         return None
     same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
         head,
-        " ".join(LOCAL_CI),
+        local_ci_command(),
         0,
         local_ci_env(),
     )
@@ -3103,9 +3150,11 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
-    file as is and loop.md's `## Verifier brief`. A proof log whose first line isn't the head is refused, since the
+    file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. A proof log whose first line isn't the head is refused, since the
     verifier counts a stale proof as missing and spends the pass on it."""
     _, loop = project()
+    if isinstance(loop, Policy):
+        loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
     pull = pull_request(pr)
     head = pull["headRefOid"]
     if missing := [str(log) for log in proofs if not log.is_file()]:

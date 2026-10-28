@@ -20,7 +20,7 @@ design, wireframes included for a UI, and delegate the rest.
    otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
-   yourself: an approval is a person's word or the owner's policy in loop.md. An issue
+   yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
    assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
    you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/approvals.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
@@ -31,10 +31,10 @@ design, wireframes included for a UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Where loop.md has a `signoff` rule, end the spec with a line `Sign-off:
+   references. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
-   proof). A spec loop.md's `spec.auto` list covers (`bug`, a `Found while #n`
+   proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
    `follow-up`, a `sub-issue` of an approved epic opened by a writer), or `auto: true` covers
    (any spec a writer opened that the risk rule doesn't match, SKILL.md, Approvals and proof, judged on the issue's labels
    and the paths the spec says it changes), is approved by that policy: it gets no label
@@ -45,8 +45,8 @@ design, wireframes included for a UI, and delegate the rest.
    the ready state (board: `Ready`). An epic's stories are filed as its sub-issues, each
    with its spec, before you ask for the epic's approval, and the request lists them: under
    the policy the owner's approval of the epic covers the stories filed by a writer, and
-   without it each story needs its own. When loop.md's `practice` names a `plan` skill, write
-   the plan with it next, as a `## Plan` comment on the issue; where loop.md's `plan` rule
+   without it each story needs its own. When gatekeeper.md's `practice` names a `plan` skill, write
+   the plan with it next, as a `## Plan` comment on the issue; where gatekeeper.md's `plan` rule
    matches, it waits for the owner the same way. At triage, add `risk:high` to an issue
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
    the tracker's priority, issues.md, Risk). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
@@ -194,7 +194,7 @@ design, wireframes included for a UI, and delegate the rest.
      (`--match-head-commit`) once the base's required checks are green, or turns on auto-merge
      pinned to the head while they are pending, and waits for GitHub's merge, through the merge
      queue where the base requires one: exit 0, merged.
-     With loop.md's `land` section it squashes, signs and pushes the PR from your
+     With gatekeeper.md's `land` section it squashes, signs and pushes the PR from your
      checkout instead, so run it where the signing key is (`approvals.py`'s docstring).
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
@@ -253,7 +253,7 @@ design, wireframes included for a UI, and delegate the rest.
      way names with `Closes` (never `Part of` or `Implements`) that is still open
      (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
      When that was an epic's last open sub-issue, close and move the epic the same way. Where
-     loop.md has a `signoff` section, each issue it names with `Implements` stays open for the
+     gatekeeper.md has a `signoff` section, each issue it names with `Implements` stays open for the
      owner's sign-off: move it to
      `Sign-off` and comment `Landed in #<pr> (<merge sha>); waits for your sign-off in use:`
      followed by the spec's acceptance examples to try ([issues.md](issues.md), Sign-off).

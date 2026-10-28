@@ -17,11 +17,11 @@ that acts on the state it finds.
   feedback, an agent's first write for a request, or what a PR leaves unfixed.
 - **`needs-owner`:** waiting for the owner: a decision research can't settle (the
   questions are a comment), a step only they can take, or their approval of a spec or
-  plan loop.md's policy does not cover.
+  plan gatekeeper.md's policy does not cover.
 - **`approved:spec`:** ready: the spec is written into that same issue and approved
   (SKILL.md, Approvals and proof). Where a tool owns an issue's body, the spec is a comment
   headed `## Spec`. The spec step sets the size label; who approves, the owner or their
-  policy in loop.md, and how, is SKILL.md, Approvals and proof.
+  policy in gatekeeper.md, and how, is SKILL.md, Approvals and proof.
 
 The `triage` skill's categories map as bug = `kind:bug` and enhancement = `kind:enhancement`,
 and its roles as needs-triage = no state label, needs-info =
@@ -46,12 +46,12 @@ read as approved.
 
 - **Approval**, `approved:spec` and `approved:plan` on the issue: added with the owner's
   approval (SKILL.md, Approvals and proof), so adding it is how they approve, or as the
-  ready state of a spec loop.md's policy covers. `approved:merge` on the PR is the owner's
+  ready state of a spec gatekeeper.md's policy covers. `approved:merge` on the PR is the owner's
   merge approval, asked for only when the change is high risk (elsewhere the gates are the
   approval), added by them once `check` is green on the head and removed by a push.
 - **Risk**, `risk:high` on an issue or PR: its consequences need the owner at merge (money,
   data, security, another team's contract). A person sets it, or the lead at
-  triage, and `approvals.py` adds it to a PR when loop.md's `risk` rule matches or the cap
+  triage, and `approvals.py` adds it to a PR when gatekeeper.md's `risk` rule matches or the cap
   was reached with a core finding open. It names consequences, not urgency: how soon a
   thing matters is the tracker's priority (its realization file says where it lives), which the
   gate never reads.
@@ -62,7 +62,7 @@ component or size: it resolves a decision, not a change.
 Label names are the loop's fixed set here plus the project's `docs/agents/issue-tracker.md`
 (its settings' `components`, `categories`, `labels`); the scripts read them from these two places only
 (`scripts/approvals.py`, `label_names`). The tracker file names a component or category
-bare (`billing`) or in full (`area:billing`); both mean the label. loop.md's settings name
+bare (`billing`) or in full (`area:billing`); both mean the label. gatekeeper.md's policy name
 a label in full, as GitHub shows it.
 
 The repo's labels are synced from the same two places (github.md, Labels): every listed
@@ -118,7 +118,7 @@ report it and carry on.
 |---|---|---|
 | `Intent` | filed, no state label | whoever files it |
 | `Needs owner` | it has `needs-owner` | whoever parks it |
-| `Ready` | it has `approved:spec`, or loop.md's policy covers its spec | the spec step, or the owner approving |
+| `Ready` | it has `approved:spec`, or gatekeeper.md's policy covers its spec | the spec step, or the owner approving |
 | `Build` | its draft PR is open | the lead |
 | `Verify` | the verifier has the PR | the lead |
 | `Sign-off` | its PR merged with `Implements #<n>`, and it waits for the owner to check it in use | the lead, after landing |
@@ -126,7 +126,7 @@ report it and carry on.
 
 ## Sign-off
 
-Where loop.md has a `signoff` rule and it, or the spec's `Sign-off: owner` line, ask for
+Where gatekeeper.md has a `signoff` rule and it, or the spec's `Sign-off: owner` line, ask for
 it, a person
 checks the merged change in the running product before its issue counts as done, since
 gates and the verifier prove the code, not how it feels in use. The PR links the issue with

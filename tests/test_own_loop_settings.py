@@ -17,9 +17,12 @@ approvals = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(approvals)
 
 
-def test_this_repos_loop_and_tracker_settings_parse() -> None:
-    """A refusal raises approvals.Refused with the reader's own message, which fails the test."""
-    assert approvals.settings((AGENTS / "loop.md").read_text())
-    tracker = (AGENTS / "issue-tracker.md").read_text()
+def test_this_repos_policy_and_tracker_settings_parse(monkeypatch) -> None:
+    """A refusal raises approvals.Refused with the reader's own message, which fails the test. The policy is read as
+    approvals.py reads it, from gatekeeper.md, which refuses a second policy in loop.md."""
+    monkeypatch.setattr(approvals, "toplevel", lambda: REPOSITORY)
+    tracker, policy = approvals.project()
+    assert isinstance(policy, approvals.Policy)
+    assert "docs/agents/gatekeeper.md" in approvals.settings(policy)["risk"]["paths"]
     assert approvals.tracker_settings(tracker)
     assert approvals.label_names(tracker)["component"]

@@ -634,6 +634,63 @@ def test_a_yaml_example_outside_settings_is_never_read_as_the_settings() -> None
         approvals.label_names("## Components\n\n- `billing`: invoices.\n\n" + EXAMPLE)
 
 
+def gatekeeper_md(settings: str = "") -> str:
+    """A gatekeeper.md whose policy block holds `settings`, YAML."""
+    return f"# Gatekeeper\n\n## Policy\n\n```yaml\n{settings}```\n"
+
+
+@pytest.fixture
+def agents(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A checkout's docs/agents/ under tmp_path, empty, and no deprecation line printed yet this run."""
+    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    approvals.deprecated.cache_clear()
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    return tmp_path / "docs" / "agents"
+
+
+def test_the_policy_is_read_from_gatekeeper_md_under_its_policy_heading(
+    agents: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """loop.md keeps its prose: a gatekeeper.md beside it is the one source of the bar, and its messages name it."""
+    (agents / "loop.md").write_text("# Loop facts\n\nWorker model: mid\n")
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: false\n"))
+    _, policy = approvals.project()
+    assert approvals.no_ci(policy)
+    assert capsys.readouterr().err == ""
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: no-ish\n"))
+    with pytest.raises(approvals.Refused, match="gatekeeper.md's `loop.ci` must be true or false"):
+        approvals.project()
+    (agents / "gatekeeper.md").write_text(loop_md("loop:\n  ci: false\n"))
+    with pytest.raises(
+        approvals.Refused, match="gatekeeper.md has no ```yaml settings block under ## Policy"
+    ):
+        approvals.project()
+
+
+def test_loop_md_settings_without_gatekeeper_md_are_read_with_one_deprecation_line(
+    agents: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (agents / "loop.md").write_text(loop_md("loop:\n  ci: false\n"))
+    for _ in range(2):
+        assert approvals.no_ci(approvals.project()[1])
+    assert capsys.readouterr().err == (
+        "docs/agents/loop.md's ## Settings is deprecated: move the block to docs/agents/gatekeeper.md under"
+        " ## Policy (SKILL.md § Settings)\n"
+    )
+
+
+def test_a_policy_in_both_gatekeeper_md_and_loop_md_is_refused_naming_both(agents: Path) -> None:
+    """Two sources of the bar would drift."""
+    (agents / "loop.md").write_text(loop_md("loop:\n  ci: false\n"))
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: false\n"))
+    with pytest.raises(approvals.Refused) as raised:
+        approvals.project()
+    assert str(raised.value) == (
+        "both docs/agents/gatekeeper.md and docs/agents/loop.md's ## Settings hold a policy:"
+        " keep it in docs/agents/gatekeeper.md alone"
+    )
+
+
 @pytest.mark.parametrize(
     ("terms", "labels", "paths", "hit"),
     [
@@ -2117,6 +2174,14 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     out = capsys.readouterr().out.splitlines()
     assert "- Report: tmp/loop/pr7-v1.md" in out
     assert not [line for line in out if line.startswith("- Previous report")]
+    # a policy in gatekeeper.md leaves the Verifier brief in loop.md, the loop's prose
+    agents = tmp_path / "docs" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "loop.md").write_text("## Verifier brief\n\n- Read the loop file's brief.\n")
+    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(gatekeeper_md())))
+    assert approvals.main(["brief", "7"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "- Read the loop file's brief."
 
 
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
@@ -4008,7 +4073,7 @@ def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
 ) -> None:
     landing["pull"]["baseRefName"] = "release"
     assert refused_untouched(landing, signing, capsys) == [
-        "PR #7 targets release, but loop.md lands signed squashes only to main"
+        "PR #7 targets release, but the policy lands signed squashes only to main"
     ]
     loop = tmp_path / "docs" / "agents" / "loop.md"
     loop.write_text(loop.read_text().replace("  allowed_signers: signers\n", ""))
@@ -4246,8 +4311,8 @@ def checkout(
         )
         return state["status"]
 
-    def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
-        assert (command, check) == (["mise", "run", "check:all"], False)
+    def run(command: str, shell: bool, check: bool) -> subprocess.CompletedProcess[str]:
+        assert (command, shell, check) == ("mise run check:all", True, False)
         state["runs"] += 1
         if state["after"]:
             state["status"] = state["after"]
@@ -4304,6 +4369,42 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     assert github == []
     assert said in capsys.readouterr().out
     assert not (checkout["common"] / "approvals").exists()
+
+
+def test_local_ci_runs_and_records_the_policys_checks_all_and_reuses_only_its_own_record(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`checks.all` is the project's real gate; a pass of another command never stands in for it."""
+    assert approvals.main(["local-ci", "--record"]) == 0  # the default, mise run check:all
+    ran: list[str] = []
+
+    def run(command: str, shell: bool, check: bool) -> subprocess.CompletedProcess[str]:
+        assert (shell, check) == (True, False)
+        ran.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(approvals.subprocess, "run", run)
+    policy = approvals.Policy(
+        gatekeeper_md("loop:\n  ci: false\nchecks:\n  all: make gate FULL=1\n")
+    )
+    checkout["loop"] = policy
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert ran == ["make gate FULL=1"]
+    assert github == [
+        (
+            "comment",
+            7,
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: make gate FULL=1\nEnv: default\n",
+        )
+    ]
+    record = json.loads(
+        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
+    )
+    assert record["command"] == "make gate FULL=1"
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert ran == ["make gate FULL=1"]  # the record of the same command is reused
 
 
 @pytest.mark.parametrize(
@@ -4578,7 +4679,7 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     repo = tmp_path / "repo"
     head = committed(repo)
     git_in(repo, "worktree", "add", "-q", "--detach", str(tmp_path / "tree"), head)
-    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "LOCAL_CI", "true")
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     monkeypatch.chdir(tmp_path / "tree")
     assert approvals.main(["local-ci", "--record"]) == 0
@@ -5512,7 +5613,7 @@ def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
     where.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "head": head,
-        "command": " ".join(approvals.LOCAL_CI),
+        "command": approvals.LOCAL_CI,
         "exit": 0,
         "env": {} if env is None else env,
         "time": "2026-01-01T00:00:00Z",
