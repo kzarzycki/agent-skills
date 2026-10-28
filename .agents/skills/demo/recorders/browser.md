@@ -21,8 +21,4 @@ In Playwright Test, `use: { video: "on" }` records each test.
 - Do setup (login, seed data) in a context without `recordVideo`, and save its
   `storageState` for the recorded one.
 - Launch with `slowMo` (around 300 ms) so a viewer can follow clicks and typing.
-- Convert to MP4 and trim the blank start:
-
-  ```sh
-  ffmpeg -ss 0.5 -i "$webm" -c:v libx264 -pix_fmt yuv420p -movflags +faststart "$tmp/demo.mp4"
-  ```
+- Pass the `.webm` to `scripts/demo.sh`, which converts it to H.264 MP4.

@@ -4,9 +4,8 @@ You review code you did not write. You make no commits or pushes, resolve no rev
 thread (resolution follows triage, which is not yours), and leave nothing behind: the
 tree ends as you found it, with `git status --porcelain` and `git diff` unchanged. The
 lead gives you the base, the reviewed head, the spec number, priorities and a
-report path, so ask for nothing. You run in the worktree you were started in, the
-lead's own or a detached one at the same head, so you see the tree the author
-tested. Read no memory (a Hindsight bank or any other store): remembered context carries
+report path, so ask for nothing. You run in the worktree you were started in, a
+detached one at the reviewed head, so you see the tree the author tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
 With loop.md's `Cloud worker:` line, name your evidence files for the PR (SKILL.md, Cloud worker).
@@ -37,18 +36,38 @@ yourself, keeping standards and spec as separate axes.
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
+- **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
+  has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
+  quarantines a test weakens a gate (Judge the risk).
 - **Out of scope:** an input the system never produces, an interleaving nobody can
   trigger, a value orders of magnitude outside what the data source emits. Style, naming,
   formatting and code-review's smell baseline are notes, not findings.
 - **Work the given priorities first.**
 - **Every pass after the first:** the lead gives you the previous report. Review
-  the diff since its head yourself, both axes in your own session with no axis
-  subagents (code-review, step 4), rerun each of its repros and mark it FIXED, NOT FIXED
-  or ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
+  the diff since its head and the files it touches yourself, both axes in your own session
+  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
+  repros from one script that prints each one's command, result and exit code, rather than
+  one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the owner asked for after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
+- **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
+  or a queue, or outlast one tool call, starts detached with its pid, output and exit code
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1`
+  (Perl's `setsid`, since macOS has no `setsid` command),
+  and is waited on up to a total budget you state, in as few calls as you can: each call
+  blocks close to the tool's limit (the longest yield your harness allows on a running
+  command, or a sleep loop that checks the log for its exit line), never short polls, since
+  every call re-reads the whole context. A blocker that is only your own call timing out
+  spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
+  background shells. A gate the machine allows
+  by rule is the exception: run it as the bare command (Gates and repros). A queued run or
+  any other pending condition is waited on the same way, in the foreground (orchestrating-agents'
+  `scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <check>`, each call under
+  the tool timeout), and past the limit you state the pass ends with a report naming it, never
+  on a run still pending, since nothing wakes an idle session and a run left queued can apply
+  its mutation after you have gone.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's acceptance examples on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
@@ -57,13 +76,18 @@ yourself, keeping standards and spec as separate axes.
   looked right. Real data you see may go in your report, never in anything bound for the
   tracker. When the sandbox can't reach the instance or its log, say so.
 - **Run loop.md § Verifier checklist**, when it has one.
-- **Mutation-check the new tests.** For each test that guards a behaviour the spec
-  changes, save the production change it guards as a patch beside your report
-  (`git diff <base> HEAD -- <file> > <patch>`). Undo it with `git apply -R <patch>`, run
-  the test, and redo it with `git apply <patch>`; undo and redo are symmetric, so this
-  also restores a file the change added or deleted. A test that still passes guards
-  nothing: report it as a major. Then check that `git status --porcelain` matches what it
-  showed at the start.
+- **Mutation-check the new tests.** Undo each production change the spec adds on its own
+  (one condition, branch or value), never the whole diff at once, since a whole-patch revert
+  fails the tests for the wrong reason (a flag gone) and hides a change no test covers. Edit
+  the file back to the base for that one change alone, since a diff hunk can join two
+  changes, even on one line; save the edit as a patch beside your report (`git diff --
+  <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
+  change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
+  also the repro. A change whose undoing leaves every test green is untested: report it as a
+  major. Before the report, `git status --porcelain` must match what it showed at the start:
+  revert any mutation of yours still applied, and report a tree you cannot clean as a finding
+  naming its paths, since the lead's next gate and push run in it (`wait` fails a host
+  verifier that leaves a tracked change).
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
@@ -78,12 +102,29 @@ yourself, keeping standards and spec as separate axes.
   check, test selection, threshold, required status) and the weakening is the change
   itself; it changes CI permissions, secrets, branch protection or the loop's own approval
   rules; or it changes what users see in a significant way the spec did not ask for, or
-  asked for only vaguely, so the owner would be surprised. Each loop.md line `- risk-criteria:
-  <text>` adds a criterion of the project's. Anything else is low. A `risk: verifier` rule
-  in loop.md lets a low change merge without the owner, so judge it on the diff, not on
+  asked for only vaguely, so the owner would be surprised. loop.md § Risk criteria, where it
+  has one, adds the project's own. Anything else is low. `verifier: true` in loop.md's
+  `risk` lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
-- **Gates and repros:** you may run `mise run check`. Leave every repro as a runnable file
+- **A full heavy slot.** A gate or mutation run that waits for the host's heavy slot is the
+  one pending run that ends in a question, not a report: wait for it in the foreground as
+  above, with a 30-minute limit. Past it, stop the run (so its mutation can't apply after
+  you), redo any patch you undid so the tree is as you found it, and write
+  `<report>.question` asking the lead for a proof run with the brief in
+  [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
+  the commands that undo and redo it, since the lead fills the brief from the question
+  alone. The lead has the runs made off this host and answers with the head-stamped logs; a
+  verdict without them would be repeated once the logs exist.
+- **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
+  what it holds, and report it as not run with the exact owner action, since parking it is
+  the lead's.
+- **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
+  (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
+  your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
+  command, so a wrapped one asks for approval, and on a reviewed sandbox each ask is a paid
+  model call. Then write its proof log from what it printed: the head's SHA, the command, its
+  output and its exit code. Leave every repro as a runnable file
   beside the report (the gitignored `tmp/loop/`), never in a tracked path, and name it in
   the report.
 
@@ -93,7 +134,14 @@ Write Markdown to the report path; `approvals.py verdict` parses it into the PR 
 keep these lines exact:
 
 - Near the top, `Verifier: <family>, pass <n>`, such as `Verifier: claude, same-family,
-  pass 2` when you are the model family that wrote the diff.
+  pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
+  `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
+  (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
+  When your brief names your tier (`mid` or `small`, loop.md's `Verifier model:` line), write it after the
+  signature, `Verifier: codex/terra-6.1/med mid, pass 1`: `check merge` refuses a high-risk change whose newest
+  verdict names a lower tier, and reads a line without one as the default tier.
+  Text after the pass number is a qualifier the posted review's first line carries, such as
+  `Verifier: claude, same-family, pass 2 (merge of main)`.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
@@ -110,4 +158,6 @@ keep these lines exact:
   The merge reads the review as covering that commit only, so a push after your review
   needs its own.
 
-Reply with only the path.
+Before replying, run `uv run <this skill's folder>/scripts/approvals.py report <report path>` and fix the
+report until it exits 0: it reads the report as `verdict` does, without GitHub, so a report
+the lead can't post never costs another turn. Then reply with only the path.

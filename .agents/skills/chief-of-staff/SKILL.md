@@ -62,7 +62,10 @@ its landing order.
   deliverables, steps, tests or guardrails the owner never named, since the lead reads
   every sentence as a requirement. An approval the owner gave (a spec, a merge, a standing
   rule) goes in word for word, with who said it, where and when: a lead refuses an approval it
-  is only told about, and stops to ask the owner.
+  is only told about, and stops to ask the owner. A pack script the brief names is the copy
+  installed in the lead's repo (`.claude/skills/…` or `.agents/skills/…`), else your own
+  installed copy, never a developer checkout of the pack: one can sit on any branch, and a
+  stale `approvals.py` there fails every land.
 - **Start.** `python3 <script> start --top-level <claude|codex> <title> <brief-file>
   <report> --role <role-file>`, with the report under your `tmp/loop/` and the
   role the ask needs (an engineering ask: engineering-loop's `lead.md`, by absolute path),
@@ -125,7 +128,11 @@ its landing order.
   the sessions, and writes nothing.
 - **Adopted sessions.** A session the owner hands you that they started themselves is a lead
   from then on: subscribe to it as above or add its line to the registry (`<session>=<report>`, a tab, `follow`), and answer its reversible
-  questions under the owner's standing decisions (Authority).
+  questions under the owner's standing decisions (Authority). A lead the owner works with in
+  its own session (they talk to it there, not through you) you mark with `python3 <script>
+  direct <session>` (`--off` clears it): the supervisor still tells you its `DONE`, failures
+  and approval prompts, but raises no deadline, sends no nudge and leaves its quiet ends and
+  questions to the owner, who reads them there.
 - **Host load.** Before starting or resuming sessions on a host, check its capacity: load
   average per core and available memory, in one call on that host with `python3 <script> capacity`
   (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,
@@ -194,10 +201,16 @@ the foreground and never poll the lead afterwards:
 | 5 | Queued: the lead holds it until its current step ends, or until the approval prompt it names is answered; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
 | 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
 
-A lead blocked only on a question (its own ask of the owner) gets the message as the
-question's answer, because a question holds every message behind it until answered: relay
-the owner's answer to it the same way. `relay` never answers an approval prompt; `approve`
+A lead blocked only on a question (its own ask of the owner) holds every message behind it
+until it is answered, so relay the owner's answer to it with `relay --answer`, which gives the
+message as the question's answer. Without `--answer` the message waits behind the question
+(exit 5): use that for anything that is not the answer. `relay` never answers an approval prompt; `approve`
 does, on the owner's word (the table above).
+
+A scheduled task or an agent that relays to you passes `relay --from <its name>`, so its
+message opens with `[relay from <name>: …]` and is clearly not the owner's words; no relay
+without `--answer` becomes the answer to a question of yours, so only the owner answers what you
+asked the owner. Set that flag in each task's prompt you write.
 
 ## Authority
 
@@ -206,8 +219,14 @@ never stand in for the owner's approval of a spec, a merge or anything hard to u
 a lead asks for approval, the owner gives it, to you or in the lead's session, and you relay
 it quoted.
 
+- **Cite it.** When you relay a decision the owner gave you, run `python3 <script> owner-said
+  <your session id> <quote-file>` with their words verbatim and put the line it prints (the
+  session link, item, time and author) under the quote, in the relay and in any comment
+  recording it. A lead can then check the words against your session with the same command
+  instead of taking your word for them; a quote it can't find there is no approval. Exit 1 means
+  the words are not the owner's own message in your session: never relay them as an approval.
 - **What you may record.** For an approval the owner gave you, add its label (such as
-  `approved:spec`) with a comment quoting their words and the session id they said them in.
+  `approved:spec`) with a comment quoting their words and the `owner-said` citation.
   The written approval record a gate checks (the loop's `approve --by owner`) is the owner's
   own to make. When a gate still waits on it, put the exact command or click the owner must
   give on the attention list; never retry a write a tool refused as self-approval.
@@ -280,10 +299,17 @@ a successor on any host reads the current one:
   not yours, its file is the one there, since this checkout's may be older: read it on
   that host (a pushed board you pull instead), or ask the owner to paste it when you cannot
   reach the host, since rebuilding
-  from transcripts is what the file exists to avoid. Once the predecessor's turn has ended,
-  archive it (`reap <session>`, which keeps its transcript): archiving drops its
-  subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
-  staff would both act, and it marks every file that names it in Owner contact as stale. Stop
+  from transcripts is what the file exists to avoid. Archive the predecessor at takeover
+  (`reap <session>`, which keeps its transcript): archiving drops its subscriptions, which
+  would otherwise wake it on every lead's notice, so two chiefs of staff would both act, and
+  it marks every file that names it in Owner contact as stale. `reap` keeps one whose turn
+  has not ended and prints `kept (…)` with the state (running, blocked on a prompt, input
+  pending and the like: the owner switched away mid-turn, or Omnigent lost its turn end), and
+  its subscriptions stay until it is archived. Write `to archive` beside its id in Owner
+  contact and run `reap` on it again at every wake until it prints `archived` or `already
+  archived`, then drop the mark. The first wake it is still kept, ask the owner once whether
+  it still works, since a lost turn end and a live turn look the same from here and only the
+  owner can stop its turn. Stop
   its supervisor too (Follow in the file), since it notifies the archived id, and start yours
   with `--console` on the same registry with your own id: the `follow` lines stay in it, and the
   state file beside it keeps the settled events, nudge and revive budgets, open intents, queued
@@ -296,7 +322,9 @@ a successor on any host reads the current one:
   found by the registry's name, so the two must keep it; a registry without its state file
   starts fresh, which re-raises every event, and a copy of the registry alone follows its leads
   but forgets their budgets. Nothing is written back to the predecessor's files.
-  Then recall with the query `owner standing decisions` (Memory), read a lead's state from
+  Then recall with the query `owner standing decisions` (Memory) in this repo and in each
+  live lead's repo you can reach, since `memory.py` reaches only the bank of the directory it
+  runs in and a decision retained in a lead's repo is missed otherwise. Read a lead's state from
   `status <session>` only when the state file or a post doesn't settle it, subscribe to a lead
   (`sys_session_subscribe(session_id=<id>)`) only when you follow it by subscription, never
   beside the supervisor: the subscription wakes you on every turn and bypasses the supervisor's

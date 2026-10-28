@@ -19,7 +19,7 @@ it (Approvals and proof); no step runs for their changes.
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** `mise run check` before every push; GitHub runs every `check:` part. | a broken change |
+| **Gates.** `mise run check` before every push, its test part behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot); GitHub runs every `check:` part. | a broken change |
 | **Proof.** On the PR branch before review, then on the owner's instance after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -33,9 +33,146 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Practice (optional); Approvals (the owner's policy lines, `risk:` and `signoff:` rules, Approvals and proof); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `cap: <n>` for the project's own cap (The cap), `Worker model: <tier> for <condition>` (Models), `CI: none` for a project without CI, whose merge proof is then `python3 scripts/approvals.py local-ci <pr>` (its docstring says what it records), `Local CI env: <NAME> <NAME>…` naming the variables that check reads, `Opt-out: allowed` for a project where a person may work outside the loop (Approvals and proof), `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), and `Land: local signed squash to <branch>, allowed signers <path>` for a repo that trusts only commits its maintainers sign: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how). | every step but Gates |
-| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Components; Never on GitHub; optionally Extra labels, Extra categories, Renamed labels and Board (the board's own names for the loop's columns) | Intent, Spec, Land |
+| `docs/agents/loop.md` | Settings (the block `approvals.py` reads, below); Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
+| `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
+
+Every agent reads loop.md on every step, like a system prompt, so it holds only what agents act
+on, each with a short reason only where the reason changes a decision. History, undo steps,
+evidence and anything this skill already states go in the PR or issue that set the line.
+
+### Settings
+
+loop.md opens with its settings, a fenced `yaml` block under `## Settings`, which
+`approvals.py` reads; the prose below it is for people and agents: why a path is critical,
+how to judge a finding, the risk criteria in words. The block is YAML because a person
+reads and edits it by hand as `key: value` under section names, a list one item per line,
+and it is typed (a boolean, a number and a list are each their own kind, so none is a
+string the reader guesses at). A string needs no quotes unless YAML would read it otherwise:
+one that starts with `*`, `&`, `!` or `[`, holds `: ` or ` #`, or reads as another type.
+YAML 1.1, which PyYAML follows, reads `yes`, `no`, `on` and `off` as booleans and `1.10` as
+the number 1.1, so `approvals.py` matches each value's type exactly and refuses, naming the
+key, a value or name YAML read as something else: quote it. A value names a thing (a label,
+a glob, a skill, a branch, a kind of spec), never a rule in words: which specs the policy
+approves is a list of kinds, not a phrase such as `auto unless risk` whose meaning lives in
+the reader, so a person reads the policy off the block and may name any part of it.
+`approvals.py` refuses, naming the key, a section or key it doesn't know and a value of the
+wrong type, and refuses a loop.md without the block, so a mistyped setting is never read as
+a rule nobody wrote.
+
+The scripts read the block with PyYAML, the one package they need beyond the standard
+library. Each declares it inline (PEP 723), so `uv run <this skill's folder>/scripts/approvals.py` installs it
+into uv's cache on first use and nothing is installed by hand; uv comes with the project's
+mise. Run with a bare `python3` that lacks PyYAML, a script exits with one line saying to
+run it with `uv run`. They need Python 3.9 or later. Every key is optional:
+
+```yaml
+spec:
+  # specs approved by policy, with no owner record; any other waits for the owner.
+  # `auto: true` approves every spec, and the risk rule then holds the spec, not the merge
+  auto:
+    - bug
+    - follow-up
+    - sub-issue
+
+loop:
+  cap: 3
+  ci: false
+  local_ci_env:
+    - GATE_TIER
+  opt_out: true
+  batch_queue: true   # lands through a batching merge queue of its own (below)
+  owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
+
+practice:
+  plan: writing-plans
+
+risk:
+  verifier: true
+  labels:
+    - size:L
+    - size:XL
+    - area:billing
+  paths:
+    - .github/**
+    - CODEOWNERS
+
+plan:
+  labels:
+    - size:XL
+
+signoff:
+  labels:
+    - area:ios
+
+bot:
+  dependabot[bot]:
+    paths:
+      - uv.lock
+      - "**/package.json"   # quoted: a leading * is a YAML alias
+  renovate:                 # an updater under a person's token: named by its branch
+    branch: renovate/
+    paths:
+      - uv.lock
+
+land:
+  signed_squash_to: main
+  allowed_signers: ~/.config/git/allowed_signers
+
+carry_over_main:
+  # a clean merge of main keeps the head's verdict unless either side changed one of these
+  except:
+    - mise.toml
+    - uv.lock
+    - '**/uv.lock'
+    - pyproject.toml
+    - .github/**
+```
+
+| Section | Key | Value | Without it |
+|---|---|---|---|
+| `spec` | `auto` | a list of `bug`, `follow-up` and `sub-issue`, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
+| `loop` | `cap` | a whole number (The cap) | the default |
+| | `ci` | `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
+| | `local_ci_env` | the environment variables that local check reads (Adopting the loop) | none |
+| | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
+| `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
+| `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
+| `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
+| `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
+| `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): a clean merge of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
+
+issue-tracker.md holds its label and board facts in a block of the same form under its own
+`## Settings`, read by `approvals.py` (`label_names`), `labels.py` and `board.py`, refused the
+same way; its Never on GitHub stays prose. Each section's values are strings:
+
+```yaml
+components:
+  # a component, bare or in full: its label's description
+  billing: invoices and payment runs.
+
+categories:
+  ops: runbooks and alerts.
+
+labels:
+  customer-reported: filed from a support ticket.
+
+renames:
+  # old label: new label
+  frontend: area:web
+
+board:
+  # loop column: the board's column
+  Build: In progress
+```
+
+| Section | Key: value | Without it |
+|---|---|---|
+| `components` | a component (`billing` or `area:billing`): its description | no `area:` label |
+| `categories` | an extra category (`ops` or `kind:ops`): its description | the loop's categories only |
+| `labels` | any other label, in full: its description | none |
+| `renames` | an old label name: its new one (issues.md, Labels) | the loop's own renames only |
+| `board` | a loop column: the board's column (github.md, Board) | each column keeps its own name |
 
 ### Adopting the loop
 
@@ -55,6 +192,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   hold a merge as pending), runs again when CI completes, posts success on a merge-queue
   commit, and removes `approved:merge` on a push;
 - `.github/check-paths.yml`: each part's path filter;
+- the test runner's retry of a failed test, once (Rules for every role, Flaky tests);
 - `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
   merge queue, requiring exactly two checks, `check` and `loop:approvals`. A repo that can't
   have a merge queue (one a user owns) gets the same ruleset with squash merges and no
@@ -66,9 +204,8 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   applied: `land` reads no required checks there, merges directly once its proofs hold, and
   says GitHub enforces nothing, since its proofs are the only gate. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
-  leaves untouched, and reverting deletes only it. Once project-templates wires it in,
-  `setup:github` also syncs the repo's labels with `scripts/labels.py`; until then run
-  that by hand (github.md, Labels).
+  leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
+  labels with `scripts/labels.py` (github.md, Labels).
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
 harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
@@ -80,35 +217,36 @@ A PR stays a draft until no core finding is open (Review trail on the PR), so CI
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
-draft, `mise run check` before each push is its check. With `CI: none` in loop.md, the
-check on a head you push for review is `python3 scripts/approvals.py local-ci --record`
+draft, `mise run check` before each push is its check. With `ci: false` in loop.md, the
+check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, committed and clean: it runs the merge check, `mise run check:all`, and records
 the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
 for the same head, command and environment rather than running the check again. A project
-whose check reads environment variables (a tier, a scope) names them on a loop.md line
-`Local CI env: NAME NAME…`: without it a pass recorded under one tier stands in for
-another, and the posted comment names those values.
+whose check reads environment variables (a tier, a scope) names them in loop.md's
+`local_ci_env`: without it a pass recorded under one tier stands in for another, and the
+posted comment names those values.
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
 in [issues.md](issues.md), so every project's board looks the same; [github.md](github.md)
 does them on GitHub. A
-`scripts/` path is relative to this skill's folder; run it from the worktree with
-`python3` (standard library only), except `scripts/browse.py`, which needs Playwright and so
-runs with `uv run`: it renders a web UI headless, signed in to an Omnigent server when
+`scripts/` path is relative to this skill's folder, not the repo root: in a project that
+installs the skill it is under the install, such as
+`.agents/skills/engineering-loop/scripts/board.py`. Run it from the worktree with `uv run`,
+which installs what its inline header declares. `scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
 asked, and screenshots it (worker.md, Report; its docstring has the flags).
 
 ### Practice
 
-loop.md § Practice names the skill that fills a stage, one line each, such as
-`Spec: brainstorming`; a stage it does not name runs its default. Either way the stage
+loop.md's `practice` names the skill that fills a stage, one key each, such as
+`spec: brainstorming`; a stage it does not name runs its default. Either way the stage
 produces what this table says:
 
 | Stage | Must produce | Default skill |
 |---|---|---|
 | Intent | open questions settled, or asked in the issue | `grilling` |
 | Spec | the spec in the issue, or linked from it, with acceptance examples and the reference each checks against | `to-spec` |
-| Plan, only when loop.md § Practice names a plan skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
+| Plan, only when loop.md's `practice` names a `plan` skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
 | Build | commits on the branch, with `check` green | the worker role |
 | Review | findings with path, cost and repro, then the verdict lines | `code-review`, run by the verifier |
 | Land | the PR body | `pr` |
@@ -121,74 +259,83 @@ merging or state-keeping is overridden, because two writers of one state drift a
 
 Only people approve: the owner, or a teammate where loop.md asks for one. No agent writes
 an approval record, since an agent approving its own work is no approval; where nobody
-was asked, the authority is the owner's standing policy in loop.md § Approvals, which
+was asked, the authority is the owner's standing policy in loop.md's settings, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
-`python3 scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
+`uv run <this skill's folder>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
 owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
 a later edit needs approving again, plus the `approved:<point>` label. A re-approval says
 what changed and minimizes the records it supersedes as outdated. The verifier only gives
-the verdict, which `python3 scripts/approvals.py verdict <pr> <report>` posts as a PR
+the verdict, which `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
 
-loop.md § Approvals holds the policy, one line each:
+loop.md's settings hold the policy (Settings):
 
-- `spec: auto unless risk` approves by policy, with no record or label, the spec of a
-  `kind:bug`, of an issue whose body has a `Found while #<n>` line (a follow-up an agent
-  raised, Triage), or of a native sub-issue of an epic the owner approved (their current
-  record and `approved:spec`), opened by an account with write access to the repo. Any
-  other spec, a new epic for one, needs the owner's approval; without the line, every
-  spec does.
-- `spec: auto` approves every spec by policy, epics included, so the owner reads only the
-  critical ones: a spec a risk rule matches, or one opened by an account without write
+- `spec.auto`, a list, approves by policy, with no record or label, the spec of each
+  kind it names: `bug`, a `kind:bug`; `follow-up`, an issue whose body has a `Found while
+  #<n>` line (a follow-up an agent raised, Triage); `sub-issue`, a native sub-issue of an
+  epic the owner approved (their current record and `approved:spec`), opened by an account
+  with write access to the repo. Any other spec, a new epic for one, needs the owner's
+  approval; without `auto`, or with `false` or an empty list, every spec does.
+- `spec.auto: true` approves every spec by policy, epics included, so the owner reads only the
+  critical ones: a spec the `risk` rule matches, or one opened by an account without write
   access, since anyone who can open an issue would otherwise approve their own, waits for
-  the owner's record and `approved:spec`. A risk rule then holds the spec instead of the
+  the owner's record and `approved:spec`. The risk rule then holds the spec instead of the
   merge: the owner decides while the change is still cheap, and its merge is automatic
-  like any other. `approvals.py` judges the rules on the labels of the issue and the PR
+  like any other. `approvals.py` judges the rule on the labels of the issue and the PR
   and the PR's files, at `check build` the files pushed so far, so a file the spec didn't
-  foresee still reaches the owner before the merge.
-- `merge: auto unless risk`: the gates are the merge approval of a change that is not high
-  risk, as they are without the line.
-- `risk: <condition>`, one rule per line: what is high risk here, by path, area or kind,
-  such as `risk: path .github/**` or `risk: size:L or larger, or component billing`.
-  `approvals.py` judges a condition on the labels of the PR and its issues (size,
-  component, category; `always` matches everything) and the PR's files (`path <glob>`); a
-  condition it can't read matches, since nothing else would enforce it. A `merge:` line
-  with a condition in place of the policy reads as a `risk:` rule until the project
-  rewrites it, and so does a `spec:` condition beside `spec: auto unless risk` or
-  `spec: auto`; without either the owner approves every spec, so a `spec:` condition
-  holds nothing.
-  A condition's `verifier` term holds when the verifier judges the change high: the newest
+  foresee still reaches the owner before the merge. `auto: true` moves the rule rather than
+  a key of its own, since with every spec approved by policy the spec is the one point the
+  owner sees a risky change before it is built, and holding the merge as well would ask
+  them twice.
+- The gates are the merge approval of a change that is not high risk.
+- `risk` says what is high risk here, and any one of its terms matching holds: `labels`,
+  matched exactly on the PR and its issues as GitHub names them (`size:L` and `size:XL`
+  for large or larger, `area:billing`, `kind:bug`); `paths`, globs matched on the PR's
+  files; `always: true`; and `verifier: true`. `approvals.py` reads the keys, never the
+  words, so a path such as `docs/verifier.md` is only a path. Paths it can't judge, past
+  the one page of files it reads, hold, since nothing else would enforce them.
+  The `verifier` term holds when the verifier judges the change high: the newest
   pass on the head, by a trusted account, says `Risk: high`, any word but `low`, or has no
-  `Risk:` line (verifier.md). It joins the other terms with `or`, and paths beside it hold
-  whatever the verifier says, so `risk: verifier or path .github/** or path CODEOWNERS`
-  lets the verifier decide and keeps those files the owner's. The gate judges it at the
-  merge, under `spec: auto` too, since the verdict comes after the build, and quotes the
-  line. A `risk:high` it added for that line comes off when a later pass says `Risk: low`;
-  one added again after it stays. `- risk-criteria: <text>` lines add the project's own
-  criteria, which the verifier reads.
-- `plan: <condition>` asks for the owner's approval of a matching plan.
-- `bot: <login> <condition>`, such as `bot: dependabot[bot] path uv.lock or path
-  pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
+  `Risk:` line (verifier.md). Paths beside it hold whatever the verifier says, so
+  `verifier: true` with `paths` `.github/**` and `CODEOWNERS` lets the verifier decide and
+  keeps those files the owner's. The gate judges it at the merge, under `auto: true` too,
+  since the verdict comes after the build, and quotes the verdict. A `risk:high` it added
+  for that term comes off when a later pass says `Risk: low`; one added again after it
+  stays. loop.md § Risk criteria adds the project's own criteria in words, which the
+  verifier reads.
+- `plan` asks for the owner's approval of a matching plan.
+- `bot.<login>`, such as `bot.dependabot[bot]` with `paths` `uv.lock` and
+  `pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
   bot's (its authors, and its committer unless that is no account) and every file it
-  changes, none renamed or copied, matches the condition on its path, since no verifier
-  runs on a bot's PR; anything else needs the review as usual. Without the line, every PR
-  needs one.
-- `signoff: <condition>`, such as `signoff: component ios or component watch`: the owner
-  signs off a matching change in use after it lands, which no gate can do for them. The
-  condition reads as a `risk:` one does, on the labels of the PR and the issue and the PR's
-  files, and one the gate can't read matches. The spec records the outcome in a line
+  changes, none renamed or copied, matches one of its `paths`, since no verifier runs on a
+  bot's PR; anything else needs the review as usual. A section with `branch`, such as
+  `bot.renovate` with `branch` `renovate/`, names an updater that opens its PRs under a
+  person's token instead: the PR's head is this repository's branch starting with the
+  prefix (a fork's PR may name any branch), and every commit is that person's, so the
+  updater commits as that person (Renovate's `gitAuthor`), not as its default author. A PR labelled
+  `verify` (a major update) needs the review either way. Without the section, every PR needs
+  one.
+- `signoff`, such as `labels` `area:ios` and `area:watch`: the owner signs off a
+  matching change in use after it lands, which no gate can do for them. The rule reads as
+  `risk` does, on the labels of the PR and the issue and the PR's files. The spec records the outcome in a line
   `Sign-off: owner` or `Sign-off: none`, and `owner` there asks for it where no rule does.
   The PR links such an issue with `Implements #<n>`, which GitHub does not close, so the
   issue stays open for the sign-off, and every other issue with `Closes #<n>`; `Part of
-  #<n>` suits both. `check merge` refuses the wrong keyword. Without a `signoff:` line no
-  keyword is checked, and `Implements` is a link like `Part of`.
+  #<n>` suits both. `check merge` refuses the wrong keyword. Without a `signoff` section
+  no keyword is checked, and `Implements` is a link like `Part of`.
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
-matches (unless under `spec: auto`, where it held the spec, but for its `verifier` term), or the cap was reached with a blocker or major open (The cap). A high-risk spec
+matches (unless under `spec.auto: true`, where it held the spec, but for its `verifier` term), or the cap was reached with a blocker or major open (The cap). A high-risk spec
 covered by policy is still built and PR'd; its merge waits for the owner's
 `approved:merge` label on the PR, asked for once `check` is green on the head: it counts
 only when added after that head's push, and a push removes it, so it never covers code the
-owner did not see. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
+owner did not see. On a PR into a feature branch (any base but the default branch), that
+label may be the delegated approver's, where loop.md names one: once the gate is green and a
+satisfied verdict from the verifier's top model covers the head, it runs `approvals.py
+delegate <pr>`, which adds the label and a record naming it the delegate's. So dependent work
+can go on landing behind a high-risk change. `land` refuses such a label on a PR into the default branch, and the branch's own
+merge to the default branch is high risk while any PR merged into the branch carries
+`risk:high`: the owner approves the stream once, as a whole. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
 the merge approval is the gates themselves: every verifier review on the newest pass's
 commit satisfied with no blocker or major open, that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks
@@ -196,29 +343,69 @@ green. A pass counts whichever model family wrote it (Independent verification).
 
 When a spec or plan needs the owner, add `needs-owner`, comment what to approve, and stop:
 a person approves by adding `approved:<point>`, by saying so in the session, or, for a spec
-on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`python3
-scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
-which records their word, adds the label and removes `needs-owner`. A change to an
-approved spec's scope or acceptance is a decision the owner never saw: remove
-`approved:spec`, add `needs-owner` with a one-line comment saying what changed, and stop
+on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`uv run
+<this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
+which records their word, adds the label and removes `needs-owner`. With `owner: <login>`
+under loop.md's `loop`, `check` and `land` do that themselves for a label that login added
+after the spec's last edit, since nothing in it needs an agent's judgment. Changing an
+approved spec's scope or acceptance is a decision the owner never saw: rewrite the issue
+body, comment briefly what changed and why, remove `approved:spec`, add `needs-owner`, stop
 until they approve. A spec the owner approved and then edited for wording needs their
 `approve` again, since `approvals.py` can't tell wording from scope; one covered by policy
 needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
 them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
-is missing. An agent merges only with `python3 scripts/approvals.py land <pr>` (the
-project's `loop:land` task): it runs every merge proof, refuses a head behind or in
-conflict with its base, marks a draft ready and waits for the CI that starts, and on a ready
+is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land <pr>` (the
+project's `loop:land` task): it runs every merge proof, refuses a head in conflict with its
+base, or behind a base that requires no merge queue, marks a draft ready and waits for the CI that starts, and on a ready
 PR merges it pinned to its head, or turns on auto-merge while only required checks are
 pending. With `--wait` it is one background command that ends when the PR merges or needs
 someone. Never run `gh pr ready` or `gh pr merge` by hand,
 because `land` is what refuses a PR whose proof is missing. A repo without
 `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
-`approved:spec` and not `needs-owner`, and the PR's own proofs. A rule GitHub can enforce,
+`approved:spec` and not `needs-owner`, and the PR's own proofs. A post that names a private project, its repo or a host can't be taken back, since
+GitHub's edit history keeps a comment's first text: every comment and review `approvals.py`
+posts, and a cloud worker's report (`omnigent_agent.py` then has the worker reply with it
+instead of posting, and checks it on the host before posting it), is first checked against a local deny list, the file the environment variable
+`LOOP_DENY_LIST` names, one name, repo slug or hostname per line, and refused, naming the
+term and the line, when it matches. The list and the variable live outside the repo (the
+project's local, untracked instructions or the shell's environment name its path), since
+listing a private name in a public repo would publish it. A rule GitHub can enforce,
 such as a required review or a code owner, belongs in branch protection or `CODEOWNERS`,
 which the loop obeys and never overrides.
 
-With the line `Opt-out: allowed` in loop.md, a developer may keep their own PRs out of the
+A project may instead land a base through a batching merge queue of its own, opting in with
+`batch_queue: true` under loop.md's `loop` (without it no batch proof counts): it merges every
+waiting PR's verified head onto the base, runs the full gate once on the result and pushes
+the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
+`uv run <this skill's folder>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
+it: every merge proof but the CI wait, the head's own `local-ci --record` pass under the
+current environment and, with CI, its `check`, and nothing high risk or
+owner-approved, since the owner's label covers one head landing alone, through `land`. The
+queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
+place of the CI wait once git shows the head merged unchanged and without conflict
+resolution into a batch whose gate passed, and the head has its own `local-ci --record` pass
+under the environment the proof names (`approvals.py`'s docstring says how). A batch gate
+never stands in for the head's own: `batch` refuses, and `check merge` rejects, a head that
+was never gated. Only a proof posted by the running account or a writer counts, and a red or
+unproven one leaves the wait exactly as it was, so a PR evicted through another PR's red batch
+re-queues or lands alone at the same head. The queue never resolves a conflict: a PR that
+conflicts goes back to its lead.
+
+With loop.md's `carry_over_main` section, merging main into a PR head H keeps H's verdict
+when git shows the merge changed nothing the PR's code reads: the merge H' has H as its
+first parent and a commit on main as its second, its tree is `git merge-tree`'s of the two
+(no conflict resolved, nothing added), and main's changes since the merge base touch none of
+the PR's files, and neither the PR's changes nor main's touch an `except` glob, since a
+config change on either side was never reviewed against the other side's code. H's verdict
+then covers H'; `check merge` and `land` print one line naming H, H' and the predicate.
+Anything else (a conflict, an evil merge, an overlapping file, a touched except path, a git
+error) carries nothing: the merge needs its own verifier pass. The gate never carries: H'
+runs its own, as CI does, and under `ci: false` that is `local-ci <pr>` on H', since a
+`local-ci` record stands in for CI on one exact head. This skips a review on purpose, so a
+project opts in by writing the section.
+
+With `opt_out: true` in loop.md, a developer may keep their own PRs out of the
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
 PR. `check merge` then reads a PR with no loop trail (no verifier review, no
 `Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
@@ -226,9 +413,9 @@ not an exempt bot PR) as outside the loop: it prints one line saying so and exit
 `loop:approvals` status is green and the PR's author merges it their usual way, under the
 repo's own rules. `land` prints the same line and exits 1, so no agent merges it or turns
 auto-merge on for it. Risk rules and `risk:high` hold no PR outside the loop; the project
-accepts that by writing the line. A spec a policy covers is no trail, since under
-`spec: auto` every issue is covered. Any trail puts the PR back under every proof. Without
-the line, a PR with no trail fails the gate.
+accepts that by setting it. A spec a policy covers is no trail, since under
+`spec.auto: true` every issue is covered. Any trail puts the PR back under every proof. Without
+it, a PR with no trail fails the gate.
 
 ## Roles
 
@@ -258,27 +445,32 @@ has no cloud bridge; anything that needs a device, a simulator, an emulator, a b
 or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
-  triage, the merge of each worker's branch into the PR branch, the full gate (`mise run
-  check`, or `local-ci --record` with `CI: none`), the instance, the verdict's post, thread
+  triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
+  PR branch, the full gate (`mise run
+  check`, or `local-ci --record` with `ci: false`), the instance, the verdict's post, thread
   resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
-  Chromium), before each push, and pushes its own branch. Its brief names that branch and
-  the role file by its path in the repo, since the host's worktrees and paths don't exist in
-  the VM. The verifier runs on the host in the lead's worktree, as verifier.md says.
+  Chromium), before each push, and pushes to the `claude/…` branch its session was given,
+  since a cloud session declines any other branch without its own user's permission and a
+  peer's brief is not that; no brief names another push target. Its brief names the role
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
-  report is one comment on the PR: the head SHA, each light-gate command with its exit
-  code, what it left out and why. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
+  report is one comment on the PR: its branch and head SHA, each light-gate command with its
+  exit code, what it left out and why. If the post fails, since the session's proxy-injected
+  `GH_TOKEN` can expire 10 to 20 min in, its reply is `UNPOSTED REPORT` and then the body
+  verbatim, and the backend's `wait --pr` posts it from the host. orchestrating-agents' `--pr` (its Omnigent backend, Cloud
   workers) has the worker post it and writes it to the report path on the host, so the lead
   reads a file as for any worker. The verdict is the review `approvals.py verdict` posts.
   The verifier names its evidence (screenshots, logs, result bundles) in its report, and the
   lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
   the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
   the host.
-- **Control flow is the lead's own.** It starts the worker with `run --pr`, follows its turn
-  end, and sends a fix list or a failing log as a fresh `run --pr` whose brief names the
-  review or comment to read, since `run` finishes a worker once its report is in (the
-  backend's Follow-ups); `send --pr` reaches a worker still open, one whose turn ended
-  without a report. Nothing in
+- **Control flow is the lead's own.** It starts the worker with `run --pr --keep` (from a
+  host without the worker's harness, `start --top-level --host <host> --pr`, then
+  `wait --pr --keep`), follows its turn end, and sends a fix list or a failing log, naming the
+  review or comment to read, to that kept worker with `send --pr` while it is still there,
+  since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
+  else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
 - **Proof.** The worker proves what the VM runs. The full gate's host-only parts (emulator,
@@ -300,12 +492,33 @@ or the owner's private network.
 - **The owner is on the loop, not in it.** They read specs, never code: gates, tests and
   the verifier are the review. Ask them only at a fork that changes what gets built,
   before something hard to undo (deploy, publish, send, spend), for a credential only
-  they hold, or at an approval loop.md § Approvals requires. A technical fork they can't judge is your call. Run commands yourself; when
+  they hold, or at an approval loop.md's settings require. A technical fork they can't judge is your call. Run commands yourself; when
   a guard blocks one, ask once for a scoped approval, then propose a narrow allow rule,
   never an interpreter-wide one. While they are away, make the reversible decisions, log
   each in one decision-log issue, wait out a usage limit and resume, and leave a handoff
   (`handoff` skill) when finished or stuck. Never idle: schedule a time-gated check and
   keep working.
+- **Owner steps park, they don't block.** A step only the owner can unblock (a GUI
+  dialog, a locked screen, a device, a permission prompt or classifier denial, a
+  credential, an approval link that expires) is stopped at its first sign, so a hang
+  becomes a failure, and whatever it holds (a gate slot, a lock, an instance) is released.
+  Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, unless an
+  `Owner step:` for the same action is already there, since a second copy reads as a second
+  ask; add
+  `needs-owner`, add a checklist line to the decision-log issue so the owner clears every
+  step in one sitting, and move to the next item; ask once, since a retry while they are
+  away fails the same way. Before a long or unattended run, try once each owner-only
+  prerequisite the queued items need (loop.md § Proof on a branch, the specs' acceptance)
+  while the owner can still answer, and check such a precondition before a heavy step
+  takes a slot.
+- **One heavy gate per host slot.** Leads on one host share its cores, and gates run at
+  once slow every one of them several times over and starve new sessions of the capacity
+  to start. So the project's test part runs behind a host-wide slot that every worktree
+  shares: the template's `scripts/gate-slot` (`GATE_SLOTS` slots, default 1; a lock frees
+  itself however the run exits), or, in a project without it, a lock on the same file,
+  `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock`, around its heavy check. A parallel runner takes the
+  `GATE_JOBS` it exports (the cores free at start), never `-n auto` or a fixed count.
+  `test:changed` while iterating and the lint parts stay outside the slot.
 - **Independent verification.** The verifier is a fresh session, never the author's. It
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
@@ -332,6 +545,22 @@ or the owner's private network.
   even different calls, mean stop and report yourself blocked with the error line. That
   includes a permission classifier that fails closed because its provider is down: every
   retry is a full-context turn.
+- **Flaky tests.** A project's `check` retries a failed test once, with its runner's own
+  retry option, and prints each test that passed only on the retry; the gate is then green.
+  Without one, rerun only the failed tests once, then only the parts of `check` the failure
+  stopped, never the whole gate, whose minutes each flake would otherwise cost again; all
+  green, the gate is green, and the report gives each command with its exit code. A
+  `ci: false` project needs the retry option, since its `local-ci` record runs the whole
+  `check`. Each test that passed on the retry has one open
+  `kind:bug` issue titled `Flaky: <test id>`: search the open issues for the id before
+  filing, and comment each occurrence on it (head SHA, PR, run, failure line), so two leads find
+  the same issue and its comments count the occurrences. An occurrence is its head SHA plus
+  the failing run (a CI run's id, else the time the local gate started): a report whose pair
+  the issue already has is that occurrence again, not a new one, since two leads reading one
+  run would otherwise count it twice toward the third. The third occurrence gets a PR
+  from main that skips the test in the blocking gate, citing the issue, which stays open
+  for the fix. A test red on both tries is a real failure: run it on main before blaming
+  the PR.
 - **Land small and soon.** Every PR branches off a freshly fetched `origin/main` and merges
   as soon as its gates pass, because a branch that lives as long as the work behind it goes
   stale against main, and a pile of them cascades on every rebase and breaks main when they
@@ -349,9 +578,16 @@ or the owner's private network.
   it restarts the PR's review and CI and couples two concerns; chains of follow-up PRs come
   from PRs landing slower than they are produced, and fast landing makes the wait cheap.
   Never push to a PR someone else owns, since that rewrites work under its owner: comment
-  on it, or wait for it to land and start from main. Before starting a fix, look for one
-  in flight on the board's `Build` column and in open PRs: use it, and don't pause other
-  work waiting for it.
+  on it, or wait for it to land and start from main. Before filing an issue or starting a
+  fix, search the open issues and PRs of this repo, and of the repo that owns the cause,
+  for the symptom (the test id, the error line, the file), since the board's `Build`
+  column misses an issue filed an hour ago and agents sharing one account share an
+  assignee: comment your evidence on what you find, use it, and don't pause other work
+  waiting for it; whoever filed first owns it. An issue an open PR links is taken, so
+  the lead opens its draft PR when it cuts the branch (lead.md step 3). A PR another lead
+  opened is taken over only on the word of that lead or of whoever started the leads,
+  recorded in the PR thread so other leads see the new owner, never because it looks
+  idle, since an idle PR may be waiting on CI or on an answer its lead still owns.
 - **Stacks are one deep.** Stacking on an unmerged branch is the exception for when
   waiting isn't possible, and only on a PR already in Land (verdict triaged, waiting for
   CI), because a base still in review changes under its stack and every change cascades.
@@ -384,8 +620,14 @@ or the owner's private network.
 - **Models.** Never pick a model: every agent runs on its harness's configured default,
   which the owner sets, unless the owner names one for a task or loop.md's `Worker model:
   <tier> for <condition>` line names a tier for a worker whose issue matches the condition
-  (read as a `risk:` rule's labels are), so the choice and its reason sit in one file the
-  owner can change. The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
+  (on the issue's labels), so the choice sits in one file the owner can change. A `Verifier model:` line does the same for a verifier whose PR
+  matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
+  on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
+  verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
+  `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
+  its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
+  reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
+  stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
   Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
   and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
   Astra) is no tier and never runs, because it costs several times `top`. Resolve the tier
@@ -464,7 +706,7 @@ A rejected finding is not real, so it gets no issue.
 
 ## The cap
 
-The cap is 5 passes, unless the project's loop.md sets its own with a line `cap: <n>`.
+The cap is 5 passes, unless the project's loop.md sets its own with `cap` under `loop` in its settings.
 Every other file says "the cap", so this is the one place to change it, and
 `approvals.py` reads the same value. Pass 1 reviews the PR's full diff; each later pass
 up to the cap reviews the diff since the previous report and reruns its repros. No fix
