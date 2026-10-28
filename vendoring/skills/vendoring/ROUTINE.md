@@ -2,7 +2,8 @@
 
 Unattended, on a schedule: bring upstream `mattpocock/skills` changes into the
 tuned package, release them as `engineering-vX.Y.Z`, and land everything without
-a human. The tuning contract is in [CLAUDE.md](CLAUDE.md); read it first.
+a human. Paths are from the repository root. The tuning contract is in
+`engineering/CLAUDE.md`; read it first.
 
 Setup: `git fetch origin --tags`, then `uv sync --frozen`. The tools in `mise.toml`
 must be on `PATH` at their pinned versions; run `mise install` only for those missing
@@ -39,15 +40,15 @@ exit code:
 - **0 with changes:** go to step 3.
 - **5:** upstream changed tuned skills.
   - For each `artifacts/engineering-deltas/deltas/<skill>.diff`, port the intent into
-    `overlays/skills/<skill>/` in the tuned style.
+    `engineering/overlays/skills/<skill>/` in the tuned style.
   - Decline instead when the change only restates what the model already does, or
     contradicts a tuning decision.
-  - Record each decision in `upstream-intake.yml`: the new commit (the second in the
+  - Record each decision in `engineering/upstream-intake.yml`: the new commit (the second in the
     stop message's `old..new`), and a one-line note on what you took or why not.
   - Rerun until it exits 0.
 - **An added skill in the summary** ships untuned. Tune it:
-  - copy it to `overlays/skills/<name>/` and rewrite it;
-  - add its `owned_overlays` entry;
+  - copy it to `engineering/overlays/skills/<name>/` and rewrite it;
+  - add its `owned_overlays` entry in `engineering/upstream.yml`;
   - rerun.
 - **2 or 4, when your own edit caused it** (a malformed ledger row, package tests broken
   by a rewrite): fix it and rerun.
@@ -81,7 +82,7 @@ separate session) gets:
   `engineering/provenance.yml` on main and on the branch, and `source_path` from its
   `source_mappings`;
 - `git diff origin/main...HEAD -- engineering/`;
-- CLAUDE.md.
+- `engineering/CLAUDE.md`.
 
 It checks each delta: its intent is carried, or the decline is sound. No load-bearing
 rule is lost from any changed skill, and the ledger rows match. It answers PASS or
@@ -95,10 +96,10 @@ review again. If it still isn't PASS after two revisions, you're blocked.
 Decide after the last rerun, from `git diff --quiet origin/main...HEAD -- engineering/skills/`:
 
 - **Skills changed:** a release. The tool already set the version, one bump past the
-  newest `engineering-v*` tag (minor when a skill was added). Give that version a
-  `CHANGELOG.md` entry, or extend its entry if one exists, with the upstream range,
+  newest `engineering-v*` tag (minor when a skill was added). Give that version an
+  `engineering/CHANGELOG.md` entry, or extend its entry if one exists, with the upstream range,
   each ported or declined delta in one line, and any newly tuned skill, and move the
-  `changelog.d/` entries under it ([changelog.d/README.md](changelog.d/README.md)).
+  `engineering/changelog.d/` entries under it (`engineering/changelog.d/README.md`).
 - **Skills unchanged** (every delta declined, or upstream touched only files outside
   the package): no release. Restore `engineering/apm.yml`,
   `engineering/.claude-plugin/plugin.json` and `engineering/tests/consumer/apm.yml`

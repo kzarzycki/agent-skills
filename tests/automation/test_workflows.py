@@ -31,7 +31,7 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
         ".github/workflows/engineering-*.yml",
         ".gitattributes",
         "engineering/**",
-        "tools/capability_pack/**",
+        "vendoring/**",
         "tests/capability_pack/**",
         "tests/automation/**",
         "mise.toml",
@@ -102,7 +102,10 @@ def test_consumer_sync_is_exact_app_authenticated_and_draft_only() -> None:
     assert "git add --all" in commands
     assert "assert-engineering-codex-inventory" in commands
     assert all("${{" not in step.get("run", "") for step in _steps(workflow))
-    assert "resolved_tag" in (ROOT / "tools" / "capability_pack" / "consumer.py").read_text()
+    assert (
+        "resolved_tag"
+        in (ROOT / "vendoring/skills/vendoring/scripts/capability_pack/consumer.py").read_text()
+    )
     assert "reconcile-draft-pr" in proposal["run"]
     assert "automation/engineering-consumer-sync" in proposal["run"]
     assert proposal["env"]["GH_TOKEN"] == "${{ steps.app-token.outputs.token }}"

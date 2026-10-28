@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack import qualify
-from tools.capability_pack.qualify import ConfigurationError, QualificationError
+from capability_pack import qualify
+from capability_pack.qualify import ConfigurationError, QualificationError
 
 FIXTURE_UPSTREAM = Path(__file__).parents[1] / "fixtures" / "upstreams" / "mattpocock-skills"
 

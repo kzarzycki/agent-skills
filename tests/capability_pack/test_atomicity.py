@@ -6,7 +6,7 @@ import pytest
 import yaml
 from conftest import OWNED_SKILLS
 
-from tools.capability_pack.qualify import QualificationError, qualify
+from capability_pack.qualify import QualificationError, qualify
 
 
 def _owned_state(package: Path) -> dict[str, tuple[bytes, int]]:

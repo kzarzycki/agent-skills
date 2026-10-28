@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack.qualify import ConfigurationError, validate_release_candidate
+from capability_pack.qualify import ConfigurationError, validate_release_candidate
 
 
 def _git(repo: Path, *arguments: str) -> None:

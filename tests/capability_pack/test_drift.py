@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack.model import Provenance
-from tools.capability_pack.qualify import (
+from capability_pack.model import Provenance
+from capability_pack.qualify import (
     BreakingDriftError,
     ConfigurationError,
     LicenseDriftError,

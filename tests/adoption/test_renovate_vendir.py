@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "renovate"
 ROOT = Path(__file__).parents[2]
-QUALIFICATION_COMMAND = "python -m tools.capability_pack.cli update engineering"
+QUALIFICATION_COMMAND = "python -m capability_pack.cli update engineering"
 
 
 def test_real_renovate_probe_records_why_scheduled_workflow_is_required() -> None:

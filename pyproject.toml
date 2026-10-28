@@ -9,11 +9,14 @@ dev = ["pytest==9.1.1", "ruff==0.16.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests", "gatekeeper/tests", "github/tests", "loop/tests", "chief-of-staff/tests", "omnigent/tests"]
-pythonpath = ["."]
+pythonpath = [".", "vendoring/skills/vendoring/scripts"]
 markers = ["live_agent: tests that require a live agent runtime"]
 
 [tool.ruff]
 target-version = "py314"
 line-length = 100
+# the vendoring tool's package is first-party, as pytest's pythonpath imports it
+src = [".", "vendoring/skills/vendoring/scripts"]
 # Shipped scripts run on a consumer's own `python3`; macOS ships 3.9.
-per-file-target-version = { "*/skills/*/scripts/*.py" = "py39" }
+# The vendoring tool runs in this repo's uv environment, not on a consumer's `python3`.
+per-file-target-version = { "vendoring/skills/vendoring/scripts/capability_pack/*.py" = "py314", "*/skills/*/scripts/*.py" = "py39" }

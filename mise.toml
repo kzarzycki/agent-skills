@@ -84,13 +84,16 @@ fi
 """
 
 [tasks.vendor-engineering]
-run = "uv run python -m tools.capability_pack.cli update engineering"
+env = { PYTHONPATH = "vendoring/skills/vendoring/scripts" }
+run = "uv run python -m capability_pack.cli update engineering"
 
 [tasks.vendor-engineering-check]
-run = "uv run python -m tools.capability_pack.cli check engineering"
+env = { PYTHONPATH = "vendoring/skills/vendoring/scripts" }
+run = "uv run python -m capability_pack.cli check engineering"
 
 [tasks.assert-engineering-codex-inventory]
-run = "uv run python -m tools.capability_pack.cli assert-codex-inventory ."
+env = { PYTHONPATH = "vendoring/skills/vendoring/scripts" }
+run = "uv run python -m capability_pack.cli assert-codex-inventory ."
 
 [tasks.probe-renovate-vendir]
 run = "uv run python tests/adoption/run_renovate_probe.py"
@@ -107,4 +110,4 @@ run = "OMNIGENT_E2E=1 uv run pytest -q -m live_agent chief-of-staff/tests/test_l
 
 [tasks.test]
 # pytest holds the host gate slot the template's scripts/gate-slot takes (gate.1.lock), so gates on one host queue (#395).
-run = """uv run perl -MFcntl=:flock -MFile::Path=make_path -e '$d = ($ENV{XDG_CACHE_HOME} || "$ENV{HOME}/.cache") . "/engineering-loop"; make_path $d; $^F = 1023; open(F, ">>", "$d/gate.1.lock") or die "$d/gate.1.lock: $!\n"; flock(F, LOCK_EX | LOCK_NB) or do { print STDERR "test: waiting for the host gate slot\n"; flock(F, LOCK_EX) }; truncate(F, 0); syswrite(F, "$$\n"); exec @ARGV' pytest -q -m 'not live_agent' && uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts gatekeeper loop github chief-of-staff omnigent"""
+run = """uv run perl -MFcntl=:flock -MFile::Path=make_path -e '$d = ($ENV{XDG_CACHE_HOME} || "$ENV{HOME}/.cache") . "/engineering-loop"; make_path $d; $^F = 1023; open(F, ">>", "$d/gate.1.lock") or die "$d/gate.1.lock: $!\n"; flock(F, LOCK_EX | LOCK_NB) or do { print STDERR "test: waiting for the host gate slot\n"; flock(F, LOCK_EX) }; truncate(F, 0); syswrite(F, "$$\n"); exec @ARGV' pytest -q -m 'not live_agent' && uv run ruff check vendoring tests engineering/tests engineering/skills/browsing/scripts gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check vendoring tests engineering/tests engineering/skills/browsing/scripts gatekeeper loop github chief-of-staff omnigent"""

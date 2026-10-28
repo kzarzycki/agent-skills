@@ -247,7 +247,7 @@ if "--locked" not in sys.argv:
 """
     )
     vendir.chmod(0o755)
-    qualify_module = importlib.import_module("tools.capability_pack.qualify")
+    qualify_module = importlib.import_module("capability_pack.qualify")
     reconcile = qualify_module._reconcile_inventory
     validate_source_policy = qualify_module._validate_source_policy
 

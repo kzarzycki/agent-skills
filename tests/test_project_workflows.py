@@ -10,7 +10,7 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
-    / "utilities/skills/github-project-board-setup/scripts/project_workflows.py"
+    / "github/skills/github-project-board-setup/scripts/project_workflows.py"
 )
 spec = importlib.util.spec_from_file_location("project_workflows", SCRIPT)
 project_workflows = importlib.util.module_from_spec(spec)

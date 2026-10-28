@@ -13,14 +13,14 @@ from typing import Literal
 
 import yaml
 
-from tools.capability_pack.model import (
+from capability_pack.model import (
     FileHash,
     Provenance,
     QualificationResult,
     SourceMapping,
 )
-from tools.capability_pack.provenance import hash_files, load_provenance, write_provenance
-from tools.capability_pack.summary import render_summary
+from capability_pack.provenance import hash_files, load_provenance, write_provenance
+from capability_pack.summary import render_summary
 
 VENDIR_MANIFEST = "vendir.yml"
 VENDIR_LOCK = "vendir.lock.yml"

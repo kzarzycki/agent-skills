@@ -21,7 +21,7 @@ jobs:
           install: false
       - run: mise install
       - run: uv sync --frozen
-      - run: uv run python -m tools.capability_pack.cli release-check engineering "$GITHUB_REF_NAME"
+      - run: PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli release-check engineering "$GITHUB_REF_NAME"
       - run: mise run vendor-engineering-check
       - run: mise run test
       - run: mise run test-engineering-package
