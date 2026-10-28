@@ -17,6 +17,7 @@
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
+    uv run scripts/approvals.py model <role> <issue|pr> --family <f>  # the model loop.md's `models` picks; none: default
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
@@ -164,6 +165,12 @@ changed, and `approve` minimizes as outdated each earlier record, which it super
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
 the block. `loop` holds `cap`, `ci`, `opt_out` and `local_ci_env`; `spec` holds `auto`.
+`tiers` maps each family's tier names to model ids; `models` holds per role (any name) an ordered list of rules, each a
+`tier` and an optional `when` of `labels`, `paths` and `risk: high`, any one of which matches; a rule's tier must be in
+every family's lineup. `model` prints the first matching rule's model for the family, or nothing (the harness default)
+without a match or a lineup for that family. On a PR, `labels` read the PR and its issues, `paths` its files, and
+`risk: high` holds where `check merge` rates it high or the risk rule matches it, so a high-risk PR never resolves to a
+rule meant for a low one; on an issue only its labels are read.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -507,10 +514,46 @@ def settings(loop: str | None) -> dict[str, Any]:
                 )
         elif name == "loop":
             data.update(typed(section, SCHEMA["loop"], name))
+        elif name == "tiers":
+            for family, lineup in section.items():
+                if not isinstance(lineup, dict):
+                    raise Refused(
+                        f"loop.md's `tiers.{family}` must be a section of `<tier>: <model id>`"
+                    )
+                typed(lineup, str, f"tiers.{family}")
+            data[name] = section
+        elif name == "models":
+            data[name] = section  # checked against `tiers` once every section is read
         elif name in SCHEMA:
             data[name] = typed(section, SCHEMA[name], name)
         else:
             raise Refused(f"loop.md has an unknown settings section `{name}`")
+    for role, rules in data.get("models", {}).items():
+        lineups = data.get("tiers", {})
+        if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
+            raise Refused(
+                f"loop.md's `models.{role}` must be a list of rules, each a `tier` and an optional `when`"
+            )
+        for n, rule in enumerate(rules, 1):
+            where = f"models.{role}[{n}]"
+            typed({k: v for k, v in rule.items() if k != "when"}, {"tier": str}, where)
+            when = rule.get("when", {})
+            if not isinstance(when, dict):
+                raise Refused(
+                    f"loop.md's `{where}.when` must be a section of `labels`, `paths` and `risk`"
+                )
+            typed(when, {"labels": list, "paths": list, "risk": str}, f"{where}.when")
+            if when.get("risk", "high") != "high":
+                raise Refused(f"loop.md's `{where}.when.risk` must be `high`, not {when['risk']!r}")
+            if "tier" not in rule:
+                raise Refused(f"loop.md's `{where}` lacks `tier`")
+            if not lineups or (
+                gaps := [f for f, lineup in lineups.items() if rule["tier"] not in lineup]
+            ):
+                lacking = f"`tiers.{gaps[0]}`" if lineups else "`tiers`"
+                raise Refused(
+                    f"loop.md's `{where}` names tier `{rule['tier']}`, which {lacking} lacks"
+                )
     return data
 
 
@@ -680,6 +723,41 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     if capped(pull, limit):
         return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
     return None
+
+
+def model_for(
+    role: str,
+    family: str,
+    loop: str | None,
+    pull: dict[str, Any] | None = None,
+    issues: list[dict[str, Any]] | None = None,
+) -> str | None:
+    """The model loop.md's `models` picks for `role` in `family`, or None for the harness default: on `pull` with
+    its `issues`, or on the one issue in `issues` when there is no PR."""
+    config, issues = settings(loop), issues or []
+    labels = names(pull or {"labels": {"nodes": []}}).union(*(names(issue) for issue in issues))
+    files = paths(pull) if pull else []
+    high = bool(
+        pull and (risk(pull, issues, loop) or ruled(labels, files, loop) or judged(pull, loop))
+    )
+    for rule in config.get("models", {}).get(role, []):
+        when = rule.get("when")
+        if not when or matches(when, labels, files) or (high and when.get("risk") == "high"):
+            return config.get("tiers", {}).get(family, {}).get(rule["tier"])
+    return None
+
+
+def model(role: str, number: int, family: str) -> int:
+    _, loop = project()
+    kind = gh("api", f"repos/{{owner}}/{{repo}}/issues/{number}", "--jq", ".pull_request != null")
+    if kind.strip() == "true":
+        pull = pull_request(number)
+        found = model_for(role, family, loop, pull, closing_issues(pull))
+    else:
+        found = model_for(role, family, loop, None, [issue_node(number)])
+    if found:
+        print(found)
+    return 0
 
 
 def default(pull: dict[str, Any]) -> bool:
@@ -2904,6 +2982,10 @@ def main(argv: list[str]) -> int:
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
+    choosing = commands.add_parser("model")
+    choosing.add_argument("role")
+    choosing.add_argument("number", type=int)
+    choosing.add_argument("--family", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "report":  # reads a local file only, so no remote needs choosing
@@ -2935,6 +3017,8 @@ def main(argv: list[str]) -> int:
             return brief(args.pr, args.priorities, args.proof)
         if args.command == "release":
             return release(args.issue)
+        if args.command == "model":
+            return model(args.role, args.number, args.family)
         return verdict(args.pr, args.report)
     except Refused as exc:
         print(exc)

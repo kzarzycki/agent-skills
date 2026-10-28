@@ -5,17 +5,24 @@ The engineering loop's values for this repo. `engineering/skills/engineering-loo
 
 Orchestration backend: omnigent
 
-Worker model: mid for size:S or smaller
-
-A mid worker costs about half a top one per item, and a small item needs no more.
-
-Verifier model: mid for not risk:high
-
 ## Settings
 
 ```yaml
 spec:
   auto: true
+
+tiers:
+  claude: {top: claude-opus-5-5, mid: claude-sonnet-5-5, small: claude-haiku-5-5}
+  codex: {top: gpt-6.1-sol, mid: gpt-6.1-terra}
+
+models:
+  worker:
+    - when: {labels: [size:XS, size:S]}
+      tier: mid
+  verifier:
+    - when: {risk: high}
+      tier: top
+    - tier: mid
 
 risk:
   verifier: true
@@ -24,6 +31,9 @@ risk:
     - CODEOWNERS
     - docs/agents/loop.md
 ```
+
+The lineup names no frontier model (Fable, Astra): it costs several times `top`, and the tiers below are at least on
+par for this work. A mid worker costs about half a top one per item, and a small item needs no more.
 
 ## Approvals
 

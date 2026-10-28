@@ -5656,3 +5656,56 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
     ]
+
+
+# --- models ---
+
+MODELS = loop_md(
+    "tiers:\n  claude:\n    top: claude-opus-5-5\n    mid: claude-sonnet-5-5\n"
+    "  codex:\n    top: gpt-6.1-sol\n    mid: gpt-6.1-terra\n"
+    "models:\n  worker:\n    - when:\n        labels: [size:XS, size:S]\n      tier: mid\n"
+    "  verifier:\n    - when:\n        risk: high\n      tier: top\n    - tier: mid\n"
+    "risk:\n  verifier: true\n  paths:\n    - .github/**\n"
+)
+
+
+def test_the_model_is_the_first_rule_matching_the_issue_or_the_prs_risk() -> None:
+    pick = approvals.model_for
+    assert pick("worker", "claude", MODELS, None, [issue(1, "size:S")]) == "claude-sonnet-5-5"
+    assert pick("worker", "codex", MODELS, None, [issue(1, "size:S")]) == "gpt-6.1-terra"
+    assert pick("worker", "claude", MODELS, None, [issue(1, "size:M")]) is None
+    assert pick("worker", "gemini", MODELS, None, [issue(1, "size:S")]) is None
+    assert pick("verifier", "claude", MODELS, pull(files=("app.py",))) == "claude-sonnet-5-5"
+    assert pick("verifier", "claude", MODELS, pull(files=(".github/ci.yml",))) == "claude-opus-5-5"
+    assert pick("verifier", "claude", MODELS, pull(labels=("risk:high",))) == "claude-opus-5-5"
+    judged_high = pull(
+        reviews=(
+            verdict_on(HEAD, "0 blocker, 0 major, 0 minor")
+            | {
+                "body": f"Verifier (claude), pass 1 on {HEAD[:7]}.\n\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+                "SATISFIED: yes\nRisk: high — a gate\n"
+            },
+        )
+    )
+    assert pick("verifier", "claude", MODELS, judged_high) == "claude-opus-5-5"
+    assert pick("lead", "claude", MODELS, pull()) is None
+    for broken, refusal in (
+        ("models:\n  worker:\n    - tier: huge\n", "names tier `huge`, which `tiers` lacks"),
+        (
+            (
+                "tiers:\n  claude:\n    top: claude-opus-5-5\n  codex:\n    mid: gpt-6.1-terra\n"
+                "models:\n  worker:\n    - tier: top\n"
+            ),
+            "`models.worker[1]` names tier `top`, which `tiers.codex` lacks",
+        ),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - tier: top\n      size: S\n",
+            "unknown setting `models.worker[1].size`",
+        ),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - when:\n        risk: low\n      tier: top\n",
+            "`models.worker[1].when.risk` must be `high`",
+        ),
+    ):
+        with pytest.raises(approvals.Refused, match=re.escape(refusal)):
+            approvals.settings(loop_md(broken))

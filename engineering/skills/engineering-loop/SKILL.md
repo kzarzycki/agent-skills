@@ -33,7 +33,7 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` before every push, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Settings (the block `approvals.py` reads, below); Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
+| `docs/agents/loop.md` | Settings (the block `approvals.py` reads, below); Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>` and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -113,6 +113,19 @@ bot:
     paths:
       - uv.lock
 
+tiers:                      # each family's model per tier
+  claude: {top: claude-opus-5-5, mid: claude-sonnet-5-5}
+  codex: {top: gpt-6.1-sol, mid: gpt-6.1-terra}
+
+models:                     # per role, the first rule that matches; none: the default
+  worker:
+    - when: {labels: [size:XS, size:S]}
+      tier: mid
+  verifier:
+    - when: {risk: high}
+      tier: top
+    - tier: mid
+
 land:
   signed_squash_to: main
   allowed_signers: ~/.config/git/allowed_signers
@@ -136,6 +149,7 @@ carry_over_main:
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
+| `tiers`, `models` | `<family>: {<tier>: <model id>}`; `<role>:` a list of `tier` with an optional `when` of `labels`, `paths`, `risk: high` (Models) | the harness default |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
 | `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): a clean merge of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
@@ -600,23 +614,9 @@ or the owner's private network.
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
   silently.
-- **Models.** Never pick a model: every agent runs on its harness's configured default,
-  which the owner sets, unless the owner names one for a task or loop.md's `Worker model:
-  <tier> for <condition>` line names a tier for a worker whose issue matches the condition
-  (on the issue's labels), so the choice sits in one file the owner can change. A `Verifier model:` line does the same for a verifier whose PR
-  matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
-  on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
-  verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
-  `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
-  its head before it lands, even when the lower-tier verdict is satisfied. It applies within the verifier's own family: it lowers the tier, never the family, which
-  stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
-  Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
-  and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
-  Astra) is no tier and never runs, because it costs several times `top`. Resolve the tier
-  at launch from the newest generation of the family's tier models only: its model of that
-  tier, else its closest higher tier (its highest when none is higher), never an older
-  generation's model, which the family has already superseded. A lead that can't read the
-  family's current lineup (the backend's Model section) leaves the default. A launch that fails on
+- **Models.** Never pick a model, since cost and quality are the owner's trade: pass one
+  only as the owner names it or as `scripts/approvals.py model <role> <issue|pr> --family
+  <family>` prints it from loop.md's `tiers` and `models`, nothing meaning the default. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork
