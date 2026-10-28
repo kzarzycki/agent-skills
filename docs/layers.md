@@ -137,9 +137,9 @@ Exit codes, for every verb:
 - `1`: refused, with one line per missing proof.
 - `3`: waiting (pending checks, a forge state not computed yet): run it again.
 
-Open question: today's `brief` (a verifier pass's brief) and `release` (removes the
-assignee the loop added) are not in the list above. #614 settles whether they stay on the
-gatekeeper or move to the loop.
+Today's `brief` (a verifier pass's brief) and `release` (removes the assignee the loop
+added) are flow operations, not gate decisions, so they leave the gatekeeper for the loop's
+own script in the package split (#615); until then they stay where they are.
 
 ## Verifier report
 
