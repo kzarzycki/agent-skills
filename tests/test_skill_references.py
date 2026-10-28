@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-# Plugin skills only: dot directories hold generated copies, _attic is not loaded.
+# Plugin skills only: dot directories hold generated copies.
 SKILLS = sorted(
     path.parent
     for path in REPOSITORY.glob("*/skills/*/SKILL.md")
-    if not path.parts[len(REPOSITORY.parts)].startswith((".", "_"))
+    if not path.parts[len(REPOSITORY.parts)].startswith(".")
 )
 # Harness metadata, attribution and the skill's own tests are not read by the model.
 UNREAD_DIRECTORIES = {"agents", "test", "tests"}
