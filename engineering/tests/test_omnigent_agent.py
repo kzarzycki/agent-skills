@@ -530,28 +530,34 @@ def test_wait_for_a_pid_ends_when_the_run_is_gone(
     assert omnigent_agent.main(["wait-for", "--budget", "1"]) == 2
 
 
-def test_wait_for_ignores_an_exit_line_older_than_the_run_it_waits_on(
+def test_wait_for_takes_an_exit_line_only_from_the_run_its_pid_names(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
     log, pid = tmp_path / "gate.log", tmp_path / "pid"
-    log.write_text("old successful run\nexit 0\n")
-    os.utime(log, (time.time() - 60, time.time() - 60))  # the previous run's, before this pid file
+    log.write_text("run 1\nprevious run passed\nexit 0\n")  # a log path reused, not yet rewritten
     run = subprocess.Popen(["sleep", "30"])
     try:
         pid.write_text(f"{run.pid}\n")
         argv = ["wait-for", "--log", str(log), "--pid", str(pid), "--budget", "0.05"]
         assert omnigent_agent.main(argv) == 6
         assert capsys.readouterr().out == "still running\n"
-        argv[4] = str(run.pid)  # a bare pid: the process's own start dates the run
+        argv[4] = str(run.pid)  # a bare pid restarted at once: no time slack lets the old line in
         assert omnigent_agent.main(argv) == 6
         assert capsys.readouterr().out == "still running\n"
+        log.write_text(f"run {run.pid}\n3 passed\nexit 0\n")  # this run's own line counts
+        assert omnigent_agent.main(argv) == 0
+        assert capsys.readouterr().out == "exit 0\n3 passed\n"
+        log.write_text("run 1\nprevious run passed\nexit 0\n")
     finally:
         run.kill()
         run.wait()
-    # the run died before it rewrote the log: gone, not the old run's success
-    assert omnigent_agent.main(argv[:4] + [str(pid), "--budget", "30"]) == 1
-    assert capsys.readouterr().out.startswith("gone: ")
+    # the run died before it rewrote the log: gone, not the old run's success, however old the log
+    os.utime(log, (time.time() - 60, time.time() - 60))
+    for named in (str(pid), str(run.pid), str(tmp_path / "missing.pid")):
+        argv = ["wait-for", "--log", str(log), "--pid", named, "--budget", "30"]
+        assert omnigent_agent.main(argv) == 1
+        assert capsys.readouterr().out.startswith("gone: ")
 
 
 def test_wait_for_fails_when_it_cannot_tell_a_pid_is_the_runs(
@@ -636,8 +642,8 @@ def test_a_detached_gate_tells_the_session_that_started_it_once(tmp_path: Path) 
     script = Path(omnigent_agent.__file__)
     # verifier.md's detached recipe with its notify step
     wrapper = (
-        f'echo $$ > {pid}; sh -c "echo 4 passed; exit 3" > {log} 2>&1; echo "exit $?" >> {log};'
-        f" {sys.executable} {script} wait-for --log {log} --notify"
+        f'echo $$ > {pid}; echo "run $$" > {log}; sh -c "echo 4 passed; exit 3" >> {log} 2>&1;'
+        f' echo "exit $?" >> {log}; {sys.executable} {script} wait-for --log {log} --pid $$ --notify'
     )
     env = {**os.environ, "LOOP_NOTIFY": f"{tell} session-1"}
     subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)

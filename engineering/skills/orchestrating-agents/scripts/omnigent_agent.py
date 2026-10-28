@@ -68,8 +68,8 @@ seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
 call), prints nothing meanwhile, and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
-exiting with that code (with ``--pid``, a log last written before that run started is a previous
-run's, so its line does not count); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
+exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
+which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
 ``--until`` condition settled (``checks``, the default: all done, exit 0 green, 1 red naming them;
 ``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged); else ``still running``
 (exit 6; a run's own 6 prints ``exit 6`` and is an end). ``--notify`` also runs ``$LOOP_NOTIFY
@@ -2272,46 +2272,44 @@ def elapsed(pid: int) -> float | None:
     return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
-def exit_of(log: Path) -> int | None:
-    """The code on the log's last ``exit <n>`` line, the detached recipe's (verifier.md), or None."""
+def run_of(pid: str) -> str | None:
+    """The pid ``--pid`` names: the number itself, else the one in that file; None for a file
+    missing or empty."""
+    if pid.isdigit():
+        return pid
     try:
-        lines = log.read_text(errors="replace").splitlines()
+        text = Path(pid).read_text().strip()
     except OSError:
         return None
-    ends = [m for line in lines if (m := re.fullmatch(r"exit (\d+)", line.strip()))]
+    return text if text.isdigit() else None
+
+
+def run_lines(log: Path, run: str | None) -> list[str] | None:
+    """The log's non-blank lines, or with ``run`` only those after its last ``run <run>`` line, the
+    marker the detached recipe (verifier.md) writes before its command starts; None when it is
+    unreadable or holds no such marker, since a reused log path holds the previous run's lines."""
+    try:
+        lines = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return None
+    if run is None:
+        return lines
+    starts = [i for i, line in enumerate(lines) if line.strip() == f"run {run}"]
+    return lines[starts[-1] + 1 :] if starts else None
+
+
+def exit_of(log: Path, run: str | None = None) -> int | None:
+    """The code on the last ``exit <n>`` line of ``run_lines(log, run)``, or None."""
+    ends = [
+        m for line in run_lines(log, run) or [] if (m := re.fullmatch(r"exit (\d+)", line.strip()))
+    ]
     return int(ends[-1][1]) if ends else None
 
 
-def run_start(pid: str | None) -> float | None:
-    """When the run ``--pid`` names started, in epoch seconds: its pid file's mtime, else its live
-    process's start, early by ``PID_SLACK``; None when neither is known."""
-    if not pid:
-        return None
-    if not pid.isdigit():
-        try:
-            return Path(pid).stat().st_mtime
-        except OSError:
-            return None
-    age = elapsed(int(pid)) if alive(int(pid)) else None
-    return None if age is None else time.time() - age - PID_SLACK
-
-
-def fresh_exit(log: Path, since: float | None) -> int | None:
-    """``exit_of(log)``, but None for a log last written before ``since``: a previous run's, its
-    path reused by a run that has not rewritten it yet."""
-    code = exit_of(log)
-    if code is None or since is None:
-        return code
-    try:
-        return code if log.stat().st_mtime >= since else None
-    except OSError:
-        return None
-
-
-def log_outcome(log: Path, code: int) -> str:
+def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
-    ``LOG_TAIL`` lines."""
-    lines = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
+    ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
+    lines = run_lines(log, run) or []
     body = lines[: max(i for i, line in enumerate(lines) if line.strip() == f"exit {code}")]
     return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
 
@@ -2357,11 +2355,18 @@ def wait_for(
     since a run may itself exit ``LIMIT``."""
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
-    bare = run_start(pid) if pid and pid.isdigit() else None  # a process's start is read once
+
+    def ended() -> tuple[int, str] | None:
+        """The log's exit line: with ``--pid``, only one after the marker of the run it names, so a
+        pid file missing or empty trusts no line."""
+        run = run_of(pid) if pid else None
+        if not log or (pid and run is None) or (code := exit_of(log, run)) is None:
+            return None
+        return code, log_outcome(log, code, run)
+
     while True:
-        since = bare if pid and pid.isdigit() else run_start(pid)
-        if log and (code := fresh_exit(log, since)) is not None:
-            return code, log_outcome(log, code)
+        if outcome := ended():
+            return outcome
         if pr is not None:
             if (left := deadline - time.monotonic()) <= 0:
                 return None
@@ -2371,8 +2376,8 @@ def wait_for(
             except Fail:  # a GitHub blip: the next poll asks again
                 pass
         elif pid and pid_of(pid) is None:
-            if log and (code := fresh_exit(log, since)) is not None:  # written on its way out
-                return code, log_outcome(log, code)
+            if outcome := ended():  # written on its way out
+                return outcome
             if log:
                 return 1, f"gone: pid {pid} ended with no exit line in {log}"
             return 0, f"pid {pid} ended"
@@ -4245,7 +4250,11 @@ def main(argv: list[str] | None = None) -> int:
         "wait-for",
         description="block on a run's log or pid, or a PR condition, up to --budget; print only the outcome",
     )
-    p.add_argument("--log", type=Path, help="a run's log, ended by an `exit <n>` line")
+    p.add_argument(
+        "--log",
+        type=Path,
+        help="a run's log, ended by an `exit <n>` line (with --pid, after its `run <pid>` line)",
+    )
     p.add_argument("--pid", help="a run's pid, or the file holding it")
     p.add_argument("--pr", type=int, help="a PR, waited on until --until holds")
     p.add_argument("--until", choices=("checks", "merged", "closed"), default="checks")

@@ -174,8 +174,9 @@ its starter, so the path rides in the brief.
 <n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed]` blocks up to `--budget`
 seconds (default 570, under a 10-minute tool call), printing nothing until it ends: on the log's
 `exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
-only a log written since that run started, since a reused log path still holds the previous run's
-line); on the pid gone; on the PR's condition settled (red checks named, exit 1); else `still running`, exit 6 (a run that itself
+only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
+first, since a reused log path still holds the previous run's line; a log alone is trusted as
+the caller's run); on the pid gone; on the PR's condition settled (red checks named, exit 1); else `still running`, exit 6 (a run that itself
 exits 6 prints `exit 6`, and that is its end).
 It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTIFY <outcome>`
 once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with

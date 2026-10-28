@@ -54,9 +54,10 @@ yourself, keeping standards and spec as separate axes.
   report's head.
 - **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached with its pid, output and exit code
-  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --notify' >/dev/null 2>&1`
-  (Perl's `setsid`, since macOS has no `setsid` command; the last step tells the session in
-  `$LOOP_NOTIFY`, when set, how it ended),
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; flock <lock> <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
+  (Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
+  run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
+  log path; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
