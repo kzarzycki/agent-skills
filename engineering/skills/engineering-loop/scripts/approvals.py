@@ -18,6 +18,7 @@
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
+    uv run scripts/approvals.py model <role> <issue|pr> --family <f> [--tier <t>]  # loop.md's pick; none: default
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
@@ -43,9 +44,9 @@ reviews, a review counting only when its body starts `Verifier (<family>), pass 
 PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
-commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
-one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
-only for a change it rates low; no unresolved
+commit after a verdict needs one of its own; on a high-risk change (`model`, below), that pass ran on the model
+loop.md's `models` picks for the verifier when its signature names one of the lineup's, since a model chosen for a low
+change is enough only for one; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
@@ -173,6 +174,14 @@ changed, and `approve` minimizes as outdated each earlier record, which it super
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `local_ci_env` and `batch_queue`; `spec` holds `auto`.
+`tiers` maps each family's tier names to model ids; `models` holds per role (any name) an ordered list of rules, each a
+`tier` and an optional `when` of `labels`, `paths` and `risk: high`, any one of which matches; a rule's tier must be in
+every family's lineup. `model` prints the first matching rule's model for the family, or nothing (the harness default)
+without a match or a lineup for that family. On a PR, `labels` read the PR and its issues, `paths` its files, and
+`risk: high` holds where `check merge` rates it high or the risk rule matches it, so a high-risk PR never resolves to a
+rule meant for a low one; on an issue only its labels are read. `--tier` takes a tier loop.md's prose names for a case
+no rule can read (a judgment), and prints that tier's model from the lineup, refusing a tier the lineup lacks, so prose
+chooses among the project's models and never adds one.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -258,9 +267,6 @@ FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.I
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
-# a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
-# family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
-LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
@@ -520,10 +526,46 @@ def settings(loop: str | None) -> dict[str, Any]:
                 )
         elif name == "loop":
             data.update(typed(section, SCHEMA["loop"], name))
+        elif name == "tiers":
+            for family, lineup in section.items():
+                if not isinstance(lineup, dict):
+                    raise Refused(
+                        f"loop.md's `tiers.{family}` must be a section of `<tier>: <model id>`"
+                    )
+                typed(lineup, str, f"tiers.{family}")
+            data[name] = section
+        elif name == "models":
+            data[name] = section  # checked against `tiers` once every section is read
         elif name in SCHEMA:
             data[name] = typed(section, SCHEMA[name], name)
         else:
             raise Refused(f"loop.md has an unknown settings section `{name}`")
+    for role, rules in data.get("models", {}).items():
+        lineups = data.get("tiers", {})
+        if not isinstance(rules, list) or not all(isinstance(rule, dict) for rule in rules):
+            raise Refused(
+                f"loop.md's `models.{role}` must be a list of rules, each a `tier` and an optional `when`"
+            )
+        for n, rule in enumerate(rules, 1):
+            where = f"models.{role}[{n}]"
+            typed({k: v for k, v in rule.items() if k != "when"}, {"tier": str}, where)
+            when = rule.get("when", {})
+            if not isinstance(when, dict):
+                raise Refused(
+                    f"loop.md's `{where}.when` must be a section of `labels`, `paths` and `risk`"
+                )
+            typed(when, {"labels": list, "paths": list, "risk": str}, f"{where}.when")
+            if when.get("risk", "high") != "high":
+                raise Refused(f"loop.md's `{where}.when.risk` must be `high`, not {when['risk']!r}")
+            if "tier" not in rule:
+                raise Refused(f"loop.md's `{where}` lacks `tier`")
+            if not lineups or (
+                gaps := [f for f, lineup in lineups.items() if rule["tier"] not in lineup]
+            ):
+                lacking = f"`tiers.{gaps[0]}`" if lineups else "`tiers`"
+                raise Refused(
+                    f"loop.md's `{where}` names tier `{rule['tier']}`, which {lacking} lacks"
+                )
     return data
 
 
@@ -696,6 +738,89 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     if capped(pull, limit):
         return f"a verifier review at the cap (pass {limit}) or later was not satisfied or left a blocker or major open, so the owner decides"
     return None
+
+
+def model_for(
+    role: str,
+    family: str,
+    loop: str | None,
+    pull: dict[str, Any] | None = None,
+    issues: list[dict[str, Any]] | None = None,
+) -> str | None:
+    """The model loop.md's `models` picks for `role` in `family`, or None for the harness default: on `pull` with
+    its `issues`, or on the one issue in `issues` when there is no PR."""
+    config, issues = settings(loop), issues or []
+    labels = names(pull or {"labels": {"nodes": []}}).union(*(names(issue) for issue in issues))
+    files = paths(pull) if pull else []
+    high = bool(pull and elevated(pull, issues, loop))
+    for rule in config.get("models", {}).get(role, []):
+        when = rule.get("when")
+        if not when or matches(when, labels, files) or (high and when.get("risk") == "high"):
+            return config.get("tiers", {}).get(family, {}).get(rule["tier"])
+    return None
+
+
+def elevated(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
+    """Why a `risk: high` model rule holds on the PR: `check merge` rates it high (risk), the risk rule matches it
+    whatever `spec.auto` says (ruled), or the verifier's `Risk:` line says high (judged)."""
+    labels = names(pull).union(*(names(issue) for issue in issues))
+    return risk(pull, issues, loop) or ruled(labels, paths(pull), loop) or judged(pull, loop)
+
+
+def short(model: str) -> str:
+    """A model id as a verifier's signature names it (orchestrating-agents' `signature`): `claude-sonnet-5-5` is
+    `sonnet-5.5`, `gpt-6.1-terra` is `terra-6.1`."""
+    name = re.sub(r"^(claude|gpt)-", "", model)
+    if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", name):
+        return f"{found[3]}-{found[1]}.{found[2]}"
+    if found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", name):
+        return f"{found[1]}-{found[2]}.{found[3]}"
+    return name
+
+
+def unpicked(
+    verdicts: list[tuple[str, int, dict[str, str]]] | str,
+    pull: dict[str, Any],
+    issues: list[dict[str, Any]],
+    loop: str | None,
+) -> str | None:
+    """How the newest verifier pass (the newest commit's highest, a mixed PR's two verifiers share one) ran on another
+    model than loop.md's `models` picks for the verifier now, or None. Only a signature naming one of the lineup's
+    models is judged, so a verdict from before the lineup, or naming no model, keeps landing. `verdicts` is
+    passes()'s."""
+    if isinstance(verdicts, str) or not verdicts:
+        return None
+    head = verdicts[-1][0]
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    last = max(number for number, _ in on_head)
+    for number, lines in on_head:
+        signed = lines["Family"].split(",")[0].split("/")
+        ran = signed[1] if number == last and len(signed) > 1 else ""
+        for family, lineup in settings(loop).get("tiers", {}).items():
+            if ran in map(short, lineup.values()):
+                picked = model_for("verifier", family, loop, pull, issues)
+                if picked and short(picked) != ran:
+                    return f"ran on {ran}, not the {picked} loop.md's `models` picks"
+    return None
+
+
+def model(role: str, number: int, family: str, tier: str | None = None) -> int:
+    _, loop = project()
+    if tier is not None:
+        lineup = settings(loop).get("tiers", {}).get(family, {})
+        if tier not in lineup:
+            raise Refused(f"loop.md's `tiers.{family}` has no tier `{tier}`")
+        print(lineup[tier])
+        return 0
+    kind = gh("api", f"repos/{{owner}}/{{repo}}/issues/{number}", "--jq", ".pull_request != null")
+    if kind.strip() == "true":
+        pull = pull_request(number)
+        found = model_for(role, family, loop, pull, closing_issues(pull))
+    else:
+        found = model_for(role, family, loop, None, [issue_node(number)])
+    if found:
+        print(found)
+    return 0
 
 
 def default(pull: dict[str, Any]) -> bool:
@@ -1151,11 +1276,14 @@ def proofs(
     if revert is None and not exempt(pull, loop):
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
-        # only on a verdict that would land, and tier first, since risk() reads the reviews again
-        if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
+        # only on a verdict that would land, and the model first, since it needs no further read without a lineup
+        if (
+            not unreviewed
+            and (off := unpicked(verdicts, pull, issues, loop))
+            and (why := elevated(pull, issues, loop))
+        ):
             found.append(
-                f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
-                " default-tier verifier pass on the head first"
+                f"{where} is high risk ({why}), and its newest verdict {off}: a pass on that first"
             )
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
@@ -1183,7 +1311,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
-    # the lines read, plus the heading's family, which names the verifier's tier when it ran below the default
+    # the lines read, plus the heading's family, whose signature names the verifier's model
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
     others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
     trusted |= {login for login in others if writer(login)}
@@ -1205,23 +1333,6 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
         for review in found
         if (review.get("author") or {}).get("login") in trusted
     ]
-
-
-def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
-    """The tier below the default (LOWER_TIER) the newest verifier pass names in its heading's family, the newest
-    commit's highest pass (a mixed PR's two verifiers share one), or None: a heading naming no tier reads as the
-    default, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
-    if isinstance(verdicts, str) or not verdicts:
-        return None
-    head = verdicts[-1][0]
-    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
-    last = max(number for number, _ in on_head)
-    tiers = [
-        found[1]
-        for number, lines in on_head
-        if number == last and (found := LOWER_TIER.search(lines["Family"]))
-    ]
-    return tiers[0].lower() if tiers else None
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
@@ -3032,6 +3143,11 @@ def main(argv: list[str]) -> int:
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
+    choosing = commands.add_parser("model")
+    choosing.add_argument("role")
+    choosing.add_argument("number", type=int)
+    choosing.add_argument("--family", required=True)
+    choosing.add_argument("--tier")
     args = parser.parse_args(argv)
     try:
         if args.command == "report":  # reads a local file only, so no remote needs choosing
@@ -3065,6 +3181,8 @@ def main(argv: list[str]) -> int:
             return brief(args.pr, args.priorities, args.proof)
         if args.command == "release":
             return release(args.issue)
+        if args.command == "model":
+            return model(args.role, args.number, args.family, args.tier)
         return verdict(args.pr, args.report)
     except Refused as exc:
         print(exc)

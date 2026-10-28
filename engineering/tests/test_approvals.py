@@ -997,11 +997,20 @@ def test_one_job_name_in_two_workflows_is_two_checks() -> None:
     assert approvals.ci("PR #7", pr) == ["PR #7: `check` is FAILURE on the head commit"]
 
 
-def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A satisfied lower-tier verdict saying `Risk: high` blocks the merge; a default-tier verdict on the same head
-    clears it, and a heading naming no tier reads as the default."""
+def test_a_high_risk_change_needs_a_verdict_on_the_model_models_picks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A satisfied verdict from the low change's model saying `Risk: high` blocks the merge; a pass on the model
+    `models` then picks clears it, and a signature naming no lineup model is not judged."""
     monkeypatch.setattr(approvals, "writer", lambda _login: False)
-    judged = add(loop_md("spec:\n  auto: true\n"), "risk", "verifier: true\n")
+    judged = add(
+        loop_md(
+            "spec:\n  auto: true\ntiers:\n  codex:\n    top: gpt-6.1-sol\n    mid: gpt-6.1-terra\n"
+            "models:\n  verifier:\n    - when:\n        risk: high\n      tier: top\n    - tier: mid\n"
+        ),
+        "risk",
+        "verifier: true\n",
+    )
 
     def said(family: str, number: int, risk: str) -> dict[str, Any]:
         heading = f"Verifier ({family}), pass {number}"
@@ -1017,22 +1026,17 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
             judged,
         )
 
-    assert gate(said("codex/terra-6.1/med mid", 1, "high — CI permissions")) == [
+    assert gate(said("codex/terra-6.1/med", 1, "high — CI permissions")) == [
         (
             "PR #7 is high risk (it matches a risk rule's `verifier` term: the verifier's pass 1 on aaaaaaa says"
-            " `Risk: high — CI permissions`), and its newest verdict came from a lower tier (mid): a default-tier"
-            " verifier pass on the head first"
+            " `Risk: high — CI permissions`), and its newest verdict ran on terra-6.1, not the gpt-6.1-sol"
+            " loop.md's `models` picks: a pass on that first"
         )
     ]
-    assert (
-        gate(said("codex/terra-6.1/med mid", 1, "high"), said("codex/sol-6.1/med", 2, "high")) == []
-    )
-    assert gate(said("codex/terra-6.1/med mid", 1, "low — a fixture")) == []
+    assert gate(said("codex/terra-6.1/med", 1, "high"), said("codex/sol-6.1/med", 2, "high")) == []
+    assert gate(said("codex/terra-6.1/med", 1, "low — a fixture")) == []
     assert gate(said("codex", 1, "high")) == []
-    # a tier word inside the model id is no tier: only a word of its own after the signature is
     assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
-    assert gate(said("claude/small-model/?, same-family", 1, "high")) == []
-    assert gate(said("claude, same-family, small", 1, "high"))
 
 
 def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
@@ -5940,3 +5944,66 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
     ]
+
+
+# --- models ---
+
+MODELS = loop_md(
+    "tiers:\n  claude:\n    top: claude-opus-5-5\n    mid: claude-sonnet-5-5\n"
+    "  codex:\n    top: gpt-6.1-sol\n    mid: gpt-6.1-terra\n"
+    "models:\n  worker:\n    - when:\n        labels: [size:XS, size:S]\n      tier: mid\n"
+    "  verifier:\n    - when:\n        risk: high\n      tier: top\n    - tier: mid\n"
+    "risk:\n  verifier: true\n  paths:\n    - .github/**\n"
+)
+
+
+def test_the_model_is_the_first_rule_matching_the_issue_or_the_prs_risk() -> None:
+    pick = approvals.model_for
+    assert pick("worker", "claude", MODELS, None, [issue(1, "size:S")]) == "claude-sonnet-5-5"
+    assert pick("worker", "codex", MODELS, None, [issue(1, "size:S")]) == "gpt-6.1-terra"
+    assert pick("worker", "claude", MODELS, None, [issue(1, "size:M")]) is None
+    assert pick("worker", "gemini", MODELS, None, [issue(1, "size:S")]) is None
+    assert pick("verifier", "claude", MODELS, pull(files=("app.py",))) == "claude-sonnet-5-5"
+    assert pick("verifier", "claude", MODELS, pull(files=(".github/ci.yml",))) == "claude-opus-5-5"
+    assert pick("verifier", "claude", MODELS, pull(labels=("risk:high",))) == "claude-opus-5-5"
+    judged_high = pull(
+        reviews=(
+            verdict_on(HEAD, "0 blocker, 0 major, 0 minor")
+            | {
+                "body": f"Verifier (claude), pass 1 on {HEAD[:7]}.\n\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+                "SATISFIED: yes\nRisk: high — a gate\n"
+            },
+        )
+    )
+    assert pick("verifier", "claude", MODELS, judged_high) == "claude-opus-5-5"
+    assert pick("lead", "claude", MODELS, pull()) is None
+    for broken, refusal in (
+        ("models:\n  worker:\n    - tier: huge\n", "names tier `huge`, which `tiers` lacks"),
+        (
+            (
+                "tiers:\n  claude:\n    top: claude-opus-5-5\n  codex:\n    mid: gpt-6.1-terra\n"
+                "models:\n  worker:\n    - tier: top\n"
+            ),
+            "`models.worker[1]` names tier `top`, which `tiers.codex` lacks",
+        ),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - tier: top\n      size: S\n",
+            "unknown setting `models.worker[1].size`",
+        ),
+        (
+            "tiers:\n  claude:\n    top: x\nmodels:\n  worker:\n    - when:\n        risk: low\n      tier: top\n",
+            "`models.worker[1].when.risk` must be `high`",
+        ),
+    ):
+        with pytest.raises(approvals.Refused, match=re.escape(refusal)):
+            approvals.settings(loop_md(broken))
+
+
+def test_a_tier_loop_md_prose_names_resolves_only_within_the_lineup(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(approvals, "project", lambda: (None, MODELS))
+    assert approvals.model("worker", 1, "codex", "mid") == 0
+    assert capsys.readouterr().out == "gpt-6.1-terra\n"
+    with pytest.raises(approvals.Refused, match=re.escape("`tiers.codex` has no tier `small`")):
+        approvals.model("worker", 1, "codex", "small")

@@ -62,10 +62,8 @@ time to compare.
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default (Codex: `~/.codex/config.toml`), a
 verifier included. Pass `--model` only when the owner asked for that model or the project's instructions
-name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
-tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
-its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
-lead's own instructions name its family's newest models, and `sys_list_models` lists none for Claude. A
+name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place.
+Claude ids need `claude` in them (`claude-sonnet-5-5`), since claude-native refuses a bare alias. A
 launch that fails on capacity (`server_overloaded`, a rate limit) is retried later with
 backoff on the same model, never on another, which would leave the work on a model nobody
 chose.
