@@ -178,7 +178,8 @@ mise run test-engineering-package
 
 ## Maintenance routine
 
-The `vendoring` package's [ROUTINE.md](../vendoring/skills/vendoring/ROUTINE.md) keeps the package current when an agent host runs it on a
+The `vendoring` package's [ROUTINE.md](../vendoring/skills/vendoring/ROUTINE.md), with this repository's values in
+[MAINTENANCE.md](MAINTENANCE.md), keeps the package current when an agent host runs it on a
 schedule. No schedule is configured yet. Each run:
 
 - It pulls upstream `main`, ports or declines each change to a tuned skill, and
@@ -194,7 +195,8 @@ schedule. No schedule is configured yet. Each run:
   closes that issue.
 
 To schedule it, point an agent host at this repository with the prompt "Run the
-maintenance routine in `vendoring/skills/vendoring/ROUTINE.md`." The host needs:
+maintenance routine in `vendoring/skills/vendoring/ROUTINE.md` with the values in
+`engineering/MAINTENANCE.md`." The host needs:
 
 - `mise`, with network access to the tools it installs (Python, Node, uv, `vendir`,
   `apm`) and to PyPI;

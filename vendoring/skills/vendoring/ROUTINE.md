@@ -1,88 +1,86 @@
-# Engineering maintenance routine
+# Pack maintenance routine
 
-Unattended, on a schedule: bring upstream `mattpocock/skills` changes into the
-tuned package, release them as `engineering-vX.Y.Z`, and land everything without
-a human. Paths are from the repository root. The tuning contract is in
-`engineering/CLAUDE.md`; read it first.
+Unattended, on a schedule: bring upstream changes into a pack's tuned skills, release
+them, and land everything without a human. Paths are from the repository root, with
+`<pack>` the pack's folder. Read the pack's tuning contract (how its overlays are
+written) first.
 
-Setup: `git fetch origin --tags`, then `uv sync --frozen`. The tools in `mise.toml`
-must be on `PATH` at their pinned versions; run `mise install` only for those missing
-(a host setup script may provide them). The credentials must be able to push
-branches and tags to `kzarzycki/agent-skills`, merge its PRs and open issues. A tag pushed with GitHub Actions' own
-`GITHUB_TOKEN` starts no workflow, so push with a user or App credential.
+The steps are the method. The project's own instructions give its values, one per slot
+below, since branch names, gates and landing differ by project. A slot the project leaves
+empty is skipped.
+
+- **Setup**: what a fresh host runs before step 1 (fetch tags, sync the environment, the
+  tools that must be on `PATH`) and the credentials it needs.
+- **Blocked marker**: where a stop is recorded, so every later run sees it (an issue
+  label, a file).
+- **Earlier work**: the project's own steps a previous run may have left unfinished (an
+  untagged release, a running release check, an open follow-up PR), in order, each with
+  what to do.
+- **Intake**: the command that runs the tool's `update <pack>`.
+- **Branch**: the name of a run's branch.
+- **Gates**: the commands that all exit 0 before a PR lands.
+- **Landing**: what must pass before a merge, and the merge command.
+- **Release**: the changelog step, the version tag, how it is published, and the version
+  files a release changes.
 
 ## 1. Finish earlier work
 
 In order, and start nothing new while any of these is open:
 
-- **Blocked:** an open `engineering-routine:blocked` issue means a person has to
-  act. Stop; closing the issue resumes the routine.
-- **Unreleased version on main:** if `engineering/apm.yml` on `origin/main` is newer
-  than the newest `engineering-v*` tag, tag the main commit that set it as in step 7.3,
-  and stop. Find it with
-  `git log -1 --first-parent --format=%H -G'^version:' origin/main -- engineering/apm.yml`.
-- **Tag check:** the newest tag's `Engineering tag check` run
-  (`gh run list --workflow engineering-tag-check.yml`) still running means stop until
-  the next run; failed, or missing for a tag older than an hour, means blocked.
-- **Open consumer sync:** if the `automation/engineering-consumer-sync` PR (the tag
-  check's bump of this repository's own APM ref) is open, bring it up to date with
-  main, wait for its checks, mark it ready and squash-merge it. Its checklist commands
-  already ran in its CI.
-- **Open routine PR:** if a PR from an `engineering-upstream/*` branch is open, draft or
-  not, check it out and carry it on from step 4.
+- **Blocked:** an open blocked marker means a person has to act. Stop; clearing the
+  marker resumes the routine.
+- **Earlier work:** each of the project's steps, as it states them.
+- **Open routine PR:** if a PR from a run's branch is open, draft or not, check it out and
+  carry it on from step 4.
 
 ## 2. Intake
 
-From a fresh `origin/main`, run `mise run vendor-engineering` and branch on its
-exit code:
+From a fresh default branch, run the intake command and branch on its exit code:
 
 - **0 with a clean `git status`:** upstream has nothing new. Stop.
 - **0 with changes:** go to step 3.
 - **5:** upstream changed tuned skills.
-  - For each `artifacts/engineering-deltas/deltas/<skill>.diff`, port the intent into
-    `engineering/overlays/skills/<skill>/` in the tuned style.
+  - For each `artifacts/<pack>-deltas/deltas/<skill>.diff`, port the intent into
+    `<pack>/overlays/skills/<skill>/` in the tuned style.
   - Decline instead when the change only restates what the model already does, or
     contradicts a tuning decision.
-  - Record each decision in `engineering/upstream-intake.yml`: the new commit (the second in the
-    stop message's `old..new`), and a one-line note on what you took or why not.
+  - Record each decision in `<pack>/upstream-intake.yml`: the new commit (the second in
+    the stop message's `old..new`), and a one-line note on what you took or why not.
   - Rerun until it exits 0.
 - **An added skill in the summary** ships untuned. Tune it:
-  - copy it to `engineering/overlays/skills/<name>/` and rewrite it;
-  - add its `owned_overlays` entry in `engineering/upstream.yml`;
+  - copy it to `<pack>/overlays/skills/<name>/` and rewrite it;
+  - add its `owned_overlays` entry in `<pack>/upstream.yml`;
   - rerun.
 - **2 or 4, when your own edit caused it** (a malformed ledger row, package tests broken
   by a rewrite): fix it and rerun.
 - **3** (upstream removed or renamed a skill, changed its licence, or collides with an
   owned skill), **or anything you can't fix:** blocked.
 
-A rerun follows upstream `main`, so it may move the lock further. New deltas go
-through this step again.
+A rerun follows the tracked ref, so it may move the lock further. New deltas go through
+this step again.
 
 ## 3. Branch
 
-Create the branch `engineering-upstream/<new upstream short sha>` (the name stays if
-the lock moves later), commit everything, new files included, push it, and open a draft
-PR, so step 1 resumes an interrupted or blocked run. From here on, every change is a
-commit that is pushed. A change to an overlay is followed by a rerun of
-`mise run vendor-engineering`, and the rerun's output is committed too.
+Create the run's branch (its name stays if the lock moves later), commit everything, new
+files included, push it, and open a draft PR, so step 1 resumes an interrupted or blocked
+run. From here on, every change is a commit that is pushed. A change to an overlay is
+followed by a rerun of the intake, and the rerun's output is committed too.
 
 ## 4. Gates
 
-With a clean `git status`, these all exit 0: `mise run vendor-engineering-check`,
-`mise run test`, `mise run test-engineering-package`, and
-`git diff --check origin/main...HEAD`.
+With a clean `git status`, every gate exits 0.
 
 ## 5. Independent verification
 
-A reviewer with a fresh context that did not write the ports (a subagent or a
-separate session) gets:
+A reviewer with a fresh context that did not write the ports (a subagent or a separate
+session) gets:
 
 - the deltas for the whole range: in a clone of upstream, `git diff <old>..<new> --
   <source_path>` for each tuned skill, with `old` and `new` the `source_commit` in
-  `engineering/provenance.yml` on main and on the branch, and `source_path` from its
-  `source_mappings`;
-- `git diff origin/main...HEAD -- engineering/`;
-- `engineering/CLAUDE.md`.
+  `<pack>/provenance.yml` on the default branch and on the run's branch, and
+  `source_path` from its `source_mappings`;
+- `git diff <default branch>...HEAD -- <pack>/`;
+- the pack's tuning contract.
 
 It checks each delta: its intent is carried, or the decline is sound. No load-bearing
 rule is lost from any changed skill, and the ledger rows match. It answers PASS or
@@ -93,17 +91,15 @@ review again. If it still isn't PASS after two revisions, you're blocked.
 
 ## 6. Release or not
 
-Decide after the last rerun, from `git diff --quiet origin/main...HEAD -- engineering/skills/`:
+Decide after the last rerun, from `git diff --quiet <default branch>...HEAD -- <pack>/skills/`:
 
 - **Skills changed:** a release. The tool already set the version, one bump past the
-  newest `engineering-v*` tag (minor when a skill was added). Give that version an
-  `engineering/CHANGELOG.md` entry, or extend its entry if one exists, with the upstream range,
-  each ported or declined delta in one line, and any newly tuned skill, and move the
-  `engineering/changelog.d/` entries under it (`engineering/changelog.d/README.md`).
+  newest release (minor when a skill was added). Record it as the release slot says, with
+  the upstream range, each ported or declined delta in one line, and any newly tuned
+  skill.
 - **Skills unchanged** (every delta declined, or upstream touched only files outside
-  the package): no release. Restore `engineering/apm.yml`,
-  `engineering/.claude-plugin/plugin.json` and `engineering/tests/consumer/apm.yml`
-  from `origin/main`.
+  the pack's skills): no release. Restore the release slot's version files from the
+  default branch.
 
 Commit, push and rerun the gates.
 
@@ -114,21 +110,20 @@ Commit, push and rerun the gates.
    - each delta's commit subjects and the decision taken;
    - the reviewer's verdict;
    - the gate exit codes.
-2. When the required `qualify` check passes, run `gh pr merge --squash --delete-branch`.
-   If it fails, fix, commit and go back to step 4; a third failure is blocked. If main
-   moved, update the branch and wait again. Never use `--admin`, and never push to main.
-3. For a release, tag the merge commit and push the tag:
-   `git tag -a engineering-vX.Y.Z -m engineering-vX.Y.Z <merge sha> && git push origin engineering-vX.Y.Z`.
-   The tag check re-qualifies the release and opens the consumer-sync PR, which step 1
-   of the next run merges.
+2. When the landing slot's checks pass, merge with its command. If they fail, fix,
+   commit and go back to step 4; a third failure is blocked. If the default branch
+   moved, update the branch and wait again. Never bypass the landing rule (an admin
+   merge, a push to the default branch), since no person reviews what an unattended run
+   lands.
+3. For a release, tag the merge commit and publish the tag as the release slot says.
 
 ## Blocked
 
-Push the branch if there is one, then open or update one issue labelled
-`engineering-routine:blocked`, creating the label if it's missing. Include:
+Push the branch if there is one, then set the blocked marker, or update it if it is
+already set, with:
 
 - what stopped the run;
 - the command output;
 - the upstream range and the branch.
 
-Merge and tag nothing. Every later run stops at step 1 until a person closes the issue.
+Merge and tag nothing. Every later run stops at step 1 until a person clears it.

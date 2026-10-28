@@ -77,7 +77,8 @@ every update.
 
 ## Maintenance routine
 
-[ROUTINE.md](ROUTINE.md) is the engineering pack's full intake-to-release procedure, meant
-for an agent host on a schedule: finish earlier work, intake, branch, gates, an
-independent review of every port, release or not, land and tag. A manual intake follows it
-too.
+[ROUTINE.md](ROUTINE.md) is a pack's full intake-to-release procedure, meant for an agent
+host on a schedule: finish earlier work, intake, branch, gates, an independent review of
+every port, release or not, land and tag. A manual intake follows it too. Read it when
+running an intake; its slots (branch, gates, landing, release) take the project's own
+values from its instructions.
