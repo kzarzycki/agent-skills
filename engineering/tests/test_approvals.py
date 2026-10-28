@@ -1087,7 +1087,11 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
     assert gate(said("claude, same-family, small", 1, "high"))
 
 
-def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
+def test_without_ci_the_merge_proof_is_the_heads_pass_never_a_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anyone who can comment can write `Local check passed`, the PR's author from a fork included, and an old comment
+    says nothing about today's command and env: only a pass reusable() finds on the head's tree proves it."""
     no_ci = add(LOOP, "loop", "ci: false\n")
     missing = [
         (
@@ -1095,43 +1099,23 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
             " the head (approvals.py local-ci)"
         )
     ]
+    passes: dict[str, dict[str, Any]] = {}
+    monkeypatch.setattr(approvals, "reusable", passes.get)
+    monkeypatch.setattr(approvals, "writer", lambda login: False)
 
-    def proofs(*comments: str) -> list[str]:
+    def proofs(*comments: dict[str, Any]) -> list[str]:
         merged = pull(reviews=(VERDICT,), comments=comments, labels=OWNED, checks=())
+        merged["isCrossRepository"] = True
         return merge(merged, [approved(1, "area:web")], no_ci)
 
-    assert (
-        proofs(),
-        proofs(f"{approvals.CHECKED}\nHead: {'b' * 40}\nCommand: mise run check\n"),
-        proofs("## Evidence\n\n- `mise run check`: exit 0\n"),
-        proofs(f"{approvals.CHECKED}: no, not run\nHead: {HEAD}\n"),
-        proofs(f"> {approvals.CHECKED}\n> Head: {HEAD}\n"),
-        proofs(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
-    ) == (missing, missing, missing, missing, missing, [])
-
-
-def test_a_local_check_counts_only_from_the_author_the_runner_or_a_writer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Anyone can comment on a public repo, so a `Local check passed` comment from an account without write access
-    proves nothing."""
-    no_ci = add(LOOP, "loop", "ci: false\n")
-    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
-    passed = f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
-
-    def proofs(login: str) -> list[str]:
-        merged = pull(
-            reviews=(VERDICT,), comments=(note(passed, author={"login": login}),), labels=OWNED
-        )
-        return merge(merged, [approved(1, "area:web")], no_ci)
-
-    assert proofs("stranger") == [
-        (
-            "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the"
-            " head (approvals.py local-ci)"
-        )
-    ]
-    assert proofs("loop") == proofs("maintainer") == proofs("worker") == []
+    forged = note(f"{approvals.CHECKED}\nHead: {HEAD}\n", author={"login": "worker"})
+    obsolete = note(
+        f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: obsolete-gate\nEnv: GATE_SCOPE=smoke\n",
+        author={"login": "loop"},
+    )
+    assert proofs() == proofs(forged) == proofs(obsolete) == missing
+    passes[HEAD] = {"head": HEAD}
+    assert proofs() == []
 
 
 def test_more_checks_than_one_page_is_refused() -> None:
@@ -1148,7 +1132,7 @@ def test_more_comments_than_one_page_is_refused() -> None:
     with pytest.raises(
         approvals.Refused, match="#7 has more than 2 comments: the gate reads one page"
     ):
-        approvals.ran(crowded, loop_md("loop:\n  ci: false\n"))
+        approvals.ran(crowded, loop_md("loop:\n  batch_queue: true\n"))
 
 
 def test_a_pr_without_its_proof_names_each_missing_one() -> None:
@@ -5717,6 +5701,7 @@ def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
 
 
 NO_LOCAL_CHECK = "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
+NO_CHECK = "PR #7: no `check` on the head commit yet"  # the CI wait a batch proof replaces
 
 
 QUEUED = add(
@@ -5732,16 +5717,13 @@ def test_a_batch_proof_counts_only_where_loop_md_opts_into_a_queue(batched: dict
     assert queued_merge(batched["head"], proof) == []
     pr = pull(reviews=(verdict_on(batched["head"]),), comments=(proof,), checks=())
     pr["headRefOid"] = batched["head"]
-    assert merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == [
-        NO_LOCAL_CHECK
-    ]
-    assert merge(pr, [approved(1, "area:web")]) == ["PR #7: no `check` on the head commit yet"]
+    assert merge(pr, [approved(1, "area:web")]) == [NO_CHECK]
 
 
 def queued_merge(head: str, *comments: str) -> list[str]:
     pr = pull(reviews=(verdict_on(head),), comments=comments, checks=())
     pr["headRefOid"] = head
-    return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\nbatch_queue: true\n"))
+    return merge(pr, [approved(1, "area:web")], QUEUED)
 
 
 def queued_reasons(head: str, *comments: str) -> list[str] | None:
@@ -5758,6 +5740,11 @@ def test_a_green_batch_that_merged_the_head_cleanly_is_its_merge_proof(
     assert queued_merge(head, batch_note(head, merged, batch)) == []
     # the batch's tip is the merge itself when the PR merged last
     assert queued_merge(head, batch_note(head, merged, merged)) == []
+    # under `ci: false` the head's own pass, which the batch needs, is the merge proof
+    pr = pull(reviews=(verdict_on(head),), comments=(batch_note(head, merged, batch),), checks=())
+    pr["headRefOid"] = head
+    no_ci = add(LOOP, "loop", "ci: false\nbatch_queue: true\n")
+    assert merge(pr, [approved(1, "area:web")], no_ci) == []
 
 
 @pytest.mark.parametrize(
@@ -5786,7 +5773,7 @@ def test_a_red_or_unproven_batch_is_no_merge_proof(
     names = {**batched, "fff": "f" * 40}
     proof = batch_note(head, fields["merge"], fields["batch"], fields["exit"])
     # it adds no hold of its own: the wait is the one a PR with no batch proof has
-    assert queued_merge(head, proof) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, proof) == [NO_CHECK]
     assert queued_reasons(head, proof) == [f"PR #7: {said.format(**names)}"]
 
 
@@ -5796,13 +5783,13 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
     head, merged, batch = batched["head"], batched["merge"], batched["batch"]
     note = batch_note(head, merged, batch)
     ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [ungated]
     gated_head(head, {"GATE_UI_TESTS": "smoke"})  # gated, but under another env than this one
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [ungated]
     monkeypatch.setattr(approvals, "local_ci_env", lambda: {"GATE_UI_TESTS": "smoke"})
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [
         f"PR #7: batch {batch} names the head's gate env `default`, its record `GATE_UI_TESTS=smoke`",
     ]
@@ -5812,12 +5799,12 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
 def test_no_batch_comment_or_one_for_another_head_leaves_the_wait(batched: dict[str, str]) -> None:
     head = batched["head"]
     gated_head(head)
-    assert queued_merge(head) == [NO_LOCAL_CHECK]
+    assert queued_merge(head) == [NO_CHECK]
     assert queued_merge(head, batch_note("b" * 40, batched["merge"], batched["batch"])) == [
-        NO_LOCAL_CHECK
+        NO_CHECK
     ]
     assert queued_merge(head, "> " + batch_note(head, batched["merge"], batched["batch"])) == [
-        NO_LOCAL_CHECK
+        NO_CHECK
     ]
 
 
@@ -6406,6 +6393,7 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     case = carrying({"other.txt": "main moved\n"})
     monkeypatch.setattr(approvals, "git", lambda *args: pytest.fail(f"git {args}"))
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
+    monkeypatch.setattr(approvals, "reusable", lambda head: None)  # the merge proof, not a carry
     pr = carried_pull(case)
     assert approvals.judged(pr, NO_CI) is None
     assert merge(pr, [approved(1, "area:web")], NO_CI)[0].startswith(

@@ -50,8 +50,8 @@ review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest
 author posted one, that embeds its videos as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
-`ci: false` in loop.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
-writer, instead), and, while the change is high risk, for the owner's
+`ci: false` in loop.md, a `local-ci` pass on the head's tree under today's command and env, read as `local-ci` reads
+it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
@@ -1493,22 +1493,21 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
-    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass."""
+    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
+    tree under today's command and env (reusable)."""
     where = f"PR #{pull['number']}"
     if batch_queue(loop) and queued(pull) is None:
         return []
     if no_ci(loop):
-        head = [CHECKED, f"Head: {pull['headRefOid']}"]
-        if any(
-            [line.strip() for line in note["body"].strip().splitlines()[:2]] == head
-            and trusted(pull, note)
-            for note in notes(pull)
-        ):
-            found = []
-        else:
-            found = [
+        # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
+        # comment may write and which says nothing about today's command and env
+        found = (
+            []
+            if reusable(pull["headRefOid"])
+            else [
                 f"{where}: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
             ]
+        )
     else:
         if required is None:
             # the approvals status is check merge's own output: waiting for it never ends
