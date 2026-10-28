@@ -34,12 +34,19 @@ Paths are relative to the pack's folder.
 
 ## The tool
 
-`scripts/capability_pack/` is a Python package (3.14, with PyYAML). Run it from the
-repository root with this skill's `scripts/` folder on `PYTHONPATH`; the mise tasks set it:
+`scripts/capability_pack/` is a Python package (3.14, with PyYAML), and `scripts/vendor.py`
+runs it. Run the launcher from the repository root; `uv run` provisions Python and PyYAML
+from its PEP 723 header, so the project needs no Python environment of its own:
 
 ```sh
-PYTHONPATH=<this skill>/scripts uv run python -m capability_pack.cli check engineering
+uv run <this skill>/scripts/vendor.py check <pack>
 ```
+
+`check` and `update` run a pack's own `tests/`, when it has them, with the tool's
+interpreter (`python -m pytest`), which the launcher's environment lacks. A pack with tests
+runs the package as a module from a project environment that has pytest and whatever the
+tests import: `PYTHONPATH=<this skill>/scripts uv run python -m capability_pack.cli check <pack>`.
+This repository's mise tasks and workflows use that form for `engineering`.
 
 | Command | Does |
 |---|---|
@@ -65,7 +72,8 @@ A fork pulls a package from here the same way this repo pulls `engineering` from
 upstream: a pack folder whose `upstream.yml` names this repository as `repository`, with
 `skills_path: engineering/skills` (or another package's `skills/`), a `vendir.yml` leaf per
 skill it takes, and its own overlays. A first `vendir sync --chdir <pack>` writes the
-lock; from then on `update` and `check` keep it, and an overlay survives every update.
+lock; from then on the launcher's `update` and `check` keep it, and an overlay survives
+every update.
 
 ## Maintenance routine
 

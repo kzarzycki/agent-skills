@@ -7,12 +7,25 @@ Real git and vendir, no fakes: the origin is a local repository laid out like th
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
 
 from capability_pack.cli import main
+from engineering.tests.test_consumer_e2e import (
+    SLUG,
+    _isolated_env,
+    _no_bytecode,
+    _publish,
+    _run,
+    _write_manifest,
+)
+
+REPOSITORY = Path(__file__).resolve().parents[2]
 
 OVERLAY = "# Alpha, as the fork tunes it\n"
 
@@ -128,3 +141,29 @@ def test_a_pack_of_any_name_is_held_to_the_upstream_it_declares(tmp_path: Path) 
     (pack / "upstream.yml").write_text(yaml.safe_dump(policy, sort_keys=False))
 
     assert main(["check", str(pack)]) == 2
+
+
+def test_the_installed_launcher_runs_without_the_authors_environment(tmp_path: Path) -> None:
+    """A consumer installs vendoring through APM and runs its launcher with no Python project of
+    its own: the launcher's PEP 723 header is the only thing that provides PyYAML."""
+    env = _isolated_env(tmp_path)
+    source = tmp_path / "source"
+    shutil.copytree(REPOSITORY / "vendoring", source / "vendoring", ignore=_no_bytecode)
+    _publish(tmp_path, env, source)
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    version = yaml.safe_load((source / "vendoring" / "apm.yml").read_text())["version"]
+    _write_manifest(consumer / "apm.yml", {"git": f"{SLUG}/vendoring", "ref": f"^{version}"})
+    _run(["apm", "install"], cwd=consumer, env=env)
+    launcher = consumer / ".agents" / "skills" / "vendoring" / "scripts" / "vendor.py"
+
+    # The real HOME keeps uv's cache; the author's virtualenv leaves PATH.
+    runtime = {k: v for k, v in os.environ.items() if k not in {"VIRTUAL_ENV", "PYTHONPATH"}}
+    venvs = {str(Path(sys.executable).parent), str(REPOSITORY / ".venv" / "bin")}
+    runtime["PATH"] = os.pathsep.join(
+        p for p in runtime["PATH"].split(os.pathsep) if p not in venvs
+    )
+    pack = _fork(tmp_path, _origin(tmp_path))
+    for args in (["--help"], ["update", str(pack)], ["check", str(pack)]):
+        _run(["uv", "run", str(launcher), *args], cwd=consumer, env=runtime)
+    assert (pack / "skills" / "alpha" / "SKILL.md").read_text() == OVERLAY
