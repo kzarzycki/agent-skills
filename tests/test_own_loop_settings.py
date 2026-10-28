@@ -13,8 +13,15 @@ import pytest
 REPOSITORY = Path(__file__).resolve().parents[1]
 SCRIPTS = Path("skills") / "engineering-loop" / "scripts"
 COPIES = {
-    copy: next(path for name in ("gatekeeper.py", "approvals.py") if (path := root / SCRIPTS / name).exists())
-    for copy, root in (("shipped", REPOSITORY / "engineering"), ("installed", REPOSITORY / ".claude"))
+    copy: next(
+        path
+        for name in ("gatekeeper.py", "approvals.py")
+        if (path := root / SCRIPTS / name).exists()
+    )
+    for copy, root in (
+        ("shipped", REPOSITORY / "engineering"),
+        ("installed", REPOSITORY / ".claude"),
+    )
 }
 
 

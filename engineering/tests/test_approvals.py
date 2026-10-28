@@ -60,7 +60,9 @@ TOPLEVEL = approvals.toplevel
 VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
+HEAD_PUSHED = approvals.head_pushed
 COMMENT = approvals.comment
+PROVE = approvals.prove
 
 
 @pytest.fixture(autouse=True)
@@ -1671,14 +1673,15 @@ def test_an_empty_file_left_in_place_is_no_exact_revert() -> None:
 def github(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     """Every write approvals.py makes, instead of making it."""
     calls: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(
-        approvals, "comment", lambda number, body: calls.append(("comment", number, body))
-    )
+    for name in ("comment", "prove"):
+        monkeypatch.setattr(
+            approvals, name, lambda number, body: calls.append(("comment", number, body))
+        )
     monkeypatch.setattr(
         approvals, "label", lambda number, name, add: calls.append(("label", number, name, add))
     )
     monkeypatch.setattr(
-        approvals, "minimize", lambda comment_id: calls.append(("minimize", comment_id))
+        approvals, "supersede", lambda comment_id: calls.append(("minimize", comment_id))
     )
     monkeypatch.chdir(PROJECT)
     return calls
@@ -1817,7 +1820,7 @@ def test_the_owners_own_label_after_the_last_edit_is_their_approval(
 
     monkeypatch.setattr(approvals, "label", label)
     monkeypatch.setattr(
-        approvals, "comment", lambda _n, body: spec["comments"]["nodes"].append(note(body))
+        approvals, "prove", lambda _n, body: spec["comments"]["nodes"].append(note(body))
     )
     monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
     pr = pull()
@@ -1857,7 +1860,7 @@ def test_check_build_before_the_pr_records_the_owners_own_label(
 
     monkeypatch.setattr(approvals, "label", label)
     monkeypatch.setattr(
-        approvals, "comment", lambda _n, body: spec["comments"]["nodes"].append(note(body))
+        approvals, "prove", lambda _n, body: spec["comments"]["nodes"].append(note(body))
     )
     monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
     monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
@@ -1892,7 +1895,7 @@ def test_an_edit_after_the_owners_label_is_never_recorded_under_it(
     later = {**spec, "lastEditedAt": "2026-10-01T12:00:00Z"}
     sent: list[str] = []
     monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: sent.append("label"))
-    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "prove", lambda _n, body: sent.append(body))
     monkeypatch.setattr(approvals, "issue_node", lambda _n: later)
     with pytest.raises(
         approvals.Refused, match=r"edited \(as edited 2026-10-01 12:00:00 UTC\) after the owner"
@@ -1945,7 +1948,7 @@ def test_delegate_takes_its_label_off_again_when_the_record_fails(
     def failing(number: int, body: str) -> None:
         raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 503: Service Unavailable")
 
-    monkeypatch.setattr(approvals, "comment", failing)
+    monkeypatch.setattr(approvals, "prove", failing)
     assert approvals.main(["delegate", "7"]) == 1
     assert github == [
         ("label", 7, "approved:merge", True),
@@ -5811,7 +5814,7 @@ def test_batch_posts_the_proof_check_merge_reads(
     batched: dict[str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     posted: list[tuple[int, str]] = []
-    monkeypatch.setattr(approvals, "comment", lambda number, body: posted.append((number, body)))
+    monkeypatch.setattr(approvals, "prove", lambda number, body: posted.append((number, body)))
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     log = tmp_path / "gate.log"
     log.write_text("".join(f"line {n}\n" for n in range(1, 41)) + "gate: green\n")
@@ -5846,6 +5849,7 @@ def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every body comment() hands gh, from a fake host whose name and home name its owner."""
     sent: list[str] = []
     monkeypatch.setattr(approvals, "comment", COMMENT)
+    monkeypatch.setattr(approvals, "prove", PROVE)
     monkeypatch.setattr(approvals.github, "gh", lambda *args, data=None: sent.append(data) or "")
     monkeypatch.setattr(approvals.socket, "gethostname", lambda: "owner-MacBook.local")
     monkeypatch.setenv("HOME", "/Users/owner")
@@ -6333,3 +6337,80 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
     ]
+
+
+# --- ports ---
+
+
+def memory(pulls: dict[int, dict[str, Any]], issues: dict[int, dict[str, Any]]) -> Any:
+    """An in-memory tracker, forge and evidence, as another tool's adapter would plug in: every operation of
+    approvals.PORTS, the reads served from `pulls` and `issues`, the writes kept in `written`, and any other call a
+    failure, since check merge on a proven PR makes none."""
+    from types import SimpleNamespace
+
+    written: list[tuple[Any, ...]] = []
+
+    def unasked(name: str) -> Callable[..., Any]:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(f"check merge called {name}{args}")
+
+        return call
+
+    served = {
+        "issue_node": issues.__getitem__,
+        "issues": lambda numbers: [issues[n] for n in numbers if n in issues],
+        "label": lambda number, name, add: written.append(("label", number, name, add)),
+        "comment": lambda number, body: written.append(("comment", number, body)),
+        "record": lambda number, body: written.append(("record", number, body)),
+        "pull_request": pulls.__getitem__,
+        "preflight": lambda: None,
+        "viewer": lambda: "loop",
+        "writer": lambda login: login == "loop",
+        "head_pushed": lambda _pull: PUSHED,
+        "required_checks": lambda _base: {"check"},
+        "merged_labelled": lambda _branch, _name: [],
+    }
+    ports = {
+        name: SimpleNamespace(**{op: served.get(op, unasked(op)) for op in operations})
+        for name, operations in approvals.PORTS.items()
+    }
+    return SimpleNamespace(**ports, written=written)
+
+
+def test_check_merge_runs_end_to_end_on_in_memory_adapters_with_no_gh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The policy names its adapters; the gate reads the PR, its issue and its proofs through them alone."""
+    for name, real in (
+        ("viewer", VIEWER),
+        ("required_checks", REQUIRED),
+        ("merged_high", MERGED_HIGH),
+        ("head_pushed", HEAD_PUSHED),
+    ):
+        monkeypatch.setattr(approvals, name, real)
+    (tmp_path / "bin").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "bin"))  # no gh to fall back on
+    agents = tmp_path / "docs" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "issue-tracker.md").write_text(TRACKER)
+    (agents / "gatekeeper.md").write_text(
+        "# Gatekeeper\n\n## Policy\n\n```yaml\nadapters:\n  tracker: memory\n  forge: memory\n"
+        "  evidence: memory\n```\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    spec = approved(1, "area:web", "kind:enhancement")
+    pr = pull(body="Closes #1\n\n## Evidence\n\nlog line\n", reviews=(VERDICT,))
+    unreviewed = {**pr, "number": 8, "reviews": {"nodes": []}}
+    adapter = memory({7: pr, 8: unreviewed}, {1: spec})
+    monkeypatch.setitem(approvals.ADAPTERS, "memory", adapter)
+    assert approvals.main(["check", "merge", "7"]) == 0
+    assert capsys.readouterr().out == ""
+    assert approvals.main(["check", "merge", "8"]) == 1
+    assert "verifier" in capsys.readouterr().out
+    assert adapter.written == []
+    # without the adapter the policy names, the gate refuses before reading anything
+    monkeypatch.delitem(approvals.ADAPTERS, "memory")
+    assert approvals.main(["check", "merge", "7"]) == 1
+    assert capsys.readouterr().out == (
+        "gatekeeper.md's `adapters.tracker` names 'memory', which no adapter implements: github\n"
+    )

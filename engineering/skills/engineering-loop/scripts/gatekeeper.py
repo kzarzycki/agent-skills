@@ -263,32 +263,96 @@ def sibling(name: str) -> ModuleType:
     return module
 
 
+# Ports: the gatekeeper reaches a tracker, a forge and an evidence store only through these operations, each a
+# function of an adapter's `tracker`, `forge` or `evidence` (github_adapter.py's are the reference). An item is an issue
+# or a PR, by number; reads return nodes shaped as github_adapter.py's ISSUE and PULL queries read them, and a failed
+# call raises subprocess.CalledProcessError with the tool's reason as its stderr.
+# ponytail: GitHub's node shapes are the data model; give the ports their own when a second adapter needs them.
+PORTS = {
+    # issue_node(n), issues(numbers) (those that are issues), comment(n, body), label(n, name, add), assign(n, login, add)
+    "tracker": ("issue_node", "issues", "comment", "label", "assign"),
+    # the PR and its head, files, merged PRs, required checks, merge settings, who may write, and the merge itself
+    "forge": (
+        "pull_request",  # (pr) -> the PR node, with its reviews, checks, comments and closing issues
+        "current_pr",  # () -> the checkout's branch's PR number, or None
+        "pr_changes",  # (pr) -> each file the PR changes, with its patch
+        "merged_pull",  # (pr) -> the merged PR with its merge commit, or None
+        "merge_base",  # (base, head) -> the commit the PR's diff starts from
+        "diff_lines",  # (base, head) -> per file, the lines a review at head can comment on
+        "tree",  # (sha) -> {path: (mode, blob)} of the commit, or None when too large
+        "head_pushed",  # (pull) -> when the head was pushed to the PR's branch, or None
+        "merged_labelled",  # (branch, name) -> the merged PRs into branch carrying the label
+        "required_checks",  # (base) -> the checks the base requires
+        "queue_required",  # (base) -> whether the base requires a merge queue
+        "auto_merge_allowed",  # () -> whether the repo allows auto-merge
+        "viewer",  # () -> the account running this, or None when the forge won't say
+        "writer",  # (login) -> whether the account can write to the repo
+        "repository",  # (remote URL) -> the `owner/repo` it names on this forge, or None
+        "preflight",  # () -> why this checkout can't reach the forge, or None
+        "ready",  # (pr) -> marks a draft ready
+        "merge",  # (pr, head, auto=False) -> merges pinned to head, or turns auto-merge on
+        "dequeue",  # (pr node id) -> takes the PR out of the merge queue
+        "run",  # (run id) -> the CI run as {status, url}, or None
+        "rerun",  # (run id) -> runs it again
+    ),
+    # approval records, check passes and batch proofs (record), an outdated record (supersede), a verdict (post_review);
+    # they are read back among the item's comments and reviews
+    "evidence": ("record", "supersede", "post_review"),
+}
 github = sibling("github_adapter")
-# the GitHub reads and writes the policy code calls by name
-pull_request, pr_changes, merged_pull, merge_base = (
-    github.pull_request,
-    github.pr_changes,
-    github.merged_pull,
-    github.merge_base,
+ADAPTERS: dict[str, Any] = {"github": github}
+# the adapter of each port: GitHub's, but while main() runs, the policy's `adapters` once a port is first called
+GITHUB = {name: getattr(github, name) for name in PORTS}
+using: dict[str, Any] | None = GITHUB
+
+
+def adapters(policy: str | None) -> dict[str, Any]:
+    """Each port's adapter, by the policy's `adapters` names (`github` for one it doesn't name); an unknown name, or an
+    adapter lacking an operation of its port, is refused naming it."""
+    named = settings(policy).get("adapters", {})
+    chosen = {}
+    for name, operations in PORTS.items():
+        adapter = named.get(name, "github")
+        if adapter not in ADAPTERS:
+            raise Refused(
+                f"{source(policy)}'s `adapters.{name}` names {adapter!r}, which no adapter implements:"
+                f" {', '.join(sorted(ADAPTERS))}"
+            )
+        chosen[name] = getattr(ADAPTERS[adapter], name, None)
+        if missing := [op for op in operations if not hasattr(chosen[name], op)]:
+            raise Refused(f"the {adapter} adapter's {name} lacks {', '.join(missing)}")
+    return chosen
+
+
+def port(name: str) -> Any:
+    global using
+    if using is None:
+        using = adapters(project()[1])
+    return using[name]
+
+
+def through(name: str, operation: str) -> Callable[..., Any]:
+    """`operation` of port `name`, called on the adapter in use at the call."""
+    return lambda *args, **kwargs: getattr(port(name), operation)(*args, **kwargs)
+
+
+issue_node, issues_of = through("tracker", "issue_node"), through("tracker", "issues")
+label, assign = through("tracker", "label"), through("tracker", "assign")
+pull_request, current_pr = through("forge", "pull_request"), through("forge", "current_pr")
+pr_changes, merged_pull = through("forge", "pr_changes"), through("forge", "merged_pull")
+merge_base, diff_lines = through("forge", "merge_base"), through("forge", "diff_lines")
+tree, head_pushed = through("forge", "tree"), through("forge", "head_pushed")
+required_checks, queue_required = (
+    through("forge", "required_checks"),
+    through("forge", "queue_required"),
 )
-required_checks, queue_required, auto_merge_allowed = (
-    github.required_checks,
-    github.queue_required,
-    github.auto_merge_allowed,
+auto_merge_allowed = through("forge", "auto_merge_allowed")
+viewer, writer, repository = (
+    through("forge", "viewer"),
+    through("forge", "writer"),
+    through("forge", "repository"),
 )
-tree, head_pushed, current_pr, diff_lines = (
-    github.tree,
-    github.head_pushed,
-    github.current_pr,
-    github.diff_lines,
-)
-issue_node, label, assign, minimize = (
-    github.issue_node,
-    github.label,
-    github.assign,
-    github.minimize,
-)
-viewer, writer, github_repo = github.viewer, github.writer, github.github_repo
+supersede = through("evidence", "supersede")
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
@@ -444,6 +508,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "carry_over_main": Table({"except": list}),
     # the project's check commands, each a shell command: `all` is what local-ci runs
     "checks": {"changed": str, "check": str, "all": str},
+    # the adapter of each port (PORTS), `github` for one not named
+    "adapters": {"tracker": str, "forge": str, "evidence": str},
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
 TRACKED: dict[str, Any] = dict.fromkeys(
@@ -1398,7 +1464,7 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     origin = subprocess.run(
         ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
     )
-    if github_repo(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
+    if repository(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
         return f"this checkout's `origin` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
     config = subprocess.run(
         ["git", "config", "--get", "user.signingkey"], capture_output=True, text=True, check=False
@@ -1771,7 +1837,7 @@ def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
             + "\n".join(tail)
             + "\n````\n</details>\n"
         )
-    comment(pr, body)
+    prove(pr, body)
     return 0
 
 
@@ -2115,7 +2181,7 @@ def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
     never links a closing line, and has no API to set the link."""
     issues: list[dict[str, Any]] = pull["closingIssuesReferences"]["nodes"]
     unlinked = sorted(set(named(pull["body"] or "")) - {issue["number"] for issue in issues})
-    return issues + github.issues(unlinked)
+    return issues + issues_of(unlinked)
 
 
 def public(text: str) -> str:
@@ -2125,32 +2191,39 @@ def public(text: str) -> str:
     return re.sub(re.escape(home) + r"(?![\w.-])", "~", text) if home else text
 
 
-def comment(number: int, body: str) -> None:
-    """Comment on an issue or PR, as posted (public), refused first when it names a term of the deny list."""
+def posted(body: str) -> str:
+    """`body` as posted (public), refused first when it names a term of the deny list."""
     body = public(body)
     for text in texts(body):
         denied(text)
-    github.comment(number, body)
+    return body
+
+
+def comment(number: int, body: str) -> None:
+    """Comment on an issue or PR (tracker)."""
+    port("tracker").comment(number, posted(body))
+
+
+def prove(number: int, body: str) -> None:
+    """Leave a proof on an issue or PR (evidence): an approval record, a check pass, a batch proof."""
+    port("evidence").record(number, posted(body))
 
 
 def post_review(pr: int, review: dict[str, Any]) -> None:
-    """Post a PR review, every text in it as posted (public), refused first when one names a term of the deny list."""
+    """Post a verdict as a PR review (evidence), every text in it as posted."""
     # unescaped, so public() finds a non-ASCII home as GitHub will decode it
-    data = public(json.dumps(review, ensure_ascii=False))
-    for text in texts(data):
-        denied(text)
-    github.post_review(pr, json.loads(data))
+    port("evidence").post_review(pr, json.loads(posted(json.dumps(review, ensure_ascii=False))))
 
 
 def one_repo() -> None:
-    """Refuse a checkout gh can't tell the repo of (github.one_repo)."""
-    if why := github.one_repo():
+    """Refuse a checkout that can't reach the forge (preflight)."""
+    if why := port("forge").preflight():
         raise Refused(why)
 
 
 def merged_high(branch: str) -> list[int]:
     """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
-    return github.merged_labelled(branch, RISK_LABEL)
+    return port("forge").merged_labelled(branch, RISK_LABEL)
 
 
 class Refused(Exception):
@@ -2445,7 +2518,7 @@ def landing(
         if not RED.intersection(state for _, state in red):
             if stuck(pull):
                 try:
-                    github.dequeue(pull["id"])
+                    port("forge").dequeue(pull["id"])
                 except subprocess.CalledProcessError as error:
                     print(
                         f"{where}: dequeueing its stuck merge-queue entry failed: {error.stderr.strip()}"
@@ -2471,7 +2544,7 @@ def landing(
         return WAITING, ON_STATE
     if pull["isDraft"]:
         # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
-        github.ready(pr)
+        port("forge").ready(pr)
         print(f"{where} is ready now: CI starts on ready, run land again")
         return WAITING, ON_CI
     if not checking + owner and local:
@@ -2479,7 +2552,7 @@ def landing(
         print(f"{where} landed in {pull['baseRefName']} as {commit}, signed by a key in {local[1]}")
         return 0, None
     if not checking + owner:
-        github.merge(pr, head)
+        port("forge").merge(pr, head)
         print(f"{where} merges at {head}")
         # on a base that requires a merge queue, GitHub queues it instead: a wait follows it to MERGED
         return 0, ON_MERGE
@@ -2492,7 +2565,7 @@ def landing(
     )
     # GitHub's auto-merge would sign the squash with GitHub's key: a signed landing waits for the checks instead
     if pending and required and not local and auto_merge_allowed():
-        github.merge(pr, head, auto=True)
+        port("forge").merge(pr, head, auto=True)
         print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
         return 0, ON_MERGE
     statuses = [
@@ -2523,7 +2596,7 @@ def landing(
             )
             return WAITING, None
         # gh resolves the id in this checkout's repo; a target naming another repo's run, or one that is gone, fails
-        run = github.run(found[1])
+        run = port("forge").run(found[1])
         if run is None or not RUN.search(run.get("url") or ""):
             print(
                 f"{stale}, and its target names no Actions run of this repo:"
@@ -2540,7 +2613,7 @@ def landing(
             return WAITING, None
         # ponytail: a status forged to name another workflow's run reruns that run; whoever can post statuses
         # can rerun runs anyway. Pin the context to the approvals app in the ruleset to close it.
-        github.rerun(found[1])
+        port("forge").rerun(found[1])
         if reran is not None:
             reran.add(found[1])
         print(
@@ -2578,10 +2651,10 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
     ]
     if any(found.get("by") == "owner" and found.get(point) != value for _, found in earlier):
         record += CHANGED[point]
-    comment(number, f"Approved: {point}\nBy: owner\n{record}")
+    prove(number, f"Approved: {point}\nBy: owner\n{record}")
     for note, _ in earlier:
         if not note.get("isMinimized") and note.get("viewerCanMinimize"):
-            minimize(note["id"])
+            supersede(note["id"])
     label(number, f"approved:{point}", add=True)
     label(number, NEEDS_OWNER, add=False)
     return 0
@@ -2599,7 +2672,7 @@ def delegate(number: int) -> int:
     # the label first, so the record is never older than the label it names
     label(number, MERGE_LABEL, add=True)
     try:
-        comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+        prove(number, f"Approved: merge\nBy: {DELEGATE}\n")
     except subprocess.CalledProcessError:
         # a label with no record reads as the owner's once the PR targets the default branch: take it off again
         label(number, MERGE_LABEL, add=False)
@@ -2852,7 +2925,7 @@ def local_ci(pr: int | None) -> int:
     else:
         record = run_local_ci(pr, head)
         source = ""
-    comment(
+    prove(
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
     )
@@ -2953,6 +3026,8 @@ def main(argv: list[str]) -> int:
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
+    global using
+    using = None  # the policy's adapters, read at the first port call
     try:
         if args.command == "report":  # reads a local file only, so no remote needs choosing
             return report_check(args.report)
@@ -2993,6 +3068,8 @@ def main(argv: list[str]) -> int:
         # gh's reason, e.g. a closing line that names a number with no issue
         print(exc.stderr.strip() or exc)
         return 1
+    finally:
+        using = GITHUB
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from types import SimpleNamespace
 from typing import Any
 
 # the collaborator permissions that can write; GitHub's `permission` field reads `maintain` as `write`
@@ -411,3 +412,34 @@ def run(run_id: str) -> dict[str, Any] | None:
 
 def rerun(run_id: str) -> None:
     gh("run", "rerun", run_id)
+
+
+# each port as gatekeeper.py's PORTS names its operations
+tracker = SimpleNamespace(
+    issue_node=issue_node, issues=issues, comment=comment, label=label, assign=assign
+)
+forge = SimpleNamespace(
+    pull_request=pull_request,
+    current_pr=current_pr,
+    pr_changes=pr_changes,
+    merged_pull=merged_pull,
+    merge_base=merge_base,
+    diff_lines=diff_lines,
+    tree=tree,
+    head_pushed=head_pushed,
+    merged_labelled=merged_labelled,
+    required_checks=required_checks,
+    queue_required=queue_required,
+    auto_merge_allowed=auto_merge_allowed,
+    viewer=viewer,
+    writer=writer,
+    repository=github_repo,
+    preflight=one_repo,
+    ready=ready,
+    merge=merge,
+    dequeue=dequeue,
+    run=run,
+    rerun=rerun,
+)
+# a proof is a comment and a verdict a review, read back with the item that holds them
+evidence = SimpleNamespace(record=comment, supersede=minimize, post_review=post_review)
