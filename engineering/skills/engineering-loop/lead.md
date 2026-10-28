@@ -186,9 +186,9 @@ design, wireframes included for a UI, and delegate the rest.
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work on other
      items meanwhile. Exit 1 names each missing proof, and nothing on the PR changed: add the
-     proof. A head behind main, or in conflict with it, is refused (exit 1) before anything
-     else, since GitHub's own refusal reads as a required check `expected`: merge `origin/main`
-     in as the first bullet says, then land again. While GitHub has not computed that merge
+     proof. A head in conflict with main, or behind it where main requires no merge queue, is
+     refused (exit 1) before anything else, since GitHub's own refusal reads as a required check
+     `expected`: merge `origin/main` in as the first bullet says, then land again. While GitHub has not computed that merge
      state yet it waits, marking nothing ready. On a draft it marks the PR ready, which starts the full list on GitHub since CI
      skips a draft, and waits for that CI. It merges pinned to the head
      (`--match-head-commit`) once the base's required checks are green, or turns on auto-merge
