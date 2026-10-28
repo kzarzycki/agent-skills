@@ -22,5 +22,7 @@ then a line `exit <n>`, since a log of another commit proves nothing about this 
 3. Restore: end with `git status --porcelain` and `git diff --stat` in the last log, both
    empty, since a run that leaves the tree changed taints the next one.
 
-Post the logs, each in its own fenced block, as your one report comment on PR #<n>.
+Write each log to `tmp/loop/<name>.log` and name each in your one report comment on PR
+#<n>, so it comes back as a file block and one that would pass the comment's size limit is
+cut to its last lines.
 ```

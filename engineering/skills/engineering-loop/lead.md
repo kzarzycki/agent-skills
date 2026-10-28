@@ -123,7 +123,9 @@ design, wireframes included for a UI, and delegate the rest.
    brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
    bring your instance up on that head (loop.md § Proof on a branch), so the verifier can drive it. Leave the
    worktree alone until the report arrives. A report without a `SATISFIED:` line is
-   unfinished: never triage or land on it. Post each finished report with
+   unfinished: never triage or land on it. A verifier's `<report>.question` asking for a
+   proof run (verifier.md, A full heavy slot) is answered by filling `proof-run.md` from it
+   and sending the logs back. Post each finished report with
    `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`: one PR review on the commit the
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
