@@ -504,7 +504,7 @@ class Table(dict):
 
 # the policy's sections (policy.md), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
-STAGES = ("intent", "spec", "plan", "build", "review", "land")
+STAGES = ("intent", "spec", "split", "plan", "build", "review", "land")
 # the specs `spec.auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
 SPEC_KINDS = ("bug", "follow-up", "sub-issue")
 SCHEMA: dict[str, dict[str, Any]] = {

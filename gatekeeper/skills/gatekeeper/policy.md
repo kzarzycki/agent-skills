@@ -106,7 +106,7 @@ carry_over_main:
 | | `opt_out` | `true` where a person may work outside the loop (Opting out) | `false` |
 | | `batch_queue` | `true` for a project that lands through a batching merge queue of its own (Batching merge queue) | no batch proof counts |
 | | `owner` | a login whose own `approved:spec` (or `approved:plan`) label, added after the spec's last edit, `check` and `land` record as the owner's approval, removing `needs-owner` | an agent records the owner's word with `record approval` |
-| `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage, which the flow reads; the gatekeeper reads only `plan`, since a `## Plan` comment is then due before the build | the stage's default |
+| `practice` | `intent`, `spec`, `split`, `plan`, `build`, `review`, `land` | the skill that fills that stage, which the flow reads; the gatekeeper reads only `plan`, since a `## Plan` comment is then due before the build | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Rules); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Rules) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`gatekeeper.py`'s docstring says how) | GitHub merges |

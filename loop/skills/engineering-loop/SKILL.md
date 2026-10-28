@@ -143,6 +143,7 @@ produces what this table says:
 |---|---|---|
 | Intent | open questions settled, or asked in the issue | `grilling` |
 | Spec | the spec in the issue, or linked from it, with acceptance examples and the reference each checks against | `to-spec` |
+| Split, only for an epic | a split manifest (a JSON file of child items, each with its `title`, `spec` and `blocked_by` titles), which the lead applies through the tracker as sub-issues with their dependencies; the skill writes no tracker state | `to-tickets` |
 | Plan, only when gatekeeper.md's `practice` names a `plan` skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
 | Build | commits on the branch, with `check` green | the worker role |
 | Review | findings with path, cost and repro, then the verdict lines | `code-review`, run by the verifier |

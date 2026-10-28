@@ -200,3 +200,22 @@ A split stage turns one spec into child items. Its manifest lists each child ite
 - a title;
 - its spec;
 - what blocks it (the other items it waits for).
+
+The manifest is a JSON file, by default `.scratch/<feature-slug>/split-manifest.json`. Titles are
+the items' identities, so `blocked_by` names titles, and a title is unique within the manifest.
+The manifest holds no labels, parent or tracker state: whoever applies it adds those.
+
+```json
+{
+  "version": 1,
+  "items": [
+    {"title": "Expose account status", "spec": "Return the current account status from the API.", "blocked_by": []},
+    {"title": "Render account status", "spec": "Show the account status in the dashboard.", "blocked_by": ["Expose account status"]}
+  ]
+}
+```
+
+The skill that splits only writes this file, so the same file works under the lead, which applies it
+through the tracker (github-tracker's github.md, Publish an issue batch), and under a flow engine,
+which applies it with its own ceiling and cycle checks. A practice skill decides how to split; it
+never writes tracker state, since two writers of one state drift apart.

@@ -136,6 +136,22 @@ Every set of issues an engineering skill produces is one publication batch. It i
 fingerprinted and resumable so that an interrupted run neither duplicates nor loses an
 issue.
 
+### Input: the split manifest
+
+The batch is a split manifest (docs/layers.md, Split manifest): the JSON file a split
+stage's skill (`to-tickets` by default) writes, with `items` of `title`, `spec` and
+`blocked_by`. The apply step reads the file and never edits it. Each item becomes one
+issue of the batch below:
+
+- `title` is the issue's title and identity; `spec` is its `body` byte-for-byte;
+  `blocked_by` is its `blockers`.
+- `labels` come from the caller, one list for every issue (the project's label map,
+  issues.md, Labels), since the manifest holds none. The caller also names the parent
+  issue (the epic), which each issue joins as a sub-issue in the relationships phase.
+- Stop before anything is rendered on an unreadable file, a `version` other than 1, a
+  missing or non-string field, a duplicate title, a blocker that names no item, or a
+  cycle. A flow engine applies the same file with its own checks instead.
+
 ### Canonical batch
 
 - Titles are the issues' identities inside the batch. Stop on a duplicate title, an

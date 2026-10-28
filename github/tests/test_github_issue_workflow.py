@@ -656,3 +656,85 @@ def test_duplicate_marker_stops_before_approval_create_or_relationship_edit(
     ]
     assert ("approval", "requested") not in result.events
     assert _mutating_invocations(tmp_path) == []
+
+
+LAYERS = PACKAGE.parent / "docs" / "layers.md"
+MANIFEST_FENCE = re.compile(r"## Split manifest.*?```json\n(?P<manifest>.*?)\n```", re.DOTALL)
+
+
+def _tickets_from_manifest(path: Path, labels: list[str]) -> list[dict]:
+    """The apply step's input rules (github.md, Input: the split manifest)."""
+    manifest = json.loads(path.read_text())
+    assert manifest["version"] == 1
+    tickets = []
+    for item in manifest["items"]:
+        assert all(isinstance(item[key], str) for key in ("title", "spec"))
+        assert isinstance(item["blocked_by"], list)
+        tickets.append(
+            {
+                "title": item["title"],
+                "body": item["spec"],
+                "labels": labels,
+                "blockers": item["blocked_by"],
+            }
+        )
+    _stable_topological_order(tickets)  # unique titles, known blockers, no cycle
+    return tickets
+
+
+def _documented_manifest(tmp_path: Path) -> Path:
+    match = MANIFEST_FENCE.search(LAYERS.read_text())
+    assert match, "docs/layers.md must show a split manifest"
+    path = tmp_path / "split-manifest.json"
+    path.write_text(match.group("manifest"))
+    return path
+
+
+def test_documented_manifest_round_trips_through_the_apply_step(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    items = json.loads(manifest.read_text())["items"]
+    tickets = _tickets_from_manifest(manifest, ["area:engineering"])
+
+    result = _run_batch(tmp_path, tickets=tickets, approval=True)
+
+    assert result.returncode == 0
+    remote = _remote_state(tmp_path)
+    assert [(issue["title"], issue["labels"]) for issue in remote["issues"]] == [
+        (item["title"], ["area:engineering"]) for item in items
+    ]
+    for issue, item in zip(remote["issues"], items, strict=True):
+        assert issue["body"].startswith(f"{item['spec']}\n\n<!-- agent-skills-batch:")
+    assert remote["relationships"] == [
+        {
+            "blocked": "https://github.test/example/repo/issues/2",
+            "blocker": "https://github.test/example/repo/issues/1",
+        }
+    ]
+    writes = len(_mutating_invocations(tmp_path))
+
+    again = _run_batch(tmp_path, tickets=tickets, approval=None)
+
+    assert again.returncode == 0
+    assert len(_mutating_invocations(tmp_path)) == writes
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: m["items"].append(dict(m["items"][0])),
+        lambda m: m["items"][0].update(blocked_by=["No such item"]),
+        lambda m: m["items"][0].update(blocked_by=[m["items"][1]["title"]]),
+        lambda m: m.update(version=2),
+    ],
+    ids=["duplicate-title", "unknown-blocker", "cycle", "version"],
+)
+def test_apply_step_refuses_a_bad_manifest_before_any_gh_call(tmp_path: Path, mutate) -> None:
+    manifest = _documented_manifest(tmp_path)
+    document = json.loads(manifest.read_text())
+    mutate(document)
+    manifest.write_text(json.dumps(document))
+
+    with pytest.raises((AssertionError, KeyError)):
+        _tickets_from_manifest(manifest, [])
+
+    assert _gh_invocations(tmp_path) == []
