@@ -73,7 +73,9 @@ loop never merges it or turns auto-merge on for it. Risk rules and `risk:high` h
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
 PR when one fails, or when GitHub's merge state says the head is behind a base that requires it up to date
-(`BEHIND`) or conflicts with it (`DIRTY`): merge the base in, rerun the gates and get a verdict on the merge. While
+(`BEHIND`) or conflicts with it (`DIRTY`): merge the base in, rerun the gates and get a verdict on the merge. Behind a
+base whose rules require a merge queue, or already in its queue, is no refusal, since the queue tests the PR on top of
+the base and every entry ahead of it: approved PRs land at once, each queued without waiting for another's merge. While
 GitHub has not computed that state yet (`UNKNOWN`) it neither marks ready nor merges: exit 3, run it again. A draft
 it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
 protection; a base requiring none requires every check on the head green). A private repo on GitHub's free plan
@@ -2179,6 +2181,21 @@ def required_checks(base: str) -> set[str]:
     return set((rulesets + protection).split())
 
 
+def queue_required(base: str) -> bool:
+    """Whether the base branch's rules require a merge queue; an error reads as none, so land refuses as without one."""
+    try:
+        rules = gh(
+            "api",
+            "--paginate",
+            f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
+            "--jq",
+            '.[] | select(.type == "merge_queue") | .type',
+        )
+    except subprocess.CalledProcessError:
+        return False
+    return bool(rules.split())
+
+
 def auto_merge_allowed() -> bool:
     return gh("api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge").strip() == "true"
 
@@ -2601,8 +2618,14 @@ def landing(
     if why := outside(pull, loop):
         # land is the loop's merge: auto-merge on a PR no verifier saw would merge it on CI alone
         raise Refused(why)
-    # GitHub says this as a required check `expected`
-    if stale := STALE_BASE.get(pull["mergeStateStatus"]):
+    # GitHub says this as a required check `expected`. A merge queue tests the PR on top of the base and every entry
+    # ahead of it, so behind is no reason to stop there: PRs landing at once each stay queued as the others merge.
+    stale = STALE_BASE.get(pull["mergeStateStatus"])
+    if stale and pull["mergeStateStatus"] == "BEHIND" and (
+        pull["isInMergeQueue"] or queue_required(pull["baseRefName"])
+    ):
+        stale = None
+    if stale:
         raise Refused(
             f"{where} {stale} {pull['baseRefName']}: merge origin/{pull['baseRefName']} in, rerun the gates, get a"
             " verdict on the merge (lead.md step 8), then land again"
