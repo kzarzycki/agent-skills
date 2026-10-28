@@ -131,3 +131,19 @@ def test_consumer_generated_state_triggers_qualification() -> None:
     workflow = _workflow("engineering-ci.yml")
     required = {".agents/**", ".claude/**", "apm.yml", "apm.lock.yaml"}
     assert required <= set(workflow["on"]["push"]["paths"])
+
+
+def test_every_workflow_call_of_the_vendoring_tool_finds_its_package() -> None:
+    """The tool is a package in the vendoring skill's scripts folder, which no environment puts on the path."""
+    calls = [
+        line.strip()
+        for path in WORKFLOWS.glob("engineering-*.yml")
+        for step in _steps(_workflow(path.name))
+        for line in step.get("run", "").splitlines()
+        if "capability_pack" in line
+    ]
+    assert len(calls) == 3
+    for call in calls:
+        found = re.fullmatch(r"PYTHONPATH=(\S+) uv run python -m capability_pack\.cli .*", call)
+        assert found, call
+        assert (ROOT / found.group(1) / "capability_pack" / "cli.py").is_file()

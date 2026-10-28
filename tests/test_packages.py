@@ -251,3 +251,16 @@ def test_the_package_packs_and_installs_for_claude_and_codex(name: str, tmp_path
     lock = (consumer / "apm.lock.yaml").read_text()
     _run(["apm", "install", "--frozen"], cwd=consumer, env=env)
     assert (consumer / "apm.lock.yaml").read_text() == lock
+
+
+def test_every_local_plugin_has_an_area_component() -> None:
+    """Every issue carries an `area:` label, one per top-level plugin plus `ci`, so a plugin's issues can be found."""
+    marketplace = json.loads((REPOSITORY / ".claude-plugin" / "marketplace.json").read_text())
+    plugins = {
+        p["source"].removeprefix("./")
+        for p in marketplace["plugins"]
+        if isinstance(p["source"], str) and p["source"].count("/") == 1
+    }
+    tracker = (REPOSITORY / "docs" / "agents" / "issue-tracker.md").read_text()
+    settings = yaml.safe_load(re.search(r"```yaml\n(.*?)```", tracker, re.DOTALL).group(1))
+    assert set(settings["components"]) == plugins | {"ci"}
