@@ -7086,11 +7086,23 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     assert "co-author line only, with no session link, since the commit reaches a" in preamble
 
 
-def test_the_cloud_preamble_freezes_the_branch_once_the_head_is_handed_on() -> None:
+def test_a_cloud_worker_s_delivered_brief_freezes_its_branch_after_hand_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The cloud subscribes a worker to its PR's events; a review comment must not wake it to push."""
-    preamble = omnigent_agent.PR_PREAMBLE
-    assert "your branch is frozen" in preamble and "read-only, so push nothing" in preamble
-    assert "a follow-up goes in a new PR" in preamble
+    for held in (False, True):
+        if held:
+            monkeypatch.setenv("LOOP_DENY_LIST", str(tmp_path / "deny.txt"))
+        else:
+            monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+        og = FakeOmnigent()
+        fake_gh(monkeypatch, {})
+        sid, _ = omnigent_agent.start(
+            og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, pr=7
+        )
+        brief = omnigent_agent.text_of(og.sessions[sid][1])
+        assert "your branch is frozen" in brief and "read-only, so push nothing" in brief
+        assert "a follow-up goes in a new PR" in brief
 
 
 def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:
