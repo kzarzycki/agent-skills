@@ -1587,9 +1587,11 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     if batch_queue(loop) and queued(pull) is None:
         return []
     if no_ci(loop):
-        head = [CHECKED, f"Head: {pull['headRefOid']}"]
+        # the merge proof is the full check: a `record checks` pass of the lighter `checks.check` proves nothing here
+        full = settings(loop).get("checks", {}).get("all", LOCAL_CI)
+        head = [CHECKED, f"Head: {pull['headRefOid']}", f"Command: {full}"]
         if any(
-            [line.strip() for line in note["body"].strip().splitlines()[:2]] == head
+            [line.strip() for line in note["body"].strip().splitlines()[:3]] == head
             and trusted(pull, note)
             for note in notes(pull)
         ):

@@ -1140,7 +1140,8 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
         proofs(f"{approvals.CHECKED}: no, not run\nHead: {HEAD}\n"),
         proofs(f"> {approvals.CHECKED}\n> Head: {HEAD}\n"),
         proofs(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
-    ) == (missing, missing, missing, missing, missing, [])
+        proofs(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"),
+    ) == (missing, missing, missing, missing, missing, missing, [])
 
 
 def test_a_local_check_counts_only_from_the_author_the_runner_or_a_writer(
