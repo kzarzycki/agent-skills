@@ -77,15 +77,18 @@ yourself, keeping standards and spec as separate axes.
   looked right. Real data you see may go in your report, never in anything bound for the
   tracker. When the sandbox can't reach the instance or its log, say so.
 - **Run loop.md § Verifier checklist**, when it has one.
-- **Mutation-check the new tests.** For each test that guards a behaviour the spec
-  changes, save the production change it guards as a patch beside your report
-  (`git diff <base> HEAD -- <file> > <patch>`). Undo it with `git apply -R <patch>`, run
-  the test, and redo it with `git apply <patch>`; undo and redo are symmetric, so this
-  also restores a file the change added or deleted. A test that still passes guards
-  nothing: report it as a major. Before the report, `git status --porcelain` must match what
-  it showed at the start: revert any mutation of yours still applied, and report a tree you
-  cannot clean as a finding naming its paths, since the lead's next gate and push run in it
-  (`wait` fails a host verifier that leaves a tracked change).
+- **Mutation-check the new tests.** Undo each production change the spec adds on its own
+  (one condition, branch or value), never the whole diff at once, since a whole-patch revert
+  fails the tests for the wrong reason (a flag gone) and hides a change no test covers. Edit
+  the file back to the base for that one change alone, since a diff hunk can join two
+  changes, even on one line; save the edit as a patch beside your report (`git diff --
+  <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
+  change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
+  also the repro. A change whose undoing leaves every test green is untested: report it as a
+  major. Before the report, `git status --porcelain` must match what it showed at the start:
+  revert any mutation of yours still applied, and report a tree you cannot clean as a finding
+  naming its paths, since the lead's next gate and push run in it (`wait` fails a host
+  verifier that leaves a tracked change).
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
