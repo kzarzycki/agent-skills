@@ -229,8 +229,8 @@ credentials as the person. issue-tracker.md's components and extra categories ar
 `components` and `categories` (tracker_settings).
 It reads and writes the tracker, the forge and the evidence only through their ports (PORTS), each an adapter the
 policy's `adapters` section names (`tracker`, `forge`, `evidence`), `github` for one it doesn't: github_adapter.py,
-through `gh`. A name no adapter has is refused, naming it. The status the approvals workflow posts may be named
-`loop:approvals` or `gatekeeper` (the template posts both for one release line): `check merge` never waits for
+through `gh`. A name no adapter has is refused, naming it. The gate accepts its own status under either name,
+`loop:approvals` (the one the project template's workflow posts) or `gatekeeper`: `check merge` never waits for
 either, and `land` reruns either's run. Stdlib, and PyYAML for the settings block (SKILL.md § Settings says how it
 is delivered).
 """
@@ -433,7 +433,7 @@ GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
 # the commit status the project's approvals workflow posts; its target is the Actions run that posted it
 APPROVALS = "loop:approvals"
-# the gate's own status, posted under both names for one release line (the project template's workflow)
+# the gate's own status, accepted under either name; the project template's workflow posts `loop:approvals`
 STATUSES = {APPROVALS, "gatekeeper"}
 RUN = re.compile(r"/actions/runs/(\d+)")
 # a URL in a `## Demo` comment; gh's --attach embeds a video as a bare user-attachments one, which plays inline
