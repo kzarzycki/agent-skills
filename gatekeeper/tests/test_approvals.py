@@ -593,11 +593,9 @@ def test_a_tracker_name_yaml_reads_as_a_boolean_is_refused_naming_it() -> None:
 
 
 def test_skill_mds_settings_examples_pass_their_schema() -> None:
-    """SKILL.md § Settings shows loop.md's block, then issue-tracker.md's: each is what the scripts read."""
-    skill = (REPOSITORY / "loop" / "skills" / "engineering-loop" / "SKILL.md").read_text()
-    loop, tracker = re.findall(
-        r"^```yaml\n(.*?)^```$", skill[skill.index("### Settings") :], re.DOTALL | re.MULTILINE
-    )[:2]
+    """policy.md shows the policy's block, then issue-tracker.md's: each is what the scripts read."""
+    skill = (SCRIPTS.parent / "policy.md").read_text()
+    loop, tracker = re.findall(r"^```yaml\n(.*?)^```$", skill, re.DOTALL | re.MULTILINE)[:2]
     assert approvals.settings(loop_md(loop))["bot"] == [
         {"login": "dependabot[bot]", "paths": ["uv.lock", "**/package.json"]},
         {"login": "renovate", "branch": "renovate/", "paths": ["uv.lock"]},
@@ -680,7 +678,7 @@ def test_loop_md_settings_without_gatekeeper_md_are_read_with_one_deprecation_li
         assert approvals.no_ci(approvals.project()[1])
     assert capsys.readouterr().err == (
         "docs/agents/loop.md's ## Settings is deprecated: move the block to docs/agents/gatekeeper.md under"
-        " ## Policy (SKILL.md § Settings)\n"
+        " ## Policy (the gatekeeper skill's policy.md)\n"
     )
 
 
@@ -2537,7 +2535,7 @@ def test_minors_only_at_the_cap_or_core_findings_before_it_need_no_owner() -> No
 
 
 def test_the_cap_is_skills_default_unless_the_projects_loop_md_sets_its_own() -> None:
-    assert approvals.cap(None) == approvals.cap(BARE) == 5  # SKILL.md § The cap
+    assert approvals.cap(None) == approvals.cap(BARE) == 5  # the gatekeeper's SKILL.md § The cap
     assert approvals.cap(loop_md("loop:\n  cap: 3\n")) == 3
     with pytest.raises(approvals.Refused, match="`loop.cap` must be a whole number"):
         approvals.cap(loop_md("loop:\n  cap: 3 passes\n"))
@@ -2621,7 +2619,7 @@ def test_a_review_requesting_changes_lets_nothing_land() -> None:
 
 def test_an_unresolved_review_thread_lets_nothing_land() -> None:
     assert verified(VERDICT, threads=(True, False, False)) == [
-        "PR #7: 2 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)"
+        "PR #7: 2 review thread(s) unresolved: fix and reply, or triage, then resolve (github-tracker's github.md, Review trail)"
     ]
     assert verified(VERDICT, threads=(True, True)) == []
 
@@ -3325,7 +3323,7 @@ def test_land_says_so_when_the_approvals_status_names_no_run(
         ({"reviews": ()}, "PR #7: no verifier review posted (approvals.py verdict)"),
         (
             {"threads": (True, False)},
-            "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)",
+            "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github-tracker's github.md, Review trail)",
         ),
     ],
 )
@@ -3814,7 +3812,7 @@ def test_land_refuses_a_head_behind_or_in_conflict_with_its_base_before_marking_
     assert capsys.readouterr().out.splitlines() == [
         (
             f"PR #7 {stale} main: merge origin/main in, rerun the gates, get a verdict on the merge"
-            " (lead.md step 8), then land again"
+            ", then land again"
         )
     ]
     assert landing["calls"] == []
@@ -3965,7 +3963,7 @@ def test_land_with_the_line_refuses_a_pr_missing_the_base_head(
     assert refused_untouched(landing, signing, capsys) == [
         (
             f"PR #7 does not contain main's head {tip}: merge origin/main in, rerun the gates, get a verdict on the"
-            " merge (lead.md step 8), then land again"
+            " merge, then land again"
         )
     ]
     assert remote_ref(signing, "main") == tip

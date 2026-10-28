@@ -5,7 +5,8 @@ is done on a tracker is its realization file, read in place: the `github-tracker
 GitHub, with the issue-batch protocol `to-tickets` and `wayfinder` publish through. The
 project's `docs/agents/issue-tracker.md` names that file in one line,
 `Tracker: GitHub (github-tracker's github.md)`, and adds only its own facts: its settings block
-(SKILL.md, Settings: components, extra categories and labels, renames, board columns) and Never on GitHub.
+(the `gatekeeper` skill's policy.md, Tracker settings: components, extra categories and labels,
+renames, board columns) and Never on GitHub.
 
 ## States
 
@@ -21,7 +22,8 @@ that acts on the state it finds.
 - **`approved:spec`:** ready: the spec is written into that same issue and approved
   (SKILL.md, Approvals and proof). Where a tool owns an issue's body, the spec is a comment
   headed `## Spec`. The spec step sets the size label; who approves, the owner or their
-  policy in gatekeeper.md, and how, is SKILL.md, Approvals and proof.
+  policy in gatekeeper.md, and how, is SKILL.md, Approvals and proof; which specs the policy
+  covers is the `gatekeeper` skill's policy.md, Rules.
 
 The `triage` skill's categories map as bug = `kind:bug` and enhancement = `kind:enhancement`,
 and its roles as needs-triage = no state label, needs-info =
@@ -130,7 +132,7 @@ Where gatekeeper.md has a `signoff` rule and it, or the spec's `Sign-off: owner`
 it, a person
 checks the merged change in the running product before its issue counts as done, since
 gates and the verifier prove the code, not how it feels in use. The PR links the issue with
-`Implements #<n>` (SKILL.md, Approvals and proof), so the merge leaves it open; the
+`Implements #<n>` (the `gatekeeper` skill's policy.md, Rules, `signoff`), so the merge leaves it open; the
 lead moves it to `Sign-off` with a comment naming the merge and the spec's
 acceptance examples to try. Without a `signoff` section nothing waits for a sign-off, and
 `Implements` is a link like `Part of`. The owner signs off by closing it (`Done`). What they find

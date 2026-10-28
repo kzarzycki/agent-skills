@@ -36,6 +36,10 @@ script's docstring is the manual: every proof each verb checks and every record 
   forge and the evidence store only through ports, each served by the adapter the policy's
   `adapters` section names; GitHub's is the only one, and `gatekeeper.py` loads it from
   beside itself.
+- [policy.md](policy.md): every policy key, its type and default, the rules the policy
+  states, the batching queue, carry-over of a merge of main, the opt-out, and
+  issue-tracker.md's settings block. Read it when writing or changing a project's policy, or
+  when a refusal names a key.
 - `scripts/approvals.py`: the gatekeeper's former name, kept for one release line. It runs
   `gatekeeper.py` with today's verbs (`approve`, `verdict`, `local-ci`), so a project's
   `approvals.py` command keeps working.
@@ -47,8 +51,31 @@ The policy is the fenced `yaml` block under `## Policy` in the project's
 same block under `docs/agents/loop.md`'s `## Settings`, with a deprecation line, and it
 refuses a project with both, since two sources of the bar would drift. It refuses, naming
 the key, a section or key it doesn't know and a value of the wrong type, so a mistyped
-setting is never read as a rule nobody wrote. `SCHEMA` in `gatekeeper.py` lists every key
-and its type. Label names come from `docs/agents/issue-tracker.md`'s settings block.
+setting is never read as a rule nobody wrote. [policy.md](policy.md) has every key, with an
+example block, and `SCHEMA` in `gatekeeper.py` is the same list as code. Label names come
+from `docs/agents/issue-tracker.md`'s settings block (policy.md, Tracker settings).
+
+## Verifier report
+
+`record verdict` posts a verifier's report as one PR review on the commit it names, and
+`report [--json]` reads it the same way, so a report is written once, for people, in this
+shape (anything else in it is prose the review carries):
+
+- near the top, `Verifier: <family>, pass <n>`, such as `Verifier: codex/terra-6.1/med, pass
+  5`. A lower tier (`mid` or `small`) is a word of its own after the family, `Verifier:
+  codex/terra-6.1/med mid, pass 1`: `check merge` refuses a high-risk change whose newest
+  verdict names one, and reads a line without one as the default tier. Text after the pass
+  number (`(merge of main)`) goes into the review's first line;
+- per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, its body
+  up to the next heading outside a code fence. Any other `### ` heading is a sub-heading;
+- at the end, `Head: <sha>`, the full commit reviewed, then `VERDICT: <n> blocker, <n>
+  major, <n> minor`, `SATISFIED: yes|no` and `Risk: low — <reason>` or `Risk: high —
+  <reason>`.
+
+It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `### ` heading with a
+`(<severity>)` it can't read, and finding headings that don't add up to the `VERDICT:`
+counts. A question for the owner goes in `<report>.question` beside it, which `report --json`
+prints.
 
 ## The cap
 

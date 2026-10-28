@@ -131,7 +131,8 @@ yourself, keeping standards and spec as separate axes.
 ## Report
 
 Write Markdown to the report path; `approvals.py verdict` parses it into the PR review, so
-keep these lines exact:
+keep these lines exact (the `gatekeeper` skill's SKILL.md, Verifier report, is the format the
+gate reads):
 
 - Near the top, `Verifier: <family>, pass <n>`, such as `Verifier: claude, same-family,
   pass 2` when you are the model family that wrote the diff. Give your signature as the family: what omnigent-agents'

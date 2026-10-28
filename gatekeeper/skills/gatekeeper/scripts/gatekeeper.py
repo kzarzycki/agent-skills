@@ -24,43 +24,43 @@ waiting (run it again).
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
 `## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
-policy in each is refused, naming both, since two sources of the bar would drift. "loop.md's" setting below means the
+policy in each is refused, naming both, since two sources of the bar would drift. "gatekeeper.md's" setting below means the
 policy's, in whichever file holds it. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
 those tasks.
 
 `check build` needs every issue the PR closes to be free of `needs-owner`, with exactly one category, a component and
 exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its spec approved: the
-owner's current record and `approved:spec`, unless loop.md's `spec.auto` covers it
-(below). A `## Plan` comment needs the same where the `plan` rule asks, and is due when loop.md's `practice` names a
+owner's current record and `approved:spec`, unless gatekeeper.md's `spec.auto` covers it
+(below). A `## Plan` comment needs the same where the `plan` rule asks, and is due when gatekeeper.md's `practice` names a
 `plan` skill. Category, component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's
 (`label_names`): a category is `kind:<name>`, a component `area:<name>`, whether the tracker file names it bare or in
 full.
 `check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
 or for a spec the policy approves the account running this), since an assignee says whose the issue is. When every
 build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
-the PR its issues' assignees, reporting a refusal and carrying on. The loop's `loop.py release` removes an assignee that record names,
+the PR its issues' assignees, reporting a refusal and carrying on. A flow that releases the claim (the loop's `release`) removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
-each issue, where loop.md has a `signoff` rule (below); the verifier's PR
+each issue, where gatekeeper.md has a `signoff` rule (below); the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
 PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
 commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
-one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
+one whose heading names `mid` or `small` (a tier, SKILL.md § Verifier report), since a lower tier's review is enough
 only for a change it rates low; no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
-author posted one, that embeds its videos as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+author posted one, that embeds its videos as user-attachments (the `demo` skill's `demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
-`ci: false` in loop.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
+`ci: false` in gatekeeper.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
 writer, instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
-with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
+with a blocker or major open (`cap`, this skill's SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
 failure to add it and carrying on. A push removes the label (the
 approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
 GitHub's repository activity for the head branch. On a PR into a feature branch (any base but the repository's
@@ -71,7 +71,7 @@ risk while any PR merged into that branch carries `risk:high`, so a feature bran
 Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
 the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
-With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
+With `opt_out: true` in gatekeeper.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
 `Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
 workflow posts success and its author merges it their usual way; `land` prints the same line and exits 1, so the
@@ -91,7 +91,7 @@ green and the label where the change is high risk: `gh pr merge --squash --match
 required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
 exit 0. Otherwise (a red check, the label, no auto-merge, `ci: false` without a record) exit 3: run it again. A
 merged PR: exit 0; a closed one: exit 1.
-With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
+With gatekeeper.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the same proofs and waits
 hold, but where `land` would merge it squashes the PR in this checkout instead: one commit with the head's tree on the
 base's tip, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key (`gpg.format ssh`, `user.signingkey`) and
@@ -115,7 +115,7 @@ the PR head, and records nothing if the check fails or changes the tree. `record
 `checks.check`, else `mise run check`, and with `--all` is `local-ci`; a record is reused only for the same command.
 A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
 exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
-`env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
+`env` holds the value, or null for unset, of each variable gatekeeper.md's `local_ci_env` names, since a
 check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
 same command and the same env, `local-ci <pr>` posts the pass from it, naming its time, instead of running the
 check again; a record without env is never reused. The host stays in the record: nothing `approvals.py` posts names
@@ -123,7 +123,7 @@ it, and posted text writes the home directory `~` (public), since a public board
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
-loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
+gatekeeper.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
 no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
@@ -141,7 +141,7 @@ or a writer counts, since anyone can comment on a public repo. A red, unproven o
 exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
 the same head like any other. The proof is the verifier's
 verdict and gate on the PR's own head plus the full gate on the batch that merged it.
-With loop.md's `carry_over_main` section (`except: <globs>`), a merge of the base into a PR head H keeps H's proofs: a
+With gatekeeper.md's `carry_over_main` section (`except: <globs>`), a merge of the base into a PR head H keeps H's proofs: a
 head H' whose first parent is H, whose second is on the base (an ancestor of its tip), whose tree is what `git
 merge-tree --write-tree` makes of the two (no conflict resolved, nothing added), and where the base's changes since
 the merge base touch no file H's side changes and no path an `except` glob matches (fnmatch, as a rule's `paths`:
@@ -156,7 +156,7 @@ variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses th
 `major`, `minor`), `satisfied` (true for `SATISFIED: yes`), `risk` (`level` `low`, else `high` as the gate reads any
 other word, and its `reason`), `findings` (each `id`, `severity`, `path`, `line`, `title`, `body`) and `question`,
 the text of `<report>.question` beside it, else null; a report `verdict` would refuse is refused the same way, exit 1.
-`verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
+`verdict` posts a report in the format SKILL.md § Verifier report gives as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
@@ -186,11 +186,11 @@ is no approval:
 A spec or plan is named by its last edit as GitHub shows it in the edit history (`as written <time>` before any), so
 a person can open the version approved. Every approval is a new comment: a re-approval says the spec or plan
 changed, and `approve` minimizes as outdated each earlier record, which it supersedes. With `owner: <login>` under
-loop.md's `loop`, `check build`, `check merge` and `land` record an `approved:spec` (or `approved:plan`) label that
+gatekeeper.md's `loop`, `check build`, `check merge` and `land` record an `approved:spec` (or `approved:plan`) label that
 login added after the spec's (plan's) last edit as `approve --by owner` would, removing `needs-owner`, and say so: the
 label is the owner's word. One they added before the last edit is named and changes nothing, nor does anyone else's.
 
-The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
+The policy block (policy.md beside SKILL.md has every key), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `checks` holds `changed`, `check` and `all`, the project's check commands. `loop` holds `cap`, `ci`, `opt_out`, `local_ci_env`, `batch_queue` and `owner`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
@@ -229,8 +229,7 @@ It reads and writes the tracker, the forge and the evidence only through their p
 policy's `adapters` section names (`tracker`, `forge`, `evidence`), `github` for one it doesn't: github_adapter.py,
 through `gh`. A name no adapter has is refused, naming it. The gate accepts its own status under either name,
 `loop:approvals` (the one the project template's workflow posts) or `gatekeeper`: `check merge` never waits for
-either, and `land` reruns either's run. Stdlib, and PyYAML for the settings block (SKILL.md § Settings says how it
-is delivered).
+either, and `land` reruns either's run. Stdlib, and PyYAML for the settings block (SKILL.md says how `uv run` delivers it).
 """
 
 from __future__ import annotations
@@ -388,17 +387,17 @@ DELEGATE = "delegate"
 MERGE_LABEL = "approved:merge"
 # a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
-# a follow-up an agent raised: SKILL.md § Triage puts this line on every issue an agent files
+# a follow-up an agent raised: the agent puts this line on every issue it files (policy.md, Rules, `spec.auto`)
 FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.IGNORECASE)
 # check merge's exit while it waits for `check` or the owner; argparse's usage error is 2
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
-# family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
+# family (`codex/terra-6.1/med mid`, SKILL.md § Verifier report): a model id holding the word (`sol-mid-preview`) names no tier
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
-# its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
+# its default in this skill's SKILL.md § The cap, a project's own in gatekeeper.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
 # the first line of the record claim() leaves when it assigns an issue, which assigned_by_loop() reads
 ASSIGNED = "Assigned: @"
@@ -447,7 +446,7 @@ POLL, CEILING = 30, 2 * 60 * 60
 ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge or the merge queue)"
 ON_STATE = "GitHub to compute its merge state"
 # GitHub sometimes builds a merge-group commit and never tells Actions: the entry then waits for the queue's own check
-# timeout. ponytail: a fixed 10 minutes with no check suite; a loop.md setting if a project's CI is slower to start.
+# timeout. ponytail: a fixed 10 minutes with no check suite; a gatekeeper.md setting if a project's CI is slower to start.
 STUCK = 10 * 60
 # GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
 STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
@@ -503,7 +502,7 @@ class Table(dict):
     """A settings section whose every key is required, such as `land`."""
 
 
-# loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
+# the policy's sections (policy.md), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
 # the specs `spec.auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
@@ -558,7 +557,7 @@ def block(text: str, file: str, heading: str = "Settings") -> dict[str, Any]:
     found = SETTINGS.search(section(text, heading))
     if found is None:
         raise Refused(
-            f"{file} has no ```yaml settings block under ## {heading}: SKILL.md § Settings has its keys"
+            f"{file} has no ```yaml settings block under ## {heading}: the gatekeeper skill's policy.md has its keys"
         )
     try:
         once(yaml.compose(found[1], Loader=yaml.SafeLoader), file)
@@ -679,12 +678,12 @@ def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
 
 
 def spec_auto(loop: str | None) -> bool:
-    """Whether loop.md's `spec.auto` is true, under which a risk rule holds the spec instead of the merge."""
+    """Whether gatekeeper.md's `spec.auto` is true, under which a risk rule holds the spec instead of the merge."""
     return settings(loop).get("spec", {}).get("auto") is True
 
 
 def spec_kinds(loop: str | None) -> set[str]:
-    """The kinds of spec loop.md's `spec.auto` list names (SPEC_KINDS), which the policy approves; empty when it
+    """The kinds of spec gatekeeper.md's `spec.auto` list names (SPEC_KINDS), which the policy approves; empty when it
     is no list."""
     auto = settings(loop).get("spec", {}).get("auto")
     return set(auto) if isinstance(auto, list) else set()
@@ -706,7 +705,7 @@ def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) ->
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR needs no verifier review: a `bot.<name>` section of loop.md names it, and every file it changes
+    """Whether the PR needs no verifier review: a `bot.<name>` section of gatekeeper.md names it, and every file it changes
     matches one of that section's `paths` (lock and manifest files). A section names a bot by its login, or, with
     `branch`, a head-branch prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the
     head must be this repository's own branch, since a fork's PR may name any branch and only a writer pushes one
@@ -765,7 +764,7 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
 def ruled(
     labels: set[str], files: list[str] | None, loop: str | None, judged: str | None = None
 ) -> str | None:
-    """Why loop.md's `risk` rule holds on these labels and files, or None; paths the gate can't judge for want of the
+    """Why gatekeeper.md's `risk` rule holds on these labels and files, or None; paths the gate can't judge for want of the
     files hold, since nothing else would enforce them. `judged` is why the verifier holds the change high (judged()),
     which its `verifier` term reads; None where no verdict is read, such as a spec before the build."""
     terms = settings(loop).get("risk", {})
@@ -844,7 +843,7 @@ def default(pull: dict[str, Any]) -> bool:
 def signoff(
     pull: dict[str, Any], issue: dict[str, Any], loop: str | None
 ) -> tuple[bool, str] | None:
-    """Whether the owner signs the issue's change off in use after it lands, and why; None when loop.md has no
+    """Whether the owner signs the issue's change off in use after it lands, and why; None when gatekeeper.md has no
     `signoff` section, which leaves every link as it was. The rule is judged as the risk rule is (matches), on the
     labels of the PR and this issue and the PR's files, and paths it can't judge hold; with no term matching, the
     spec's own `Sign-off: owner` line asks for it. A spec's `Sign-off: none` never waives a matching rule, since the
@@ -1036,7 +1035,7 @@ def headed(
     node: dict[str, Any], heading: str, keep: Callable[[dict[str, Any]], bool] = lambda _note: True
 ) -> dict[str, Any] | None:
     """The last comment whose first line is `heading`, among those `keep` takes: `## Specification notes` is no
-    `## Spec`. A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
+    `## Spec`. A leading `> 🤖 AI` line (`github-tracker`'s github.md) is skipped, so an agent's marked comment is still found."""
     found = [
         note
         for note in notes(node)
@@ -1156,7 +1155,7 @@ def events(node: dict[str, Any], kind: str) -> list[dict[str, Any]]:
 
 
 def approver(issue: dict[str, Any]) -> str | None:
-    """Who approved the issue's spec: the person who last added `approved:spec`, or, for a spec loop.md's policy
+    """Who approved the issue's spec: the person who last added `approved:spec`, or, for a spec gatekeeper.md's policy
     approves (no label), the account running the loop, whose policy it is. None for a bot, since an agent is never an
     assignee."""
     added = [
@@ -1249,7 +1248,7 @@ def proofs(
     revert: int | None = None,
 ) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
-    #`revert` names no issue and needs no verdict. Without docs/agents/loop.md (`loop` None) an issue needs only the
+    #`revert` names no issue and needs no verdict. Without a policy file (`loop` None) an issue needs only the
     `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
     (spec_policy) or `spec.auto: true` does (spec_hold). A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
@@ -1299,7 +1298,7 @@ def proofs(
         )
     elif unresolved := sum(not thread["isResolved"] for thread in threads["nodes"]):
         found.append(
-            f"{where}: {unresolved} review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)"
+            f"{where}: {unresolved} review thread(s) unresolved: fix and reply, or triage, then resolve (github-tracker's github.md, Review trail)"
         )
     found += [
         f"{where}: {(review.get('author') or {}).get('login', 'a reviewer')} requested changes: answer the review"
@@ -1373,13 +1372,15 @@ def held(lines: dict[str, str]) -> bool:
 
 
 def cap(loop: str | None) -> int:
-    """The project's cap: loop.md's `cap` setting, else SKILL.md's default."""
+    """The project's cap: gatekeeper.md's `cap` setting, else this skill's SKILL.md's default."""
     if (own := settings(loop).get("cap")) is not None:
         return own
     skill = Path(__file__).resolve().parents[1] / "SKILL.md"
     found = CAP_DEFAULT.search(skill.read_text())
     if found is None:
-        raise Refused("SKILL.md § The cap names no default (`The cap is <n> passes`)")
+        raise Refused(
+            "the gatekeeper skill's SKILL.md § The cap names no default (`The cap is <n> passes`)"
+        )
     return int(found[1])
 
 
@@ -1400,7 +1401,7 @@ def reviewed(
 ) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried,
-    which prints a line either way where loop.md opts in), or on its commit the highest pass (a mixed PR's two
+    which prints a line either way where gatekeeper.md opts in), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
@@ -1445,7 +1446,7 @@ def waits(
 
 
 def batch_queue(loop: str | None) -> bool:
-    """Whether loop.md opts into a batching merge queue (`batch_queue: true` under `loop`), without which no batch
+    """Whether gatekeeper.md opts into a batching merge queue (`batch_queue: true` under `loop`), without which no batch
     proof stands in for the CI wait: a project that never set one up gets no second way to satisfy it."""
     return settings(loop).get("batch_queue") is True
 
@@ -1459,7 +1460,7 @@ def opted_out(loop: str | None) -> bool:
 
 
 def signed(loop: str | None) -> tuple[str, Path] | None:
-    """loop.md's `land` section as (branch, signers), None without one."""
+    """gatekeeper.md's `land` section as (branch, signers), None without one."""
     land = settings(loop).get("land")
     return (land["signed_squash_to"], Path(land["allowed_signers"]).expanduser()) if land else None
 
@@ -1512,7 +1513,7 @@ def signed_squash(pull: dict[str, Any], signers: Path) -> str:
     if subprocess.run(["git", "merge-base", "--is-ancestor", tip, head], check=False).returncode:
         raise Refused(
             f"PR #{pr} does not contain {base}'s head {tip}: merge origin/{base} in, rerun the gates, get a"
-            " verdict on the merge (lead.md step 8), then land again"
+            " verdict on the merge, then land again"
         )
     tree = git("rev-parse", f"{head}^{{tree}}").strip()
     try:
@@ -1556,9 +1557,9 @@ def signed_squash(pull: dict[str, Any], signers: Path) -> str:
 
 
 def outside(pull: dict[str, Any], loop: str | None) -> str | None:
-    """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `opt_out: true`. A trail
+    """Why the PR is outside the loop, or None when it left a loop trail or gatekeeper.md lacks `opt_out: true`. A trail
     is a verifier review (passes), an `Approved: spec` record or `approved:spec` on an issue it links, a `Reverts #<n>`
-    line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `spec.auto: true` every issue is covered,
+    line, or a bot PR gatekeeper.md exempts. A spec a policy covers is no trail: under `spec.auto: true` every issue is covered,
     so a person who opted out could never link one."""
     if not opted_out(loop):
         return None
@@ -1671,7 +1672,7 @@ def merged(
     first: str, second: str, guard: list[str] | None = None, base: str = "the base"
 ) -> tuple[str, str] | str:
     """The tree `git merge-tree --write-tree` makes of commits `first` and `second`, so a merge with that tree resolved
-    no conflict and added nothing, and their merge base; a string names why not. With `guard`, the globs of loop.md's
+    no conflict and added nothing, and their merge base; a string names why not. With `guard`, the globs of gatekeeper.md's
     `carry_over_main.except`, the proofs on `first` carry over to that merge only when `second`'s changes since the
     merge base (`base`'s) touch no file `first`'s changes touch, neither side's changes touch a file a glob matches
     (fnmatch on the full path, as a rule's `paths`), and the two have one merge base. `first` is the PR's head, so a
@@ -1733,7 +1734,7 @@ def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
 
 
 def carried(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
-    """The commit whose verdict the PR's head carries, with carry_line(), where loop.md has
+    """The commit whose verdict the PR's head carries, with carry_line(), where gatekeeper.md has
     `carry_over_main`: the head is a merge whose first parent is that commit and whose second is on the base (an
     ancestor of its tip), its tree is git merge-tree's of the two, and merged() finds the base's changes disjoint
     from the PR's and neither side's touching an except glob. A string names why it carries nothing; None without the setting, which
@@ -1764,7 +1765,7 @@ def carried(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | N
 
 def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
     """Whether the PR's head carries the proofs of `verified`, the newest verdict's commit (carried), printing the
-    line that says so, or where loop.md opts in, why it carries nothing."""
+    line that says so, or where gatekeeper.md opts in, why it carries nothing."""
     carry = carried(pull, loop)
     if carry is None:
         return False
@@ -2287,13 +2288,13 @@ def project() -> tuple[str | None, str | None]:
 def deprecated() -> None:
     """One line per run, however often the policy is read."""
     print(
-        f"{LOOP}'s ## Settings is deprecated: move the block to {POLICY} under ## Policy (SKILL.md § Settings)",
+        f"{LOOP}'s ## Settings is deprecated: move the block to {POLICY} under ## Policy (the gatekeeper skill's policy.md)",
         file=sys.stderr,
     )
 
 
 def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, Any]]:
-    """The issues, each read again after recording an `approved:<point>` label the owner (loop.md's `owner`) added
+    """The issues, each read again after recording an `approved:<point>` label the owner (gatekeeper.md's `owner`) added
     after the spec's or plan's last edit as their approval (approve), which also removes `needs-owner`, printing a line
     for each; a label the owner added before that edit gets a line saying so and changes nothing, nor does anyone
     else's. Without `owner` nothing is read, since only the owner's own label is their word."""
@@ -2316,7 +2317,7 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
                 for event in events(issue, "LabeledEvent")
                 if (event.get("label") or {}).get("name") == name
             ]
-            # GitHub logins are case-insensitive: `Octocat` in loop.md names the account `octocat`
+            # GitHub logins are case-insensitive: `Octocat` in gatekeeper.md names the account `octocat`
             if (
                 not added
                 or (added[-1].get("actor") or {}).get("login", "").lower() != str(owner).lower()
@@ -2512,7 +2513,7 @@ def landing(
     if stale:
         raise Refused(
             f"{where} {stale} {pull['baseRefName']}: merge origin/{pull['baseRefName']} in, rerun the gates, get a"
-            " verdict on the merge (lead.md step 8), then land again"
+            " verdict on the merge, then land again"
         )
     found, issues = gated("merge", pull, tracker, loop)
     if found:  # never ready on a missing proof: ready starts CI and, with auto-merge, the merge
@@ -3015,7 +3016,7 @@ def main(argv: list[str]) -> int:
     for approving in (commands.add_parser("approve"), recording.add_parser("approval")):
         approving.add_argument("point", choices=POINTS)
         approving.add_argument("number", type=int)
-        # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest
+        # an agent never approves: a record is a person's word, and the owner's policy in gatekeeper.md covers the rest
         approving.add_argument("--by", choices=("owner",), required=True)
     for posting in (commands.add_parser("verdict"), recording.add_parser("verdict")):
         posting.add_argument("pr", type=int)

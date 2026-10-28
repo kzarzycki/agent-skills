@@ -36,7 +36,7 @@ design, wireframes included for a UI, and delegate the rest.
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
    proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
    `follow-up`, a `sub-issue` of an approved epic opened by a writer), or `auto: true` covers
-   (any spec a writer opened that the risk rule doesn't match, SKILL.md, Approvals and proof, judged on the issue's labels
+   (any spec a writer opened that the risk rule doesn't match, the `gatekeeper` skill's policy.md, Rules, judged on the issue's labels
    and the paths the spec says it changes), is approved by that policy: it gets no label
    and no record, since the gate reads the policy and an `approved:spec` an agent added
    would read as the owner's; move it to `Ready` on the board and carry on; the owner
@@ -159,9 +159,9 @@ design, wireframes included for a UI, and delegate the rest.
      mergeStateStatus` is `DIRTY` (a conflict) or `BEHIND` (main requires an up-to-date
      branch and no merge queue). A merge queue, where the repo has one, tests the PR on top of main anyway, so a
      merge there only costs a CI run. When you do merge it in, rerun the gates and get a verifier pass on the
-     merge (step 7), since `land` merges only a head with a verdict of its own. Where loop.md
+     merge (step 7), since `land` merges only a head with a verdict of its own. Where gatekeeper.md's policy
      has `carry_over_main`, no verifier pass is needed when `check merge` prints that the
-     merge carries the head's verdict (SKILL.md, Approvals and proof); the gates still rerun
+     merge carries the head's verdict (the `gatekeeper` skill's policy.md, Carry over main); the gates still rerun
      on the merge (`local-ci <pr>` under `ci: false`). Otherwise, when main's
      changes touch no file the PR changes and no merge check (a `check:` task, a tool it
      runs, or the lint, type or test configuration), that pass is the short delta pass.
