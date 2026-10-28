@@ -1988,6 +1988,11 @@ def test_a_top_level_start_from_a_leads_helper_subscribes_the_lead_not_the_helpe
         og, "claude", "acceptance", "do X", tmp_path / "a.md", None, 0, top_level=True
     )
     assert og.subscriptions == [("lead", worker)]
+    monkeypatch.setattr(og, "info", lambda sid: (_ for _ in ()).throw(omnigent_agent.Fail("503")))
+    other, _ = omnigent_agent.start(
+        og, "claude", "other", "do Y", tmp_path / "b.md", None, 0, top_level=True
+    )
+    assert og.subscriptions[-1] == ("helper", other)  # a failed lookup still subscribes someone
 
 
 def test_run_refuses_top_level_before_a_session_exists(

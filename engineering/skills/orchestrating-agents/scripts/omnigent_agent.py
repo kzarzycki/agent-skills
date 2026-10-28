@@ -1807,7 +1807,11 @@ def start(
             try:
                 if not (me := subscriber or own_id()):
                     raise Fail("this shell does not name its Omnigent session")
-                me = subscriber or og.info(me).get("root_conversation_id") or me
+                if not subscriber:
+                    try:
+                        me = og.info(me).get("root_conversation_id") or me
+                    except Fail as e:  # the starter, as before, rather than no one
+                        print(f"no root session for {me} ({e}); subscribing it", file=sys.stderr)
                 og.subscribe(me, sid)
             except Fail as e:
                 print(f"not subscribed to {sid} ({e}); follow it with watch", file=sys.stderr)
