@@ -54,12 +54,13 @@ yourself, keeping standards and spec as separate axes.
   report's head.
 - **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached with its pid, output and exit code
-  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1`
-  (Perl's `setsid`, since macOS has no `setsid` command),
-  and is waited on up to a total budget you state, in as few calls as you can: each call
-  blocks close to the tool's limit (the longest yield your harness allows on a running
-  command, or a sleep loop that checks the log for its exit line), never short polls, since
-  every call re-reads the whole context. A blocker that is only your own call timing out
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --notify' >/dev/null 2>&1`
+  (Perl's `setsid`, since macOS has no `setsid` command; the last step tells the session in
+  `$LOOP_NOTIFY`, when set, how it ended),
+  and is waited on up to a total budget you state, in as few calls as you can: each call is
+  `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
+  call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
+  loop of your own, since every call re-reads the whole context. A blocker that is only your own call timing out
   spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
   background shells. A gate the machine allows
   by rule is the exception: run it as the bare command (Gates and repros). A queued run or

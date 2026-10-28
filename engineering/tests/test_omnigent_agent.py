@@ -478,6 +478,104 @@ def test_wait_until_exits_0_once_the_command_does_and_its_own_code_at_the_limit(
     assert omnigent_agent.main(["wait-until", "--every", "61", "--limit", "5", "--", "true"]) == 2
 
 
+def test_wait_for_a_gate_returns_at_its_exit_line_or_still_running_with_no_log_text(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    log = tmp_path / "gate.log"
+    log.write_text("collecting\nSECRET progress line\n")
+    assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.05"]) == 6
+    assert capsys.readouterr().out == "still running\n"
+
+    def finish() -> None:
+        time.sleep(0.1)
+        log.write_text(log.read_text() + "12 passed in 3s\nexit 0\n")
+
+    threading.Thread(target=finish).start()
+    assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "30"]) == 0
+    assert capsys.readouterr().out == "exit 0\n12 passed in 3s\n"
+
+    log.write_text("".join(f"line {i}\n" for i in range(50)) + "FAILED test_x\nexit 2\n")
+    assert omnigent_agent.main(["wait-for", "--log", str(log)]) == 2
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "exit 2" and out[-1] == "FAILED test_x" and len(out) == 1 + 30
+
+
+def test_wait_for_a_pid_ends_when_the_run_is_gone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    run = subprocess.Popen(["sleep", "0.2"])
+    threading.Thread(target=run.wait).start()  # reaped, so the pid goes rather than lingering
+    pid = tmp_path / "pid"
+    pid.write_text(f"{run.pid}\n")
+    assert omnigent_agent.main(["wait-for", "--pid", str(pid), "--budget", "30"]) == 0
+    assert capsys.readouterr().out == f"pid {pid} ended\n"
+    # a live process younger than the pid file got the run's pid after it ended
+    other = subprocess.Popen(["sleep", "30"])
+    pid.write_text(f"{other.pid}\n")
+    os.utime(pid, (time.time() - 3600, time.time() - 3600))
+    try:
+        assert omnigent_agent.main(["wait-for", "--pid", str(pid), "--budget", "30"]) == 0
+    finally:
+        other.kill()
+        other.wait()
+    capsys.readouterr()
+    # a run killed before its exit line: the wait ends on it, not at the budget
+    log = tmp_path / "gate.log"
+    log.write_text("running\n")
+    argv = ["wait-for", "--log", str(log), "--pid", str(tmp_path / "none"), "--budget", "30"]
+    assert omnigent_agent.main(argv) == 1
+    assert capsys.readouterr().out.startswith("gone: ")
+    assert omnigent_agent.main(["wait-for", "--budget", "1"]) == 2
+
+
+def test_wait_for_a_pr_waits_until_its_checks_settle(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    views = iter(
+        [
+            {"state": "OPEN", "statusCheckRollup": []},
+            {"state": "OPEN", "statusCheckRollup": [{"name": "test", "status": "IN_PROGRESS"}]},
+            {
+                "state": "OPEN",
+                "statusCheckRollup": [
+                    {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
+                    {"context": "lint", "state": "SUCCESS"},
+                ],
+            },
+        ]
+    )
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a: json.dumps(next(views)))
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "30"]) == 1
+    assert capsys.readouterr().out == "PR #7 checks red: test\n"
+
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a: '{"state": "CLOSED"}')
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "merged"]) == 1
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "closed"]) == 0
+
+
+def test_a_detached_gate_tells_the_session_that_started_it_once(tmp_path: Path) -> None:
+    told = tmp_path / "told"
+    tell = tmp_path / "tell"
+    tell.write_text(f'#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> {told}\n')
+    tell.chmod(0o755)
+    log, pid = tmp_path / "gate.log", tmp_path / "pid"
+    script = Path(omnigent_agent.__file__)
+    # verifier.md's detached recipe with its notify step
+    wrapper = (
+        f'echo $$ > {pid}; sh -c "echo 4 passed; exit 3" > {log} 2>&1; echo "exit $?" >> {log};'
+        f" {sys.executable} {script} wait-for --log {log} --notify"
+    )
+    env = {**os.environ, "LOOP_NOTIFY": f"{tell} session-1"}
+    subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
+    assert told.read_text() == "session-1|exit 3\n4 passed\n"  # the red run's last lines too
+    del env["LOOP_NOTIFY"]  # unset: the outcome is only printed
+    subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
+    assert told.read_text().count("session-1|") == 1
+
+
 def test_verifier_wait_returns_only_after_the_verdict(tmp_path: Path) -> None:
     og = FakeOmnigent(reply="checking", status="running")
     report = tmp_path / "r.md"
