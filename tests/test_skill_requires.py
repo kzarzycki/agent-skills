@@ -26,7 +26,7 @@ def test_declared_requirements_match_the_convention(skill_md: Path) -> None:
     for line in frontmatter.splitlines()[1:]:
         if re.match(r"[^\s#][^:]*:", line):
             parent = line.split(":", 1)[0]
-        if "requires" not in line.split(":", 1)[0]:
+        if not re.match(r"\s*requires\s*:", line):
             continue
         assert parent == "metadata", f"requires outside metadata: {line!r}"
         match = LINE.fullmatch(line)
