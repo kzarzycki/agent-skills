@@ -4608,7 +4608,7 @@ def test_parking_removes_only_the_assignee_the_loop_added(
 
 
 FORK, THEM = "https://github.com/me/fork.git", "git@github.com:them/fork"
-POST_DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "post_demo.sh"
+DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "demo.sh"
 
 
 @pytest.mark.parametrize(
@@ -4636,7 +4636,7 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
     refused: bool,
 ) -> None:
     """gh reads `{owner}/{repo}` as `upstream`'s when several GitHub remotes have no default: approvals.py and
-    post_demo.sh refuse, naming them, before any gh call."""
+    demo.sh refuse, naming them, before any gh call but demo.sh's version check."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     for name, url in remotes.items():
         subprocess.run(["git", "-C", str(tmp_path), "remote", "add", name, url], check=True)
@@ -4650,14 +4650,17 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
             approvals.one_repo()
     else:
         approvals.one_repo()
-    # post_demo.sh: a gh that exits 77 on any call shows whether the guard let it through
+    # demo.sh: a gh that passes the version check and exits 77 on any other call shows whether the
+    # guard let it through
     shim = tmp_path / "bin"
     shim.mkdir()
-    (shim / "gh").write_text("#!/bin/sh\nexit 77\n")
+    (shim / "gh").write_text(
+        '#!/bin/sh\n[ "$1" = --version ] && echo "gh version 2.103.3" && exit 0\nexit 77\n'
+    )
     (shim / "gh").chmod(0o755)
     (tmp_path / "v.mp4").write_bytes(b"x")
     shell = subprocess.run(
-        ["bash", str(POST_DEMO), "x", "v.mp4"],
+        ["bash", str(DEMO), "v.mp4"],
         capture_output=True,
         text=True,
         env={"PATH": f"{shim}:/usr/bin:/bin", "HOME": str(tmp_path)},

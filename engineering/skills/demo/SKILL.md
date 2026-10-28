@@ -8,12 +8,28 @@ description: Record a short video of a change running and post it to its PR, so 
 A demo is the change running, recorded at the PR's head and posted on the PR, so a
 person can watch it work in a minute instead of checking out the branch. Whether a PR
 gets one is the project's call: its agent instructions say when to suggest a demo and
-when to record one. Without such a rule, record only when asked.
+when to record one (A project's task and rule). Without such a rule, record only when asked.
 
-## Record
+## Record and post
 
-When the project's agent docs name a demo command, such as `mise run pr:demo <script>`, use
-it. Otherwise pick the recorder for the surface and read its file:
+```sh
+scripts/demo.sh [--pr <number>] [--caption "<what it shows>"] <recording>...
+```
+
+`scripts/` is relative to this skill's folder. One command records and posts: a `.tape` is
+rendered with VHS, a `.webm` or `.mov` is converted to H.264 MP4 with ffmpeg, and an `.mp4`
+is posted as it is. All of them go into one `## Demo` comment naming the head commit, each
+attached with `gh pr comment --attach` (gh 2.99.0 or later), so it plays inline. Your
+earlier `## Demo` comments are minimized as outdated, so only the current one is open;
+other people's are left alone. The PR defaults to the current branch's, and without
+`--caption` the comment names the recordings. Then name the demo in the PR body's Evidence.
+
+Every refusal comes before anything records: a missing file or an unknown type (exit 2),
+gh older than 2.99.0 or `ttyd` missing for a tape (exit 1), and a checkout that is not
+the PR's head or holds uncommitted or untracked files (exit 3), since the video must show
+the head everyone else gets.
+
+Pick the recorder for the surface and read its file to write the recording:
 
 | Surface | Recorder | Read |
 |---|---|---|
@@ -22,37 +38,29 @@ it. Otherwise pick the recorder for the surface and read its file:
 | iOS simulator | `simctl` | [recorders/ios.md](recorders/ios.md) |
 | Android emulator or device | `screenrecord` | [recorders/android.md](recorders/android.md) |
 
-A change that spans surfaces gets one short video per surface, posted together.
+A change that spans surfaces gets one short recording per surface, posted together.
 
 - Record the real build at the PR's head, so the video proves the change rather than a
-  mock. `post_demo.sh` refuses to post from a checkout that is not the PR's head or has
-  uncommitted changes; it checks when posting, so record from that same checkout.
+  mock.
 - Drive it from a script (a tape, a test, a command list) next to the e2e scenario it
   shows, so a re-recording after a fix is one command and shows a path the tests check.
 - Keep secrets off screen (tokens, passwords, `env` output, customer data): anyone who
-  can read the PR can download the video, and secret scanning does not read video.
-- Produce MP4 with H.264, the one format every browser and player opens.
-- Write the video to a temporary folder, never into the repo, since every recording
-  would grow every clone.
+  can read the PR can watch the video, and secret scanning does not read video.
+- Write recordings to a temporary folder, never into the repo, since every recording
+  would grow every clone. The script renders and converts into one of its own.
 
-## Post
+## A project's task and rule
 
-```sh
-scripts/post_demo.sh [--pr <number>] "<what it shows>" <video.mp4>...
+A project wraps the command in a task and names it in its agent docs. mise passes a
+variadic `arg` as one shell-quoted variable, `usage_<name>`, not as `$@`, so the task
+unquotes it to keep a path with a space whole:
+
+```toml
+[tasks."pr:demo"]
+usage = 'arg "<recording>" var=#true'
+run = 'eval "set -- $usage_recording"; .agents/skills/demo/scripts/demo.sh "$@"'
 ```
 
-`scripts/` is relative to this skill's folder. The script uploads each video as an asset
-of the repo's `demos` prerelease, creating it on first use, and posts one `## Demo`
-comment naming the head commit and linking the videos. It minimizes your earlier `## Demo`
-comments as outdated so only the current one is open. The PR defaults to the current
-branch's. A repo with immutable releases refuses uploads to a published release, so there
-the script creates one prerelease per post (`demo-pr<N>-<sha7>-<time>`) with the videos
-attached by the same `gh release create`, and links those. Then name the demo in the PR body's Evidence.
-
-The video is a link to download, not a player inline in the comment: GitHub plays only
-videos dragged into its web editor, and neither `gh` nor the API can make that upload.
-An asset is named `pr<N>-<sha7>-<i>.mp4`, so a recording of a newer commit never
-replaces the video an older comment links.
-
-A project that records often wraps both steps in one task (record to a temporary
-folder, then `post_demo.sh`) and names that task in its agent docs.
+Whether a PR needs a demo is the project's rule, and it goes in the project's agent
+instructions, for example: record one for a PR that changes what a user sees, and accept a
+`Demo: none, <why>` line in the PR body for one where nothing runs differently.
