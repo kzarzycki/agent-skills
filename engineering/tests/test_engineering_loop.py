@@ -43,7 +43,7 @@ def loop_sections() -> list[str]:
 
 def test_every_cited_loop_section_is_listed() -> None:
     sections = loop_sections()
-    assert "Approvals" in sections and "Settings" in sections
+    assert "Approvals" in sections and "Owner" in sections
     unlisted = [
         f"{path.relative_to(LOOP)}: § {cited}"
         for path in sorted(LOOP.rglob("*.md"))
