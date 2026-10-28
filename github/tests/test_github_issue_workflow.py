@@ -782,7 +782,9 @@ def test_batch_sha256_matches_a_fixed_vector_of_canonical_bytes(tmp_path: Path) 
     manifest = _documented_manifest(tmp_path)
     document = json.loads(manifest.read_text())
 
-    documented = issue_batch.prepare(issue_batch.tickets_from_manifest(manifest, ["ready-for-agent"]))
+    documented = issue_batch.prepare(
+        issue_batch.tickets_from_manifest(manifest, ["ready-for-agent"])
+    )
     assert hashlib.sha256(DOCUMENTED_CANONICAL.encode()).hexdigest() == DOCUMENTED_SHA256
     assert documented["batch_sha256"] == DOCUMENTED_SHA256
 
@@ -798,7 +800,7 @@ def test_batch_sha256_matches_a_fixed_vector_of_canonical_bytes(tmp_path: Path) 
 def test_local_apply_refuses_a_revised_manifest_over_an_earlier_apply(tmp_path: Path) -> None:
     manifest = _documented_manifest(tmp_path)
     script = str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py")
-    run = lambda: subprocess.run(  # noqa: E731
+    run = lambda: subprocess.run(
         ["python3", script, "local", str(manifest)], check=False, capture_output=True, text=True
     )
     assert run().returncode == 0
@@ -808,7 +810,9 @@ def test_local_apply_refuses_a_revised_manifest_over_an_earlier_apply(tmp_path: 
     assert {path.name: path.read_text() for path in issues.iterdir()} == before
 
     document = json.loads(manifest.read_text())
-    document["items"].insert(0, {"title": "Audit account status", "spec": "Log it.", "blocked_by": []})
+    document["items"].insert(
+        0, {"title": "Audit account status", "spec": "Log it.", "blocked_by": []}
+    )
     manifest.write_text(json.dumps(document))
     refused = run()
 
