@@ -170,7 +170,7 @@ def pull(
     *,
     body: str = "## Evidence\n\nlog line\n",
     files: tuple[str, ...] = (),
-    comments: tuple[str, ...] = (),
+    comments: tuple[str | dict[str, Any], ...] = (),
     labels: tuple[str, ...] = (),
     checks: tuple[tuple[str, str], ...] = (("check", "SUCCESS"),),
     labeled: str = LABELED,
@@ -977,6 +977,30 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
     ) == (missing, missing, missing, missing, missing, [])
 
 
+def test_a_local_check_counts_only_from_the_author_the_runner_or_a_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anyone can comment on a public repo, so a `Local check passed` comment from an account without write access
+    proves nothing."""
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
+    passed = f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
+
+    def proofs(login: str) -> list[str]:
+        merged = pull(
+            reviews=(VERDICT,), comments=(note(passed, author={"login": login}),), labels=OWNED
+        )
+        return merge(merged, [approved(1, "area:web")], no_ci)
+
+    assert proofs("stranger") == [
+        (
+            "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the"
+            " head (approvals.py local-ci)"
+        )
+    ]
+    assert proofs("loop") == proofs("maintainer") == proofs("worker") == []
+
+
 def test_more_checks_than_one_page_is_refused() -> None:
     big = pull(reviews=(VERDICT,), labels=OWNED, checks=(("lint", "SUCCESS"),))
     big["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["totalCount"] = 101
@@ -1251,6 +1275,61 @@ def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
             "PR #3: no verifier review posted (approvals.py verdict)",
         ],
     )
+
+
+def held_revert(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    revert: dict[str, Any],
+    original: dict[str, Any],
+    loop: str = BARE,
+) -> tuple[int, list[str]]:
+    """check merge on an exact revert of `original` (#1), by default under a loop.md with no risk rule, so only the
+    risk of what it reverts can hold it."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    monkeypatch.setattr(approvals, "pull_request", lambda n: original if n == 1 else revert)
+    code = approvals.main(["check", "merge", str(revert["number"])])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_label(
+    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The risk of the change a revert undoes (or re-lands) carries over: `risk:high` on an issue the revert closes,
+    on the PR it reverts, or that PR's last verdict saying `Risk: high`."""
+    low = {**pull(), "number": 1}
+    held = "PR #2 waits for the owner's `approved:merge` label, since it is high risk: "
+    closing = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    closing["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug", "risk:high")]}
+    assert held_revert(monkeypatch, capsys, closing, low) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #71"],
+    )
+    high = {**pull(labels=("risk:high",)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), high) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #1, which it reverts"],
+    )
+    said = "Verifier (codex), pass 2\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — CI permissions\n"
+    judged = {**pull(reviews=(verdict_on(HEAD) | {"body": said},)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), judged) == (
+        approvals.WAITING,
+        [
+            held
+            + "it reverts #1, and the verifier's pass 2 on aaaaaaa says `Risk: high — CI permissions`"
+        ],
+    )
+    # a risk rule reads the labels of the issues a revert names, as for any PR
+    ruled = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    ruled["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug")]}
+    web = add(BARE, "risk", "labels: [area:web]\n")
+    assert held_revert(monkeypatch, capsys, ruled, low, web) == (
+        approvals.WAITING,
+        [held + "it matches a risk rule (label `area:web`)"],
+    )
+    # the owner's label clears each, and a revert of a low-risk PR lands without it
+    assert held_revert(monkeypatch, capsys, revert_pr(labels=OWNED), high) == (0, [])
+    assert held_revert(monkeypatch, capsys, revert_pr(), low) == (0, [])
 
 
 @pytest.mark.parametrize(
@@ -4608,7 +4687,7 @@ def test_parking_removes_only_the_assignee_the_loop_added(
 
 
 FORK, THEM = "https://github.com/me/fork.git", "git@github.com:them/fork"
-POST_DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "post_demo.sh"
+DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "demo.sh"
 
 
 @pytest.mark.parametrize(
@@ -4636,7 +4715,7 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
     refused: bool,
 ) -> None:
     """gh reads `{owner}/{repo}` as `upstream`'s when several GitHub remotes have no default: approvals.py and
-    post_demo.sh refuse, naming them, before any gh call."""
+    demo.sh refuse, naming them, before any gh call but demo.sh's version check."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     for name, url in remotes.items():
         subprocess.run(["git", "-C", str(tmp_path), "remote", "add", name, url], check=True)
@@ -4650,14 +4729,17 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
             approvals.one_repo()
     else:
         approvals.one_repo()
-    # post_demo.sh: a gh that exits 77 on any call shows whether the guard let it through
+    # demo.sh: a gh that passes the version check and exits 77 on any other call shows whether the
+    # guard let it through
     shim = tmp_path / "bin"
     shim.mkdir()
-    (shim / "gh").write_text("#!/bin/sh\nexit 77\n")
+    (shim / "gh").write_text(
+        '#!/bin/sh\n[ "$1" = --version ] && echo "gh version 2.103.3" && exit 0\nexit 77\n'
+    )
     (shim / "gh").chmod(0o755)
     (tmp_path / "v.mp4").write_bytes(b"x")
     shell = subprocess.run(
-        ["bash", str(POST_DEMO), "x", "v.mp4"],
+        ["bash", str(DEMO), "v.mp4"],
         capture_output=True,
         text=True,
         env={"PATH": f"{shim}:/usr/bin:/bin", "HOME": str(tmp_path)},

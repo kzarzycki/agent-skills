@@ -46,7 +46,8 @@ commit after a verdict needs one of its own; no unresolved
 review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
-`ci: false` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
+`ci: false` in loop.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
+writer, instead), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
@@ -146,7 +147,8 @@ differ), and every path either touches has at the PR's merge base the mode it ha
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
 only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
-label where the change is high risk.
+label where the change is high risk, which for a revert also means `risk:high` on an issue it names or on #n, or #n's
+last verdict judging it high, since undoing a high-risk change changes as much as making it.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 A spec or plan approval is a person's: a comment `approve --by owner` writes on the owner's word, which the gate
@@ -657,7 +659,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
     `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
     was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
-    blocker or major open (capped)."""
+    blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
+    issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
@@ -668,6 +671,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := pull.get("reverted"):
+        return why
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
         if why := ruled(labels, paths(pull), loop, judged(pull, loop)):
@@ -1393,8 +1398,9 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     if no_ci(loop):
         head = [CHECKED, f"Head: {pull['headRefOid']}"]
         if any(
-            [line.strip() for line in body.strip().splitlines()[:2]] == head
-            for body in bodies(pull)
+            [line.strip() for line in note["body"].strip().splitlines()[:2]] == head
+            and trusted(pull, note)
+            for note in notes(pull)
         ):
             found = []
         else:
@@ -1414,7 +1420,6 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
     where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
-    me: list[str | None] = []  # viewer(), asked once and only when a batch proof is found
     for note in notes(pull):
         lines = note["body"].strip().splitlines()
         if not lines or lines[0].strip() != BATCHED:
@@ -1425,17 +1430,23 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
         fields = {
             key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
         }
-        if fields.get("Head", "").lower() != head:
-            continue
-        login = (note.get("author") or {}).get("login")
-        if not me:
-            me.append(viewer())
-        if login is None or (login != me[0] and not writer(login)):
+        if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
             continue
         if (why := unproven(head, fields)) is None:
             return None
         found.append(f"{where}: {why}")
     return found
+
+
+def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> bool:
+    """Whether a proof comment's author counts: the account running this, a writer (writer), and with `author` the
+    PR's author, as passes() reads verifier reviews, since anyone can comment on a public repo."""
+    login = (note.get("author") or {}).get("login")
+    if login is None:
+        return False
+    if author and login == (pull.get("author") or {}).get("login"):
+        return True
+    return login == viewer() or writer(login)
 
 
 def unproven(head: str, fields: dict[str, str]) -> str | None:
@@ -2247,12 +2258,27 @@ def project() -> tuple[str | None, str | None]:
 def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Every missing proof at `point`, and the issues the PR names (none for an exact revert)."""
+    """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
+    reads its issues from `named` and the reverted PR's risk from `reverted` instead)."""
     revert, found = reverts(pull)
-    issues = [] if revert else closing_issues(pull)
-    if not revert:
-        found += problems(issues, None if tracker is None else label_names(tracker))
+    if revert:
+        pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
+        return found + proofs(point, pull, [], loop, revert), []
+    issues = closing_issues(pull)
+    found += problems(issues, None if tracker is None else label_names(tracker))
     return found + proofs(point, pull, issues, loop, revert), issues
+
+
+def reverted(number: int) -> str | None:
+    """Why an exact revert of #number is high risk for what it reverts, or None: `risk:high` on #number, or #number's
+    last verdict judging it high (judged), since undoing a high-risk change (or re-landing one, a revert of its
+    revert) changes as much as making it."""
+    original = pull_request(number)
+    if RISK_LABEL in names(original):
+        return f"`{RISK_LABEL}` is on #{number}, which it reverts"
+    if why := judged(original):
+        return f"it reverts #{number}, and {why}"
+    return None
 
 
 def check(point: str, pr: int | None, head: str | None = None) -> int:

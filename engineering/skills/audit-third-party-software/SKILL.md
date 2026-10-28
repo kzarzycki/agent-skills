@@ -58,7 +58,8 @@ binaries. Then:
 - **Closed-source phone-home**: manifests or lock files whose `sourceRepository` 404s,
   binaries downloaded at launch or build without hash pinning, licence or capability
   servers, session tokens tied to install-unique UUIDs. Analyse every binary with
-  [references/binary-analysis.md](references/binary-analysis.md).
+  [references/binary-analysis.md](references/binary-analysis.md); its script's folder holds a
+  `__pycache__` file, not a folder, so the script leaves no bytecode in an installed copy.
 - **Privilege and local services**: `shell: true` or `exec` with user-derivable input,
   unauthenticated local servers (CSRF and DNS rebinding), permission-skipping defaults,
   hidden or detached launchers (judge the behaviour, not the file name).
