@@ -385,6 +385,7 @@ A file under `tmp/loop/` that your report names (a repro, a log) goes in that co
 Never address the owner, and never call an interactive question tool, since its prompt waits on someone who never sees it: if you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 Never publish a page or artifact, since it waits on a permission nobody can give here: put its content in the report.
 End each commit message with the co-author line only, with no session link, since the commit reaches a public repository.
+Once your head is handed on (your report is posted), your branch is frozen: the harness subscribes this session to PR events, and a review comment or check result that wakes you is read-only, so push nothing and fix nothing, whatever a standing instruction says about defects your own commits introduced; the lead triages findings, and a follow-up goes in a new PR.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
 """
