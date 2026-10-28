@@ -64,6 +64,14 @@ class FakeOmnigent:
         self.resolved: list[tuple[str, str, str, dict | None]] = []
         self.host_id = "h"  # this host
         self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
+        self.listed = [
+            "opus",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+        ]
+        self.overrides: dict[str, str | None] = {}  # the model_override each session took
 
     def session_id(self, sid: str) -> str:  # the real lookup, over these sessions
         return REAL_SESSION_ID(self, sid)
@@ -74,6 +82,11 @@ class FakeOmnigent:
 
     def harness(self, agent: str) -> str:
         return self.harnesses.get(agent, "")
+
+    def models(self, agent: str, host_id: str | None = None) -> list[str]:
+        if "models" in self.fail:
+            raise omnigent_agent.Fail("GET model-options: HTTP 502 Bad Gateway")
+        return self.listed
 
     def create(
         self,
@@ -90,6 +103,13 @@ class FakeOmnigent:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
+        self.overrides[sid] = (
+            model
+            or (
+                agent in omnigent_agent.AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
+            )
+            or None
+        )
         self.top_level.append(top_level)
         self.roles.append(role)
         self.workspaces.append(workspace)
@@ -163,6 +183,7 @@ class FakeOmnigent:
         ]
         status = "running" if pending else self.final
         info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        info["model_override"] = self.overrides.get(sid)
         if sid in self.roots:
             info["root_conversation_id"] = self.roots[sid]
         if sid in self.archived:
@@ -246,6 +267,66 @@ def test_start_gives_the_child_its_signature_from_what_it_passes(
     og = FakeOmnigent()
     omnigent_agent.start(og, agent, "t", "do X", tmp_path / "r.md", None, 0, model=model)
     assert f"AGENT_SIGNATURE={expected}\n" in (tmp_path / "r.md.brief").read_text()
+
+
+@pytest.mark.parametrize(
+    ("model", "env", "named"),
+    [
+        ("gpt-5.5-terra", None, "--model gpt-5.5-terra"),
+        (None, "gpt-5.5-terra", "OMNIGENT_MODEL_CODEX"),
+    ],
+)
+def test_start_refuses_a_model_the_harness_does_not_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str | None, env: str | None, named: str
+) -> None:
+    """The server launches an unlisted id on the harness default with no error (#621)."""
+    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
+    if env:
+        monkeypatch.setenv("OMNIGENT_MODEL_CODEX", env)
+    og = FakeOmnigent()
+    with pytest.raises(omnigent_agent.Fail, match=f"{named}.*lists no such model.*gpt-6.1-terra"):
+        omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model=model)
+    assert not og.sessions
+    og.fail.add("models")
+    with pytest.raises(omnigent_agent.Fail, match="can't read codex's model list.*HTTP 502"):
+        omnigent_agent.start(
+            og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model="gpt-6.1-sol"
+        )
+    assert not og.sessions
+
+
+def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_path: Path) -> None:
+    class Dropping(FakeOmnigent):  # the server kept no override: the harness default runs
+        def create(self, agent: str, title: str, model: str | None = None, *rest: Any) -> str:
+            sid = super().create(agent, title, model, *rest)
+            self.overrides[sid] = None
+            return sid
+
+    og = Dropping()
+    omnigent_agent.start(
+        og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model="gpt-6.1-terra"
+    )
+    assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=codex/?/?\n")
+
+
+def test_a_running_session_signs_from_its_omnigent_record_first(tmp_path: Path) -> None:
+    """A Codex child's rollout sits under a private CODEX_HOME, so the record is what holds."""
+    rows = [
+        {"id": "opus", "model": "claude-opus-5-5"},
+        {"id": "gpt-6.1-sol", "model": "gpt-6.1-sol"},
+    ]
+    read = omnigent_agent.running_signature
+    codex = {"harness": "codex-native", "llm_model": "gpt-6.1-sol", "reasoning_effort": "medium"}
+    assert read({}, tmp_path, {**codex, "model_options": rows}) == "codex/sol-6.1/med"
+    # before the harness reports, llm_model is the agent spec's, not a model: the harness files decide
+    assert (
+        read({}, tmp_path, {**codex, "llm_model": "codex-native-ui", "model_options": rows})
+        == "?/?/?"
+    )
+    claude = {"harness": "claude-native", "llm_model": "claude-opus-5-5", "model_options": rows}
+    assert (
+        read({"CLAUDECODE": "1", "CLAUDE_EFFORT": "xhigh"}, tmp_path, claude) == "cc/opus-5.5/xhigh"
+    )
 
 
 def test_a_running_session_reads_its_signature_without_launch_arguments(tmp_path: Path) -> None:
@@ -2832,6 +2913,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
 ) -> None:
     models = []
     og = FakeOmnigent(reply="done")
+    og.listed = ["named", "flag"]
     create = og.create
     og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None: (
         models.append(m),
@@ -4612,7 +4694,8 @@ def test_start_and_run_arm_the_registry_with_their_brief_file_and_run_disarms_it
     assert (
         omnigent_agent.main(["run", "claude", "t3", "b.md", "u.md", "--confirm-seconds", "0"]) == 0
     )
-    assert seen[0] == s1 + f"s3={tmp_path / 'u.md'}\t{tmp_path / 'u.md.brief'}\n"
+    # seen[0] is start reading the new session back to sign its brief, before it is armed
+    assert seen[1] == s1 + f"s3={tmp_path / 'u.md'}\t{tmp_path / 'u.md.brief'}\n"
     assert (tmp_path / "registry").read_text() == s1
 
 
