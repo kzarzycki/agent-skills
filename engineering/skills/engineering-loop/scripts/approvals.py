@@ -16,7 +16,7 @@
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
-    uv run scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
+    uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
@@ -105,13 +105,23 @@ label or a local-ci record holds it, which GitHub never supplies; auto-merge tur
 without a merge is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
-A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
-exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
-`env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
-check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
-same command and the same env, `local-ci <pr>` posts the pass from it, naming its time, instead of running the
-check again; a record without env is never reused. The host stays in the record: nothing `approvals.py` posts names
-it, and posted text writes the home directory `~` (public), since a public board would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
+A pass also leaves a record keyed by tree and env under the git common dir (`approvals/local-ci/<tree>-<key>.json`:
+head, tree, command, exit, env, time, host, `head` being the commit it ran on), which every worktree sees and nothing
+commits; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
+nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
+records itself. `env` holds the value, or null for unset, of each variable loop.md's `local_ci_env` names, since a
+check that reads them may run a different tier under each; `<key>` is a digest of the command and env. Every pass
+this clone holds, run or reused, is published as a commit status on the head it covers: success, context
+`local-ci/<key>`, description `Tree <tree> on <commit>`, since `gh`'s token can write a status where a check run needs
+a GitHub App. GitHub refusing it (a commit not pushed yet) or unreachable is said and changes nothing else: the record
+stays local, and a later `local-ci` publishes it. A pass is reusable for a commit when this clone's record for its
+tree holds exit 0, the same command and env, or when a status on that commit itself names its tree under the same
+key, posted by the account running this or a writer, since anyone who can only open a PR must never publish a pass;
+so another clone of the repo reuses it. `local-ci <pr>`, `local-ci --record`, `check queue`, `batch` and `check
+merge` read it the same way; the posted comment then says it was reused by tree from the pass recorded on that commit,
+and when, instead of running the check again. A record without env is never reused. The host stays in the record:
+nothing `approvals.py` posts names it, and posted text writes the home directory `~` (public), since a public board
+would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
@@ -221,6 +231,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import hashlib
 import io
 import itertools
 import json
@@ -315,6 +326,8 @@ FLAGGED = f"`{RISK_LABEL}` added by the gate"
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
+# a local-ci pass published as a commit status: its context, then `/` and env_key()
+PUBLISHED = "local-ci"
 # the first line of a merge queue's batch proof (batch), which queued() reads, and how much of the gate's log it shows
 BATCHED = "Merge queue batch"
 LOG_TAIL = 30
@@ -2990,29 +3003,47 @@ def git(*args: str) -> str:
 LOCAL_CI = ["mise", "run", "check:all"]
 
 
-def recorded(head: str) -> Path:
-    """Where a local-ci pass on `head` is recorded: the git common dir, which every worktree of the clone shares and no
-    commit carries."""
+def recorded(tree: str, env: dict[str, str | None]) -> Path:
+    """Where a local-ci pass on `tree` under `env` is recorded: the git common dir, which every worktree of the clone
+    shares and no commit carries."""
     common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
-    return common / "approvals" / "local-ci" / f"{head}.json"
+    return common / "approvals" / "local-ci" / f"{tree}-{env_key(env)}.json"
+
+
+def env_key(env: dict[str, str | None]) -> str:
+    """A digest of the command and `env` a pass ran under: it names the record and the published status, so a pass
+    counts only for both, without publishing the values."""
+    named = json.dumps({"command": " ".join(LOCAL_CI), "env": env}, sort_keys=True)
+    return hashlib.sha256(named.encode()).hexdigest()[:12]
+
+
+def tree_of(commit: str) -> str | None:
+    """The tree `commit` holds, fetching `origin` once when the clone lacks it; None when neither has it."""
+    with contextlib.suppress(subprocess.CalledProcessError):
+        return git("rev-parse", f"{commit}^{{tree}}").strip()
+    with contextlib.suppress(subprocess.CalledProcessError):
+        git("fetch", "--quiet", "origin")
+        return git("rev-parse", f"{commit}^{{tree}}").strip()
+    return None
+
+
+def checkout_state() -> tuple[str, str]:
+    """HEAD and every change in the checkout, empty when it is clean."""
+    # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
+    status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+    # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
+    hidden = [
+        f"{line[2:]} (index flag hides its changes)\n"
+        for line in git("ls-files", "-v").splitlines()
+        if line[:1].islower() or line[:1] == "S"
+    ]
+    return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
 
 def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
-    """Run `mise run check:all` on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
-    check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
-
-    def state() -> tuple[str, str]:
-        # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
-        status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
-        # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
-        hidden = [
-            f"{line[2:]} (index flag hides its changes)\n"
-            for line in git("ls-files", "-v").splitlines()
-            if line[:1].islower() or line[:1] == "S"
-        ]
-        return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
-
-    before = state()
+    """Run `mise run check:all` on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by tree and
+    env; refuse a check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
+    before = checkout_state()
     if head and before[0] != head:
         raise Refused(
             f"the checkout is at {before[0]}, PR #{pr}'s head is {head}: push, or check out the head"
@@ -3023,19 +3054,20 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
     code = subprocess.run(LOCAL_CI, check=False).returncode
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
-    if state() != before:
+    if checkout_state() != before:
         raise Refused(
-            f"{command} changed the checkout, so it did not run on the head as pushed:\n{state()[1]}"
+            f"{command} changed the checkout, so it did not run on the head as pushed:\n{checkout_state()[1]}"
         )
     record = {
         "head": before[0],
+        "tree": git("rev-parse", "HEAD^{tree}").strip(),
         "command": command,
         "exit": code,
         "env": env,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host": socket.gethostname(),
     }
-    where = recorded(before[0])
+    where = recorded(record["tree"], env)
     where.parent.mkdir(parents=True, exist_ok=True)
     where.write_text(json.dumps(record, indent=2) + "\n")
     return record
@@ -3058,40 +3090,126 @@ def env_line(env: dict[str, str | None]) -> str:
 
 
 def reusable(head: str) -> dict[str, Any] | None:
-    """A recorded pass on exactly `head` with today's command and environment, or None. A record without `env` (0.23.1
-    wrote none) never matches, since nothing says what tier it ran."""
+    """A green pass on `head`'s tree under today's command and environment, or None: this clone's record, made on any
+    commit with that tree, else one published on `head` itself (published). The record's `head` is the commit the
+    pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it ran."""
+    if (held := tree_of(head)) is None:
+        return None
+    env = local_ci_env()
     try:
-        record = json.loads(recorded(head).read_text())
+        record = json.loads(recorded(held, env).read_text())
     except (OSError, ValueError):
-        return None
-    # the posting path reads time and host too: a record without them is a miss, not a crash
-    if not isinstance(record, dict) or not all(
-        isinstance(record.get(key), str) for key in ("time", "host")
+        record = None
+    # the posting path reads the commit and time too: a record without them is a miss, not a crash
+    if (
+        isinstance(record, dict)
+        and all(isinstance(record.get(key), str) for key in ("head", "time"))
+        and (record.get("tree"), record.get("command"), record.get("exit"), record.get("env"))
+        == (held, " ".join(LOCAL_CI), 0, env)
     ):
+        return record
+    return published(head, held, env)
+
+
+def published(head: str, held: str, env: dict[str, str | None]) -> dict[str, Any] | None:
+    """A pass on `head` another clone published (publish), as a record, or None. It counts only from the account
+    running this or a writer, since a status is the repo's to write and a PR's author may hold no more than a fork;
+    and only for `head`'s own tree `held` and the context `env` names. GitHub unreachable: None, so the check runs."""
+    context = f"{PUBLISHED}/{env_key(env)}"
+    try:
+        found = statuses(head)
+    except (subprocess.CalledProcessError, OSError, ValueError):
         return None
-    same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
-        head,
-        " ".join(LOCAL_CI),
-        0,
-        local_ci_env(),
+    for status in found:  # newest first
+        named = re.fullmatch(
+            r"Tree ([0-9a-f]{40,64}) on ([0-9a-f]{40,64})", status.get("description") or ""
+        )
+        login = (status.get("creator") or {}).get("login")
+        if (status.get("context"), status.get("state")) != (context, "success") or not named:
+            continue
+        if named[1] == held and login is not None and (login == viewer() or writer(login)):
+            return {
+                "head": named[2],
+                "tree": held,
+                "command": " ".join(LOCAL_CI),
+                "exit": 0,
+                "env": env,
+                "time": status["created_at"],
+                "published": True,
+            }
+    return None
+
+
+def statuses(head: str) -> list[dict[str, Any]]:
+    """The commit statuses on `head`, newest first; ponytail: the first 100, which a head reaches only by hand."""
+    out = gh("api", f"repos/{{owner}}/{{repo}}/commits/{head}/statuses?per_page=100")
+    found: list[dict[str, Any]] = json.loads(out)
+    return found
+
+
+def publish(head: str, record: dict[str, Any]) -> None:
+    """Publish a pass as a commit status on `head`, unless one already does: success under the context env_key()
+    names, its description the tree and the commit the pass ran on, so another clone's reusable() finds it. A status,
+    since gh's token can write one and only an account that can push may (a check run needs a GitHub App). GitHub
+    refusing or unreachable: say so, and the record stays in this clone."""
+    context = f"{PUBLISHED}/{env_key(record['env'])}"
+    if published(head, record["tree"], record["env"]):
+        return
+    try:
+        post_status(head, context, f"Tree {record['tree']} on {record['head']}")
+    except (subprocess.CalledProcessError, OSError) as exc:
+        why = (getattr(exc, "stderr", None) or str(exc)).strip()
+        print(f"not published on GitHub, so only this clone reuses it: {why}")
+        return
+    print(f"published on {head} as the commit status `{context}`")
+
+
+def post_status(head: str, context: str, description: str) -> None:
+    gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/statuses/{head}",
+        "-f",
+        "state=success",
+        "-f",
+        f"context={context}",
+        "-f",
+        f"description={description}",
+        "--silent",
     )
-    return record if same else None
+
+
+def reused(record: dict[str, Any]) -> str:
+    return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}, not run again."
 
 
 def local_ci(pr: int | None) -> int:
-    """With a PR: post a pass on its head, from a recorded run on that head and command or from a run now. Without
-    one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
+    """With a PR: post a pass on its head, from a recorded pass on its tree or from a run now. Without one: on a
+    clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
+    check and record nothing. Either publishes a pass this clone holds (publish)."""
     if pr is None:
-        record = run_local_ci(None, None)
-        print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
+        head, changes = checkout_state()
+        if changes:
+            code = subprocess.run(LOCAL_CI, check=False).returncode
+            print(
+                f"{' '.join(LOCAL_CI)} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
+            )
+            return code
+        if record := reusable(head):
+            print(f"{CHECKED} on {head}: {reused(record)}")
+        else:
+            record = run_local_ci(None, None)
+            print(f"{CHECKED} on {head}: recorded in {recorded(record['tree'], record['env'])}")
+        if not record.get("published"):
+            publish(head, record)
         return 0
     head = pull_request(pr)["headRefOid"]
-    record = reusable(head)
-    if record:
-        source = f"From the recorded run at {record['time']}, not run again.\n"
+    if record := reusable(head):
+        source = f"{reused(record)}\n"
     else:
         record = run_local_ci(pr, head)
         source = ""
+    if not record.get("published"):
+        publish(head, record)
     comment(
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",

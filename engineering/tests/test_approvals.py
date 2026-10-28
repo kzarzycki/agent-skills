@@ -47,6 +47,7 @@ def add(loop: str, section: str, settings: str) -> str:
 
 
 HEAD, BASE = "a" * 40, "b" * 40
+TREE = "e" * 40  # the head's tree in a faked checkout
 WRITTEN = "2026-10-01T09:00:00Z"
 AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
 IDS = itertools.count(1)
@@ -71,6 +72,31 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
     monkeypatch.setattr(approvals, "merged_high", lambda _branch: [])
+
+
+@pytest.fixture(autouse=True)
+def hub(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
+    """GitHub's commit statuses by commit, newest first: what statuses() reads and post_status() writes as `loop`."""
+    found: dict[str, list[dict[str, Any]]] = {}
+
+    def post(head: str, context: str, description: str) -> None:
+        found.setdefault(head, []).insert(0, status(context, description))
+
+    monkeypatch.setattr(approvals, "statuses", lambda head: found.get(head, []))
+    monkeypatch.setattr(approvals, "post_status", post)
+    return found
+
+
+def status(
+    context: str, description: str, by: str = "loop", state: str = "success"
+) -> dict[str, Any]:
+    return {
+        "context": context,
+        "state": state,
+        "description": description,
+        "creator": {"login": by},
+        "created_at": "2026-01-01T00:00:00Z",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -4228,12 +4254,16 @@ def checkout(
     """A checkout at the PR head and clean, its git common dir under tmp_path; a test changes it, or what the check
     does to it. `runs` counts the checks run."""
     state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None, "runs": 0}
+    state["trees"] = {}  # a commit's tree, TREE unless named
     state["common"] = tmp_path / "common.git"
     state["loop"] = LOOP
 
     def git(*args: str) -> str:
         if args == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
             return f"{state['common']}\n"
+        if args[0] == "rev-parse" and args[-1].endswith("^{tree}"):
+            commit = args[-1].removesuffix("^{tree}").replace("HEAD", state["head"])
+            return state["trees"].get(commit, TREE) + "\n"
         if args[0] == "rev-parse":
             return state["head"] + "\n"
         if args[0] == "ls-files":
@@ -4272,11 +4302,10 @@ def test_a_passing_check_on_the_clean_head_is_recorded(
             f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
         )
     ]
-    record = json.loads(
-        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
-    )
-    assert {k: record[k] for k in ("head", "command", "exit")} == {
+    record = json.loads(record_at().read_text())
+    assert {k: record[k] for k in ("head", "tree", "command", "exit")} == {
         "head": HEAD,
+        "tree": TREE,
         "command": "mise run check:all",
         "exit": 0,
     }
@@ -4306,28 +4335,62 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     assert not (checkout["common"] / "approvals").exists()
 
 
-@pytest.mark.parametrize(
-    "change", [{"status": " M app.py\n"}, {"exit": 2}, {"after": " M uv.lock\n"}]
-)
+@pytest.mark.parametrize("change", [{"exit": 2}, {"after": " M uv.lock\n"}])
 def test_record_writes_only_a_passing_check_on_a_clean_unchanged_tree(
-    github: list[tuple[Any, ...]], checkout: dict[str, Any], change: dict[str, Any]
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    change: dict[str, Any],
 ) -> None:
     checkout.update(change)
     assert approvals.main(["local-ci", "--record"]) == 1
     assert not (checkout["common"] / "approvals").exists()
+    assert hub == {}
     checkout.update({"status": "", "exit": 0, "after": None})
     assert approvals.main(["local-ci", "--record"]) == 0
-    assert (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").exists()
+    assert record_at().exists()
     assert github == []  # no PR yet: nothing is posted
+
+
+@pytest.mark.parametrize("code", [0, 2])
+def test_record_on_a_checkout_with_changes_runs_the_check_and_records_nothing(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+    code: int,
+) -> None:
+    """The recording command is the gate while iterating too: a run on changes is no pass on HEAD, so it records
+    nothing, and the check's exit is the command's. A clean green run, the last one, records itself."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    checkout.update({"status": " M app.py\n", "exit": code})
+    assert approvals.main(["local-ci", "--record"]) == code
+    assert checkout["runs"] == 2  # a pass on HEAD's tree says nothing about the changes
+    assert "on a checkout with changes, so nothing is recorded" in capsys.readouterr().out
+    assert len(hub[HEAD]) == 1 and github == []
+
+
+def test_record_on_a_tree_already_green_reuses_it_and_publishes_once(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Rerun once the head is pushed, it publishes a pass GitHub could not take before, without running the check."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    hub.clear()  # the commit was not on GitHub yet
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 1
+    assert [s["description"] for s in hub[HEAD]] == [f"Tree {TREE} on {HEAD}"]
+    out = capsys.readouterr().out
+    assert f"Reused by tree from the pass recorded on {HEAD}" in out
 
 
 def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = json.loads(
-        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
-    )
+    record = json.loads(record_at().read_text())
     checkout["head"] = "c" * 40  # the checkout moved on: the record still proves the PR's head
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
@@ -4337,7 +4400,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
             7,
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n"
-                f"From the recorded run at {record['time']}, not run again.\n"
+                f"Reused by tree from the pass recorded on {HEAD} at {record['time']}, not run again.\n"
             ),
         )
     ]
@@ -4352,7 +4415,7 @@ def test_a_local_ci_comment_names_no_host(
     """Run and recorded on a host named for its owner, the pass is posted without it, and still proves the head."""
     sent = posts(monkeypatch)
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = json.loads(approvals.recorded(HEAD).read_text())
+    record = json.loads(record_at().read_text())
     assert record["host"] == "owner-MacBook.local"  # the local record keeps it
     assert approvals.main(["local-ci", "7"]) == 0
     [body] = sent
@@ -4364,19 +4427,19 @@ def test_a_local_ci_comment_names_no_host(
 @pytest.mark.parametrize(
     ("file", "record"),
     [
-        ("c" * 40, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
-        (HEAD, {"head": HEAD, "command": "mise run check", "exit": 0}),
-        (HEAD, {"head": HEAD, "command": "mise run check:all", "exit": 2}),
-        (HEAD, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
+        ("f" * 40, {"tree": "f" * 40, "command": "mise run check:all", "exit": 0}),
+        (TREE, {"tree": TREE, "command": "mise run check", "exit": 0}),
+        (TREE, {"tree": TREE, "command": "mise run check:all", "exit": 2}),
+        (TREE, {"tree": "f" * 40, "command": "mise run check:all", "exit": 0}),
     ],
-    ids=["another head", "another command", "a failed run", "a record naming another head"],
+    ids=["another tree", "another command", "a failed run", "a record naming another tree"],
 )
-def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
+def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], file: str, record: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
-    (where / f"{file}.json").write_text(json.dumps({**record, "time": "t", "host": "h"}))
+    where = approvals.recorded(file, {})
+    where.parent.mkdir(parents=True)
+    where.write_text(json.dumps({**record, "head": HEAD, "env": {}, "time": "t", "host": "h"}))
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
     assert github == [
@@ -4391,8 +4454,13 @@ def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
 ENV_LOOP = add(LOOP, "loop", "local_ci_env:\n  - GATE_UI_TESTS\n  - GATE_SCOPE\n")
 
 
+def record_at(head: str = HEAD) -> Path:
+    """Where this clone records a pass on `head`'s tree under the current env."""
+    return approvals.recorded(approvals.tree_of(head), approvals.local_ci_env())
+
+
 def recorded_pass(checkout: dict[str, Any]) -> dict[str, Any]:
-    return json.loads((checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text())
+    return json.loads(record_at().read_text())
 
 
 def test_a_pass_recorded_under_another_env_runs_the_check_again(
@@ -4433,7 +4501,7 @@ def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
                 "Env: GATE_SCOPE=changed GATE_UI_TESTS=0\n"
-                f"From the recorded run at {record['time']}, not run again.\n"
+                f"Reused by tree from the pass recorded on {HEAD} at {record['time']}, not run again.\n"
             ),
         )
     ]
@@ -4442,10 +4510,17 @@ def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
 def test_a_record_without_env_runs_the_check_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
-    old = {"head": HEAD, "command": "mise run check:all", "exit": 0, "time": "t", "host": "h"}
-    (where / f"{HEAD}.json").write_text(json.dumps(old))  # as 0.23.1 wrote it
+    where = record_at()
+    where.parent.mkdir(parents=True)
+    old = {
+        "head": HEAD,
+        "tree": TREE,
+        "command": "mise run check:all",
+        "exit": 0,
+        "time": "t",
+        "host": "h",
+    }
+    where.write_text(json.dumps(old))  # as 0.23.1 wrote it, but for the tree
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
     assert recorded_pass(checkout)["env"] == {}
@@ -4453,16 +4528,17 @@ def test_a_record_without_env_runs_the_check_again(
 
 @pytest.mark.parametrize(
     "drop",
-    [{"time": None}, {"host": None}, {"time": 1}, {"env": []}],
-    ids=["no time", "no host", "a number for time", "env not a dict"],
+    [{"time": None}, {"head": None}, {"time": 1}, {"env": []}],
+    ids=["no time", "no commit", "a number for time", "env not a dict"],
 )
 def test_an_incomplete_record_runs_the_check_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], drop: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
+    where = record_at()
+    where.parent.mkdir(parents=True)
     full = {
         "head": HEAD,
+        "tree": TREE,
         "command": "mise run check:all",
         "exit": 0,
         "env": {},
@@ -4470,7 +4546,7 @@ def test_an_incomplete_record_runs_the_check_again(
         "host": "h",
     }
     record = {k: v for k, v in {**full, **drop}.items() if v is not None}
-    (where / f"{HEAD}.json").write_text(json.dumps(record))
+    where.write_text(json.dumps(record))
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
     assert github == [
@@ -4586,6 +4662,122 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     monkeypatch.chdir(repo)
     assert approvals.reusable(head)["head"] == head
     assert approvals.reusable("c" * 40) is None
+
+
+def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_env(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host A records and publishes; host B, a clone made before the head was pushed, fetches it, finds the
+    published pass and posts it without running the check, which would fail there."""
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    a, b = tmp_path / "a", tmp_path / "b"
+    committed(a)
+    git_in(a, "remote", "add", "origin", str(origin))
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(tmp_path, "clone", "-q", str(origin), str(b))
+    (a / "app.py").write_text("value = 2\n")
+    git_in(a, "commit", "-qam", "change")
+    head = git_in(a, "rev-parse", "HEAD").strip()
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
+    monkeypatch.chdir(a)
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert [s["description"] for s in hub[head]] == [f"Tree {approvals.tree_of(head)} on {head}"]
+    monkeypatch.chdir(b)
+
+    def never(*_args: Any) -> Any:
+        raise AssertionError("host B ran the check")
+
+    monkeypatch.setattr(approvals, "run_local_ci", never)
+    assert approvals.reusable(head)["head"] == head  # check queue, batch and check merge read this
+    assert approvals.main(["local-ci", "7"]) == 0
+    [(_, _, body)] = github
+    assert f"Reused by tree from the pass recorded on {head} at 2026-01-01T00:00:00Z" in body
+    assert len(hub[head]) == 1  # already published: not again
+
+
+@pytest.mark.parametrize(
+    ("published", "writers"),
+    [
+        (status("local-ci/{key}", f"Tree {'f' * 40} on {HEAD}"), {"loop"}),
+        (status("local-ci/000000000000", f"Tree {TREE} on {HEAD}"), {"loop"}),
+        (status("local-ci/{key}", f"Tree {TREE} on {HEAD}", by="contributor"), {"loop"}),
+        (status("local-ci/{key}", f"Tree {TREE} on {HEAD}", state="failure"), {"loop"}),
+        (status("local-ci/{key}", f"Tree {TREE}"), {"loop"}),
+    ],
+    ids=["another tree", "another env", "a non-writer", "not a pass", "no commit named"],
+)
+def test_a_published_pass_for_another_tree_or_env_or_by_a_non_writer_runs_the_check(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    published: dict[str, Any],
+    writers: set[str],
+) -> None:
+    """Anyone who can only open a PR must not publish a pass: a status counts from the running account or a writer."""
+    monkeypatch.setattr(approvals, "writer", lambda login: login in writers)
+    key = approvals.env_key(approvals.local_ci_env())
+    hub[HEAD] = [{**published, "context": published["context"].format(key=key)}]
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+
+
+def test_a_pass_published_by_a_writer_on_the_head_is_reused(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
+    key = approvals.env_key(approvals.local_ci_env())
+    hub[HEAD] = [status(f"local-ci/{key}", f"Tree {TREE} on {'c' * 40}", by="maintainer")]
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 0
+    [(_, _, body)] = github
+    assert f"Reused by tree from the pass recorded on {'c' * 40} at 2026-01-01T00:00:00Z" in body
+
+
+def test_two_commits_with_one_tree_and_env_share_a_pass_and_another_tree_runs_it(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """A rebase or amended message keeps the tree: the second commit reuses the first's pass, naming it."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    amended = "c" * 40
+    checkout["head"] = amended
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 1
+    assert hub[amended][0]["description"] == f"Tree {TREE} on {HEAD}"
+    checkout["trees"][amended] = "f" * 40  # the same commit name, another tree
+    hub.clear()
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 2
+
+
+def test_without_github_the_pass_is_recorded_here_and_says_it_is_not_published(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def offline(*_args: Any) -> Any:
+        raise subprocess.CalledProcessError(1, "gh", stderr="error connecting to api.github.com")
+
+    monkeypatch.setattr(approvals, "statuses", offline)
+    monkeypatch.setattr(approvals, "post_status", offline)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert (
+        "not published on GitHub, so only this clone reuses it: error connecting"
+        in capsys.readouterr().out
+    )
+    assert record_at().exists()
+    assert approvals.reusable(HEAD)["head"] == HEAD
 
 
 # --- the owner's policy: specs approved and merges landed without an agent's approval ---
@@ -5508,13 +5700,16 @@ def batch_note(head: str, merge: str, batch: str, exit: int = 0, env: str = "def
 
 def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
     """Record a green `local-ci --record` pass on `head`, as run_local_ci() writes it."""
-    where = approvals.recorded(head)
+    env = {} if env is None else env
+    held = approvals.tree_of(head)
+    where = approvals.recorded(held, env)
     where.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "head": head,
+        "tree": held,
         "command": " ".join(approvals.LOCAL_CI),
         "exit": 0,
-        "env": {} if env is None else env,
+        "env": env,
         "time": "2026-01-01T00:00:00Z",
         "host": "host",
     }
@@ -5761,7 +5956,7 @@ def test_posted_comments_name_no_host_or_home(
     env = {"CACHE": "/Users/owner/cache"}
     monkeypatch.setattr(approvals, "local_ci_env", lambda: env)
     gated_head(batched["head"], env)
-    record = approvals.recorded(batched["head"])
+    record = approvals.recorded(approvals.tree_of(batched["head"]), env)
     record.write_text(record.read_text().replace('"host": "host"', '"host": "owner-MacBook.local"'))
     log = tmp_path / "gate.log"
     log.write_text(
