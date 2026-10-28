@@ -7,8 +7,10 @@ targets:
 - codex
 dependencies:
   apm:
-  - path: ../loop
-  - path: ../omnigent
+  - git: kzarzycki/agent-skills/loop
+    ref: ^0.1.0
+  - git: kzarzycki/agent-skills/omnigent
+    ref: ^0.1.0
   mcp: []
 includes: auto
 scripts: {}

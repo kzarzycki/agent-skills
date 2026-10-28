@@ -7,7 +7,8 @@ targets:
 - codex
 dependencies:
   apm:
-  - path: ../gatekeeper
+  - git: kzarzycki/agent-skills/gatekeeper
+    ref: ^0.1.0
   mcp: []
 includes: auto
 scripts: {}
