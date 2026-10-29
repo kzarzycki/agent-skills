@@ -1458,9 +1458,11 @@ def test_create_starts_a_claude_lead_with_the_project_s_autocompact_window(
     assert bodies[-1]["terminal_launch_args"] == ["--autocompact", "150k"]
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=330000 outranks" in capsys.readouterr().err
     (tmp_path / "home" / ".claude" / "settings.json").write_text("{}")
-    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "250000")  # from the environment alone
+    # the caller's env never reaches the lead, which gets the runner's
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "250000")
     og.create("claude", "t", workspace=ws, top_level=True)
-    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000 outranks" in capsys.readouterr().err
+    assert bodies[-1]["terminal_launch_args"] == ["--autocompact", "150k"]
+    assert "outranks" not in capsys.readouterr().err
     for size, ok in (
         ("150000", True),
         ("200", True),
