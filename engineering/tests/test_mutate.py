@@ -244,3 +244,13 @@ def test_a_log_path_that_is_tracked_or_a_patch_is_refused_and_left_as_it_was(
     result = mutate(repo, killed, to=path)
     assert result.returncode == 2 and "the log" in result.stderr
     assert path.read_text() == before and clean(repo)
+
+
+def test_a_failure_while_a_patch_is_applied_still_restores_the_tree(repo: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    gone = repo / "tmp" / "gone"
+    gone.mkdir()
+    # the test deletes the log's folder, so writing its result fails while the patch is applied
+    result = mutate(repo, killed, test=f"rm -rf {gone}; {TESTS}", to=gone / "m.log")
+    assert result.returncode == 1 and "FileNotFoundError" in result.stderr
+    assert clean(repo) and (repo / "calc.py").read_text() == MODULE
