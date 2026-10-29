@@ -78,6 +78,7 @@ spec:
 loop:
   cap: 3
   ci: false
+  gate: GATE_TIER=full mise run check:all   # the merge check, and the variables it sets
   local_ci_env:
     - GATE_TIER
   opt_out: true
@@ -134,7 +135,8 @@ carry_over_main:
 | `spec` | `auto` | a list of `bug`, `follow-up` and `sub-issue`, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
 | `loop` | `cap` | a whole number (The cap) | the default |
 | | `ci` | `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
-| | `local_ci_env` | the environment variables that local check reads (Adopting the loop) | none |
+| | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
+| | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
@@ -219,15 +221,17 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
 draft, `mise run check` before each push is its check. With `ci: false` in loop.md, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
-instead, and is the gate while iterating too: it runs the merge check, `mise run check:all`,
-and a clean, green run records itself by tree in the clone's git dir and publishes it as a
-commit status on the head once GitHub has it, so `local-ci <pr>` at landing, on this host or
-another clone, posts that pass for any commit with the same tree, command and environment
-rather than running the check again (a rebase or reworded commit keeps its tree). A run on a
-checkout with changes records nothing. A project
-whose check reads environment variables (a tier, a scope) names them in loop.md's
-`local_ci_env`: without it a pass recorded under one tier stands in for another, and the
-posted comment names those values.
+instead, and is the gate while iterating too: it runs the merge check, loop.md's `gate`
+(default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and publishes it as a
+commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing posts
+that pass rather than running the check again: on this host for any commit with the same
+tree and gate command (a rebase or reworded commit keeps its tree), on another for the
+commit whose `gate` status names them. `gate` is one command with no shell operator, so a
+chain of checks is one task. A run on a
+checkout with changes records nothing. A project whose check reads environment variables (a
+tier, a scope) names them in loop.md's `local_ci_env`, and they are cleared for the run, so a
+host's own setting never changes what a pass proves; the tier the merge needs goes in
+front of the command in `gate`.
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
