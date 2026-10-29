@@ -3245,8 +3245,11 @@ def test_with_head_proof_land_refuses_a_head_without_its_status_and_lands_it_onc
     code, lines = lands["land"]("7")
     assert (code, lands["runs"](), lands["merged"]()) == (1, 0, [])
     assert lines == [
-        f"PR #7: its head {head} has no green `gate-ui` status for its tree (loop.md `head_proof`): run"
-        " `approvals.py local-ci --record --head-proof` on a clean checkout of it, with the tier set in GATE_UI_TESTS"
+        (
+            f"PR #7: its head {head} has no green `gate-ui` status for its tree (loop.md `head_proof`): run"
+            " `approvals.py local-ci --record --head-proof` on a clean checkout of it, with the tier set in"
+            " GATE_UI_TESTS"
+        )
     ]
     hub[head].insert(
         0, status("gate-ui", f"Tree {approvals.tree_of(head)} on {head[:12]}: GATE_UI_TESTS=smoke")
@@ -4436,8 +4439,12 @@ def test_record_head_proof_runs_the_gate_with_the_callers_tier_over_the_gate_lin
     [
         (LOOP, ["local-ci", "--record", "--head-proof"]),
         (add(LOOP, "loop", HEAD_PROOF), ["local-ci", "7", "--head-proof"]),
+        (
+            add(LOOP, "loop", "head_proof:\n  status: gate-ui\n  env:\n    - 1GATE\n"),
+            ["local-ci", "--record", "--head-proof"],
+        ),
     ],
-    ids=["no head_proof in loop.md", "with a PR"],
+    ids=["no head_proof in loop.md", "with a PR", "an env naming no variable"],
 )
 def test_head_proof_without_the_setting_or_with_a_pr_is_refused(
     github: list[tuple[Any, ...]],
@@ -4449,6 +4456,26 @@ def test_head_proof_without_the_setting_or_with_a_pr_is_refused(
     checkout["loop"] = loop
     assert approvals.main(argv) == 1
     assert (checkout["runs"], github, hub) == (0, [], {})
+
+
+def test_head_proof_reuses_a_gate_pass_published_under_the_command_it_runs_naming_its_values(
+    checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `gate` status from when the gate line itself set `smoke` is a pass of the command the head proof runs."""
+    gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    checkout["loop"] = add(gated, "loop", HEAD_PROOF)
+    monkeypatch.setenv("GATE_UI_TESTS", "smoke")
+    smoke = f"Tree {TREE} on {HEAD[:12]}: GATE_UI_TESTS=smoke mise run check:all"
+    hub[HEAD] = [status("gate", smoke)]
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
+    assert checkout["runs"] == 0
+    assert hub[HEAD][0] == status("gate-ui", f"Tree {TREE} on {HEAD[:12]}: GATE_UI_TESTS=smoke")
+
+
+def test_a_head_proof_description_says_default_for_no_value_and_fits_github() -> None:
+    record = {"tree": TREE, "head": HEAD, "env": {"LONG": "x" * 200}}
+    assert approvals.proof_line(record, ["UNSET"]) == f"Tree {TREE} on {HEAD[:12]}: default"
+    assert len(approvals.proof_line(record, ["UNSET", "LONG"])) == approvals.DESCRIBED
 
 
 def test_a_name_added_to_local_ci_env_keeps_every_pass(
