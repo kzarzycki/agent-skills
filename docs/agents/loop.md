@@ -23,7 +23,7 @@ spec:
   auto: true
 
 loop:
-  gate: mise run check   # the merge check: the three gates CI's qualify job runs
+  gate: QUALIFY_TIMEOUT=900 mise run check   # the merge check CI runs; 900 s for package tests on a shared host
 
 risk:
   verifier: true
