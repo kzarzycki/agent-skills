@@ -175,8 +175,10 @@ design, wireframes included for a UI, and delegate the rest.
      runs, or the lint, type or test configuration), that pass is the short delta pass.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
-     `approved:merge` label on the head that lands (SKILL.md, Approvals and proof); you
-     never add it. Into a feature branch, the delegated approver loop.md names may add it
+     go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
+     <pr> --head <sha> --by owner` naming the head you showed them, when they say it in your
+     session, or their own `approved:merge`; you
+     never give it. Into a feature branch, the delegated approver loop.md names may add it
      with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
    - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
@@ -207,13 +209,13 @@ design, wireframes included for a UI, and delegate the rest.
      GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
      `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
      merge queue, without a merge (still so on a second reading one poll later, since GitHub takes a PR out of the queue a moment before it reports the merge) is exit 1. An entry still waiting for checks 10 minutes after it was queued, with no check suite on its merge-group commit, is one GitHub never told CI about: the wait dequeues it and lands the PR again. Exit 3 is what CI won't clear, once no required check is still pending: a red
-     check, the owner's label, `ci: false` without a `local-ci` record, a repository without
+     check, the owner's go, `ci: false` without a `local-ci` record, a repository without
      auto-merge or a base with no required checks whose CI has finished, or 2 hours of waiting;
      run it again once that clears. When every proof holds and only `loop:approvals` is red
      (resolving a review thread starts no workflow), it reruns the Actions run that posted it
      once. Never mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because
      `land` is what refuses a PR whose proof is missing. A push after it needs
-     `gh pr ready --undo` first; the push removes `approved:merge`, and after the verdict on
+     `gh pr ready --undo` first; the owner's go stays on the old head, and after the verdict on
      the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
      never after another PR's merge. Where the base requires a merge queue, the queue tests each
@@ -229,10 +231,10 @@ design, wireframes included for a UI, and delegate the rest.
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
-   - Where a high-risk change waits for the owner's label, `land` exits 3 with only that left
+   - Where a high-risk change waits for the owner's go, `land` exits 3 with only that left
      once CI has passed the head (with `ci: false`, once `uv run <this skill's folder>/scripts/approvals.py local-ci
      <pr>` has recorded a pass on it, reusing a `local-ci --record` pass on the same tree), so the owner never approves a head CI could still
-     reject: give them the PR link, ask for `approved:merge`, and run `land` again once it is on.
+     reject: give them the PR link and the head, ask for their go, and run `land` again once it is on.
      The PR has landed only once `land` exits 0, or `gh pr view <pr> --json state,mergeCommit`
      shows `MERGED`. Then use the merge commit in the steps below.
    - A PR the queue removes without merging: read the failed queue run. A failure that comes

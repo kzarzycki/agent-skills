@@ -336,10 +336,19 @@ loop.md's settings hold the policy (Settings):
 
 A change is high risk when `risk:high` is on the PR or an issue it closes, a risk rule
 matches (unless under `spec.auto: true`, where it held the spec, but for its `verifier` term), or the cap was reached with a blocker or major open (The cap). A high-risk spec
-covered by policy is still built and PR'd; its merge waits for the owner's
-`approved:merge` label on the PR, asked for once `check` is green on the head: it counts
-only when added after that head's push, and a push removes it, so it never covers code the
-owner did not see. On a PR into a feature branch (any base but the default branch), that
+covered by policy is still built and PR'd; its merge waits for the owner's go on its
+head, asked for once `check` is green there: `uv run <this skill's folder>/scripts/approvals.py
+approve merge <pr> --head <sha> --by owner`, naming the head you showed them and run in
+the session where the owner said it, posts a commit status `owner` on that one commit and a
+record naming it, and refuses a head that moved since; the script writes every word, so
+nobody's paraphrase of the change travels with it. `--withdraw` takes the go back, removing
+the label too; the owner adding it again gives the go again. A go
+relayed from another session is none: ask the owner to say it where the landing runs. On a
+PR into the default branch the owner may instead add `approved:merge` in GitHub after the
+head's push; `check` and `land` turn it into the same status, which holds while the label
+is on, so removing it withdraws the go. A status covers one commit, so it never covers code
+the owner did not see. On a
+change that is not high risk `approved:merge` means nothing. On a PR into a feature branch (any base but the default branch), that
 label may be the delegated approver's, where loop.md names one: once the gate is green and a
 satisfied verdict from the verifier's top model covers the head, it runs `approvals.py
 delegate <pr>`, which adds the label and a record naming it the delegate's. So dependent work
@@ -364,7 +373,7 @@ until they approve. A spec the owner approved and then edited for wording needs 
 `approve` again, since `approvals.py` can't tell wording from scope; one covered by policy
 needs nothing. `mise run loop:approvals build` before building and `mise run
 loop:approvals merge` before merging check every proof (`scripts/approvals.py` lists
-them); `merge` exits 3 while it waits for `check` or the owner's label, and 1 when a proof
+them); `merge` exits 3 while it waits for `check` or the owner's go, and 1 when a proof
 is missing. An agent merges only with `uv run <this skill's folder>/scripts/approvals.py land <pr>` (the
 project's `loop:land` task): it runs every merge proof, refuses a head in conflict with its
 base, or behind a base that requires no merge queue, marks a draft ready and waits for the CI that starts, and on a ready
@@ -390,11 +399,11 @@ waiting PR's verified head onto the base, runs the full gate once on the result 
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
 `uv run <this skill's folder>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
 it: every merge proof but the CI wait, the head's own `local-ci --record` pass under the
-current environment and, with CI, its `check`, and on a high-risk change the owner's
-`approved:merge` added after the head's push, the test `land` applies. The label covers that
+current environment and, with CI, its `check`, and on a high-risk change the owner's go on
+the head, the test `land` applies. The go covers that
 one head, and the queue keeps it: it runs `check queue` again before it merges a PR into a
-batch, evicting one whose head moved, and `check merge` dates the label against the landed
-head again. The queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
+batch, evicting one whose head moved, and `check merge` reads the go on the landed head
+again. The queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
 place of the CI wait once git shows the head merged unchanged and without conflict
 resolution into a batch whose gate passed, and the head has its own `local-ci --record` pass
 under the environment the proof names (`approvals.py`'s docstring says how). A batch gate
@@ -664,7 +673,7 @@ or the owner's private network.
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
   which marks it ready and merges it, or turns on auto-merge and waits for the merge. The PR merges only when the newest
   verdict covers the head that lands, the required checks are green there, and, where the
-  change is high risk (Approvals and proof), the owner's `approved:merge` label is on.
+  change is high risk (Approvals and proof), the owner's go is on that head.
   The verdict's commit is the head itself: any commit after it, a merge of main included,
   needs a verifier pass first, and a triage or comment is no verdict.
 
@@ -733,8 +742,7 @@ none of the PR's files keep the verdict (Approvals and proof).
   since the fix keeps regressing and only they decide what happens next. They have two
   options. One is a fix followed by one pass past the cap, scoped to the open items. The
   other is leaving the code untouched, and parking or closing the PR. You never fix and
-  land on your own call: `land` holds such a PR for the owner's `approved:merge` label,
-  added after the head's push.
+  land on your own call: `land` holds such a PR for the owner's go on its head.
 - **The last pass under the cap leaves only minor or edge findings open:** ledger them and
   file their issue (Triage), leave the code untouched, and land on the satisfied verdict.
   There is no owner stop.
