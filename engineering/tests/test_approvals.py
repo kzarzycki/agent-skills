@@ -3334,15 +3334,16 @@ CHECK_SCRIPT = """import os, pathlib, subprocess, sys
 pathlib.Path(sys.argv[1]).open("a").write(f"{os.environ['LAND_HEAD']} {os.environ['LAND_BASE']}\\n")
 files = subprocess.run(["git", "ls-tree", "--name-only", os.environ["LAND_HEAD"]], capture_output=True, text=True)
 pathlib.Path("check.cache").write_text("left behind\\n")
-if "old.txt" in files.stdout.split():
+if os.environ["STALE"] in files.stdout.split():
     print("forked before the restructuring: old.txt is back")
     sys.exit(1)
 """
 
 
 def pre_land(lands: dict[str, Any], configured: bool = True) -> Path:
-    """main holds `check.py`, which refuses a head whose tree holds `old.txt` and leaves a file behind, and loop.md's `pre_land` runs it, unless
-    not `configured`; the log of its runs, one `<LAND_HEAD> <LAND_BASE>` line each."""
+    """main holds `check.py`, which refuses a head whose tree holds the file `STALE` names and leaves a file behind,
+    and loop.md's `pre_land` runs it with `STALE=old.txt`, unless not `configured`; the log of its runs, one
+    `<LAND_HEAD> <LAND_BASE>` line each."""
     work, runs = lands["work"], lands["work"].parent / "pre_land.log"
     git_in(work, "switch", "-q", "--detach", "origin/main")
     (work / "check.py").write_text(CHECK_SCRIPT)
@@ -3355,7 +3356,7 @@ def pre_land(lands: dict[str, Any], configured: bool = True) -> Path:
             add(
                 GITHUB_RULE,
                 "loop",
-                f"pre_land: {shlex.join([sys.executable, 'check.py', str(runs)])}\n",
+                f"pre_land: {shlex.join(['STALE=old.txt', sys.executable, 'check.py', str(runs)])}\n",
             )
         )
     return runs
@@ -3377,7 +3378,7 @@ def test_a_pr_the_pre_land_check_refuses_is_left_out_with_one_comment_and_stays_
     assert code == 1, lines
     assert lands["merged"]() == ["7"]
     assert runs.read_text().splitlines() == [f"{fine} {base}", f"{old} {base}"]
-    command = shlex.join([sys.executable, "check.py", str(runs)])
+    command = shlex.join(["STALE=old.txt", sys.executable, "check.py", str(runs)])
     assert (
         f"PR #8: `{command}` refused it against main at {base}, exiting 1: left out of this batch"
         in lines
@@ -3393,6 +3394,18 @@ def test_a_pr_the_pre_land_check_refuses_is_left_out_with_one_comment_and_stays_
     assert (number, body.splitlines()[1]) == (8, f"Head: {old}")
     assert "forked before the restructuring: old.txt is back\n" in body
     assert lands["land"]("8")[0] == 1
+    # a new head refused is said again
+    said = lands["pulls"][8]["comments"]
+    for ref in ("refs/heads/pr8", "refs/pull/8/head"):  # a force-push
+        git_in(lands["origin"], "update-ref", "-d", ref)
+    newer = lands["open"](8, {"old.txt": "older\n"})
+    lands["pulls"][8]["comments"] = said
+    assert lands["land"]("8")[0] == 1
+    assert [
+        body.splitlines()[1]
+        for n, body in lands["comments"]
+        if n == 8 and body.startswith(approvals.PRE_LAND)
+    ] == [f"Head: {old}", f"Head: {newer}"]
 
 
 def test_a_pr_editing_the_pre_land_check_is_judged_by_the_bases_version(
