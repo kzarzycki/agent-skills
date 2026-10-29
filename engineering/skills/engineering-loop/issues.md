@@ -87,6 +87,9 @@ The assignee says whose issue it is; who is working on it shows in its board col
   go-ahead is still `approved:spec` or the owner's ask, never the assignment.
 - Someone else's issue is theirs: the loop never builds an issue assigned to anyone but
   the person who approved its spec, and `approvals.py check build` refuses one.
+- One build per issue: `check build` refuses a PR that closes an issue another open PR
+  closes too, naming that PR and its branch, since each build runs its own verifier, gate
+  and queue.
 - When building starts and no one is assigned, the loop assigns the approver, and the PR
   gets its issue's assignee (`check build` does both, github.md, Assignee).
 - Parked or dropped, the loop removes only an assignment it made; a claim the owner made

@@ -47,6 +47,7 @@ def add(loop: str, section: str, settings: str) -> str:
 
 
 HEAD, BASE = "a" * 40, "b" * 40
+TREE = "e" * 40  # the head's tree in a faked checkout
 WRITTEN = "2026-10-01T09:00:00Z"
 AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
 IDS = itertools.count(1)
@@ -61,6 +62,7 @@ VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
 COMMENT = approvals.comment
+OPEN_PULLS = getattr(approvals, "open_pulls", list)
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +73,39 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
     monkeypatch.setattr(approvals, "merged_high", lambda _branch: [])
+
+
+@pytest.fixture(autouse=True)
+def others_open(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """The repo's open PRs `check build` compares a PR with: none, unless a test adds one."""
+    found: list[dict[str, Any]] = []
+    monkeypatch.setattr(approvals, "open_pulls", lambda: found, raising=False)
+    return found
+
+
+@pytest.fixture(autouse=True)
+def hub(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
+    """GitHub's commit statuses by commit, newest first: what statuses() reads and post_status() writes as `loop`."""
+    found: dict[str, list[dict[str, Any]]] = {}
+
+    def post(head: str, context: str, description: str) -> None:
+        found.setdefault(head, []).insert(0, status(context, description))
+
+    monkeypatch.setattr(approvals, "statuses", lambda head: found.get(head, []))
+    monkeypatch.setattr(approvals, "post_status", post)
+    return found
+
+
+def status(
+    context: str, description: str, by: str = "loop", state: str = "success"
+) -> dict[str, Any]:
+    return {
+        "context": context,
+        "state": state,
+        "description": description,
+        "creator": {"login": by},
+        "created_at": "2026-01-01T00:00:00Z",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -143,7 +178,15 @@ def node(
 def issue(
     number: int, *labels: str, body: str = "the spec", comments: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    return node(labels, comments, number=number, body=body, createdAt=WRITTEN, lastEditedAt=None)
+    return node(
+        labels,
+        comments,
+        number=number,
+        body=body,
+        createdAt=WRITTEN,
+        lastEditedAt=None,
+        repository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
+    )
 
 
 def specced(number: int, *labels: str) -> dict[str, Any]:
@@ -1118,7 +1161,11 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
     assert gate(said("claude, same-family, small", 1, "high"))
 
 
-def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
+def test_without_ci_the_merge_proof_is_the_heads_pass_never_a_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anyone who can comment can write `Local check passed`, the PR's author from a fork included, and an old comment
+    says nothing about today's command and env: only a pass reusable() finds on the head's tree proves it."""
     no_ci = add(LOOP, "loop", "ci: false\n")
     missing = [
         (
@@ -1126,43 +1173,23 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
             " the head (approvals.py local-ci)"
         )
     ]
+    passes: dict[str, dict[str, Any]] = {}
+    monkeypatch.setattr(approvals, "reusable", passes.get)
+    monkeypatch.setattr(approvals, "writer", lambda login: False)
 
-    def proofs(*comments: str) -> list[str]:
+    def proofs(*comments: dict[str, Any]) -> list[str]:
         merged = pull(reviews=(VERDICT,), comments=comments, labels=OWNED, checks=())
+        merged["isCrossRepository"] = True
         return merge(merged, [approved(1, "area:web")], no_ci)
 
-    assert (
-        proofs(),
-        proofs(f"{approvals.CHECKED}\nHead: {'b' * 40}\nCommand: mise run check\n"),
-        proofs("## Evidence\n\n- `mise run check`: exit 0\n"),
-        proofs(f"{approvals.CHECKED}: no, not run\nHead: {HEAD}\n"),
-        proofs(f"> {approvals.CHECKED}\n> Head: {HEAD}\n"),
-        proofs(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
-    ) == (missing, missing, missing, missing, missing, [])
-
-
-def test_a_local_check_counts_only_from_the_author_the_runner_or_a_writer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Anyone can comment on a public repo, so a `Local check passed` comment from an account without write access
-    proves nothing."""
-    no_ci = add(LOOP, "loop", "ci: false\n")
-    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
-    passed = f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
-
-    def proofs(login: str) -> list[str]:
-        merged = pull(
-            reviews=(VERDICT,), comments=(note(passed, author={"login": login}),), labels=OWNED
-        )
-        return merge(merged, [approved(1, "area:web")], no_ci)
-
-    assert proofs("stranger") == [
-        (
-            "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the"
-            " head (approvals.py local-ci)"
-        )
-    ]
-    assert proofs("loop") == proofs("maintainer") == proofs("worker") == []
+    forged = note(f"{approvals.CHECKED}\nHead: {HEAD}\n", author={"login": "worker"})
+    obsolete = note(
+        f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: obsolete-gate\nEnv: GATE_SCOPE=smoke\n",
+        author={"login": "loop"},
+    )
+    assert proofs() == proofs(forged) == proofs(obsolete) == missing
+    passes[HEAD] = {"head": HEAD}
+    assert proofs() == []
 
 
 def test_more_checks_than_one_page_is_refused() -> None:
@@ -1179,7 +1206,7 @@ def test_more_comments_than_one_page_is_refused() -> None:
     with pytest.raises(
         approvals.Refused, match="#7 has more than 2 comments: the gate reads one page"
     ):
-        approvals.ran(crowded, loop_md("loop:\n  ci: false\n"))
+        approvals.ran(crowded, loop_md("loop:\n  batch_queue: true\n"))
 
 
 def test_a_pr_without_its_proof_names_each_missing_one() -> None:
@@ -4293,12 +4320,16 @@ def checkout(
     """A checkout at the PR head and clean, its git common dir under tmp_path; a test changes it, or what the check
     does to it. `runs` counts the checks run."""
     state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None, "runs": 0}
+    state["trees"] = {}  # a commit's tree, TREE unless named
     state["common"] = tmp_path / "common.git"
     state["loop"] = LOOP
 
     def git(*args: str) -> str:
         if args == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
             return f"{state['common']}\n"
+        if args[0] == "rev-parse" and args[-1].endswith("^{tree}"):
+            commit = args[-1].removesuffix("^{tree}").replace("HEAD", state["head"])
+            return state["trees"].get(commit, TREE) + "\n"
         if args[0] == "rev-parse":
             return state["head"] + "\n"
         if args[0] == "ls-files":
@@ -4337,11 +4368,10 @@ def test_a_passing_check_on_the_clean_head_is_recorded(
             f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
         )
     ]
-    record = json.loads(
-        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
-    )
-    assert {k: record[k] for k in ("head", "command", "exit")} == {
+    record = json.loads(record_at().read_text())
+    assert {k: record[k] for k in ("head", "tree", "command", "exit")} == {
         "head": HEAD,
+        "tree": TREE,
         "command": "mise run check:all",
         "exit": 0,
     }
@@ -4399,36 +4429,67 @@ def test_local_ci_runs_and_records_the_policys_checks_all_and_reuses_only_its_ow
             f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: make gate FULL=1\nEnv: default\n",
         )
     ]
-    record = json.loads(
-        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
-    )
-    assert record["command"] == "make gate FULL=1"
+    assert json.loads(record_at().read_text())["command"] == "make gate FULL=1"
     assert approvals.main(["local-ci", "7"]) == 0
     assert ran == ["make gate FULL=1"]  # the record of the same command is reused
 
 
-@pytest.mark.parametrize(
-    "change", [{"status": " M app.py\n"}, {"exit": 2}, {"after": " M uv.lock\n"}]
-)
+@pytest.mark.parametrize("change", [{"exit": 2}, {"after": " M uv.lock\n"}])
 def test_record_writes_only_a_passing_check_on_a_clean_unchanged_tree(
-    github: list[tuple[Any, ...]], checkout: dict[str, Any], change: dict[str, Any]
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    change: dict[str, Any],
 ) -> None:
     checkout.update(change)
     assert approvals.main(["local-ci", "--record"]) == 1
     assert not (checkout["common"] / "approvals").exists()
+    assert hub == {}
     checkout.update({"status": "", "exit": 0, "after": None})
     assert approvals.main(["local-ci", "--record"]) == 0
-    assert (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").exists()
+    assert record_at().exists()
     assert github == []  # no PR yet: nothing is posted
+
+
+@pytest.mark.parametrize("code", [0, 2])
+def test_record_on_a_checkout_with_changes_runs_the_check_and_records_nothing(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+    code: int,
+) -> None:
+    """The recording command is the gate while iterating too: a run on changes is no pass on HEAD, so it records
+    nothing, and the check's exit is the command's. A clean green run, the last one, records itself."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    checkout.update({"status": " M app.py\n", "exit": code})
+    assert approvals.main(["local-ci", "--record"]) == code
+    assert checkout["runs"] == 2  # a pass on HEAD's tree says nothing about the changes
+    assert "on a checkout with changes, so nothing is recorded" in capsys.readouterr().out
+    assert len(hub[HEAD]) == 1 and github == []
+
+
+def test_record_on_a_tree_already_green_reuses_it_and_publishes_once(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Rerun once the head is pushed, it publishes a pass GitHub could not take before, without running the check."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    hub.clear()  # the commit was not on GitHub yet
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 1
+    assert [s["description"] for s in hub[HEAD]] == [f"Tree {TREE} on {HEAD}"]
+    out = capsys.readouterr().out
+    assert f"Reused by tree from the pass recorded on {HEAD}" in out
 
 
 def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = json.loads(
-        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
-    )
+    record = json.loads(record_at().read_text())
     checkout["head"] = "c" * 40  # the checkout moved on: the record still proves the PR's head
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
@@ -4438,7 +4499,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
             7,
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n"
-                f"From the recorded run at {record['time']}, not run again.\n"
+                f"Reused by tree from the pass recorded on {HEAD} at {record['time']}, not run again.\n"
             ),
         )
     ]
@@ -4453,7 +4514,7 @@ def test_a_local_ci_comment_names_no_host(
     """Run and recorded on a host named for its owner, the pass is posted without it, and still proves the head."""
     sent = posts(monkeypatch)
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = json.loads(approvals.recorded(HEAD).read_text())
+    record = json.loads(record_at().read_text())
     assert record["host"] == "owner-MacBook.local"  # the local record keeps it
     assert approvals.main(["local-ci", "7"]) == 0
     [body] = sent
@@ -4465,19 +4526,19 @@ def test_a_local_ci_comment_names_no_host(
 @pytest.mark.parametrize(
     ("file", "record"),
     [
-        ("c" * 40, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
-        (HEAD, {"head": HEAD, "command": "mise run check", "exit": 0}),
-        (HEAD, {"head": HEAD, "command": "mise run check:all", "exit": 2}),
-        (HEAD, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
+        ("f" * 40, {"tree": "f" * 40, "command": "mise run check:all", "exit": 0}),
+        (TREE, {"tree": TREE, "command": "mise run check", "exit": 0}),
+        (TREE, {"tree": TREE, "command": "mise run check:all", "exit": 2}),
+        (TREE, {"tree": "f" * 40, "command": "mise run check:all", "exit": 0}),
     ],
-    ids=["another head", "another command", "a failed run", "a record naming another head"],
+    ids=["another tree", "another command", "a failed run", "a record naming another tree"],
 )
-def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
+def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], file: str, record: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
-    (where / f"{file}.json").write_text(json.dumps({**record, "time": "t", "host": "h"}))
+    where = approvals.recorded(file, {})
+    where.parent.mkdir(parents=True)
+    where.write_text(json.dumps({**record, "head": HEAD, "env": {}, "time": "t", "host": "h"}))
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
     assert github == [
@@ -4492,8 +4553,13 @@ def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
 ENV_LOOP = add(LOOP, "loop", "local_ci_env:\n  - GATE_UI_TESTS\n  - GATE_SCOPE\n")
 
 
+def record_at(head: str = HEAD) -> Path:
+    """Where this clone records a pass on `head`'s tree under the current env."""
+    return approvals.recorded(approvals.tree_of(head), approvals.local_ci_env())
+
+
 def recorded_pass(checkout: dict[str, Any]) -> dict[str, Any]:
-    return json.loads((checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text())
+    return json.loads(record_at().read_text())
 
 
 def test_a_pass_recorded_under_another_env_runs_the_check_again(
@@ -4534,7 +4600,7 @@ def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
                 "Env: GATE_SCOPE=changed GATE_UI_TESTS=0\n"
-                f"From the recorded run at {record['time']}, not run again.\n"
+                f"Reused by tree from the pass recorded on {HEAD} at {record['time']}, not run again.\n"
             ),
         )
     ]
@@ -4543,10 +4609,17 @@ def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
 def test_a_record_without_env_runs_the_check_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
-    old = {"head": HEAD, "command": "mise run check:all", "exit": 0, "time": "t", "host": "h"}
-    (where / f"{HEAD}.json").write_text(json.dumps(old))  # as 0.23.1 wrote it
+    where = record_at()
+    where.parent.mkdir(parents=True)
+    old = {
+        "head": HEAD,
+        "tree": TREE,
+        "command": "mise run check:all",
+        "exit": 0,
+        "time": "t",
+        "host": "h",
+    }
+    where.write_text(json.dumps(old))  # as 0.23.1 wrote it, but for the tree
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
     assert recorded_pass(checkout)["env"] == {}
@@ -4554,16 +4627,17 @@ def test_a_record_without_env_runs_the_check_again(
 
 @pytest.mark.parametrize(
     "drop",
-    [{"time": None}, {"host": None}, {"time": 1}, {"env": []}],
-    ids=["no time", "no host", "a number for time", "env not a dict"],
+    [{"time": None}, {"head": None}, {"time": 1}, {"env": []}],
+    ids=["no time", "no commit", "a number for time", "env not a dict"],
 )
 def test_an_incomplete_record_runs_the_check_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], drop: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
+    where = record_at()
+    where.parent.mkdir(parents=True)
     full = {
         "head": HEAD,
+        "tree": TREE,
         "command": "mise run check:all",
         "exit": 0,
         "env": {},
@@ -4571,7 +4645,7 @@ def test_an_incomplete_record_runs_the_check_again(
         "host": "h",
     }
     record = {k: v for k, v in {**full, **drop}.items() if v is not None}
-    (where / f"{HEAD}.json").write_text(json.dumps(record))
+    where.write_text(json.dumps(record))
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
     assert github == [
@@ -4687,6 +4761,159 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     monkeypatch.chdir(repo)
     assert approvals.reusable(head)["head"] == head
     assert approvals.reusable("c" * 40) is None
+
+
+def published_on_a(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Host A records and publishes a pass of `true` on a pushed head; the test then runs in host B, a clone made
+    before that head was pushed, with no record of it. Returns the head."""
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    a, b = tmp_path / "a", tmp_path / "b"
+    committed(a)
+    git_in(a, "remote", "add", "origin", str(origin))
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(tmp_path, "clone", "-q", str(origin), str(b))
+    (a / "app.py").write_text("value = 2\n")
+    git_in(a, "commit", "-qam", "change")
+    head = git_in(a, "rev-parse", "HEAD").strip()
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
+    monkeypatch.chdir(a)
+    monkeypatch.setattr(approvals, "LOCAL_CI", "true")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    monkeypatch.chdir(b)
+    return head
+
+
+def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_env(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host B fetches the head, finds A's published pass and posts it without running the check, which would fail
+    there."""
+    head = published_on_a(tmp_path, monkeypatch)
+    assert [s["description"] for s in hub[head]] == [f"Tree {approvals.tree_of(head)} on {head}"]
+
+    def never(*_args: Any) -> Any:
+        raise AssertionError("host B ran the check")
+
+    monkeypatch.setattr(approvals, "run_local_ci", never)
+    assert approvals.reusable(head)["head"] == head  # check queue, batch and check merge read this
+    assert approvals.main(["local-ci", "7"]) == 0
+    [(_, _, body)] = github
+    assert f"Reused by tree from the pass recorded on {head} at 2026-01-01T00:00:00Z" in body
+    assert len(hub[head]) == 1  # already published: not again
+
+
+def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host B has no record to compare the command with, so the published status's key alone must tell: a gate whose
+    command changed since A's pass runs again, and check merge waits for that run."""
+    head = published_on_a(tmp_path, monkeypatch)
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    posted = note(f"{approvals.CHECKED}\nHead: {head}\nCommand: true\nEnv: default\n")
+    merged = {
+        **pull(reviews=(verdict_on(head),), comments=(posted,), labels=OWNED, checks=()),
+        "headRefOid": head,
+    }
+    assert merge(merged, [approved(1, "area:web")], no_ci) == []
+    monkeypatch.setattr(approvals, "LOCAL_CI", "true --another-tier")
+    ran: list[str | None] = []
+
+    def run_local_ci(pr: int | None, at: str | None) -> dict[str, Any]:
+        ran.append(at)
+        raise approvals.Refused("the check would run")
+
+    monkeypatch.setattr(approvals, "run_local_ci", run_local_ci)
+    assert approvals.reusable(head) is None
+    assert merge(merged, [approved(1, "area:web")], no_ci) == [NO_LOCAL_CHECK]
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (ran, github) == ([head], [])
+
+
+@pytest.mark.parametrize(
+    ("published", "writers"),
+    [
+        (status("local-ci/{key}", f"Tree {'f' * 40} on {HEAD}"), {"loop"}),
+        (status("local-ci/000000000000", f"Tree {TREE} on {HEAD}"), {"loop"}),
+        (status("local-ci/{key}", f"Tree {TREE} on {HEAD}", by="contributor"), {"loop"}),
+        (status("local-ci/{key}", f"Tree {TREE} on {HEAD}", state="failure"), {"loop"}),
+        (status("local-ci/{key}", f"Tree {TREE}"), {"loop"}),
+    ],
+    ids=["another tree", "another env", "a non-writer", "not a pass", "no commit named"],
+)
+def test_a_published_pass_for_another_tree_or_env_or_by_a_non_writer_runs_the_check(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    published: dict[str, Any],
+    writers: set[str],
+) -> None:
+    """Anyone who can only open a PR must not publish a pass: a status counts from the running account or a writer."""
+    monkeypatch.setattr(approvals, "writer", lambda login: login in writers)
+    key = approvals.env_key(approvals.local_ci_env())
+    hub[HEAD] = [{**published, "context": published["context"].format(key=key)}]
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+
+
+def test_a_pass_published_by_a_writer_on_the_head_is_reused(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
+    key = approvals.env_key(approvals.local_ci_env())
+    hub[HEAD] = [status(f"local-ci/{key}", f"Tree {TREE} on {'c' * 40}", by="maintainer")]
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 0
+    [(_, _, body)] = github
+    assert f"Reused by tree from the pass recorded on {'c' * 40} at 2026-01-01T00:00:00Z" in body
+
+
+def test_two_commits_with_one_tree_and_env_share_a_pass_and_another_tree_runs_it(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """A rebase or amended message keeps the tree: the second commit reuses the first's pass, naming it."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    amended = "c" * 40
+    checkout["head"] = amended
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 1
+    assert hub[amended][0]["description"] == f"Tree {TREE} on {HEAD}"
+    checkout["trees"][amended] = "f" * 40  # the same commit name, another tree
+    hub.clear()
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 2
+
+
+def test_without_github_the_pass_is_recorded_here_and_says_it_is_not_published(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def offline(*_args: Any) -> Any:
+        raise subprocess.CalledProcessError(1, "gh", stderr="error connecting to api.github.com")
+
+    monkeypatch.setattr(approvals, "statuses", offline)
+    monkeypatch.setattr(approvals, "post_status", offline)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert (
+        "not published on GitHub, so only this clone reuses it: error connecting"
+        in capsys.readouterr().out
+    )
+    assert record_at().exists()
+    assert approvals.reusable(HEAD)["head"] == HEAD
 
 
 # --- the owner's policy: specs approved and merges landed without an agent's approval ---
@@ -5139,6 +5366,176 @@ def test_check_build_refuses_an_issue_assigned_to_anyone_but_its_approver(
     )
     assert approvals.proofs("build", pull(), [found], LOOP) == ([line] if refused else [])
     assert approvals.proofs("merge", pull(reviews=(VERDICT,), labels=OWNED), [found], LOOP) == []
+
+
+def listed(number: int, branch: str, body: str, *closing: int) -> dict[str, Any]:
+    """An open PR as `gh pr list --json number,headRefName,body,closingIssuesReferences` prints it."""
+    return {
+        "number": number,
+        "headRefName": branch,
+        "body": body,
+        "closingIssuesReferences": [
+            {
+                "number": n,
+                "repository": {"name": "scratch-gate-revert", "owner": {"login": "kzarzycki"}},
+            }
+            for n in closing
+        ],
+    }
+
+
+def duplicate(number: int, other: int, branch: str) -> str:
+    return (
+        f"#{number} is also closed by open PR #{other} (branch `{branch}`): one build per issue, so close one of"
+        " the PRs, or link it with `Part of`"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs", "closing"),
+    [
+        ("Closes #1", "Fixes #1", ()),
+        ("Resolves #1", "the change", (1,)),  # GitHub links it, with no line in the body
+        (
+            "Implements #1",
+            "closes #1",
+            (),
+        ),  # under a `signoff` rule, Implements finishes the issue too
+    ],
+)
+def test_check_build_refuses_an_issue_another_open_pr_closes_and_each_names_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine: str,
+    theirs: str,
+    closing: tuple[int, ...],
+) -> None:
+    monkeypatch.setattr(
+        approvals, "project", lambda: (TRACKER, add(LOOP, "signoff", "always: true\n"))
+    )
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    first, second = pull(body=mine), pull(body=theirs)
+    second.update(number=8, headRefName="second")
+    second["closingIssuesReferences"]["nodes"] = [spec for _ in closing]
+    first["closingIssuesReferences"]["nodes"] = [] if "#1" in mine else [spec]
+    pulls = {7: first, 8: second}
+    monkeypatch.setattr(approvals, "pull_request", lambda pr: pulls[pr])
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    listing = json.dumps([listed(7, "feature", mine), listed(8, "second", theirs, *closing)])
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if "graphql" in args:  # the body's unlinked `#1`
+            return json.dumps({"data": {"repository": {"i1": spec}}})
+        assert args[:2] == ("pr", "list")
+        calls.append(args)
+        return listing
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 1
+    assert capsys.readouterr().out.splitlines() == [duplicate(1, 8, "second")]
+    assert approvals.main(["check", "build", "8"]) == 1
+    assert capsys.readouterr().out.splitlines() == [duplicate(1, 7, "feature")]
+    assert len(calls) == 2  # one list call per check
+
+
+def test_check_build_passes_as_today_when_no_other_open_pr_closes_its_issue(
+    monkeypatch: pytest.MonkeyPatch,
+    assigned: list[tuple[Any, ...]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Another PR that only builds on the issue (`Part of`), closes another one, or is this PR itself holds nothing."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    listing = [
+        listed(7, "feature", "Closes #1", 1),
+        listed(8, "part", "Part of #1"),
+        listed(9, "other", "Fixes #2", 2),
+        listed(10, "signed", "Implements #1"),  # no `signoff` rule: a link like `Part of`
+    ]
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        return json.dumps(listing)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert capsys.readouterr().out == ""
+    assert [args[:2] for args in calls] == [("pr", "list")]
+    assert (1, "loop", True) in assigned
+
+
+def test_check_build_counts_only_this_repos_issue_when_another_pr_closes_the_same_number_elsewhere(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`other/project#1` is another issue than this repo's #1, in the body or in GitHub's closing references."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    foreign = listed(8, "foreign", "Closes other/project#1")
+    foreign["closingIssuesReferences"] = [
+        {"number": 1, "repository": {"name": "project", "owner": {"login": "other"}}}
+    ]
+    monkeypatch.setattr(approvals, "gh", lambda *_args, **_kw: json.dumps([foreign]))
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_check_build_refuses_when_the_open_pr_list_reaches_its_limit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A list as long as the limit may have left out the PR that closes the issue too, so the check can't pass."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    monkeypatch.setattr(approvals, "OPEN_LIMIT", 2, raising=False)
+    everyone = [
+        listed(7, "feature", "Closes #1", 1),
+        listed(8, "a", "Fixes #2"),
+        listed(9, "b", "Fixes #1"),
+    ]
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        return json.dumps(everyone[: int(args[args.index("--limit") + 1])])
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        (
+            "the duplicate-build check reads at most 2 open PRs and this repo has at least that many, so it could"
+            " not see every open PR: close stale PRs, or check by hand that no other open PR closes #1"
+        )
+    ]
+    assert len(calls) == 1
+
+
+def test_check_merge_lists_no_open_prs_and_a_duplicate_does_not_hold_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The duplicate check belongs to build: by merge the build it guards has run, and the list costs a request."""
+    spec = approved(1, "kind:bug", "area:web")
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    listings: list[None] = []
+    second = {**listed(8, "second", "Fixes #1"), "closingIssuesReferences": {"nodes": []}}
+    monkeypatch.setattr(approvals, "open_pulls", lambda: listings.append(None) or [second])
+    assert duplicate(1, 8, "second") in approvals.proofs("build", mine, [spec], LOOP)
+    assert duplicate(1, 8, "second") not in approvals.proofs("merge", mine, [spec], LOOP)
+    assert len(listings) == 1  # the build check's, none at merge
 
 
 def test_being_assigned_is_no_go_ahead() -> None:
@@ -5609,13 +6006,16 @@ def batch_note(head: str, merge: str, batch: str, exit: int = 0, env: str = "def
 
 def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
     """Record a green `local-ci --record` pass on `head`, as run_local_ci() writes it."""
-    where = approvals.recorded(head)
+    env = {} if env is None else env
+    held = approvals.tree_of(head)
+    where = approvals.recorded(held, env)
     where.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "head": head,
+        "tree": held,
         "command": approvals.LOCAL_CI,
         "exit": 0,
-        "env": {} if env is None else env,
+        "env": env,
         "time": "2026-01-01T00:00:00Z",
         "host": "host",
     }
@@ -5623,6 +6023,7 @@ def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
 
 
 NO_LOCAL_CHECK = "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
+NO_CHECK = "PR #7: no `check` on the head commit yet"  # the CI wait a batch proof replaces
 
 
 QUEUED = add(
@@ -5638,16 +6039,13 @@ def test_a_batch_proof_counts_only_where_loop_md_opts_into_a_queue(batched: dict
     assert queued_merge(batched["head"], proof) == []
     pr = pull(reviews=(verdict_on(batched["head"]),), comments=(proof,), checks=())
     pr["headRefOid"] = batched["head"]
-    assert merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == [
-        NO_LOCAL_CHECK
-    ]
-    assert merge(pr, [approved(1, "area:web")]) == ["PR #7: no `check` on the head commit yet"]
+    assert merge(pr, [approved(1, "area:web")]) == [NO_CHECK]
 
 
 def queued_merge(head: str, *comments: str) -> list[str]:
     pr = pull(reviews=(verdict_on(head),), comments=comments, checks=())
     pr["headRefOid"] = head
-    return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\nbatch_queue: true\n"))
+    return merge(pr, [approved(1, "area:web")], QUEUED)
 
 
 def queued_reasons(head: str, *comments: str) -> list[str] | None:
@@ -5664,6 +6062,11 @@ def test_a_green_batch_that_merged_the_head_cleanly_is_its_merge_proof(
     assert queued_merge(head, batch_note(head, merged, batch)) == []
     # the batch's tip is the merge itself when the PR merged last
     assert queued_merge(head, batch_note(head, merged, merged)) == []
+    # under `ci: false` the head's own pass, which the batch needs, is the merge proof
+    pr = pull(reviews=(verdict_on(head),), comments=(batch_note(head, merged, batch),), checks=())
+    pr["headRefOid"] = head
+    no_ci = add(LOOP, "loop", "ci: false\nbatch_queue: true\n")
+    assert merge(pr, [approved(1, "area:web")], no_ci) == []
 
 
 @pytest.mark.parametrize(
@@ -5692,7 +6095,7 @@ def test_a_red_or_unproven_batch_is_no_merge_proof(
     names = {**batched, "fff": "f" * 40}
     proof = batch_note(head, fields["merge"], fields["batch"], fields["exit"])
     # it adds no hold of its own: the wait is the one a PR with no batch proof has
-    assert queued_merge(head, proof) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, proof) == [NO_CHECK]
     assert queued_reasons(head, proof) == [f"PR #7: {said.format(**names)}"]
 
 
@@ -5702,13 +6105,13 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
     head, merged, batch = batched["head"], batched["merge"], batched["batch"]
     note = batch_note(head, merged, batch)
     ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [ungated]
     gated_head(head, {"GATE_UI_TESTS": "smoke"})  # gated, but under another env than this one
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [ungated]
     monkeypatch.setattr(approvals, "local_ci_env", lambda: {"GATE_UI_TESTS": "smoke"})
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [
         f"PR #7: batch {batch} names the head's gate env `default`, its record `GATE_UI_TESTS=smoke`",
     ]
@@ -5718,12 +6121,12 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
 def test_no_batch_comment_or_one_for_another_head_leaves_the_wait(batched: dict[str, str]) -> None:
     head = batched["head"]
     gated_head(head)
-    assert queued_merge(head) == [NO_LOCAL_CHECK]
+    assert queued_merge(head) == [NO_CHECK]
     assert queued_merge(head, batch_note("b" * 40, batched["merge"], batched["batch"])) == [
-        NO_LOCAL_CHECK
+        NO_CHECK
     ]
     assert queued_merge(head, "> " + batch_note(head, batched["merge"], batched["batch"])) == [
-        NO_LOCAL_CHECK
+        NO_CHECK
     ]
 
 
@@ -5862,7 +6265,7 @@ def test_posted_comments_name_no_host_or_home(
     env = {"CACHE": "/Users/owner/cache"}
     monkeypatch.setattr(approvals, "local_ci_env", lambda: env)
     gated_head(batched["head"], env)
-    record = approvals.recorded(batched["head"])
+    record = approvals.recorded(approvals.tree_of(batched["head"]), env)
     record.write_text(record.read_text().replace('"host": "host"', '"host": "owner-MacBook.local"'))
     log = tmp_path / "gate.log"
     log.write_text(
@@ -5966,26 +6369,66 @@ def test_check_queue_refuses_a_head_without_a_recorded_pass(
     )
 
 
+def owner_labels(pr: dict[str, Any], labels: tuple[str, ...], at: str) -> None:
+    pr["labels"]["nodes"] = [{"name": name} for name in labels]
+    pr["timelineItems"]["nodes"] += [{"createdAt": at, "label": {"name": name}} for name in labels]
+
+
+def test_an_owner_approved_high_risk_pr_may_enter_the_queue(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The owner's label added after the head's push covers that head, in a batch as through `land`."""
+    owner_labels(queueing["pull"], ("risk:high", "approved:merge"), LABELED)
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
+
+
 @pytest.mark.parametrize(
-    ("labels", "said"),
+    ("labels", "labeled", "said"),
     [
         (
             ("risk:high",),
-            "PR #7 is high risk (`risk:high` is on PR #7): it lands alone through `land`",
+            LABELED,
+            "PR #7 waits for the owner's `approved:merge` label, since it is high risk: `risk:high` is on PR #7",
         ),
         (
-            ("approved:merge",),
-            "PR #7 has the owner's `approved:merge`, which covers its head alone: it lands through `land`",
+            ("risk:high", "approved:merge"),
+            "2026-10-01T09:00:00Z",
+            "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again",
         ),
     ],
 )
-def test_check_queue_keeps_a_high_risk_or_owner_approved_pr_out(
-    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], labels: tuple[str, ...], said: str
+def test_check_queue_keeps_out_a_high_risk_pr_the_owner_has_not_approved_at_its_head(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    labels: tuple[str, ...],
+    labeled: str,
+    said: str,
 ) -> None:
-    queueing["pull"]["labels"]["nodes"] = [{"name": name} for name in labels]
-    code, lines = queue_check(capsys)
-    assert code == 1
-    assert said in lines
+    owner_labels(queueing["pull"], labels, labeled)
+    assert queue_check(capsys) == (1, [said])
+
+
+def test_check_merge_takes_the_batch_proof_of_an_owner_approved_high_risk_pr(
+    batched: dict[str, str],
+) -> None:
+    """Once the queue landed it, the batch stands in for the CI wait, and the label is dated against the landed head
+    again: a head pushed after the label still waits for the owner."""
+    head = batched["head"]
+    gated_head(head)
+    pr = pull(
+        reviews=(verdict_on(head),),
+        comments=(batch_note(head, batched["merge"], batched["batch"]),),
+        labels=("risk:high", "approved:merge"),
+        checks=(),
+    )
+    pr["headRefOid"] = head
+    loop = add(LOOP, "loop", "ci: false\nbatch_queue: true\n")
+    assert merge(pr, [approved(1, "area:web")], loop) == []
+    pr["timelineItems"]["nodes"] = []
+    owner_labels(pr, ("risk:high", "approved:merge"), "2026-10-01T09:00:00Z")
+    assert merge(pr, [approved(1, "area:web")], loop) == [
+        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
+    ]
 
 
 def test_check_queue_refuses_a_missing_merge_proof(
@@ -6047,8 +6490,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
     app.py's first line. `merged(files)` commits `files` on a branch off that `main` (`base`) and merges it into the
     head as git would (`merge`, the head its first parent): `resolve` writes what a conflict leaves, `extra` adds a
     file the merge alone has, `crossed` first has each side merge the other's commit (a criss-cross, so the head is
-    that merge and the two have two merge bases). The test runs in a clone made before any of them was pushed, so
-    the gate must fetch."""
+    that merge and the two have two merge bases), `onto` merges into that commit instead of the head and `main` moves
+    main from that commit, `then` commits `then` on top of the merge as a PR commit after it (`merge`). The test runs
+    in a clone made before any of them was pushed, so the gate must fetch."""
     origin, work, checker = (tmp_path / name for name in ("origin.git", "work", "checker"))
     sh("git", "init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
     sh("git", "clone", "-q", str(origin), str(work), cwd=tmp_path)
@@ -6076,12 +6520,15 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         resolve: dict[str, str] | None = None,
         extra: dict[str, str] | None = None,
         crossed: bool = False,
+        onto: str | None = None,
+        main: str = "main",
+        then: dict[str, str] | None = None,
     ) -> dict[str, str]:
         n = next(cases)
-        git("switch", "-qc", f"base{n}", "main")
+        git("switch", "-qc", f"base{n}", main)
         write(files)
         git("commit", "-qm", f"main moved {n}")
-        first = head
+        first = onto or head
         if crossed:
             moved = git("rev-parse", "HEAD")
             git("merge", "-q", "--no-ff", "-m", f"main takes the feature {n}", head)
@@ -6099,6 +6546,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         )
         write({**(resolve or {}), **(extra or {})})
         git("commit", "-qm", f"Merge main {n}")
+        if then:
+            write(then)
+            git("commit", "-qm", f"the feature after main {n}")
         merge = git("rev-parse", "HEAD")
         git(
             "push",
@@ -6312,6 +6762,7 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     case = carrying({"other.txt": "main moved\n"})
     monkeypatch.setattr(approvals, "git", lambda *args: pytest.fail(f"git {args}"))
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
+    monkeypatch.setattr(approvals, "reusable", lambda head: None)  # the merge proof, not a carry
     pr = carried_pull(case)
     assert approvals.judged(pr, NO_CI) is None
     assert merge(pr, [approved(1, "area:web")], NO_CI)[0].startswith(
@@ -6332,4 +6783,56 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
     )
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
+    ]
+
+
+def test_two_clean_merges_of_main_carry_the_verdict_from_before_both(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Main merged in twice since the verdict: each merge carries its first parent's, down to the verified head."""
+    first = carrying({"other.txt": "main moved\n"})
+    second = carrying({"more.txt": "main moved again\n"}, onto=first["merge"], main=first["base"])
+    pr = carried_pull(first)
+    pr.update(headRefOid=second["merge"], baseRefOid=second["base"])
+    assert merge(pr, [approved(1, "area:web")], CARRY) == [NO_LOCAL_CHECK]
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {carries(first['merge'], first['head'], first['base'], first['since'])}",
+        f"PR #7: {carries(second['merge'], first['merge'], second['base'], first['base'])}",
+    ]
+
+
+def test_a_pr_commit_after_a_clean_merge_carries_nothing(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The commit on top of the merge is the PR's own, never reviewed: the head needs its own verdict. A rebased or
+    amended head is the same case, a commit of one parent where the walk looks for a merge."""
+    case = carrying(
+        {"other.txt": "main moved\n"}, then={"app.py": APP.replace("line 5\n", "line 5, new\n")}
+    )
+    assert merge(carried_pull(case), [approved(1, "area:web")], CARRY)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {case['merge']} carries nothing from {case['head']}: it is no merge of two parents"
+    ]
+
+
+def test_a_pr_commit_between_two_clean_merges_carries_nothing(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clean merge on top hides no PR commit under it: the walk meets that commit before the verified one."""
+    first = carrying({"other.txt": "main moved\n"})
+    rewritten = carrying(
+        {"more.txt": "main moved again\n"}, then={"app.py": APP.replace("line 2\n", "line 2!\n")}
+    )
+    case = carrying(
+        {"third.txt": "main moved a third time\n"}, onto=rewritten["merge"], main=first["base"]
+    )
+    pr = carried_pull(first)
+    pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
+    assert merge(pr, [approved(1, "area:web")], CARRY)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {case['merge']} carries nothing from {first['head']}: {rewritten['merge']} is no merge of two parents"
     ]
