@@ -163,16 +163,14 @@ design, wireframes included for a UI, and delegate the rest.
    still reviewing only the change since the last verdict's head.
 8. **Land** once the last verdict is triaged with no core finding open; the merge itself
    waits for the landing rule (SKILL.md):
-   - Fetch, then merge `origin/main` in only when GitHub requires it: `gh pr view <pr> --json
-     mergeStateStatus` is `DIRTY` (a conflict) or `BEHIND` (main requires an up-to-date
-     branch and no merge queue). A merge queue, where the repo has one, tests the PR on top of main anyway, so a
-     merge there only costs a CI run. When you do merge it in, rerun the gates and get a verifier pass on the
-     merge (step 7), since `land` merges only a head with a verdict of its own. Where loop.md
-     has `carry_over_main`, no verifier pass is needed when `check merge` prints that the
-     merge carries the head's verdict (SKILL.md, Approvals and proof); the gates still rerun
-     on the merge (`local-ci <pr>` under `ci: false`). Otherwise, when main's
-     changes touch no file the PR changes and no merge check (a `check:` task, a tool it
-     runs, or the lint, type or test configuration), that pass is the short delta pass.
+   - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
+     (`Conflicts in the landing batch`): `land` merges every head onto main itself and gates
+     the result, so a PR behind main lands without a merge. When you do merge it in, rerun the
+     gates and get a verifier pass on the merge (step 7), since `land` merges only a head with
+     a verdict of its own. When main's changes touch no file the PR changes and no merge check
+     (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
+     the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
+     needed when `check merge` prints that the merge carries the head's verdict.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
@@ -185,62 +183,46 @@ design, wireframes included for a UI, and delegate the rest.
      "Generated with" footer: the worker's from its report, or yours, what orchestrating-agents'
      `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
      (`?` for any part you can't know).
-   - Where the project lands this base through a batching merge queue (its own instructions
-     name it), enqueue the PR there instead of running `land`, once `approvals.py check queue
-     <pr> --head <sha>` exits 0, and go on with the next item: the queue tells you the outcome.
-     A PR it evicts comes back with the gate log or the conflict: fix a conflict or a failure of
-     its own like any finding, and re-queue a PR evicted for another PR's failure as it is.
+   - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
+     project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <this skill's folder>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: `mise run check` passed on the head, the
      newest verifier review, satisfied with no core finding open, covers it, and every review
      thread is resolved (SKILL.md, Review trail on the PR). Start it as a background
-     command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work on other
-     items meanwhile. Exit 1 names each missing proof, and nothing on the PR changed: add the
-     proof. A head in conflict with main, or behind it where main requires no merge queue, is
-     refused (exit 1) before anything else, since GitHub's own refusal reads as a required check
-     `expected`: merge `origin/main` in as the first bullet says, then land again. While GitHub has not computed that merge
-     state yet it waits, marking nothing ready. On a draft it marks the PR ready, which starts the full list on GitHub since CI
-     skips a draft, and waits for that CI. It merges pinned to the head
-     (`--match-head-commit`) once the base's required checks are green, or turns on auto-merge
-     pinned to the head while they are pending, and waits for GitHub's merge, through the merge
-     queue where the base requires one: exit 0, merged.
-     With loop.md's `land` section it squashes, signs and pushes the PR from your
-     checkout instead, so run it where the signing key is (`approvals.py`'s docstring).
-     GitHub deletes the head branch (the repository's `delete_branch_on_merge`, which
-     `setup:github` sets with `allow_auto_merge`). Auto-merge turned off, or the PR out of the
-     merge queue, without a merge (still so on a second reading one poll later, since GitHub takes a PR out of the queue a moment before it reports the merge) is exit 1. An entry still waiting for checks 10 minutes after it was queued, with no check suite on its merge-group commit, is one GitHub never told CI about: the wait dequeues it and lands the PR again. Exit 3 is what CI won't clear, once no required check is still pending: a red
-     check, the owner's go, `ci: false` without a `local-ci` record, a repository without
-     auto-merge or a base with no required checks whose CI has finished, or 2 hours of waiting;
-     run it again once that clears. When every proof holds and only `loop:approvals` is red
-     (resolving a review thread starts no workflow), it reruns the Actions run that posted it
-     once. Never mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because
-     `land` is what refuses a PR whose proof is missing. A push after it needs
-     `gh pr ready --undo` first; the owner's go stays on the old head, and after the verdict on
-     the new head `land` runs again.
+     command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
+     on other items meanwhile. It lands every landable PR into main as one gated batch, not
+     only yours (SKILL.md, Approvals and proof; `approvals.py`'s docstring has each step), and
+     exit 0 means your PR merged, with a `Landed` comment naming the base commit, the tree and
+     the gate. Exit 1 names what stopped your PR, and the fix is yours:
+     - a missing proof, with nothing on the PR changed: add the proof;
+     - a conflict with main or the PRs merged before it: merge `origin/main` in, as the first
+       bullet says;
+     - an eviction, red alone twice: the PR is a draft again with its gate log's tail in a
+       comment; fix it like a check red after ready, and `land <pr>` marks it ready again;
+     - `main itself is red`: nobody is evicted, since the fault is on main; fix main first
+       (Rules for every role, Revert first);
+     - a merge GitHub refused: as the bullet below says.
+     Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
+     or of pending required checks. With loop.md's `land` section it squashes, signs and pushes
+     each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
+     head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
+     mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
+     refuses a PR whose proof is missing. A push after it needs `gh pr ready --undo` first; the
+     owner's go stays on the old head, and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
-     never after another PR's merge. Where the base requires a merge queue, the queue tests each
-     entry on top of main and every entry ahead of it, so its CI covers the combined code, and
-     `land` enqueues a head behind main rather than refusing it. Host load is no reason to
-     serialize: queue CI runs on the CI runners, not the host. An entry the queue removes
-     unmerged (a conflict with an entry ahead, or red combined CI) ends its `land --wait` with
-     exit 1: merge `origin/main` in, rerun the gates, get a verifier pass on the change since the
-     last verdict's head (step 7), and land it again. A merge that resolves a conflict always
-     needs that pass, since `carry_over_main` carries a verdict only over a merge whose tree is
-     `git merge-tree`'s of its parents, and a rebase, with one parent, carries none.
+     never after another PR's merge. Whichever runs first takes the lock and lands every
+     landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)
+     or land what is left. Host load is no reason to serialize: one gate covers the batch.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change
      since its last verdict's head; then `land` runs again on the new head.
    - Where a high-risk change waits for the owner's go, `land` exits 3 with only that left
-     once CI has passed the head (with `ci: false`, once `uv run <this skill's folder>/scripts/approvals.py local-ci
-     <pr>` has recorded a pass on it, reusing a `local-ci --record` pass on the same tree), so the owner never approves a head CI could still
-     reject: give them the PR link and the head, ask for their go, and run `land` again once it is on.
+     once the base's required checks have passed the head, so the owner never approves a head
+     CI could still reject: give them the PR link and the head, ask for their go, and run `land` again once it is on.
      The PR has landed only once `land` exits 0, or `gh pr view <pr> --json state,mergeCommit`
      shows `MERGED`. Then use the merge commit in the steps below.
-   - A PR the queue removes without merging: read the failed queue run. A failure that comes
-     from the combination with main gets fixed on the PR's branch, with main merged in, and
-     the PR is queued again. A fault in code already on main is its own change.
-   - When `land`'s `gh pr merge` is refused for a missing review or check, request the reviewers
+   - When GitHub refuses `land`'s merge for a missing review or check (`land` prints why), request the reviewers
      (`gh pr edit <pr> --add-reviewer <login>`), add `needs-owner` to the issue, and
      stop. Never use `--admin`, which overrides the project's protection, and never push
      to main.
@@ -251,8 +233,7 @@ design, wireframes included for a UI, and delegate the rest.
      so CI skips the half-done fix, then each fix its own pushed commit, replied on its
      thread with the SHA and resolved (`worker.md`, Trail), and a verifier pass (step 7)
      before `land` runs again. Never cascade a fix down a stack or re-prove a merge
-     order: CI tests each PR on top of main (a merge queue, or a ruleset requiring an
-     up-to-date branch), main's push run catches the rest (step 9), and a PR stacked on this one moves
+     order: `land` gates each batch on top of main, main's push run catches the rest (step 9), and a PR stacked on this one moves
      onto main when it lands (SKILL.md, Stacks are one deep). Dismiss a teammate's review
      requesting changes only as SKILL.md, Review trail on the PR allows (github.md, Review trail).
    - Closing keywords fire only on a PR merged into the default branch, and GitHub misses
