@@ -199,7 +199,8 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   queue, requiring exactly two checks, `check` and `loop:approvals`. `land` merges its PRs
   directly once it has gated them merged on top of main itself, so the ruleset needs no
   up-to-date branch, and must not require a merge queue: GitHub would only queue each PR, to
-  merge later on a tree `land` never gated, so `land` stops at a PR GitHub leaves unmerged.
+  merge later on a tree `land` never gated, so `land` and `check merge` refuse a base whose
+  rules require one, and `land` stops at any PR GitHub leaves unmerged.
   Where the template still renders a merge queue, drop it before applying. A private repo on
   GitHub's free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
   applied: `land` reads no required checks there, merges directly once its proofs hold, and

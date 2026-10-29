@@ -2380,14 +2380,16 @@ PLAN_LIMIT = "Upgrade to GitHub Pro"
 
 def required_checks(base: str) -> set[str]:
     """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's. A private
-    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises."""
+    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises. A base whose rules
+    require GitHub's merge queue is refused: GitHub would merge each PR later, on a tree land never gated."""
     try:
         rulesets = gh(
             "api",
             "--paginate",
             f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
             "--jq",
-            '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context',
+            '.[] | if .type == "merge_queue" then ":merge_queue"'
+            ' elif .type == "required_status_checks" then .parameters.required_status_checks[].context else empty end',
         )
     except subprocess.CalledProcessError as error:
         if "(HTTP 403)" not in (error.stderr or "") or PLAN_LIMIT not in error.stderr:
@@ -2396,6 +2398,11 @@ def required_checks(base: str) -> set[str]:
             f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
         )
         rulesets = ""
+    if ":merge_queue" in rulesets.split():
+        raise Refused(
+            f"{base}'s rules require GitHub's merge queue, which would merge each PR later on a tree land never gated:"
+            " drop it from the ruleset (SKILL.md, Adopting the loop)"
+        )
     protection = gh(
         "api",
         f"repos/{{owner}}/{{repo}}/branches/{base}",

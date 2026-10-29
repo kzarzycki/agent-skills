@@ -3012,6 +3012,13 @@ def test_any_other_rules_error_fails(
         approvals.required_checks("main")
 
 
+def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
+    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
+    landing.update(rulesets=["check", ":merge_queue"])
+    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
+        approvals.required_checks("main")
+
+
 def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
     landing: dict[str, Any],
 ) -> None:
@@ -3467,6 +3474,26 @@ def test_a_merge_github_refuses_stops_the_rest_and_the_partial_base_is_gated(
     assert lands["runs"]() == 2
     assert landed_note(lands, 7)["Tree"] == tree
     assert hub[tip][0]["description"].startswith(f"Tree {tree} on ")
+
+
+def test_a_merge_github_leaves_unmerged_stops_the_rest(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`gh pr merge` exits 0 having only queued #8: it gets no `Landed`, and #9 waits for the next land."""
+    for number in (7, 8, 9):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    fake = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:3] == ("pr", "merge", "8"):
+            return ""
+        return fake(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    code, lines = lands["land"]()
+    assert (code, lands["merged"]()) == (1, ["7"])
+    assert any("PR #8: the merge was refused" in line and "not merged" in line for line in lines)
+    assert [n for n, body in lands["comments"] if body.startswith("Landed\n")] == [7]
 
 
 def test_a_base_that_moved_during_the_merges_is_gated_and_red_gets_no_gate_status(
