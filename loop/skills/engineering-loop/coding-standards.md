@@ -21,8 +21,11 @@ second occurrence of a mistake; a line that would not change behaviour goes.
 - Removing beats adding. A feature nobody has asked to use does not exist yet, and
   earlier decisions, including other models', are hypotheses.
 - `ponytail:` marks a deliberate ceiling with its upgrade path
-  (`# ponytail: global lock, per-account locks if throughput matters`). Triage's
-  fail-fast guards carry one, and a reviewer reads it as known, not as a finding.
+  (`# ponytail: global lock, per-account locks if throughput matters`), below the spec:
+  it changes how an approved item is built, never whether. Triage's fail-fast guards carry
+  one, and a reviewer reads it as known, not as a finding. A `ponytail:` that narrows an
+  approved acceptance item or Implementation Decision is a spec deviation, and the reviewer
+  reports it as a finding, since the owner approved the item, not the ceiling.
 - A script is non-interactive and reproduces on another host: setup is code.
 
 ## Docs and git
