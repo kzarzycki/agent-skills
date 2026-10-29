@@ -109,7 +109,11 @@ def test_the_cloud_split_is_reached_only_through_its_loop_md_line() -> None:
 def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> None:
     """A wait or a repro per short call re-reads the whole context each time."""
     verifier = " ".join((LOOP / "verifier.md").read_text().split())
-    assert "never short polls, since every call re-reads the whole context" in verifier
+    assert (
+        "never short polls or a sleep loop of your own, since every call re-reads the whole context"
+        in verifier
+    )
+    assert "wait-for --log <log> --pid <pid>" in verifier  # the one verb that blocks to the limit
     assert "waited on as a detached run is" in verifier  # the bare gate too
     assert "Rerun all of its repros from one script" in verifier
     assert "the diff since its head and the files it touches" in verifier

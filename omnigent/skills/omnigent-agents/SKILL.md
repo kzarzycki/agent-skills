@@ -178,6 +178,20 @@ lock per lead (the runner's primary session, which a lead's workers and their ch
 take one heavy slot between them (worker.md, Gates and push); a session gets no environment from
 its starter, so the path rides in the brief.
 
+**Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
+<n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed]` blocks up to `--budget`
+seconds (default 570, under a 10-minute tool call), printing nothing until it ends: on the log's
+`exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
+only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
+first, since a reused log path still holds the previous run's line; a log alone is trusted as
+the caller's run); on the pid gone; on the PR's condition settled (red checks named, exit 1); else `still running`, exit 6 (a run that itself
+exits 6 prints `exit 6`, and that is its end).
+It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTIFY <outcome>`
+once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with
+`omnigent_agent.py wait-for --log <log> --notify` and the session that set `LOOP_NOTIFY="python3
+<this skill>/scripts/omnigent_agent.py relay --from gate <its session id>"` gets one message
+when it ends; unset, nothing is sent.
+
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
 each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`

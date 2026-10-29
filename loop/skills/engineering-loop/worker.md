@@ -37,12 +37,14 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    CI. A brief that is a failing CI log is a check red after the PR went ready: fix it in
    the worktree you are given, then `mise run check` and push the same way. A command that
    may outlast one tool call (a gate, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
-   with its log, pid and exit code in files, and is polled, since a foreground call times out
-   and Claude Code's low-memory reaper stops in-session background shells; never end a turn
-   saying you are waiting, since nothing wakes you and the lead reads silence as work.
-   A pending condition (a queued run, a free device, an unlocked screen) is waited on the same
-   way, in the foreground, with omnigent-agents' `scripts/omnigent_agent.py wait-until
-   --every <s> --limit <s> -- <check>` or a sleep loop, each call under the tool timeout: the
+   with its log, pid and exit code in files, and is waited on with omnigent-agents'
+   `scripts/omnigent_agent.py wait-for --log <log> --pid <pid>` (a PR's checks: `wait-for --pr
+   <n>`), which blocks close to the tool limit and prints only the outcome, since a foreground
+   call times out and Claude Code's low-memory reaper stops in-session background shells; never
+   end a turn saying you are waiting, since nothing wakes you and the lead reads silence as work.
+   Any other pending condition (a queued run, a free device, an unlocked screen) is waited on the
+   same way, in the foreground, with `scripts/omnigent_agent.py wait-until
+   --every <s> --limit <s> -- <check>`, each call under the tool timeout: the
    turn goes on once it holds, and past the limit you state it ends with a report naming the
    condition, since a background command's exit does not wake an idle session.
 3. **Trail.** Fixing findings from a PR review, make each fix its own commit. After the

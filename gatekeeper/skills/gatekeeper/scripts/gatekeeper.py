@@ -15,7 +15,7 @@
     uv run scripts/gatekeeper.py record verdict <pr> <report>  # post a verifier report as a PR review
     uv run scripts/gatekeeper.py report [--json] <report>   # read a verifier report as verdict does; posts nothing
     uv run scripts/gatekeeper.py record checks [--all] <pr>  # run `checks.check` (`checks.all`) on the PR head, post it
-    uv run scripts/gatekeeper.py record checks [--all]      # the same on HEAD before a PR; `record checks <pr>` reuses it
+    uv run scripts/gatekeeper.py record checks [--all]      # the same on HEAD, the gate before each push; reused by tree
 
 Today's verbs stay for one release line, as does scripts/approvals.py, which runs this file: `approve` is `record
 approval`, `verdict` is `record verdict`, and `local-ci <pr>` and `local-ci --record` are `record checks --all <pr>`
@@ -37,8 +37,9 @@ owner's current record and `approved:spec`, unless gatekeeper.md's `spec.auto` c
 (`label_names`): a category is `kind:<name>`, a component `area:<name>`, whether the tracker file names it bare or in
 full.
 `check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
-or for a spec the policy approves the account running this), since an assignee says whose the issue is. When every
-build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
+or for a spec the policy approves the account running this), since an assignee says whose the issue is; and, with a
+PR, an issue another open PR closes too (a closing keyword, or `Implements` under a `signoff` rule), naming that PR
+and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. A flow that releases the claim (the loop's `release`) removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
@@ -56,8 +57,8 @@ review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest
 author posted one, that embeds its videos as user-attachments (the `demo` skill's `demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
-`ci: false` in gatekeeper.md, a `local-ci` pass on the head, its comment by the PR's author, the account running this or a
-writer, instead), and, while the change is high risk, for the owner's
+`ci: false` in gatekeeper.md, a `local-ci` pass on the head's tree under today's command and env, read as `local-ci` reads
+it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
 `approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, this skill's SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
@@ -112,14 +113,24 @@ without a merge is exit 1, and a red required check exit 3. Whatever CI won't cl
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs the policy's `checks.all`, a shell command, else `mise run check:all`, only on a clean checkout at
 the PR head, and records nothing if the check fails or changes the tree. `record checks` does the same with
-`checks.check`, else `mise run check`, and with `--all` is `local-ci`; a record is reused only for the same command.
-A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
-exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
-`env` holds the value, or null for unset, of each variable gatekeeper.md's `local_ci_env` names, since a
-check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
-same command and the same env, `local-ci <pr>` posts the pass from it, naming its time, instead of running the
-check again; a record without env is never reused. The host stays in the record: nothing `approvals.py` posts names
-it, and posted text writes the home directory `~` (public), since a public board would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
+`checks.check`, else `mise run check`, and with `--all` is `local-ci`; a pass is reused only for the same command.
+A pass also leaves a record keyed by tree and env under the git common dir (`approvals/local-ci/<tree>-<key>.json`:
+head, tree, command, exit, env, time, host, `head` being the commit it ran on), which every worktree sees and nothing
+commits; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
+nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
+records itself. `env` holds the value, or null for unset, of each variable gatekeeper.md's `local_ci_env` names, since a
+check that reads them may run a different tier under each; `<key>` is a digest of the command and env. Every pass
+this clone holds, run or reused, is published as a commit status on the head it covers: success, context
+`local-ci/<key>`, description `Tree <tree> on <commit>`, since `gh`'s token can write a status where a check run needs
+a GitHub App. GitHub refusing it (a commit not pushed yet) or unreachable is said and changes nothing else: the record
+stays local, and a later `local-ci` publishes it. A pass is reusable for a commit when this clone's record for its
+tree holds exit 0, the same command and env, or when a status on that commit itself names its tree under the same
+key, posted by the account running this or a writer, since anyone who can only open a PR must never publish a pass;
+so another clone of the repo reuses it. `local-ci <pr>`, `local-ci --record`, `check queue`, `batch` and `check
+merge` read it the same way; the posted comment then says it was reused by tree from the pass recorded on that commit,
+and when, instead of running the check again. A record without env is never reused. The host stays in the record:
+nothing `approvals.py` posts names it, and posted text writes the home directory `~` (public), since a public board
+would show both. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
 names left out, or `Env: default`).
 A project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
@@ -127,8 +138,9 @@ gatekeeper.md's `loop`; without it `check queue` refuses and no batch proof coun
 no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
-with CI, the checks `check merge` waits for passed, and the change is not high risk and has no `approved:merge`, since the
-owner's label covers one head landing alone: such a PR lands through `land`. After its gate the queue posts `batch` on
+with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's `approved:merge`, added after
+the head's push (owner_waits, as `check merge` and `land` read it): the label covers that head, which the queue checks
+again before it merges it. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
 exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
 head with no such pass under the current env. `check merge` takes that comment in place of the CI wait (either kind)
@@ -141,15 +153,16 @@ or a writer counts, since anyone can comment on a public repo. A red, unproven o
 exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
 the same head like any other. The proof is the verifier's
 verdict and gate on the PR's own head plus the full gate on the batch that merged it.
-With gatekeeper.md's `carry_over_main` section (`except: <globs>`), a merge of the base into a PR head H keeps H's proofs: a
-head H' whose first parent is H, whose second is on the base (an ancestor of its tip), whose tree is what `git
-merge-tree --write-tree` makes of the two (no conflict resolved, nothing added), and where the base's changes since
-the merge base touch no file H's side changes and no path an `except` glob matches (fnmatch, as a rule's `paths`:
-the project's merge-check configuration, such as lint, type, test and gate config and lockfiles). Then H's newest
-verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included). It never carries a `local-ci`
-record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line naming H, H' and the
-predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
-nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
+With gatekeeper.md's `carry_over_main` section (`except: <globs>`), merges of the base into a PR head H keep H's proofs:
+each commit from the head H' down its first-parent line to H is a merge whose second parent is on the base (an
+ancestor of its tip), whose tree is what `git merge-tree --write-tree` makes of its parents (no conflict resolved,
+nothing added), and where the base's changes since the merge base touch no file the PR's side changes and no path an
+`except` glob matches (fnmatch, as a rule's `paths`: the project's merge-check configuration, such as lint, type,
+test and gate config and lockfiles). So a PR commit after H, new, edited or rebased, carries nothing. Then H's newest
+verdict covers H' (`check merge`, `check queue` and `land`, the verifier's `Risk:` line included). It never carries
+a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line per merge
+naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
+any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
 variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
 `report --json` prints, as one JSON object, the facts of a report `verdict` would post: `head`, `counts` (`blocker`,
@@ -238,6 +251,7 @@ import argparse
 import contextlib
 import fnmatch
 import functools
+import hashlib
 import importlib.util
 import io
 import itertools
@@ -295,6 +309,7 @@ PORTS = {
         "tree",  # (sha) -> {path: (mode, blob)} of the commit, or None when too large
         "head_pushed",  # (pull) -> when the head was pushed to the PR's branch, or None
         "merged_labelled",  # (branch, name) -> the merged PRs into branch carrying the label
+        "open_pulls",  # (limit) -> up to limit open PRs, each with its number, branch, body and closing references
         "required_checks",  # (base) -> the checks the base requires
         "queue_required",  # (base) -> whether the base requires a merge queue
         "auto_merge_allowed",  # () -> whether the repo allows auto-merge
@@ -311,8 +326,19 @@ PORTS = {
     # writes: approval records, check passes and batch proofs (record), an outdated record (supersede), a verdict
     # (post_review); reads, each of the item the tracker or forge returned, as a connection of comment or review nodes:
     # its approval records (approvals), its verdicts, each on the head it reviewed (verdicts), and its check passes
-    # and batch proofs, each naming its head (checks)
-    "evidence": ("record", "supersede", "post_review", "approvals", "verdicts", "checks"),
+    # and batch proofs, each naming its head (checks); a local-ci pass published on a commit (post_status(commit,
+    # context, description)) and the passes published on one, newest first, each with its context, state,
+    # description, creator login and creation time (statuses(commit))
+    "evidence": (
+        "record",
+        "supersede",
+        "post_review",
+        "approvals",
+        "verdicts",
+        "checks",
+        "statuses",
+        "post_status",
+    ),
 }
 github = sibling("github_adapter")
 ADAPTERS: dict[str, Any] = {"github": github}
@@ -369,6 +395,7 @@ viewer, writer, repository = (
     through("forge", "repository"),
 )
 supersede = through("evidence", "supersede")
+statuses, post_status = through("evidence", "statuses"), through("evidence", "post_status")
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
@@ -422,6 +449,8 @@ FLAGGED = f"`{RISK_LABEL}` added by the gate"
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
+# a local-ci pass published as a commit status: its context, then `/` and env_key()
+PUBLISHED = "local-ci"
 # the first line of a merge queue's batch proof (batch), which queued() reads, and how much of the gate's log it shows
 BATCHED = "Merge queue batch"
 LOG_TAIL = 30
@@ -788,7 +817,7 @@ def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
         return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
     head = pull["headRefOid"].lower()
     on_head = [(number, lines) for commit, number, lines in found if commit == head]
-    if not on_head and found and isinstance(carry := carried(pull, loop), tuple):
+    if not on_head and found and isinstance(carry := carried(pull, loop, found[-1][0]), tuple):
         head = carry[0]
         on_head = [(number, lines) for commit, number, lines in found if commit == head]
     if not on_head:
@@ -1185,6 +1214,56 @@ def others(issue: dict[str, Any]) -> str | None:
     )
 
 
+def closed(pull: dict[str, Any], repo: str, loop: str | None) -> set[int]:
+    """The issues of `repo` a PR finishes: GitHub's closing references there and each `#n` after a closing keyword,
+    plus `Implements` where gatekeeper.md has a `signoff` rule, which leaves the issue open only for the owner's sign-off.
+    `Part of` builds on an issue without finishing it, so two PRs may share one. A reference to another repo's issue
+    is a different issue, whatever its number; a body's `#n` is always `repo`'s (CLOSING)."""
+    kinds = {CLOSES, IMPLEMENTS} if "signoff" in settings(loop) else {CLOSES}
+    named = {n for n, kind in links(pull.get("body") or "").items() if kind in kinds}
+    return named | {
+        issue["number"]
+        for issue in pull["closingIssuesReferences"]["nodes"]
+        if issue["repository"]["nameWithOwner"].lower() == repo.lower()
+    }
+
+
+# how many open PRs duplicates() reads, in one call; a list that long may have left one out
+OPEN_LIMIT = 1000
+
+
+def open_pulls() -> list[dict[str, Any]]:
+    """The repo's open PRs, up to OPEN_LIMIT, through the forge, in one call."""
+    found: list[dict[str, Any]] = port("forge").open_pulls(OPEN_LIMIT)
+    return found
+
+
+def duplicates(pull: dict[str, Any], loop: str | None) -> list[str]:
+    """One line per issue the PR finishes (closed) that another open PR finishes too, naming that PR and its branch:
+    two builds of one issue each run a verifier, a gate and the queue, and one of them is thrown away. A list as long
+    as OPEN_LIMIT may have left that PR out, so it refuses rather than pass on a partial comparison."""
+    repo = pull["baseRepository"]["nameWithOwner"]
+    mine = closed(pull, repo, loop)
+    if not mine:
+        return []
+    found = open_pulls()
+    if len(found) >= OPEN_LIMIT:
+        return [
+            (
+                f"the duplicate-build check reads at most {OPEN_LIMIT} open PRs and this repo has at least that many,"
+                " so it could not see every open PR: close stale PRs, or check by hand that no other open PR closes"
+                f" {', '.join(f'#{n}' for n in sorted(mine))}"
+            )
+        ]
+    return [
+        f"#{number} is also closed by open PR #{other['number']} (branch `{other['headRefName']}`): one build per"
+        " issue, so close one of the PRs, or link it with `Part of`"
+        for other in found
+        if other["number"] != pull["number"]
+        for number in sorted(mine & closed(other, repo, loop))
+    ]
+
+
 def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) -> list[str]:
     """One line per reason an issue the PR closes waits for the owner or lacks a label of `kinds` (label_names;
     None, without docs/agents/issue-tracker.md, checks no label's shape); empty when none does. A missing
@@ -1273,6 +1352,10 @@ def proofs(
                 found += approvals(where, issue, "plan", version(plan))
         elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
+    if (
+        point == "build" and "number" in pull
+    ):  # before the PR exists (unopened) there is nothing to compare
+        found += duplicates(pull, loop)
     found += demo_form(pull)
     if point != "merge":
         return found
@@ -1579,24 +1662,23 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
-    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass."""
+    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
+    tree under today's command and env (reusable)."""
     where = f"PR #{pull['number']}"
     if batch_queue(loop) and queued(pull) is None:
         return []
     if no_ci(loop):
         # the merge proof is the full check: a `record checks` pass of the lighter `checks.check` proves nothing here
         full = settings(loop).get("checks", {}).get("all", LOCAL_CI)
-        head = [CHECKED, f"Head: {pull['headRefOid']}", f"Command: {full}"]
-        if any(
-            [line.strip() for line in note["body"].strip().splitlines()[:3]] == head
-            and trusted(pull, note)
-            for note in evidenced(pull, "checks")
-        ):
-            found = []
-        else:
-            found = [
+        # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
+        # comment may write and which says nothing about today's command and env
+        found = (
+            []
+            if reusable(pull["headRefOid"], full)
+            else [
                 f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head (approvals.py local-ci)"
             ]
+        )
     else:
         if required is None:
             # the approvals status is check merge's own output: waiting for it never ends
@@ -1733,48 +1815,55 @@ def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
     )
 
 
-def carried(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
-    """The commit whose verdict the PR's head carries, with carry_line(), where gatekeeper.md has
-    `carry_over_main`: the head is a merge whose first parent is that commit and whose second is on the base (an
-    ancestor of its tip), its tree is git merge-tree's of the two, and merged() finds the base's changes disjoint
-    from the PR's and neither side's touching an except glob. A string names why it carries nothing; None without the setting, which
-    then reads no git at all. ponytail: one merge deep; walk first parents when a PR merges main in twice unverified."""
+def carried(
+    pull: dict[str, Any], loop: str | None, verified: str
+) -> tuple[str, list[str]] | str | None:
+    """`verified` with one carry_line() per merge, oldest first, when the PR's head carries the verdict on
+    `verified`, the newest verdict's commit, where gatekeeper.md has `carry_over_main`: from the head, each commit on its
+    first-parent line down to `verified` is a merge whose second parent is on the base (an ancestor of its tip), whose
+    tree is git merge-tree's of its parents, and where merged() finds the base's changes disjoint from the PR's and
+    neither side's touching an except glob. So a PR commit after `verified` (new, edited or rebased) carries nothing.
+    A string names why it carries nothing; None without the setting, which then reads no git at all."""
     guard = settings(loop).get("carry_over_main")
     if guard is None:
         return None
     head, tip, base = pull["headRefOid"].lower(), pull["baseRefOid"].lower(), pull["baseRefName"]
+    commit, lines = head, []
     try:
         if not (fetched(head) and fetched(tip)):
             return f"the head or {base}'s head {tip} is not a commit origin has"
-        parents = git("rev-list", "--parents", "-n", "1", head).split()[1:]
-        if len(parents) != 2:
-            return "it is no merge of two parents"
-        first, second = parents
-        on_base = ["git", "merge-base", "--is-ancestor", second, tip]
-        if subprocess.run(on_base, capture_output=True, check=False).returncode:
-            return f"its second parent {second} is not on {base}"
-        found = merged(first, second, guard["except"], base)
-        if isinstance(found, str):
-            return found
-        if found[0] != git("rev-parse", f"{head}^{{tree}}").strip():
-            return f"{head}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
+        while commit != verified:
+            it, its = ("it", "its") if commit == head else (commit, f"{commit}'s")
+            parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
+            if len(parents) != 2:
+                return f"{it} is no merge of two parents"
+            first, second = parents
+            on_base = ["git", "merge-base", "--is-ancestor", second, tip]
+            if subprocess.run(on_base, capture_output=True, check=False).returncode:
+                return f"{its} second parent {second} is not on {base}"
+            found = merged(first, second, guard["except"], base)
+            if isinstance(found, str):
+                return found
+            if found[0] != git("rev-parse", f"{commit}^{{tree}}").strip():
+                return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
+            lines.insert(0, carry_line(commit, first, second, found[1], base))
+            commit = first
     except (subprocess.CalledProcessError, OSError) as exc:
-        return f"git failed reading {head}: {exc}"
-    return first, carry_line(head, first, second, found[1], base)
+        return f"git failed reading {commit}: {exc}"
+    return verified, lines
 
 
 def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
     """Whether the PR's head carries the proofs of `verified`, the newest verdict's commit (carried), printing the
-    line that says so, or where gatekeeper.md opts in, why it carries nothing."""
-    carry = carried(pull, loop)
+    lines that say so, or where gatekeeper.md opts in, why it carries nothing."""
+    carry = carried(pull, loop, verified)
     if carry is None:
         return False
-    if isinstance(carry, tuple) and carry[0] != verified:
-        carry = f"its first parent is {carry[0]}"
     if isinstance(carry, str):
         print(f"{where}: {pull['headRefOid']} carries nothing from {verified}: {carry}")
         return False
-    print(f"{where}: {carry[1]}")
+    for line in carry[1]:
+        print(f"{where}: {line}")
     return True
 
 
@@ -1814,12 +1903,8 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
         found.append(
             f"{where}: no `local-ci --record` pass on {head} under this environment (approvals.py local-ci --record)"
         )
-    if why := risk(pull, issues, loop):
-        found.append(f"{where} is high risk ({why}): it lands alone through `land`")
-    if MERGE_LABEL in names(pull):
-        found.append(
-            f"{where} has the owner's `{MERGE_LABEL}`, which covers its head alone: it lands through `land`"
-        )
+    # the queue re-runs this before it merges the head, and check merge dates the label against the landed head again
+    found += owner_waits(pull, issues, loop)
     for line in found:
         print(line)
     if found:
@@ -2885,29 +2970,48 @@ def check_command() -> str:
     return settings(project()[1]).get("checks", {}).get("check", CHECK)
 
 
-def recorded(head: str) -> Path:
-    """Where a local-ci pass on `head` is recorded: the git common dir, which every worktree of the clone shares and no
-    commit carries."""
+def recorded(tree: str, env: dict[str, str | None], command: str | None = None) -> Path:
+    """Where a pass of `command` (else local_ci_command) on `tree` under `env` is recorded: the git common dir, which every worktree of the
+    clone shares and no commit carries."""
     common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
-    return common / "approvals" / "local-ci" / f"{head}.json"
+    return common / "approvals" / "local-ci" / f"{tree}-{env_key(env, command)}.json"
+
+
+def env_key(env: dict[str, str | None], command: str | None = None) -> str:
+    """A digest of the command (else local_ci_command) and `env` a pass ran under: it names the record and the
+    published status, so a pass counts only for both, without publishing the values."""
+    named = json.dumps({"command": command or local_ci_command(), "env": env}, sort_keys=True)
+    return hashlib.sha256(named.encode()).hexdigest()[:12]
+
+
+def tree_of(commit: str) -> str | None:
+    """The tree `commit` holds, fetching `origin` once when the clone lacks it; None when neither has it."""
+    with contextlib.suppress(subprocess.CalledProcessError):
+        return git("rev-parse", f"{commit}^{{tree}}").strip()
+    with contextlib.suppress(subprocess.CalledProcessError):
+        git("fetch", "--quiet", "origin")
+        return git("rev-parse", f"{commit}^{{tree}}").strip()
+    return None
+
+
+def checkout_state() -> tuple[str, str]:
+    """HEAD and every change in the checkout, empty when it is clean."""
+    # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
+    status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+    # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
+    hidden = [
+        f"{line[2:]} (index flag hides its changes)\n"
+        for line in git("ls-files", "-v").splitlines()
+        if line[:1].islower() or line[:1] == "S"
+    ]
+    return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
 
 def run_local_ci(pr: int | None, head: str | None, command: str | None = None) -> dict[str, Any]:
-    """Run `command`, else the project's full check (local_ci_command), on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
-    check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
-
-    def state() -> tuple[str, str]:
-        # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
-        status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
-        # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
-        hidden = [
-            f"{line[2:]} (index flag hides its changes)\n"
-            for line in git("ls-files", "-v").splitlines()
-            if line[:1].islower() or line[:1] == "S"
-        ]
-        return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
-
-    before = state()
+    """Run `command`, else the project's full check (local_ci_command), on a clean checkout (at PR `pr`'s `head`, when
+    given) and record the pass by tree, command and env; refuse a check off the head, on a changed tree, failing, or
+    changing the tree, recording nothing."""
+    before = checkout_state()
     if head and before[0] != head:
         raise Refused(
             f"the checkout is at {before[0]}, PR #{pr}'s head is {head}: push, or check out the head"
@@ -2918,19 +3022,20 @@ def run_local_ci(pr: int | None, head: str | None, command: str | None = None) -
     code = subprocess.run(command, shell=True, check=False).returncode
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
-    if state() != before:
+    if checkout_state() != before:
         raise Refused(
-            f"{command} changed the checkout, so it did not run on the head as pushed:\n{state()[1]}"
+            f"{command} changed the checkout, so it did not run on the head as pushed:\n{checkout_state()[1]}"
         )
     record = {
         "head": before[0],
+        "tree": git("rev-parse", "HEAD^{tree}").strip(),
         "command": command,
         "exit": code,
         "env": env,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host": socket.gethostname(),
     }
-    where = recorded(before[0])
+    where = recorded(record["tree"], env, command)
     where.parent.mkdir(parents=True, exist_ok=True)
     where.write_text(json.dumps(record, indent=2) + "\n")
     return record
@@ -2954,40 +3059,113 @@ def env_line(env: dict[str, str | None]) -> str:
 
 
 def reusable(head: str, command: str | None = None) -> dict[str, Any] | None:
-    """A recorded pass on exactly `head` with `command` (else today's local_ci_command) and environment, or None. A record without `env` (0.23.1
-    wrote none) never matches, since nothing says what tier it ran."""
+    """A green pass of `command` (else today's local_ci_command) on `head`'s tree under today's environment, or None:
+    this clone's record, made on any commit with that tree, else one published on `head` itself (published). The
+    record's `head` is the commit the pass ran on. A record without `env` (0.23.1 wrote none) never matches, since
+    nothing says what tier it ran."""
+    if (held := tree_of(head)) is None:
+        return None
+    command, env = command or local_ci_command(), local_ci_env()
     try:
-        record = json.loads(recorded(head).read_text())
+        record = json.loads(recorded(held, env, command).read_text())
     except (OSError, ValueError):
-        return None
-    # the posting path reads time and host too: a record without them is a miss, not a crash
-    if not isinstance(record, dict) or not all(
-        isinstance(record.get(key), str) for key in ("time", "host")
+        record = None
+    # the posting path reads the commit and time too: a record without them is a miss, not a crash
+    if (
+        isinstance(record, dict)
+        and all(isinstance(record.get(key), str) for key in ("head", "time"))
+        and (record.get("tree"), record.get("command"), record.get("exit"), record.get("env"))
+        == (held, command, 0, env)
     ):
+        return record
+    return published(head, held, env, command)
+
+
+def published(
+    head: str, held: str, env: dict[str, str | None], command: str
+) -> dict[str, Any] | None:
+    """A pass of `command` on `head` another clone published (publish), as a record, or None. It counts only from the
+    account running this or a writer, since a status is the repo's to write and a PR's author may hold no more than a
+    fork; and only for `head`'s own tree `held` and the context `env` and `command` name. The evidence store
+    unreachable: None, so the check runs."""
+    context = f"{PUBLISHED}/{env_key(env, command)}"
+    try:
+        found = statuses(head)
+    except (subprocess.CalledProcessError, OSError, ValueError):
         return None
-    same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
-        head,
-        command or local_ci_command(),
-        0,
-        local_ci_env(),
-    )
-    return record if same else None
+    for status in found:  # newest first
+        named = re.fullmatch(
+            r"Tree ([0-9a-f]{40,64}) on ([0-9a-f]{40,64})", status.get("description") or ""
+        )
+        login = (status.get("creator") or {}).get("login")
+        if (status.get("context"), status.get("state")) != (context, "success") or not named:
+            continue
+        if named[1] == held and login is not None and (login == viewer() or writer(login)):
+            return {
+                "head": named[2],
+                "tree": held,
+                "command": command,
+                "exit": 0,
+                "env": env,
+                "time": status["created_at"],
+                "published": True,
+            }
+    return None
+
+
+def publish(head: str, record: dict[str, Any]) -> None:
+    """Publish a pass as a commit status on `head` through the evidence port, unless one already does: success under
+    the context env_key() names, its description the tree and the commit the pass ran on, so another clone's
+    reusable() finds it. A status, since gh's token can write one and only an account that can push may (a check run
+    needs a GitHub App). Refused or unreachable: say so, and the record stays in this clone."""
+    context = f"{PUBLISHED}/{env_key(record['env'], record['command'])}"
+    if published(head, record["tree"], record["env"], record["command"]):
+        return
+    try:
+        post_status(head, context, f"Tree {record['tree']} on {record['head']}")
+    except (subprocess.CalledProcessError, OSError) as exc:
+        why = (getattr(exc, "stderr", None) or str(exc)).strip()
+        print(f"not published on GitHub, so only this clone reuses it: {why}")
+        return
+    print(f"published on {head} as the commit status `{context}`")
+
+
+def reused(record: dict[str, Any]) -> str:
+    return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}, not run again."
 
 
 def local_ci(pr: int | None, command: str | None = None) -> int:
-    """With a PR: post a pass on its head, from a recorded run on that head and `command` (else local_ci_command) or
-    from a run now. Without one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
+    """With a PR: post a pass of `command` (else local_ci_command) on its head, from a recorded pass on its tree or
+    from a run now. Without one: on a clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to
+    reuse; on one with changes, run the check and record nothing. Either publishes a pass this clone holds
+    (publish)."""
+    command = command or local_ci_command()
     if pr is None:
-        record = run_local_ci(None, None, command)
-        print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
+        head, changes = checkout_state()
+        if changes:
+            code = subprocess.run(command, shell=True, check=False).returncode
+            print(
+                f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
+            )
+            return code
+        if record := reusable(head, command):
+            print(f"{CHECKED} on {head}: {reused(record)}")
+        else:
+            record = run_local_ci(None, None, command)
+            print(
+                f"{CHECKED} on {head}: recorded in {recorded(record['tree'], record['env'], command)}"
+            )
+        if not record.get("published"):
+            publish(head, record)
         return 0
     head = pull_request(pr)["headRefOid"]
-    record = reusable(head, command)
-    if record:
-        source = f"From the recorded run at {record['time']}, not run again.\n"
+    if record := reusable(head, command):
+        source = f"{reused(record)}\n"
     else:
         record = run_local_ci(pr, head, command)
         source = ""
+    if not record.get("published"):
+        publish(head, record)
     prove(
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",

@@ -478,6 +478,185 @@ def test_wait_until_exits_0_once_the_command_does_and_its_own_code_at_the_limit(
     assert omnigent_agent.main(["wait-until", "--every", "61", "--limit", "5", "--", "true"]) == 2
 
 
+def test_wait_for_a_gate_returns_at_its_exit_line_or_still_running_with_no_log_text(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    log = tmp_path / "gate.log"
+    log.write_text("collecting\nSECRET progress line\n")
+    assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.05"]) == 6
+    assert capsys.readouterr().out == "still running\n"
+
+    def finish() -> None:
+        time.sleep(0.1)
+        log.write_text(log.read_text() + "12 passed in 3s\nexit 0\n")
+
+    threading.Thread(target=finish).start()
+    assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "30"]) == 0
+    assert capsys.readouterr().out == "exit 0\n12 passed in 3s\n"
+
+    log.write_text("".join(f"line {i}\n" for i in range(50)) + "FAILED test_x\nexit 2\n")
+    assert omnigent_agent.main(["wait-for", "--log", str(log)]) == 2
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "exit 2" and out[-1] == "FAILED test_x" and len(out) == 1 + 30
+
+
+def test_wait_for_a_pid_ends_when_the_run_is_gone(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    run = subprocess.Popen(["sleep", "0.2"])
+    threading.Thread(target=run.wait).start()  # reaped, so the pid goes rather than lingering
+    pid = tmp_path / "pid"
+    pid.write_text(f"{run.pid}\n")
+    assert omnigent_agent.main(["wait-for", "--pid", str(pid), "--budget", "30"]) == 0
+    assert capsys.readouterr().out == f"pid {pid} ended\n"
+    # a live process younger than the pid file got the run's pid after it ended
+    other = subprocess.Popen(["sleep", "30"])
+    pid.write_text(f"{other.pid}\n")
+    os.utime(pid, (time.time() - 3600, time.time() - 3600))
+    try:
+        assert omnigent_agent.main(["wait-for", "--pid", str(pid), "--budget", "30"]) == 0
+    finally:
+        other.kill()
+        other.wait()
+    capsys.readouterr()
+    # a run killed before its exit line: the wait ends on it, not at the budget
+    log = tmp_path / "gate.log"
+    log.write_text("running\n")
+    argv = ["wait-for", "--log", str(log), "--pid", str(tmp_path / "none"), "--budget", "30"]
+    assert omnigent_agent.main(argv) == 1
+    assert capsys.readouterr().out.startswith("gone: ")
+    assert omnigent_agent.main(["wait-for", "--budget", "1"]) == 2
+
+
+def test_wait_for_takes_an_exit_line_only_from_the_run_its_pid_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    log, pid = tmp_path / "gate.log", tmp_path / "pid"
+    log.write_text("run 1\nprevious run passed\nexit 0\n")  # a log path reused, not yet rewritten
+    run = subprocess.Popen(["sleep", "30"])
+    try:
+        pid.write_text(f"{run.pid}\n")
+        argv = ["wait-for", "--log", str(log), "--pid", str(pid), "--budget", "0.05"]
+        assert omnigent_agent.main(argv) == 6
+        assert capsys.readouterr().out == "still running\n"
+        argv[4] = str(run.pid)  # a bare pid restarted at once: no time slack lets the old line in
+        assert omnigent_agent.main(argv) == 6
+        assert capsys.readouterr().out == "still running\n"
+        log.write_text(f"run {run.pid}\n3 passed\nexit 0\n")  # this run's own line counts
+        assert omnigent_agent.main(argv) == 0
+        assert capsys.readouterr().out == "exit 0\n3 passed\n"
+        log.write_text("run 1\nprevious run passed\nexit 0\n")
+    finally:
+        run.kill()
+        run.wait()
+    # the run died before it rewrote the log: gone, not the old run's success, however old the log
+    os.utime(log, (time.time() - 60, time.time() - 60))
+    for named in (str(pid), str(run.pid), str(tmp_path / "missing.pid")):
+        argv = ["wait-for", "--log", str(log), "--pid", named, "--budget", "30"]
+        assert omnigent_agent.main(argv) == 1
+        assert capsys.readouterr().out.startswith("gone: ")
+
+
+def test_wait_for_fails_when_it_cannot_tell_a_pid_is_the_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    denied = tmp_path / "bin" / "ps"
+    denied.parent.mkdir()
+    denied.write_text("#!/bin/sh\necho 'ps: operation not permitted' >&2\nexit 1\n")
+    denied.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{denied.parent}{os.pathsep}{os.environ['PATH']}")
+    run = subprocess.Popen(["sleep", "30"])
+    try:
+        pid = tmp_path / "pid"
+        pid.write_text(f"{run.pid}\n")
+        assert omnigent_agent.main(["wait-for", "--pid", str(pid), "--budget", "0.05"]) == 1
+        captured = capsys.readouterr()
+        assert captured.out == "" and "operation not permitted" in captured.err
+    finally:
+        run.kill()
+        run.wait()
+
+
+def test_wait_for_a_pr_waits_until_its_checks_settle(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    views = iter(
+        [
+            {"state": "OPEN", "statusCheckRollup": []},
+            # a check still running has no conclusion yet: the wait goes on past it
+            {"state": "OPEN", "statusCheckRollup": [{"name": "build", "status": "IN_PROGRESS"}]},
+            {
+                "state": "OPEN",
+                "statusCheckRollup": [
+                    {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                    {"name": "test", "status": "COMPLETED", "conclusion": "FAILURE"},
+                    {"context": "lint", "state": "SUCCESS"},
+                ],
+            },
+        ]
+    )
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(next(views)))
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_PR_EVERY", 0.01)
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "30"]) == 1
+    assert capsys.readouterr().out == "PR #7 checks red: test\n"
+    assert next(views, None) is None  # it read the settled view, not the one still running
+
+    green = {
+        "state": "OPEN",
+        "statusCheckRollup": [
+            {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"context": "lint", "state": "SUCCESS"},
+        ],
+    }
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: json.dumps(green))
+    assert omnigent_agent.main(["wait-for", "--pr", "7"]) == 0
+    assert capsys.readouterr().out == "PR #7 checks green (2)\n"
+
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: '{"state": "CLOSED"}')
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "merged"]) == 1
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--until", "closed"]) == 0
+
+
+def test_wait_for_a_pr_keeps_its_budget_when_github_is_slow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slow = tmp_path / "gh"
+    slow.write_text('#!/bin/sh\nsleep 2\necho \'{"state": "OPEN", "statusCheckRollup": []}\'\n')
+    slow.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    began = time.monotonic()
+    assert omnigent_agent.main(["wait-for", "--pr", "7", "--budget", "0.2"]) == 6
+    assert time.monotonic() - began < 1.5  # the query is cut at the budget, not gh's own timeout
+    assert capsys.readouterr().out == "still running\n"
+
+
+def test_a_detached_gate_tells_the_session_that_started_it_once(tmp_path: Path) -> None:
+    told = tmp_path / "told"
+    tell = tmp_path / "tell"
+    tell.write_text(f'#!/bin/sh\nprintf "%s|%s\\n" "$1" "$2" >> {told}\n')
+    tell.chmod(0o755)
+    log, pid = tmp_path / "gate.log", tmp_path / "pid"
+    script = Path(omnigent_agent.__file__)
+    # verifier.md's detached recipe with its notify step
+    wrapper = (
+        f'echo $$ > {pid}; echo "run $$" > {log}; sh -c "echo 4 passed; exit 3" >> {log} 2>&1;'
+        f' echo "exit $?" >> {log}; {sys.executable} {script} wait-for --log {log} --pid $$ --notify'
+    )
+    env = {**os.environ, "LOOP_NOTIFY": f"{tell} session-1"}
+    subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
+    assert told.read_text() == "session-1|exit 3\n4 passed\n"  # the red run's last lines too
+    # a run's own exit 6 is an outcome, not wait-for's budget passing
+    six = wrapper.replace("exit 3", "exit 6")
+    subprocess.run(["sh", "-c", six], env=env, check=False, capture_output=True, timeout=30)
+    assert told.read_text().endswith("session-1|exit 6\n4 passed\n")
+    del env["LOOP_NOTIFY"]  # unset: the outcome is only printed
+    subprocess.run(["sh", "-c", wrapper], env=env, check=False, capture_output=True, timeout=30)
+    assert told.read_text().count("session-1|") == 2
+
+
 def test_verifier_wait_returns_only_after_the_verdict(tmp_path: Path) -> None:
     og = FakeOmnigent(reply="checking", status="running")
     report = tmp_path / "r.md"
