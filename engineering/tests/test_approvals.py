@@ -3330,6 +3330,96 @@ def test_a_conflicting_pr_is_skipped_with_one_comment_per_head(lands: dict[str, 
     assert "It conflicts with main plus #7 merged before it: merge origin/main in" in body
 
 
+CHECK_SCRIPT = """import os, pathlib, subprocess, sys
+pathlib.Path(sys.argv[1]).open("a").write(f"{os.environ['LAND_HEAD']} {os.environ['LAND_BASE']}\\n")
+files = subprocess.run(["git", "ls-tree", "--name-only", os.environ["LAND_HEAD"]], capture_output=True, text=True)
+pathlib.Path("check.cache").write_text("left behind\\n")
+if "old.txt" in files.stdout.split():
+    print("forked before the restructuring: old.txt is back")
+    sys.exit(1)
+"""
+
+
+def pre_land(lands: dict[str, Any], configured: bool = True) -> Path:
+    """main holds `check.py`, which refuses a head whose tree holds `old.txt` and leaves a file behind, and loop.md's `pre_land` runs it, unless
+    not `configured`; the log of its runs, one `<LAND_HEAD> <LAND_BASE>` line each."""
+    work, runs = lands["work"], lands["work"].parent / "pre_land.log"
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    (work / "check.py").write_text(CHECK_SCRIPT)
+    git_in(work, "add", "check.py")
+    git_in(work, "commit", "-qm", "the pre-land check")
+    git_in(work, "push", "-q", "origin", "HEAD:main")
+    git_in(work, "fetch", "-q", "origin")
+    if configured:
+        (work / "docs" / "agents" / "loop.md").write_text(
+            add(
+                GITHUB_RULE,
+                "loop",
+                f"pre_land: {shlex.join([sys.executable, 'check.py', str(runs)])}\n",
+            )
+        )
+    return runs
+
+
+def test_a_pr_the_pre_land_check_refuses_is_left_out_with_one_comment_and_stays_ready(
+    lands: dict[str, Any],
+) -> None:
+    runs = pre_land(lands)
+    base = lands["main"]()
+    fine = lands["open"](7, {"7.txt": "7\n"})
+    old = lands["open"](8, {"old.txt": "old\n"})
+    # the heads are on origin only, as a PR's are, so the check reads one only once land fetched it
+    work = lands["work"]
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    git_in(work, "reflog", "expire", "--expire=now", "--all")
+    git_in(work, "gc", "-q", "--prune=now")
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    assert lands["merged"]() == ["7"]
+    assert runs.read_text().splitlines() == [f"{fine} {base}", f"{old} {base}"]
+    command = shlex.join([sys.executable, "check.py", str(runs)])
+    assert (
+        f"PR #8: `{command}` refused it against main at {base}, exiting 1: left out of this batch"
+        in lines
+    )
+    assert landed_note(lands, 7)["Batch"] == "#7"
+    # not red: neither evicted nor back to draft, and the same head refused again says it no more
+    assert lands["land"]()[0] == 1
+    assert not lands["pulls"][8]["isDraft"]
+    assert not [call for call in lands["calls"] if call[:2] == ("pr", "ready")]
+    [(number, body)] = [
+        (n, body) for n, body in lands["comments"] if body.startswith(approvals.PRE_LAND)
+    ]
+    assert (number, body.splitlines()[1]) == (8, f"Head: {old}")
+    assert "forked before the restructuring: old.txt is back\n" in body
+    assert lands["land"]("8")[0] == 1
+
+
+def test_a_pr_editing_the_pre_land_check_is_judged_by_the_bases_version(
+    lands: dict[str, Any],
+) -> None:
+    runs = pre_land(lands)
+    lands["open"](7, {"old.txt": "old\n", "check.py": "import sys\nsys.exit(0)\n"})
+    assert lands["land"]()[0] == 1
+    assert lands["merged"]() == []
+    assert len(runs.read_text().splitlines()) == 1
+
+
+def test_without_pre_land_no_check_runs(lands: dict[str, Any]) -> None:
+    runs = pre_land(lands, configured=False)
+    lands["open"](7, {"old.txt": "old\n"})
+    assert lands["land"]()[0] == 0
+    assert lands["merged"]() == ["7"]
+    assert not runs.exists()
+
+
+def test_a_pre_land_with_a_shell_operator_is_refused() -> None:
+    with pytest.raises(
+        approvals.Refused, match="loop.md's `pre_land` is 'a && b': variables to set"
+    ):
+        approvals.command_line("a && b", "pre_land")
+
+
 def test_land_marks_a_named_draft_ready_and_waits_for_the_required_checks_it_starts(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

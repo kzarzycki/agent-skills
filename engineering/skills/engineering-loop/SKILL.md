@@ -84,6 +84,7 @@ loop:
   opt_out: true
   batch_queue: true   # deprecated with ci and carry_over_main: land batches every landable PR
   owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
+  pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
 
 practice:
   plan: writing-plans
@@ -138,6 +139,7 @@ carry_over_main:
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
+| | `pre_land` | a check `land` runs for each PR before batching it, parsed as `gate` is, from the base's tree with `LAND_HEAD` and `LAND_BASE` set, such as one refusing a branch forked before a restructuring; non-zero leaves that PR out of the batch with one comment per head holding its output, and it stays ready (`approvals.py`'s docstring says how) | no check |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
