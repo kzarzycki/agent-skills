@@ -1,0 +1,16 @@
+name: chief-of-staff
+version: 0.1.0
+description: "A chief of staff over many leads and repos: one person's supervision of the engineering loop, with the optional cos-console mod."
+author: Krzysztof Zarzycki
+targets:
+- claude
+- codex
+dependencies:
+  apm:
+  - git: kzarzycki/agent-skills/loop
+    ref: ^0.1.0
+  - git: kzarzycki/agent-skills/omnigent
+    ref: ^0.1.0
+  mcp: []
+includes: auto
+scripts: {}

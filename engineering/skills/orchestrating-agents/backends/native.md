@@ -20,7 +20,7 @@ The default backend: every harness has one, and it needs no setup.
 This backend starts only native subagents of your own harness. A child of another model
 family (which role does is the caller's policy: under the engineering loop, its
 SKILL.md, Independent verification) is the Omnigent backend's
-([omnigent.md](omnigent.md)); never start it with a bare CLI (`claude -p`, `codex exec`,
+(the `omnigent-agents` skill); never start it with a bare CLI (`claude -p`, `codex exec`,
 `omp`, `gemini -p`, `agy -p`) from a tool call, since nothing then lists, watches or
 closes it. Without Omnigent, a fresh native subagent of your own harness is the only
 child to start.

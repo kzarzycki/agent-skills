@@ -35,6 +35,41 @@
       "tags": ["engineering", "design", "implementation", "testing", "review"]
     },
     {
+      "name": "gatekeeper",
+      "description": "The gatekeeper CLI: may this change be built, enter a merge queue or merge, decided from proof on the forge and the team's policy.",
+      "source": "./gatekeeper",
+      "category": "development",
+      "tags": ["gatekeeper", "merge-gate", "approvals", "ci", "required-check"]
+    },
+    {
+      "name": "loop",
+      "description": "The engineering loop: a lead, workers and an independent verifier take a change from intent through a spec, build, gates and proof to a landed PR.",
+      "source": "./loop",
+      "category": "workflow",
+      "tags": ["engineering-loop", "lead", "worker", "verifier", "workflow"]
+    },
+    {
+      "name": "github",
+      "description": "The GitHub tracker and forge conventions the loop and the gatekeeper run on: issue and label operations, the review trail, label sync and board moves.",
+      "source": "./github",
+      "category": "development",
+      "tags": ["github", "issues", "labels", "project-board", "tracker"]
+    },
+    {
+      "name": "chief-of-staff",
+      "description": "A chief of staff over many leads and repos: one person's supervision of the engineering loop, with the optional cos-console mod.",
+      "source": "./chief-of-staff",
+      "category": "workflow",
+      "tags": ["chief-of-staff", "supervisor", "leads", "omnigent"]
+    },
+    {
+      "name": "omnigent",
+      "description": "Omnigent as the agent runner: the backend and driver that start, message and watch agent sessions, operating a local install, and its telemetry.",
+      "source": "./omnigent",
+      "category": "workflow",
+      "tags": ["omnigent", "runner", "agents", "sessions", "telemetry"]
+    },
+    {
       "name": "content",
       "description": "Content-preparation toolkit for Claude Code: understanding and reproducing a person's writing voice for outreach, content, and proposals.",
       "source": "./content",
@@ -51,7 +86,7 @@
     {
       "name": "cos-console",
       "description": "Optional mod for a chief-of-staff session: a status line and /leads pane over the supervisor's console state, and the leads' status and recent events attached to the owner's messages.",
-      "source": "./cos-console",
+      "source": "./chief-of-staff/cos-console",
       "category": "workflow",
       "tags": ["mod", "chief-of-staff", "supervisor", "status-line"]
     },

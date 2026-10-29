@@ -67,11 +67,59 @@ def _isolated_env(tmp_path: Path) -> dict[str, str]:
     }
 
 
+SLUG = "kzarzycki/agent-skills"
+
+
+def _dependencies(package: Path = PACKAGE) -> list[Path]:
+    """The packages of this repo that `package` pulls in (`git: kzarzycki/agent-skills/<name>` in its apm.yml), the
+    siblings beside it, and theirs."""
+    found: list[Path] = []
+    for item in yaml.safe_load((package / "apm.yml").read_text())["dependencies"]["apm"]:
+        if str(item.get("git", "")).startswith(f"{SLUG}/"):
+            dependency = package.parent / item["git"].removeprefix(f"{SLUG}/")
+            found += [dependency, *_dependencies(dependency)]
+    return list(dict.fromkeys(found))
+
+
+def _copy_package(root: Path) -> Path:
+    """engineering and the packages it depends on, copied as siblings under root, as a release tag holds them."""
+    for package in (PACKAGE, *_dependencies()):
+        shutil.copytree(package, root / package.name, ignore=_no_bytecode)
+    return root / PACKAGE.name
+
+
+def _publish(tmp_path: Path, env: dict[str, str], source: Path) -> Path:
+    """Commit source as this repo, tag each package's release `<name>-v<version>` and serve it as the GitHub repo
+    through git's insteadOf, so a package's git dependencies on its siblings resolve offline. Returns the origin."""
+    _run(["git", "init", "-q"], cwd=source, env=env)
+    _run(["git", "add", "."], cwd=source, env=env)
+    _run(["git", "commit", "-q", "-m", "fixture"], cwd=source, env=env)
+    for manifest in source.glob("*/apm.yml"):
+        version = yaml.safe_load(manifest.read_text())["version"]
+        _run(["git", "tag", f"{manifest.parent.name}-v{version}"], cwd=source, env=env)
+    origin = tmp_path / "agent-skills.git"
+    _run(["git", "clone", "-q", "--bare", str(source), str(origin)], cwd=tmp_path, env=env)
+    _run(
+        [
+            "git",
+            "config",
+            "--global",
+            f"url.{origin.as_uri()}.insteadOf",
+            f"https://github.com/{SLUG}.git",
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    return origin
+
+
 def _expected_skills() -> set[str]:
+    """engineering's own skills and every skill of the packages it depends on, all installed beside them."""
     provenance = yaml.safe_load((PACKAGE / "provenance.yml").read_text())
     policy = yaml.safe_load((PACKAGE / "upstream.yml").read_text())
     overlays = {Path(item["destination"]).name for item in policy["owned_overlays"]}
-    return set(provenance["included_skills"]) | set(policy["owned_skills"]) | overlays
+    pulled = {path.parent.name for dep in _dependencies() for path in dep.glob("skills/*/SKILL.md")}
+    return set(provenance["included_skills"]) | set(policy["owned_skills"]) | overlays | pulled
 
 
 def _file_manifest(root: Path) -> dict[str, str]:
@@ -147,8 +195,8 @@ def _write_manifest(path: Path, dependency: dict[str, str]) -> None:
 
 def test_local_package_packs_and_installs_for_claude_and_codex(tmp_path: Path) -> None:
     env = _isolated_env(tmp_path)
-    package_copy = tmp_path / "engineering"
-    shutil.copytree(PACKAGE, package_copy, ignore=_no_bytecode)
+    package_copy = _copy_package(tmp_path / "source")
+    _publish(tmp_path, env, tmp_path / "source")
 
     pack_dir = tmp_path / "packed"
     _run(["apm", "pack", "--output", str(pack_dir)], cwd=package_copy, env=env)
@@ -157,8 +205,10 @@ def test_local_package_packs_and_installs_for_claude_and_codex(tmp_path: Path) -
     bundle = packed_manifests[0].parent
     assert bundle.resolve().is_relative_to(pack_dir.resolve())
     assert _file_manifest(bundle / "skills") == _file_manifest(package_copy / "skills")
+    # the bundle holds engineering's own skills; an install pulls in its dependencies' beside them
     assert {path.parent.name for path in (bundle / "skills").glob("*/SKILL.md")} == (
         _expected_skills()
+        - {p.parent.name for d in _dependencies() for p in d.glob("skills/*/SKILL.md")}
     )
 
     consumer = tmp_path / "local-consumer"
@@ -178,31 +228,10 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
         source / "apm.yml",
         {"git": "kzarzycki/dotagents", "path": "toolkits/agents"},
     )
-    shutil.copytree(
-        PACKAGE,
-        source / "engineering",
-        ignore=_no_bytecode,
-    )
-    _run(["git", "init", "-q"], cwd=source, env=env)
-    _run(["git", "add", "."], cwd=source, env=env)
-    _run(["git", "commit", "-q", "-m", "fixture"], cwd=source, env=env)
+    _copy_package(source)
+    _publish(tmp_path, env, source)
     version = yaml.safe_load((PACKAGE / "apm.yml").read_text())["version"]
     tag = f"engineering-v{version}"
-    _run(["git", "tag", tag], cwd=source, env=env)
-
-    origin = tmp_path / "agent-skills.git"
-    _run(["git", "clone", "-q", "--bare", str(source), str(origin)], cwd=tmp_path, env=env)
-    _run(
-        [
-            "git",
-            "config",
-            "--global",
-            f"url.{origin.as_uri()}.insteadOf",
-            "https://github.com/kzarzycki/agent-skills.git",
-        ],
-        cwd=tmp_path,
-        env=env,
-    )
 
     consumer = tmp_path / "git-consumer"
     shutil.copytree(PACKAGE / "tests" / "consumer", consumer)
@@ -219,13 +248,13 @@ def test_virtual_subdirectory_release_installs_and_replays_frozen(tmp_path: Path
     # A script run, or an agent importing a sibling module, writes no bytecode into the installed skills (#428).
     scripts = consumer / ".agents" / "skills"
     _run(
-        [sys.executable, "-c", "import approvals, board, labels, omnigent_agent"],
+        [sys.executable, "-c", "import approvals, board, labels, loop, omnigent_agent"],
         cwd=consumer,
         env={
             **env,
             "PYTHONPATH": os.pathsep.join(
                 str(scripts / name / "scripts")
-                for name in ("engineering-loop", "orchestrating-agents")
+                for name in ("gatekeeper", "github-tracker", "engineering-loop", "omnigent-agents")
             ),
         },
     )

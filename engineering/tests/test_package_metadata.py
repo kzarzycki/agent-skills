@@ -19,9 +19,15 @@ def test_apm_and_claude_metadata_publish_the_same_independent_package() -> None:
     assert apm_manifest["name"] == "engineering"
     assert isinstance(apm_manifest["version"], str)
     assert apm_manifest["targets"] == ["claude", "codex"]
-    assert apm_manifest["dependencies"] == {"apm": [], "mcp": []}
+    # for one release line engineering pulls in the packages split out of it, so a project pinned to it keeps working
+    pulled = ["gatekeeper", "loop", "github", "chief-of-staff", "omnigent"]
+    assert apm_manifest["dependencies"] == {
+        "apm": [{"git": f"kzarzycki/agent-skills/{name}", "ref": "^0.1.0"} for name in pulled],
+        "mcp": [],
+    }
     assert plugin_manifest["name"] == "engineering"
     assert plugin_manifest["version"] == apm_manifest["version"]
+    assert plugin_manifest["dependencies"] == pulled
 
 
 def test_claude_marketplace_exposes_only_the_owned_engineering_package() -> None:

@@ -12,17 +12,19 @@ a pin in the project's instructions (under the engineering loop, loop.md's line
 `Orchestration backend: <name>`); the same line in the developer's personal instructions;
 the session you run in, read from its environment (`OMNIGENT=1` is omnigent,
 `HERDR_ENV=1` is herdr); else native. Then read that backend's file:
-[backends/native.md](backends/native.md), [backends/omnigent.md](backends/omnigent.md) or
-[backends/herdr-link.md](backends/herdr-link.md). Only that line names a backend: an
+[backends/native.md](backends/native.md), the `omnigent-agents` skill (in the `omnigent`
+package) or [backends/herdr-link.md](backends/herdr-link.md). Only that line names a backend: an
 instruction about which CLI or model to use is not one, and never turns a child into a
-separate process outside the backend, since nothing then lists, watches or closes it.
+separate process outside the backend, since nothing then lists, watches or closes it. This skill's
+`scripts/omnigent_agent.py`, the Omnigent driver's former path, runs the `omnigent-agents`
+skill's for one release line, after a deprecation line on stderr: call that one.
 
 Each file gives the backend's operations: **start** a child with its brief, **message**
 it, **wait** for its report, **watch** children nothing waits on, **list** them and
 **close** them; Omnigent's also **approves** a child's pending approval prompt
 (`approve`), on whatever authority the project's instructions give, and **broadcasts** one
-message to many sessions at once (`broadcast`). A `scripts/` path is relative to this skill's folder; run it with
-`python3` (standard library only).
+message to many sessions at once (`broadcast`). A `scripts/` path in a backend's file is relative to the skill
+that holds that file; run it with `python3` (standard library only).
 
 ## Rules
 

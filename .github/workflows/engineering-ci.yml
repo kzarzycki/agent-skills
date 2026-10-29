@@ -15,6 +15,11 @@ on:
       - apm.yml
       - apm.lock.yaml
       - engineering/**
+      - gatekeeper/**
+      - loop/**
+      - github/**
+      - chief-of-staff/**
+      - omnigent/**
       - content/**
       - experimental/**
       - research/**

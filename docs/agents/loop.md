@@ -1,7 +1,8 @@
 # Loop facts
 
-The engineering loop's values for this repo. `engineering/skills/engineering-loop/SKILL.md`
-(Approvals and proof) defines what each setting approves and what still waits for the owner.
+The engineering loop's values for this repo. `gatekeeper/skills/gatekeeper/policy.md` defines
+what each setting approves, and `loop/skills/engineering-loop/SKILL.md` (Approvals and proof)
+what still waits for the owner.
 
 Orchestration backend: omnigent
 

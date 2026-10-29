@@ -42,9 +42,10 @@ skills:
   chief-of-staff: {layer: 4}
   overnight-run: {layer: 4}   # the chief of staff's procedure for an unattended run
   engineering-loop: {layer: 3}
-  # layer 2 has no skill yet: the gatekeeper is engineering-loop's gatekeeper.py until #615
+  gatekeeper: {layer: 2}
   ask-matt: {layer: 1}
   audit-third-party-software: {layer: 1}
+  browsing: {layer: 1}
   claude-handoff: {layer: 1}
   code-review: {layer: 1}
   codebase-design: {layer: 1}
@@ -83,22 +84,14 @@ skills:
   find-conversation: {layer: 1}
   playwright: {layer: 1}
   github-project-board-setup: {layer: 0, implements: [engineering-loop]}   # tracker and forge ports
+  github-tracker: {layer: 0, implements: [engineering-loop, gatekeeper]}   # tracker, forge and evidence ports
+  omnigent-agents: {layer: 0, implements: [orchestrating-agents]}   # runner port
   operating-omnigent: {layer: 0, implements: [orchestrating-agents]}   # runner port
-  omnigent-telemetry: {layer: 0, implements: [orchestrating-agents]}   # runner port
+  omnigent-telemetry: {layer: 0}
   update-delta-audit: {layer: tooling}
 
 exceptions:
-  ask-matt -> engineering-loop: {reason: "names github.md, the GitHub tracker's realization file", removed_by: "#615"}
-  code-review -> engineering-loop: {reason: "names github.md, the GitHub tracker's realization file", removed_by: "#615"}
-  implement-spec -> engineering-loop: {reason: "names github.md, the GitHub tracker's realization file", removed_by: "#615"}
-  to-spec -> engineering-loop: {reason: "names github.md, the GitHub tracker's realization file", removed_by: "#615"}
-  to-tickets -> engineering-loop: {reason: "names github.md, the GitHub tracker's realization file", removed_by: "#615"}
-  wayfinder -> engineering-loop: {reason: "names github.md, the GitHub tracker's realization file", removed_by: "#615"}
-  triage -> engineering-loop: {reason: "names issues.md's label mapping", removed_by: "#615"}
-  orchestrating-agents -> engineering-loop: {reason: "the Omnigent backend starts the loop's roles and reads its deny list and models", removed_by: "#615"}
-  operating-omnigent -> engineering-loop: {reason: "names the loop's launcher, which moves to omnigent-agents", removed_by: "#615"}
-  omnigent-telemetry -> engineering-loop: {reason: "its verifier-pass warning cites the loop's cap", removed_by: "#615"}
-  omnigent-telemetry -> retro: {reason: "says the retro narrative is the retro skill's", removed_by: "#615"}
+  omnigent-agents -> engineering-loop: {reason: "the runner starts the loop's roles and reads its deny list and gate-slot directory", removed_by: "#631"}
 ```
 
 ## Package map
@@ -106,18 +99,30 @@ exceptions:
 | Package | Layer | Holds |
 |---|---|---|
 | `chief-of-staff` | 4 | `chief-of-staff`, the cos-console mod |
-| `loop` | 3 | `engineering-loop` with its lead, worker and verifier roles (the skill keeps its name, so every `AGENTS.md` line and brief naming it keeps working) |
-| `gatekeeper` | 2 | the gatekeeper CLI, today engineering-loop's `gatekeeper.py` |
-| `engineering` | 1 | every craft skill above at layer 1 under `engineering/`, `orchestrating-agents` with its native backend, a new `browsing` skill |
+| `loop` | 3 | `engineering-loop` with its lead, worker and verifier roles and `loop.py` (`brief`, `release`); the skill keeps its name, so every `AGENTS.md` line and brief naming it keeps working |
+| `gatekeeper` | 2 | `gatekeeper`: the gatekeeper CLI and its GitHub adapter |
+| `engineering` | 1 | every craft skill above at layer 1 under `engineering/`, `orchestrating-agents` with its native backend, `browsing` |
 | `omnigent` | 0 | `omnigent-agents` (the runner backend and its driver), `operating-omnigent`, `omnigent-telemetry` |
-| `github` | 0 | `github.md`, `board.py`, `labels.py`, `github-project-board-setup` |
+| `github` | 0 | `github-tracker` (`github.md`, `board.py`, `labels.py`); `github-project-board-setup` joins it from `utilities` in #616 |
 | `vendoring` | tooling | the capability-pack tool, `ROUTINE.md`, `update-delta-audit` |
 | `research`, `utilities`, `content`, `experimental` | 1 (`overnight-run` 4) | unchanged |
 
-The `playwright` plugin is removed. A package declares the packages it uses, and
-installing it installs them (Claude Code `plugin.json` `dependencies`, APM `dependencies`
-in `apm.yml`). For one release line `engineering` keeps pulling the others in, so a
-project pinned to it keeps working.
+The `playwright` plugin is removed in #616. A package declares the packages it uses, and
+installing it installs them:
+
+- Claude Code: `plugin.json` `dependencies` lists each by plugin name, which resolves in
+  this marketplace.
+- APM: `apm.yml` lists each as `git: kzarzycki/agent-skills/<package>` with a range of its
+  own tags (`ref: ^0.1.0` matches `<package>-v0.1.x`). A `path: ../<package>` entry would
+  read the sibling folder, but `apm pack` refuses a package with one, and a consumer's
+  `apm install --frozen` resolves it with the parent's range, which fails once the packages
+  version apart. The git form needs each package's tag on the forge before a release that
+  depends on it.
+
+For one release line `engineering` keeps pulling the others in, so a project pinned to it
+keeps working. A script that needs another package's skill finds it where the host
+installed it (a sibling skill folder, a sibling plugin, or Claude Code's plugin cache) and
+exits naming the skill to install when it is missing.
 
 ## Gatekeeper CLI
 
@@ -139,9 +144,9 @@ Exit codes, for every verb:
 - `1`: refused, with one line per missing proof.
 - `3`: waiting (pending checks, a forge state not computed yet): run it again.
 
-Today's `brief` (a verifier pass's brief) and `release` (removes the assignee the loop
-added) are flow operations, not gate decisions, so they leave the gatekeeper for the loop's
-own script in the package split (#615); until then they stay where they are.
+`brief` (a verifier pass's brief) and `release` (removes the assignee the loop added) are
+flow operations, not gate decisions, so they are the loop's own script, `loop.py`, which
+reads the PR and the issue through the gatekeeper's ports.
 
 ## Verifier report
 

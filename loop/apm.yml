@@ -1,0 +1,16 @@
+name: loop
+version: 0.1.0
+description: "The engineering loop: a lead, workers and an independent verifier take a change from intent through a spec, build, gates and proof to a landed PR."
+author: Krzysztof Zarzycki
+targets:
+- claude
+- codex
+dependencies:
+  apm:
+  - git: kzarzycki/agent-skills/gatekeeper
+    ref: ^0.1.0
+  - git: kzarzycki/agent-skills/github
+    ref: ^0.1.0
+  mcp: []
+includes: auto
+scripts: {}

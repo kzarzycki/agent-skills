@@ -12,7 +12,7 @@ Review the diff from a fixed point to the current work on two axes, each in its 
 
 A change can pass one and fail the other (the right thing built against convention, or the wrong thing built well), so the axes stay separate from review to report.
 
-`docs/agents/issue-tracker.md` names the tracker's realization file (for GitHub, the `engineering-loop` skill's `github.md`). If it is missing, tell the user to create it: the project template writes one.
+`docs/agents/issue-tracker.md` names the tracker's realization file (for GitHub, the `github-tracker` skill's `github.md`). If it is missing, tell the user to create it: the project template writes one.
 
 ## 1. Pin the diff
 

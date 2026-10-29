@@ -15,6 +15,7 @@ from engineering.tests.e2e.conformance import (
     install_fixture,
     local_reference_failures,
     pack_catalog,
+    source_manifest,
 )
 from engineering.tests.e2e.live_contract import run_agent
 
@@ -28,7 +29,7 @@ WAYFINDER_SUPPORT = {
 
 def test_apm_targets_receive_complete_canonical_inventory(tmp_path: Path) -> None:
     fixture = install_fixture(tmp_path)
-    source = file_manifest(PACKAGE / "skills")
+    source = source_manifest()
 
     assert_catalog_matches(source, fixture.catalog(CLAUDE))
     assert_catalog_matches(source, fixture.catalog(CODEX))
@@ -44,7 +45,7 @@ def test_complete_inventory_rejects_symmetric_target_mutation(
     tmp_path: Path,
 ) -> None:
     fixture = install_fixture(tmp_path)
-    source = file_manifest(PACKAGE / "skills")
+    source = source_manifest()
     relative = Path("prototype/agents/openai.yaml")
     for adapter in (CLAUDE, CODEX):
         target = fixture.catalog(adapter).root / relative
@@ -68,7 +69,7 @@ def test_wayfinder_is_byte_identical_across_canonical_and_targets(tmp_path: Path
 
 def test_deployed_relative_references_and_packaged_scripts_resolve(tmp_path: Path) -> None:
     fixture = install_fixture(tmp_path)
-    source = file_manifest(PACKAGE / "skills")
+    source = source_manifest()
 
     assert local_reference_failures(fixture.catalog(CLAUDE).root) == []
     assert local_reference_failures(fixture.catalog(CODEX).root) == []

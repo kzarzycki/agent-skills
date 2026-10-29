@@ -7,9 +7,11 @@ future coding-agent adapters.
 
 ## Source ownership
 
-- Owned skills, edited in place: `skills/audit-third-party-software/`,
-  `skills/chief-of-staff/`, `skills/context-extractor/`, `skills/demo/`, `skills/engineering-loop/`,
-  `skills/omnigent-telemetry/`, `skills/operating-omnigent/`, `skills/orchestrating-agents/`.
+- Owned skills, edited in place: `skills/audit-third-party-software/`, `skills/browsing/`,
+  `skills/context-extractor/`, `skills/demo/`, `skills/orchestrating-agents/`. The loop, the
+  gatekeeper, the GitHub tracker, the chief of staff and the Omnigent skills are their own
+  packages (`../loop`, `../gatekeeper`, `../github`, `../chief-of-staff`, `../omnigent`), which
+  this package depends on for one release line.
 - Owned overlays, canonical under `overlays/skills/<name>/` and reproduced into
   `skills/<name>/`: every tuned imported skill (listed under `owned_overlays` in
   `upstream.yml`).
@@ -32,14 +34,11 @@ A tuned skill carries only what a strong current model would not do unprompted.
   capitals), step-by-step choreography for things the model sequences well,
   verification scaffolding, repetition.
 - Delegation (subagents, parallel work) is the model's judgment, not a
-  requirement, except in `engineering-loop`, whose role split is its method.
+  requirement.
   A skill that does prescribe a subagent's brief hands it the skill's path and
   the sections to follow, since a paraphrase drops the formats and gates.
 - Stay harness-neutral (no tool names of one agent) and tracker-neutral
   (`docs/agents/issue-tracker.md` names the tracker's realization file).
-- `engineering-loop` names no project: a project's facts live in its
-  `docs/agents/` files, and `tests/test_engineering_loop.py` fails on a
-  project term.
 - Give every "never" or "must" its reason in the same sentence.
 
 ## Upstream intake
