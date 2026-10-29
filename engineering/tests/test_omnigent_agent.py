@@ -1222,7 +1222,7 @@ def test_create_files_the_session_under_the_project(
 
 
 def test_create_files_the_session_under_its_caller_s_project(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """A scheduled run is filed in its task's project, whose name its repo's need not match."""
     bodies: list[dict] = []
@@ -1250,7 +1250,8 @@ def test_create_files_the_session_under_its_caller_s_project(
     monkeypatch.setattr(omnigent_agent, "repo_name", lambda: "eng-repo")  # matches no project
     monkeypatch.delenv("OMNIGENT_PROJECT", raising=False)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
-    omnigent_agent.Omnigent().create("claude", "t", top_level=True)
+    # a workspace outside a checkout, so no project line of this repo's applies
+    omnigent_agent.Omnigent().create("claude", "t", top_level=True, workspace=str(tmp_path))
     assert bodies[-1]["project_id"] == "p1"
     assert capsys.readouterr().err == ""
 
@@ -1401,6 +1402,83 @@ def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_na
         "--mcp-config",
         json.dumps({"mcpServers": {"docs": docs, "mail": {"url": "u"}, "tracker": {"url": "t"}}}),
     ]
+
+
+def test_create_starts_a_claude_lead_with_the_project_s_autocompact_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {
+            "/v1/agents": agents,
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        }[path]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.setattr(omnigent_agent, "parent_id", lambda: "")
+    monkeypatch.setattr(omnigent_agent.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", raising=False)
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    ws = str(repo)
+    og = omnigent_agent.Omnigent()
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert "terminal_launch_args" not in bodies[-1]  # no line: the lead starts as before
+    (repo / "docs" / "agents").mkdir(parents=True)
+    loop = repo / "docs" / "agents" / "loop.md"
+    loop.write_text("# Loop\n\nLead autocompact: 150k\n")
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert bodies[-1]["terminal_launch_args"] == ["--autocompact", "150k"]
+    assert "outranks" not in capsys.readouterr().err
+    og.create("claude", "t", workspace=ws, top_level=True, permission_mode="plan")
+    assert bodies[-1]["terminal_launch_args"] == [
+        "--permission-mode",
+        "plan",
+        "--autocompact",
+        "150k",
+    ]
+    og.create("claude", "t", workspace=ws)  # a child keeps the user's window
+    assert "terminal_launch_args" not in bodies[-1]
+    og.create("codex", "t", workspace=ws, top_level=True)  # a claude flag, not codex's
+    assert "terminal_launch_args" not in bodies[-1]
+    (tmp_path / "home" / ".claude").mkdir(parents=True)
+    (tmp_path / "home" / ".claude" / "settings.json").write_text(
+        json.dumps({"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "330000"}})
+    )
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert bodies[-1]["terminal_launch_args"] == ["--autocompact", "150k"]
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=330000 outranks" in capsys.readouterr().err
+    (tmp_path / "home" / ".claude" / "settings.json").write_text("{}")
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "250000")  # from the environment alone
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000 outranks" in capsys.readouterr().err
+    for size, ok in (
+        ("150000", True),
+        ("200", True),
+        ("1M", True),
+        ("0.15M", True),
+        ("150.5k", True),
+        ("99k", False),
+        ("1.1M", False),
+        ("1001k", False),
+        ("lots", False),
+    ):
+        loop.write_text(f"Lead autocompact: {size}\n")
+        if ok:
+            og.create("claude", "t", workspace=ws, top_level=True)
+            assert bodies[-1]["terminal_launch_args"] == ["--autocompact", size]
+        else:
+            with pytest.raises(omnigent_agent.Fail, match="not a size from 100k to 1M"):
+                og.create("claude", "t", workspace=ws, top_level=True)
 
 
 @pytest.mark.parametrize(
