@@ -257,6 +257,11 @@ it quoted.
   as inferred.
 - A question offers a few options, one line each, with your recommendation first. Under a
   delegating standing decision it also says what you did (Authority).
+- Ask as text at the end of your turn, numbered when there are several, never through a tool
+  that waits for the answer (Claude Code's AskUserQuestion, Codex's requestUserInput): it holds
+  your turn open, and Omnigent delivers new input only when a turn ends, so every relay,
+  supervisor event and idle compaction waits behind the question until the owner replies,
+  often hours later. Their reply arrives as your next message.
 
 ## Handover
 
