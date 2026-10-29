@@ -1377,7 +1377,11 @@ def test_create_starts_a_claude_worker_or_verifier_lean_unless_the_project_names
     og.create("claude", "t", workspace=ws, role="/x/verifier.md")
     assert "terminal_launch_args" not in bodies[-1]  # the role keeps every tool and server
     og.create("claude", "t", workspace=ws, role="/x/worker.md")
-    assert bodies[-1]["terminal_launch_args"] == ["--strict-mcp-config", "--tools", "Bash,Read,mcp__x"]
+    assert bodies[-1]["terminal_launch_args"] == [
+        "--strict-mcp-config",
+        "--tools",
+        "Bash,Read,mcp__x",
+    ]
 
 
 @pytest.mark.parametrize(
