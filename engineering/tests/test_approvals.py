@@ -3032,6 +3032,8 @@ flaky = runs.with_suffix(".flaky")
 if pathlib.Path("flaky.txt").exists() and len(flaky.read_text() if flaky.exists() else "") < 2:
     flaky.open("a").write("x")
     sys.exit(1)
+if pathlib.Path("dirty.txt").exists():
+    pathlib.Path("app.py").write_text("changed\\n")
 sys.exit(1 if pathlib.Path("red.txt").exists() else 0)
 """
 
@@ -3044,7 +3046,7 @@ def lands(
     against a fake GitHub. `open(number, files)` pushes a PR off main writing those files (its branch and
     `refs/pull/<n>/head`), with one approved issue and a satisfied verdict on its head; `gh pr merge` squashes the head
     onto origin's main as GitHub does. The gate fails on a tree holding `red.txt`, and twice on one holding
-    `flaky.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
+    `flaky.txt`, and changes `app.py` on one holding `dirty.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     committed(work)
@@ -3072,6 +3074,7 @@ def lands(
     def open_pr(number: int, files: dict[str, str], **fields: Any) -> str:
         git_in(work, "switch", "-q", "--detach", "origin/main")
         for name, text in files.items():
+            (work / name).parent.mkdir(parents=True, exist_ok=True)
             (work / name).write_text(text)
         git_in(work, "add", *files)
         git_in(work, "commit", "-qm", f"PR {number}")
@@ -3170,11 +3173,12 @@ def test_land_gates_three_landable_prs_once_and_the_base_ends_at_the_gated_tree(
     assert code == 0, lines
     assert (lands["runs"](), lands["merged"]()) == (1, ["7", "8", "9"])
     tree, command = lands["main"]("^{tree}"), shlex.join(approvals.LOCAL_CI)
-    for number in (7, 8, 9):
+    # each PR's tree is the base with it and those before it merged; the gate ran on the batch's
+    for number, back in ((7, "~2"), (8, "~1"), (9, "")):
         assert landed_note(lands, number) == {
             "Base": lands["main"](),
-            "Tree": tree,
-            "Gate": f"{command}, run",
+            "Tree": lands["main"](f"{back}^{{tree}}"),
+            "Gate": f"{command}, run on {tree}",
             "Batch": "#7, #8, #9",
         }
     assert hub[lands["main"]()][0]["description"].startswith(f"Tree {tree} on ")
@@ -3190,7 +3194,7 @@ def test_an_up_to_date_pr_reuses_the_pass_on_its_head_and_runs_no_gate(
     hub[head] = [status("gate", approvals.described(approvals.tree_of(head), head, command))]
     assert lands["land"]("7")[0] == 0
     assert (lands["runs"](), lands["merged"]()) == (0, ["7"])
-    assert landed_note(lands, 7)["Gate"] == f"{command}, reused"
+    assert landed_note(lands, 7)["Gate"] == f"{command}, reused on {approvals.tree_of(head)}"
     assert lands["main"]("^{tree}") == approvals.tree_of(head)
 
 
@@ -3331,9 +3335,9 @@ def test_land_marks_a_named_draft_ready_and_waits_for_the_required_checks_it_sta
         approvals.WAITING,
         ["PR #7 is ready now", "PR #7: CI starts on ready, so its required checks are pending"],
     )
-    # ready, `check` green and `loop:approvals` not waited for: it lands, its required checks standing in for a gate run
+    # ready, `check` green and `loop:approvals` not waited for: it lands, gated, since required checks never stand in
     assert lands["land"]("7")[0] == 0
-    assert (lands["runs"](), lands["merged"]()) == (0, ["7"])
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7"])
 
 
 def test_the_lock_is_released_when_land_fails(
@@ -3349,6 +3353,177 @@ def test_the_lock_is_released_when_land_fails(
         lands["land"]("7")
     assert lands["lock"]() == ""
     assert git_in(lands["work"], "worktree", "list").count("\n") == 1
+
+
+def test_a_pr_missing_a_proof_is_never_readied_nor_merged(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"}, reviews=())
+    lands["pulls"][7]["isDraft"] = True
+    assert lands["land"]("7")[0] == 1
+    assert (lands["calls"], lands["runs"]()) == ([], 0)
+
+
+def test_a_high_risk_pr_without_the_owners_go_waits_and_never_merges(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    lands["open"](7, {".github/ci.yml": "on: push\n"})
+    lands["pulls"][7]["files"] = {"nodes": [{"path": ".github/ci.yml"}]}
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING
+    assert any(line.startswith("PR #7 waits for the owner's go on its head") for line in lines)
+    assert lands["merged"]() == ["8"]
+
+
+def test_a_pr_whose_required_check_is_red_is_no_candidate(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
+    lands["open"](7, {"7.txt": "7\n"}, checks=(("check", "FAILURE"),))
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]("7")[0] == 1
+    assert lands["merged"]() == ["8"]
+
+
+def test_two_lands_in_the_same_second_cannot_both_take_the_lock(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # one identity, one base and one commit second: the lock commit's nonce alone tells the two apart
+    now = f"@{int(datetime.now(UTC).timestamp())} +0000"
+    monkeypatch.setenv("GIT_COMMITTER_DATE", now)
+    monkeypatch.setenv("GIT_AUTHOR_DATE", now)
+    first = approvals.locked("main")
+    assert first is not None
+    assert approvals.locked("main") is None
+    assert lands["lock"]() == first
+
+
+def test_a_lock_another_land_took_meanwhile_stays_theirs(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    theirs: list[str] = []
+
+    def broken_and_taken(*_args: Any) -> None:
+        git_in(lands["origin"], "update-ref", "-d", approvals.LOCK)
+        theirs.append(lock_commit(lands, 0))
+
+    monkeypatch.setattr(approvals, "merges", broken_and_taken)
+    _, lines = lands["land"]("7")
+    assert lands["lock"]() == theirs[0]
+    assert lines[-1].startswith(f"the landing lock {approvals.LOCK} was not released: ")
+
+
+def test_breaking_a_stale_lock_leaves_one_another_land_took_first(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lock_commit(lands, 3 * 60 * 60)
+    fresh: list[str] = []
+    real = approvals.git
+
+    def git(*args: str) -> str:
+        out = real(*args)
+        if (
+            args[:1] == ("ls-remote",) and not fresh
+        ):  # another land breaks the stale lock first, and takes it
+            git_in(lands["origin"], "update-ref", "-d", approvals.LOCK)
+            fresh.append(lock_commit(lands, 60))
+        return out
+
+    monkeypatch.setattr(approvals, "git", git)
+    code, lines = lands["land"]("7")
+    assert (code, lands["lock"](), lands["merged"]()) == (approvals.WAITING, fresh[0], [])
+    assert lines[-1].startswith(
+        f"another land holds the landing lock {approvals.LOCK}, taken 1 minutes ago ("
+    )
+
+
+def refusing(monkeypatch: pytest.MonkeyPatch, refuse: Callable[[tuple[str, ...]], bool]) -> None:
+    """GitHub refuses `gh pr merge` where `refuse(args)` says so."""
+    fake = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "merge") and refuse(args):
+            raise subprocess.CalledProcessError(1, args, stderr="Required status check is expected")
+        return fake(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+
+
+def test_a_merge_github_refuses_stops_the_rest_and_the_partial_base_is_gated(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for number in (7, 8, 9):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    refusing(monkeypatch, lambda args: args[2] == "8")
+    code, lines = lands["land"]()
+    assert (code, lands["merged"]()) == (1, ["7"])
+    tip, tree = lands["main"](), lands["main"]("^{tree}")
+    assert (
+        f"main holds #7 of the batch, whose tree {tree} was never gated, so {tip} is gated now"
+        in lines
+    )
+    # the batch, then main with #7 alone
+    assert lands["runs"]() == 2
+    assert landed_note(lands, 7)["Tree"] == tree
+    assert hub[tip][0]["description"].startswith(f"Tree {tree} on ")
+
+
+def test_a_base_that_moved_during_the_merges_is_gated_and_red_gets_no_gate_status(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    work, moved = lands["work"], []
+
+    def merged_by_hand(_args: tuple[str, ...]) -> bool:
+        if not moved:
+            git_in(work, "switch", "-q", "--detach", "origin/main")
+            (work / "red.txt").write_text("red\n")
+            git_in(work, "add", "red.txt")
+            git_in(work, "commit", "-qm", "merged by hand")
+            moved.append(git_in(work, "push", "-q", "origin", "HEAD:main"))
+        return False
+
+    refusing(monkeypatch, merged_by_hand)
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"](), lands["runs"]()) == (0, ["7"], 2)
+    assert any("someone merged meanwhile" in line for line in lines)
+    assert [s for s in hub.get(lands["main"](), []) if s["context"] == "gate"] == []
+
+
+def test_a_gate_that_changes_the_tree_is_red(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"dirty.txt": "\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]()[0] == 1
+    assert lands["merged"]() == ["8"]
+    [body] = [
+        body for n, body in lands["comments"] if n == 7 and body.startswith(approvals.EVICTED)
+    ]
+    assert "the gate changed the tree, so it did not run on the batch as merged:" in body
+    assert "\nM app.py\n" in body
+
+
+def test_a_batch_tree_this_clone_passed_before_runs_no_gate(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    refused: list[str] = []
+    refusing(monkeypatch, lambda args: not refused and not refused.append(args[2]))
+    assert lands["land"]()[0] == 1
+    assert (lands["runs"](), lands["merged"](), hub) == (1, [], {})
+    assert lands["land"]()[0] == 0
+    # neither head holds the batch's tree, and nothing was published: this clone's record is the pass
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7", "8"])
+
+
+def test_land_on_a_merged_pr_says_so_and_on_a_closed_one_refuses(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["state"] = "MERGED"
+    assert lands["land"]("7") == (0, ["PR #7 is merged"])
+    lands["pulls"][7]["state"] = "CLOSED"
+    assert lands["land"]("7") == (1, ["PR #7 is closed: nothing to land"])
+    assert (lands["lock"](), lands["runs"]()) == ("", 0)
 
 
 def test_the_old_queue_commands_and_settings_work_and_say_they_are_deprecated(
@@ -3609,6 +3784,40 @@ OUTSIDE = (
     "PR #7 is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
     " revert or bot exemption): its author merges it"
 )
+
+
+def test_a_green_signed_batch_gives_each_pr_a_commit_of_its_own_change(
+    lands: dict[str, Any], tmp_path: Path
+) -> None:
+    work = lands["work"]
+    git_in(work, "remote", "set-url", "origin", REPO)
+    git_in(work, "config", f"url.{lands['origin'].as_uri()}.insteadOf", REPO)
+    key = tmp_path / "key"
+    sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "lander", "-f", str(key), cwd=tmp_path)
+    git_in(work, "config", "gpg.format", "ssh")
+    git_in(work, "config", "user.signingkey", str(key))
+    (work / "signers").write_text(f"loop@example.com {key.with_suffix('.pub').read_text()}")
+    loop = work / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", SIGNED_LAND))
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]()[0] == 0
+    # one gate on the batch, and each commit holds its own PR's change, so reverting one reverts only it
+    assert lands["runs"]() == 1
+    assert git_in(work, "log", "-2", "--name-only", "--format=%s", lands["main"]()).split() == [
+        "PR", "8", "(#8)", "8.txt", "PR", "7", "(#7)", "7.txt",
+    ]  # fmt: skip
+
+
+def test_required_checks_never_stand_in_for_the_gate(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # green required CI on an up-to-date head: the gate still runs, since its pass is published as the gate command's
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]("7")[0] == 0
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7"])
+    assert landed_note(lands, 7)["Gate"].endswith(", run on " + lands["main"]("^{tree}"))
 
 
 def gate(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, list[str]]:

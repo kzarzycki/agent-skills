@@ -191,18 +191,19 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
 - `.github/workflows/`: CI, which runs every `check:` part, and the `loop:approvals`
   workflow, which turns `mise run loop:approvals merge`'s exit into the `loop:approvals`
   commit status on the head (0 success, 1 failure, 3 pending, since a job's own result can't
-  hold a merge as pending), runs again when CI completes, posts success on a merge-queue
-  commit, and removes `approved:merge` on a push;
+  hold a merge as pending), runs again when CI completes, and removes `approved:merge` on a
+  push;
 - `.github/check-paths.yml`: each part's path filter;
 - the test runner's retry of a failed test, once (Rules for every role, Flaky tests);
-- `.github/rulesets/main.json`: a ruleset named `loop-merge-queue` on main, with a squash
-  merge queue, requiring exactly two checks, `check` and `loop:approvals`. A repo that can't
-  have a merge queue (one a user owns) gets the same ruleset with squash merges and no
-  queue, and `land` merges its PRs directly, once it has gated them merged on top of main
-  itself, so the ruleset needs no up-to-date branch. A private repo on GitHub's
-  free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
+- `.github/rulesets/main.json`: a ruleset on main allowing squash merges only, with no merge
+  queue, requiring exactly two checks, `check` and `loop:approvals`. `land` merges its PRs
+  directly once it has gated them merged on top of main itself, so the ruleset needs no
+  up-to-date branch, and must not require a merge queue: GitHub would only queue each PR, to
+  merge later on a tree `land` never gated, so `land` stops at a PR GitHub leaves unmerged.
+  Where the template still renders a merge queue, drop it before applying. A private repo on
+  GitHub's free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
   applied: `land` reads no required checks there, merges directly once its proofs hold, and
-  says GitHub enforces nothing, since its proofs are the only gate. `mise run
+  says GitHub enforces no rules there, since its proofs are the only gate. `mise run
   setup:github` applies it; GitHub layers it on top of the repo's own rulesets, which it
   leaves untouched, and reverting deletes only it. `setup:github` also syncs the repo's
   labels with `scripts/labels.py` (github.md, Labels).
@@ -376,14 +377,15 @@ is missing. An agent merges only with `uv run <this skill's folder>/scripts/appr
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
-- It takes a lock any host sees, the ref `refs/loop/landing` on `origin`, so two hosts never
-  land at once; a lock older than 2 hours was left by a land that died and is broken.
+- It takes a lock any host sees, the ref `refs/loop/landing` on `origin`, so two lands never
+  run at once; a lock older than 2 hours was left by a land that died and is broken.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
 - It merges their heads onto the base in a temporary worktree, oldest first, skipping a PR
-  that conflicts with a comment saying so, and gates the result's tree once, or reuses a pass
-  on that tree: a PR already up to date with the base runs no gate.
+  that conflicts with a comment saying so, and gates the result's tree once, or reuses the
+  gate's pass on that tree, never GitHub's required checks in its place: a PR already up to
+  date with the base, with a pass on its head, runs no gate.
 - Green: it merges each PR through GitHub in the same order, pinned to its head, checks the
   base ended at the gated tree, publishes the pass on the new tip, and comments `Landed` on each.
 - Red: it lands one PR at a time on the last green commit. A PR red alone twice is evicted

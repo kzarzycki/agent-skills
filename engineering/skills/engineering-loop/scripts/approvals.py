@@ -82,7 +82,8 @@ prints the same line and exits 1, so the loop never merges it. Risk rules and `r
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
 repository's default branch, as one batch:
-1. It takes the landing lock: it pushes a commit with no parent (the base's tree, titled `landing lock`) to
+1. It takes the landing lock: it pushes a commit with no parent (the base's tree, titled `landing lock`, with its pid
+and a random value, so two lands in the same second never make the same commit and both push it) to
 `refs/loop/landing` on `origin`, which refuses a second such push while the ref is there, as no fast-forward, so two
 hosts never land at once; a ref outside `refs/heads/` starts no workflow. The lock's commit date is its age. Held by
 another: exit 3, naming its age. One older than 2 hours is stale, left by a land that died: it is deleted and taken. The
@@ -98,16 +99,19 @@ a wait for the owner or a pending required check 3, a red required check 1.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it merges each candidate's head
 (`git merge --no-ff`). A PR that conflicts is skipped, with a comment, once per head, saying it conflicts with the base
 plus the PRs merged before it, so it needs the base merged in.
-4. It gates the result's tree. A pass is reused when this clone's record for that tree holds under today's gate command,
-when a candidate's head has that same tree and a pass (reusable, below: one PR already up to date with the base runs no
-gate), or when the base's required checks, green on every candidate, ran on a head with that tree. Otherwise it runs the
-gate there as `local-ci` does (below), its log under the git common dir, and records the pass by tree.
+4. It gates the result's tree. A pass is reused when the gate command passed on that tree before (reusable, below):
+this clone's record, or a `gate` status on a candidate's head with that same tree, so one PR already up to date with
+the base runs no gate. GitHub's required checks never stand in for it, since the pass is then published as the gate
+command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
+the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`), then fetches and compares the base's tree with the gated tree. Equal: the pass is published as the
-`gate` status on the new tip. Different, as when someone merged by hand meanwhile: it prints both and gates the tip.
-Each PR landed gets one comment, `Landed`, then `Base:` the new tip, `Tree:` the tree gated with it, `Gate:` the command
-and `run` or `reused`, and `Batch:` the PRs landed together. A merge GitHub refuses stops there: that PR and those after
-it wait for the next land.
+--match-head-commit`). A merge GitHub refuses, or leaves unmerged (a base requiring a merge queue only queues it, to
+merge later on a tree no gate saw), stops there: that PR and those after it wait for the next land. Then it fetches
+and compares the base's tree with the gated tree. Equal: the pass is published as the `gate` status on the new tip.
+Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
+which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
+`Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
+and the tree it passed on, and `Batch:` the PRs landed together.
 6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone. A PR red alone is
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
@@ -118,8 +122,8 @@ waits on the lock or on CI, printing each new state once, for up to 2 hours, the
 at once, since only the owner clears it.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
-PR lands as a squash made in this checkout instead: one commit holding the tree gated with it, on the base's tip the
-batch was merged onto (or the squash before it), titled `<PR title> (#<pr>)`, signed with the checkout's SSH key
+PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
+batch was merged onto (or the squash before it), so each commit holds its own PR's change, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key
 (`gpg.format ssh`, `user.signingkey`) and checked with `git verify-commit` against the allowed signers file. It pushes
 that commit to the PR's branch, pinned to the head the gates checked, then fast-forwards the base to it, so GitHub shows
 the PR merged. A base that moved since the batch was merged is refused, since the squash would drop what landed
@@ -2810,7 +2814,14 @@ def locked(base: str) -> str | None:
     fast-forward while another is there, so any host sees it. Its commit date is its age; one older than CEILING is
     stale, deleted and taken. Our commit, or None after saying who holds it since when."""
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-    ours = git("commit-tree", "-m", "landing lock", f"refs/remotes/origin/{base}^{{tree}}").strip()
+    # pid and a random value: two lands in the same second, under one identity, would otherwise build one commit,
+    # and the second push of it would succeed as a no-op
+    ours = git(
+        "commit-tree",
+        "-m",
+        f"landing lock\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
+        f"refs/remotes/origin/{base}^{{tree}}",
+    ).strip()
     for _ in range(2):
         pushed = subprocess.run(
             ["git", "push", "-q", "origin", f"{ours}:{LOCK}"],
@@ -2917,21 +2928,21 @@ def batched(
         else:
             waits[number] = why
     failed: set[int] = set()
-    # each PR to land, the tree gated with it on top, and how it passed
-    landed: list[tuple[dict[str, Any], str, str]] = []
+    # each PR to land, the tree it lands, the tree gated with it, and how that passed
+    landed: list[tuple[dict[str, Any], str, str, str]] = []
     if candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
-            landed = merge_batch(candidates, base, work, required, failed)
+            landed = merge_batch(candidates, base, work, failed)
             if landed:
-                merges(landed, base, tip, work, loop, required, failed)
+                merges(landed, base, tip, work, loop, failed)
     number = named["number"] if named else None
     if number is not None:
         if number in waits:
             return waits[number]
         return (
             (0, False)
-            if any(pull["number"] == number for pull, _, _ in landed) and number not in failed
+            if any(pull["number"] == number for pull, *_ in landed) and number not in failed
             else (1, False)
         )
     if failed:
@@ -2962,41 +2973,44 @@ def batch_tree(base: str) -> Any:
 
 
 def merge_batch(
-    candidates: list[dict[str, Any]], base: str, work: Path, required: set[str], failed: set[int]
-) -> list[tuple[dict[str, Any], str, str]]:
+    candidates: list[dict[str, Any]], base: str, work: Path, failed: set[int]
+) -> list[tuple[dict[str, Any], str, str, str]]:
     """Merge the candidates onto the base in `work` and gate the result; red: one PR at a time on the last green
     commit, a PR red alone gated once more, then evicted, and when the first one is red twice the bare base gated,
-    which red ends the run evicting nobody. Each PR to land, with the tree gated with it and how."""
+    which red ends the run evicting nobody. Each PR to land, with the tree it lands (the base with it and the PRs
+    before it merged), the tree gated with it, and how."""
     tip = run_in(work, "rev-parse", "HEAD")
     merged: list[dict[str, Any]] = []
+    trees: list[str] = []
     for pull in candidates:
         if merged_onto(pull, work, base, [other["number"] for other in merged], failed):
             merged.append(pull)
+            trees.append(run_in(work, "rev-parse", "HEAD^{tree}"))
     if not merged:
         return []
-    tree, how = gate_batch(work, merged, required)
+    tree, how = gate_batch(work, merged)
     if how:
-        return [(pull, tree, how) for pull in merged]
+        return [(pull, own, tree, how) for pull, own in zip(merged, trees, strict=True)]
     numbers = ", ".join(f"#{pull['number']}" for pull in merged)
     print(f"the batch of {numbers} is red: one PR at a time")
     green, landed, base_green = tip, [], False
     for pull in merged:
         reset(work, green)
-        if not merged_onto(pull, work, base, [p["number"] for p, _, _ in landed], failed):
+        if not merged_onto(pull, work, base, [p["number"] for p, *_ in landed], failed):
             continue
-        tree, how = gate_batch(work, [pull], required)
+        tree, how = gate_batch(work, [pull])
         if not how:
             print(
                 f"PR #{pull['number']} is red alone on {green}: once more, in case it was a flake"
             )
-            tree, how = gate_batch(work, [pull], required)
+            tree, how = gate_batch(work, [pull])
         if how:
             green = run_in(work, "rev-parse", "HEAD")
-            landed.append((pull, tree, how))
+            landed.append((pull, tree, tree, how))
             continue
         if green == tip and not base_green:
             reset(work, tip)
-            if not gate_batch(work, [], required)[1]:
+            if not gate_batch(work, [])[1]:
                 print(
                     f"{base} itself is red at {tip}: nothing lands and nobody is evicted until it is fixed"
                 )
@@ -3055,16 +3069,15 @@ def merged_onto(
     return False
 
 
-def gate_batch(work: Path, pulls: list[dict[str, Any]], required: set[str]) -> tuple[str, str]:
+def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     """The tree checked out in `work` and how it passed the gate (`run` or `reused`), empty when red. A pass is reused
-    when this clone's record for the tree holds under today's gate command, or a PR's head with that tree has a pass
-    (reusable) or GitHub's required checks, green on every candidate; else the gate runs there and its pass is
-    recorded by tree. Its log stays beside the worktree."""
+    when the gate command passed on the tree before (reusable), on the batch's commit or a PR's head with that tree;
+    never on GitHub's required checks alone, since the pass is published as the gate command's. Else the gate runs
+    there and its pass is recorded by tree. Its log stays beside the worktree."""
     commit, tree = run_in(work, "rev-parse", "HEAD"), run_in(work, "rev-parse", "HEAD^{tree}")
     command = gate()[0]
     if reusable(commit) or any(
-        tree_of(pull["headRefOid"]) == tree and (required or reusable(pull["headRefOid"]))
-        for pull in pulls
+        tree_of(pull["headRefOid"]) == tree and reusable(pull["headRefOid"]) for pull in pulls
     ):
         print(f"Tree {tree}: `{command}` passed on it before, reused")
         return tree, "reused"
@@ -3114,20 +3127,19 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
 
 
 def merges(
-    landed: list[tuple[dict[str, Any], str, str]],
+    landed: list[tuple[dict[str, Any], str, str, str]],
     base: str,
     tip: str,
     work: Path,
     loop: str | None,
-    required: set[str],
     failed: set[int],
 ) -> None:
     """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
-    signed squash of the tree gated with it on the commit before it), then check the base ended at the gated tree:
-    equal, publish the pass on the new tip; else someone merged meanwhile, so the tip is gated here. Each landed PR
-    gets a `Landed` comment."""
+    signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
+    open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
+    the batch partial, or someone merged meanwhile) the tip is gated here. Each landed PR gets a `Landed` comment."""
     local, command, done = signed(loop), gate()[0], []
-    for pull, tree, how in landed:
+    for pull, tree, gated, how in landed:
         where, head = f"PR #{pull['number']}", pull["headRefOid"]
         try:
             if local:
@@ -3137,34 +3149,41 @@ def merges(
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
                 gh("pr", "merge", str(pull["number"]), "--squash", "--match-head-commit", head)
+                # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
+                if (state := pull_request(pull["number"])["state"]) != "MERGED":
+                    raise Refused(f"GitHub left it {state}, not merged")
                 print(f"{where} merged at {head}")
         except (subprocess.CalledProcessError, Refused) as exc:
             why = " ".join(str(getattr(exc, "stderr", None) or exc).split())
             print(
                 f"{where}: the merge was refused, so it and every PR after it wait for the next land: {why}"
             )
-            failed.update(other["number"] for other, _, _ in landed[len(done) :])
+            failed.update(other["number"] for other, *_ in landed[len(done) :])
             break
-        done.append((pull, tree, how))
+        done.append((pull, tree, gated, how))
     if not done:
         return
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
-    if (actual := git("rev-parse", f"{tip}^{{tree}}").strip()) == done[-1][1]:
+    actual, (_, tree, gated, _) = git("rev-parse", f"{tip}^{{tree}}").strip(), done[-1]
+    if actual == gated:
         publish(tip, {"head": tip, "tree": actual, "command": command})
     else:
+        numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
         print(
-            f"{base}'s tree is {actual} after the merges, not the gated {done[-1][1]}: someone merged meanwhile,"
-            f" so {tip} needs a gate"
+            f"{base} holds {numbers} of the batch, whose tree {actual} was never gated, so {tip} is gated now"
+            if actual == tree
+            else f"{base}'s tree is {actual} after the merges, not the {tree} they make: someone merged meanwhile,"
+            f" so {tip} is gated now"
         )
         reset(work, tip)
-        if gate_batch(work, [], required)[1]:
+        if gate_batch(work, [])[1]:
             publish(tip, {"head": tip, "tree": actual, "command": command})
-    numbers = ", ".join(f"#{pull['number']}" for pull, _, _ in done)
-    for pull, tree, how in done:
+    numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
+    for pull, tree, gated, how in done:
         comment(
             pull["number"],
-            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how}\nBatch: {numbers}\n",
+            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}\n",
         )
 
 
