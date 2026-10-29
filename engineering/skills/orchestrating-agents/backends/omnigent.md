@@ -100,8 +100,9 @@ lead's turns otherwise grow to the user's window. Without the line it starts as 
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` outranks the flag, so a host whose user settings set the window
 that way keeps it, and `start` says so: set it as the `autoCompactWindow` setting instead, which the
 flag overrides. `start`'s own environment never reaches the lead, which gets the runner's, so it is
-not checked. A chief of staff the owner starts in the UI gets no flag; it sets `autoCompactWindow` in
-its project's `.claude/settings.json`, which outranks the user's settings.
+not checked. A chief of staff the owner starts in the UI gets no flag. To give it a smaller window, set
+`autoCompactWindow` in its project's `.claude/settings.json`: it outranks the user's
+`autoCompactWindow`, though not the environment variable.
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
