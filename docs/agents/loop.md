@@ -22,6 +22,9 @@ file carries the run's state across a compaction. Raise or remove the line if le
 spec:
   auto: true
 
+loop:
+  gate: mise run check   # the merge check: the three gates CI's qualify job runs
+
 risk:
   verifier: true
   paths:
