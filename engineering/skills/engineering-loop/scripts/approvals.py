@@ -11,7 +11,7 @@
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # the queue's proof
     uv run scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
-    uv run scripts/approvals.py approve merge <pr> --by owner   # the owner's go on a high-risk PR's head
+    uv run scripts/approvals.py approve merge <pr> --head <sha> --by owner [--withdraw]  # the owner's go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
@@ -54,17 +54,18 @@ status) for the newest run of each check the base branch requires, as `land` rea
 of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
 it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
-go on that head: a green commit status `owner` on the head commit, by the account running this or a writer, which
-`approve merge <pr> --by owner` posts on the owner's word with a record (`Approved: merge`, `By: owner`, `Head: <sha>`)
-whose every word the script writes. A status belongs to one commit, so no push carries the go to a head the owner
-didn't see. The owner's own `approved:merge` label on a PR into the default branch, added after the head was pushed
-and still present, is their go too, and `check merge` and `land` post it as that status. On a change that is not high
-risk the label means nothing. High risk is `risk:high` on the
+go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
+green. `approve merge <pr> --head <sha> --by owner` posts it on the owner's word with a record (`Approved: merge`,
+`By: owner`, `Head: <sha>`) whose every word the script writes, refusing a head other than the one named, which is
+the one the owner was shown; `--withdraw` posts a newer failing one and a `Withdrawn: merge` record. A status belongs
+to one commit, so no push carries the go to a head the owner didn't see. The owner's own `approved:merge` label on a
+PR into the default branch, added after the head was pushed, is their go too: `check merge`, `check queue` and `land`
+post it as that status, marked as from the label, which then holds only while the label is on, so removing it
+withdraws the go. On a change that is not high risk the label means nothing. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
-failure to add it and carrying on. A push removes the label (the
-approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
-GitHub's repository activity for the head branch. On a PR into a feature branch (any base but the repository's
+failure to add it and carrying on. A label added before the head's push is no go, the push time being GitHub's
+repository activity for the head branch, and the approvals workflow removes it on `synchronize`. On a PR into a feature branch (any base but the repository's
 default branch) the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
 `By: delegate`), and refuses a PR into the default branch. There a label no newer than such a record is no approval,
 since only the owner approves a merge to the default branch; and a PR from a branch into the default branch is high
@@ -141,9 +142,8 @@ loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so
 no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
-with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's `approved:merge`, added after
-the head's push (owner_waits, as `check merge` and `land` read it): the label covers that head, which the queue checks
-again before it merges it. After its gate the queue posts `batch` on
+with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's go on that head
+(owner_waits, as `check merge` and `land` read it), which the queue checks again before it merges it. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
 exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
 head with no such pass under the current env. `check merge` takes that comment in place of the CI wait (either kind)
@@ -284,6 +284,8 @@ DELEGATE = "delegate"
 MERGE_LABEL = "approved:merge"
 # the owner's go on a high-risk head, a commit status on that one commit (approve merge), so no push carries it over
 OWNER_GO = "owner"
+# how an OWNER_GO status turned from the owner's `approved:merge` label ends, which then holds only while the label is on
+LABELLED = f"from their `{MERGE_LABEL}` label"
 # a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
 # the collaborator permissions that can write; GitHub's `permission` field reads `maintain` as `write`
@@ -1446,7 +1448,7 @@ def waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: ran()'s checks, and the owner's label (owner_waits)."""
+    """One line per thing the merge waits for: ran()'s checks, and the owner's go (owner_waits)."""
     return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
 
 
@@ -1830,7 +1832,7 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
             f"{where}: no `local-ci --record` pass on {head} under the gate command (approvals.py local-ci --record)"
             f"{elsewhere(head)}"
         )
-    # the queue re-runs this before it merges the head, and check merge dates the label against the landed head again
+    # the queue re-runs this before it merges the head, and check merge reads the owner's go on the landed head again
     found += owner_waits(pull, issues, loop)
     for line in found:
         print(line)
@@ -1876,15 +1878,16 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while the change is high risk (risk) and the owner's `approved:merge` label is not on the PR, added
-    after the head's push; on a PR into the default branch, a label no newer than a delegated record (delegate) is
-    the delegate's, not the owner's. `pushed(pull)` is when the head was pushed (default: GitHub's repository
-    activity)."""
+    """A line while the change is high risk (risk) and the owner's go is not on the head (owned) nor their
+    `approved:merge` label on the PR, added after the head's push; on a PR into the default branch, a label no newer
+    than a delegated record (delegate) is the delegate's, not the owner's, and the owner's label is posted as their go
+    on the head, which holds while the label is on. `pushed(pull)` is when the head was pushed (default: GitHub's
+    repository activity)."""
     where, found = f"PR #{pull['number']}", []
     why = risk(pull, issues, loop)
     if why is None:
         return found
-    if owned(pull["headRefOid"]):
+    if owned(pull):
         return found
     if MERGE_LABEL not in names(pull):
         return [
@@ -1923,33 +1926,55 @@ def owner_waits(
         # covers a feature branch only, so it stays a label
         with contextlib.suppress(subprocess.CalledProcessError, OSError):
             post_status(
-                pull["headRefOid"], OWNER_GO, f"The owner's go on {pull['headRefOid'][:12]}"
+                pull["headRefOid"],
+                OWNER_GO,
+                f"The owner's go on {pull['headRefOid'][:12]}, {LABELLED}",
             )
     return found
 
 
-def owned(head: str) -> bool:
-    """Whether the owner's go (OWNER_GO) is on `head`: a green status by the account running this or a writer, since a
-    status is the repo's to write. GitHub unreachable: no go."""
+def owned(pull: dict[str, Any]) -> bool:
+    """Whether the owner's go (OWNER_GO) is on the PR's head: the newest `owner` status there by the account running
+    this or a writer (a status is the repo's to write) is green, so a later one the owner withdrew it with (go) wins,
+    and one turned from their label (LABELLED) holds only while the label is on. GitHub unreachable: no go."""
     try:
-        found = statuses(head)
+        found = statuses(pull["headRefOid"])
     except (subprocess.CalledProcessError, OSError, ValueError):
         return False
-    return any(
-        (status.get("context"), status.get("state")) == (OWNER_GO, "success")
-        and (login := (status.get("creator") or {}).get("login")) is not None
-        and (login == viewer() or writer(login))
-        for status in found
-    )
+    for status in found:  # newest first
+        login = (status.get("creator") or {}).get("login")
+        if (
+            status.get("context") != OWNER_GO
+            or login is None
+            or not (login == viewer() or writer(login))
+        ):
+            continue
+        if status.get("state") != "success":
+            return False
+        return not (status.get("description") or "").endswith(LABELLED) or MERGE_LABEL in names(
+            pull
+        )
+    return False
 
 
-def go(number: int) -> int:
-    """approve merge: the owner's go on the PR's current head, on their word: the status OWNER_GO on that commit and a
-    record naming it. The script writes every word, so no agent's description of the change travels with it."""
+def go(number: int, head: str, withdraw: bool = False) -> int:
+    """approve merge: the owner's go on `head`, the PR's head they were shown, on their word: the status OWNER_GO on
+    that commit and a record naming it; with `withdraw`, a newer failing status and record that take it back. The
+    script writes every word, so no agent's description of the change travels with it. A head that moved is refused,
+    since the owner saw the one they were asked about."""
     pull = pull_request(number)
     if pull["state"] != "OPEN":
         raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
+    if pull["headRefOid"].lower() != head.lower():
+        raise Refused(
+            f"PR #{number}'s head is {pull['headRefOid']}, not {head}: ask the owner about the head it has now"
+        )
     head = pull["headRefOid"]
+    if withdraw:
+        post_status(head, OWNER_GO, f"The owner withdrew their go on {head[:12]}", state="failure")
+        comment(number, f"Withdrawn: merge\nBy: owner\nHead: {head}\n")
+        print(f"PR #{number}: the owner's go on {head} is withdrawn")
+        return 0
     post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
     comment(number, f"Approved: merge\nBy: owner\nHead: {head}\n")
     print(f"PR #{number}: the owner's go is on {head}")
@@ -3398,12 +3423,12 @@ def publish(head: str, record: dict[str, Any]) -> None:
     print(f"published on {head} as the commit status `{PUBLISHED}`")
 
 
-def post_status(head: str, context: str, description: str) -> None:
+def post_status(head: str, context: str, description: str, state: str = "success") -> None:
     gh(
         "api",
         f"repos/{{owner}}/{{repo}}/statuses/{head}",
         "-f",
-        "state=success",
+        f"state={state}",
         "-f",
         f"context={context}",
         "-f",
@@ -3523,6 +3548,9 @@ def main(argv: list[str]) -> int:
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest
     approving.add_argument("--by", choices=("owner",), required=True)
+    # merge only: the head the owner was shown, and their go taken back
+    approving.add_argument("--head")
+    approving.add_argument("--withdraw", action="store_true")
     delegating = commands.add_parser("delegate")
     delegating.add_argument("pr", type=int)
     posting = commands.add_parser("verdict")
@@ -3560,7 +3588,15 @@ def main(argv: list[str]) -> int:
         if args.command == "batch":
             return batch(args.pr, args.merge, args.batch, args.exit, args.log)
         if args.command == "approve":
-            return go(args.number) if args.point == "merge" else approve(args.point, args.number)
+            if args.point != "merge" and (args.head or args.withdraw):
+                raise Refused("--head and --withdraw belong to `approve merge`")
+            if args.point == "merge" and not args.head:
+                raise Refused("approve merge needs --head <sha>: the head the owner was shown")
+            return (
+                go(args.number, args.head, args.withdraw)
+                if args.point == "merge"
+                else approve(args.point, args.number)
+            )
         if args.command == "delegate":
             return delegate(args.pr)
         if args.command == "local-ci":
