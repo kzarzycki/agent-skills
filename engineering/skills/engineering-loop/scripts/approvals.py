@@ -31,8 +31,9 @@ owner's current record and `approved:spec`, unless loop.md's `spec.auto` covers 
 (`label_names`): a category is `kind:<name>`, a component `area:<name>`, whether the tracker file names it bare or in
 full.
 `check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
-or for a spec the policy approves the account running this), since an assignee says whose the issue is. When every
-build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
+or for a spec the policy approves the account running this), since an assignee says whose the issue is; and, with a
+PR, an issue another open PR closes too (a closing keyword, or `Implements` under a `signoff` rule), naming that PR
+and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. `release` removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
 A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
@@ -1088,6 +1089,47 @@ def others(issue: dict[str, Any]) -> str | None:
     )
 
 
+def closed(pull: dict[str, Any], loop: str | None) -> set[int]:
+    """The issues a PR finishes: GitHub's closing references and each `#n` after a closing keyword, plus `Implements`
+    where loop.md has a `signoff` rule, which leaves the issue open only for the owner's sign-off. `Part of` builds on
+    an issue without finishing it, so two PRs may share one."""
+    kinds = {CLOSES, IMPLEMENTS} if "signoff" in settings(loop) else {CLOSES}
+    named = {n for n, kind in links(pull.get("body") or "").items() if kind in kinds}
+    return named | {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
+
+
+def open_pulls() -> list[dict[str, Any]]:
+    """Every open PR in the repo with its number, branch, body and closing references, in one call."""
+    found = json.loads(
+        gh(
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "1000",
+            "--json",
+            "number,headRefName,body,closingIssuesReferences",
+        )
+    )
+    for other in found:
+        other["closingIssuesReferences"] = {"nodes": other["closingIssuesReferences"]}
+    return found
+
+
+def duplicates(pull: dict[str, Any], loop: str | None) -> list[str]:
+    """One line per issue the PR finishes (closed) that another open PR finishes too, naming that PR and its branch:
+    two builds of one issue each run a verifier, a gate and the queue, and one of them is thrown away."""
+    mine = closed(pull, loop)
+    return [
+        f"#{number} is also closed by open PR #{other['number']} (branch `{other['headRefName']}`): one build per"
+        " issue, so close one of the PRs, or link it with `Part of`"
+        for other in open_pulls()
+        if other["number"] != pull["number"]
+        for number in sorted(mine & closed(other, loop))
+    ]
+
+
 def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) -> list[str]:
     """One line per reason an issue the PR closes waits for the owner or lacks a label of `kinds` (label_names;
     None, without docs/agents/issue-tracker.md, checks no label's shape); empty when none does. A missing
@@ -1176,6 +1218,10 @@ def proofs(
                 found += approvals(where, issue, "plan", version(plan))
         elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
+    if (
+        point == "build" and "number" in pull
+    ):  # before the PR exists (unopened) there is nothing to compare
+        found += duplicates(pull, loop)
     found += demo_form(pull)
     if point != "merge":
         return found
