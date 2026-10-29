@@ -1103,8 +1103,12 @@ def closed(pull: dict[str, Any], repo: str, loop: str | None) -> set[int]:
     }
 
 
+# how many open PRs duplicates() reads, in one call; a list that long may have left one out
+OPEN_LIMIT = 1000
+
+
 def open_pulls() -> list[dict[str, Any]]:
-    """Every open PR in the repo with its number, branch, body and closing references (each naming its
+    """The repo's open PRs, up to OPEN_LIMIT, each with its number, branch, body and closing references (each naming its
     issue's repo as `nameWithOwner`, as the PR query does), in one call."""
     found = json.loads(
         gh(
@@ -1113,7 +1117,7 @@ def open_pulls() -> list[dict[str, Any]]:
             "--state",
             "open",
             "--limit",
-            "1000",
+            str(OPEN_LIMIT),
             "--json",
             "number,headRefName,body,closingIssuesReferences",
         )
@@ -1129,12 +1133,21 @@ def open_pulls() -> list[dict[str, Any]]:
 
 def duplicates(pull: dict[str, Any], loop: str | None) -> list[str]:
     """One line per issue the PR finishes (closed) that another open PR finishes too, naming that PR and its branch:
-    two builds of one issue each run a verifier, a gate and the queue, and one of them is thrown away."""
+    two builds of one issue each run a verifier, a gate and the queue, and one of them is thrown away. A list as long
+    as OPEN_LIMIT may have left that PR out, so it refuses rather than pass on a partial comparison."""
     repo = pull["baseRepository"]["nameWithOwner"]
     mine = closed(pull, repo, loop)
     if not mine:
         return []
     found = open_pulls()
+    if len(found) >= OPEN_LIMIT:
+        return [
+            (
+                f"the duplicate-build check reads at most {OPEN_LIMIT} open PRs and this repo has at least that many,"
+                " so it could not see every open PR: close stale PRs, or check by hand that no other open PR closes"
+                f" {', '.join(f'#{n}' for n in sorted(mine))}"
+            )
+        ]
     return [
         f"#{number} is also closed by open PR #{other['number']} (branch `{other['headRefName']}`): one build per"
         " issue, so close one of the PRs, or link it with `Part of`"

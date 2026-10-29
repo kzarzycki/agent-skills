@@ -5179,6 +5179,39 @@ def test_check_build_counts_only_this_repos_issue_when_another_pr_closes_the_sam
     assert capsys.readouterr().out == ""
 
 
+def test_check_build_refuses_when_the_open_pr_list_reaches_its_limit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A list as long as the limit may have left out the PR that closes the issue too, so the check can't pass."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    monkeypatch.setattr(approvals, "OPEN_LIMIT", 2, raising=False)
+    everyone = [
+        listed(7, "feature", "Closes #1", 1),
+        listed(8, "a", "Fixes #2"),
+        listed(9, "b", "Fixes #1"),
+    ]
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        return json.dumps(everyone[: int(args[args.index("--limit") + 1])])
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        (
+            "the duplicate-build check reads at most 2 open PRs and this repo has at least that many, so it could"
+            " not see every open PR: close stale PRs, or check by hand that no other open PR closes #1"
+        )
+    ]
+    assert len(calls) == 1
+
+
 def test_being_assigned_is_no_go_ahead() -> None:
     claimed = held(specced(1, "kind:enhancement"), "loop")
     assert approvals.proofs("build", pull(), [claimed], LOOP) == [
