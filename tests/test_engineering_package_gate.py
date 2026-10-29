@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,13 @@ def test_live_agent_gate_requests_both_supported_agents() -> None:
     assert (
         'run = "CLAUDE_CODE_E2E=1 CODEX_E2E=1 uv run pytest -q -m live_agent engineering/tests/e2e"'
     ) in task
+
+
+def test_the_check_task_runs_the_gates_ci_runs_in_its_order() -> None:
+    task = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]["check"]
+    workflow = (REPOSITORY / ".github" / "workflows" / "engineering-ci.yml").read_text()
+
+    assert task["run"] == re.findall(r"^\s*- run: (mise run \S+)$", workflow, re.MULTILINE)
 
 
 @pytest.mark.parametrize("mutation", ["corrupt", "delete"])
