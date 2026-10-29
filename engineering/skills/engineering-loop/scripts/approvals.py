@@ -133,15 +133,16 @@ or a writer counts, since anyone can comment on a public repo. A red, unproven o
 exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
 the same head like any other. The proof is the verifier's
 verdict and gate on the PR's own head plus the full gate on the batch that merged it.
-With loop.md's `carry_over_main` section (`except: <globs>`), a merge of the base into a PR head H keeps H's proofs: a
-head H' whose first parent is H, whose second is on the base (an ancestor of its tip), whose tree is what `git
-merge-tree --write-tree` makes of the two (no conflict resolved, nothing added), and where the base's changes since
-the merge base touch no file H's side changes and no path an `except` glob matches (fnmatch, as a rule's `paths`:
-the project's merge-check configuration, such as lint, type, test and gate config and lockfiles). Then H's newest
-verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included). It never carries a `local-ci`
-record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line naming H, H' and the
-predicate, or why the head carries nothing. A git error, a second merge base or any failed condition carries
-nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
+With loop.md's `carry_over_main` section (`except: <globs>`), merges of the base into a PR head H keep H's proofs:
+each commit from the head H' down its first-parent line to H is a merge whose second parent is on the base (an
+ancestor of its tip), whose tree is what `git merge-tree --write-tree` makes of its parents (no conflict resolved,
+nothing added), and where the base's changes since the merge base touch no file the PR's side changes and no path an
+`except` glob matches (fnmatch, as a rule's `paths`: the project's merge-check configuration, such as lint, type,
+test and gate config and lockfiles). So a PR commit after H, new, edited or rebased, carries nothing. Then H's newest
+verdict covers H' (`check merge`, `check queue` and `land`, the verifier's `Risk:` line included). It never carries
+a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line per merge
+naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
+any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
 variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
@@ -663,7 +664,7 @@ def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
         return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
     head = pull["headRefOid"].lower()
     on_head = [(number, lines) for commit, number, lines in found if commit == head]
-    if not on_head and found and isinstance(carry := carried(pull, loop), tuple):
+    if not on_head and found and isinstance(carry := carried(pull, loop, found[-1][0]), tuple):
         head = carry[0]
         on_head = [(number, lines) for commit, number, lines in found if commit == head]
     if not on_head:
@@ -1632,48 +1633,55 @@ def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
     )
 
 
-def carried(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
-    """The commit whose verdict the PR's head carries, with carry_line(), where loop.md has
-    `carry_over_main`: the head is a merge whose first parent is that commit and whose second is on the base (an
-    ancestor of its tip), its tree is git merge-tree's of the two, and merged() finds the base's changes disjoint
-    from the PR's and neither side's touching an except glob. A string names why it carries nothing; None without the setting, which
-    then reads no git at all. ponytail: one merge deep; walk first parents when a PR merges main in twice unverified."""
+def carried(
+    pull: dict[str, Any], loop: str | None, verified: str
+) -> tuple[str, list[str]] | str | None:
+    """`verified` with one carry_line() per merge, oldest first, when the PR's head carries the verdict on
+    `verified`, the newest verdict's commit, where loop.md has `carry_over_main`: from the head, each commit on its
+    first-parent line down to `verified` is a merge whose second parent is on the base (an ancestor of its tip), whose
+    tree is git merge-tree's of its parents, and where merged() finds the base's changes disjoint from the PR's and
+    neither side's touching an except glob. So a PR commit after `verified` (new, edited or rebased) carries nothing.
+    A string names why it carries nothing; None without the setting, which then reads no git at all."""
     guard = settings(loop).get("carry_over_main")
     if guard is None:
         return None
     head, tip, base = pull["headRefOid"].lower(), pull["baseRefOid"].lower(), pull["baseRefName"]
+    commit, lines = head, []
     try:
         if not (fetched(head) and fetched(tip)):
             return f"the head or {base}'s head {tip} is not a commit origin has"
-        parents = git("rev-list", "--parents", "-n", "1", head).split()[1:]
-        if len(parents) != 2:
-            return "it is no merge of two parents"
-        first, second = parents
-        on_base = ["git", "merge-base", "--is-ancestor", second, tip]
-        if subprocess.run(on_base, capture_output=True, check=False).returncode:
-            return f"its second parent {second} is not on {base}"
-        found = merged(first, second, guard["except"], base)
-        if isinstance(found, str):
-            return found
-        if found[0] != git("rev-parse", f"{head}^{{tree}}").strip():
-            return f"{head}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
+        while commit != verified:
+            it, its = ("it", "its") if commit == head else (commit, f"{commit}'s")
+            parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
+            if len(parents) != 2:
+                return f"{it} is no merge of two parents"
+            first, second = parents
+            on_base = ["git", "merge-base", "--is-ancestor", second, tip]
+            if subprocess.run(on_base, capture_output=True, check=False).returncode:
+                return f"{its} second parent {second} is not on {base}"
+            found = merged(first, second, guard["except"], base)
+            if isinstance(found, str):
+                return found
+            if found[0] != git("rev-parse", f"{commit}^{{tree}}").strip():
+                return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
+            lines.insert(0, carry_line(commit, first, second, found[1], base))
+            commit = first
     except (subprocess.CalledProcessError, OSError) as exc:
-        return f"git failed reading {head}: {exc}"
-    return first, carry_line(head, first, second, found[1], base)
+        return f"git failed reading {commit}: {exc}"
+    return verified, lines
 
 
 def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
     """Whether the PR's head carries the proofs of `verified`, the newest verdict's commit (carried), printing the
-    line that says so, or where loop.md opts in, why it carries nothing."""
-    carry = carried(pull, loop)
+    lines that say so, or where loop.md opts in, why it carries nothing."""
+    carry = carried(pull, loop, verified)
     if carry is None:
         return False
-    if isinstance(carry, tuple) and carry[0] != verified:
-        carry = f"its first parent is {carry[0]}"
     if isinstance(carry, str):
         print(f"{where}: {pull['headRefOid']} carries nothing from {verified}: {carry}")
         return False
-    print(f"{where}: {carry[1]}")
+    for line in carry[1]:
+        print(f"{where}: {line}")
     return True
 
 

@@ -140,7 +140,7 @@ carry_over_main:
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
-| `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): a clean merge of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
+| `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
 `## Settings`, read by `approvals.py` (`label_names`), `labels.py` and `board.py`, refused the
@@ -393,14 +393,16 @@ re-queues or lands alone at the same head. The queue never resolves a conflict: 
 conflicts goes back to its lead.
 
 With loop.md's `carry_over_main` section, merging main into a PR head H keeps H's verdict
-when git shows the merge changed nothing the PR's code reads: the merge H' has H as its
-first parent and a commit on main as its second, its tree is `git merge-tree`'s of the two
-(no conflict resolved, nothing added), and main's changes since the merge base touch none of
-the PR's files, and neither the PR's changes nor main's touch an `except` glob, since a
-config change on either side was never reviewed against the other side's code. H's verdict
-then covers H'; `check merge` and `land` print one line naming H, H' and the predicate.
-Anything else (a conflict, an evil merge, an overlapping file, a touched except path, a git
-error) carries nothing: the merge needs its own verifier pass. The gate never carries: H'
+when git shows the merges changed nothing the PR's code reads: every commit from the new
+head H' down its first parents to H is a merge with a commit on main as its second parent,
+its tree is `git merge-tree`'s of its parents (no conflict resolved, nothing added), and
+main's changes since the merge base touch none of the PR's files, and neither the PR's
+changes nor main's touch an `except` glob, since a config change on either side was never
+reviewed against the other side's code. H's verdict then covers H', over one merge of main
+or several; `check merge`, `check queue` and `land` print one line per merge naming it, its
+first parent and the predicate. Anything else (a PR commit after H, new, edited or rebased,
+a conflict, an evil merge, an overlapping file, a touched except path, a git error) carries
+nothing, and the check prints which condition failed: the head needs its own verifier pass. The gate never carries: H'
 runs its own, as CI does, and under `ci: false` that is `local-ci <pr>` on H', since a
 `local-ci` record stands in for CI on one exact head. This skips a review on purpose, so a
 project opts in by writing the section.
@@ -712,7 +714,8 @@ Every other file says "the cap", so this is the one place to change it, and
 up to the cap reviews the diff since the previous report and reruns its repros. No fix
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
-its own.
+its own. The one exception is loop.md's `carry_over_main`: clean merges of main that touch
+none of the PR's files keep the verdict (Approvals and proof).
 
 - **The last pass under the cap leaves a blocker or major open:** stop and ask the owner,
   since the fix keeps regressing and only they decide what happens next. They have two
