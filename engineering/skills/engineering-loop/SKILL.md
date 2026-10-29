@@ -219,9 +219,12 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
 draft, `mise run check` before each push is its check. With `ci: false` in loop.md, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
-instead, committed and clean: it runs the merge check, `mise run check:all`, and records
-the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
-for the same head, command and environment rather than running the check again. A project
+instead, and is the gate while iterating too: it runs the merge check, `mise run check:all`,
+and a clean, green run records itself by tree in the clone's git dir and publishes it as a
+commit status on the head once GitHub has it, so `local-ci <pr>` at landing, on this host or
+another clone, posts that pass for any commit with the same tree, command and environment
+rather than running the check again (a rebase or reworded commit keeps its tree). A run on a
+checkout with changes records nothing. A project
 whose check reads environment variables (a tier, a scope) names them in loop.md's
 `local_ci_env`: without it a pass recorded under one tier stands in for another, and the
 posted comment names those values.
@@ -406,7 +409,7 @@ first parent and the predicate. Anything else (a PR commit after H, new, edited 
 a conflict, an evil merge, an overlapping file, a touched except path, a git error) carries
 nothing, and the check prints which condition failed: the head needs its own verifier pass. The gate never carries: H'
 runs its own, as CI does, and under `ci: false` that is `local-ci <pr>` on H', since a
-`local-ci` record stands in for CI on one exact head. This skips a review on purpose, so a
+`local-ci` record stands in for CI on one exact tree. This skips a review on purpose, so a
 project opts in by writing the section.
 
 With `opt_out: true` in loop.md, a developer may keep their own PRs out of the
