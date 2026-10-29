@@ -1157,7 +1157,9 @@ def test_dead_terminals(tmp_path, monkeypatch):
     def fake():
         rows = []
         for pid, ppid, uid, pgid, z, command in real():
-            if pgid not in groups:  # the host's own terminals and zombies are not this test's
+            if (
+                pgid not in groups or z
+            ):  # the host's processes are not this test's, nor are its own unreaped children
                 continue
             if pid == kids["otheruser"].pid:
                 uid += 1
