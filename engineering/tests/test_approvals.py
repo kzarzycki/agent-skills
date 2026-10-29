@@ -5212,6 +5212,21 @@ def test_check_build_refuses_when_the_open_pr_list_reaches_its_limit(
     assert len(calls) == 1
 
 
+def test_check_merge_lists_no_open_prs_and_a_duplicate_does_not_hold_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The duplicate check belongs to build: by merge the build it guards has run, and the list costs a request."""
+    spec = approved(1, "kind:bug", "area:web")
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    listings: list[None] = []
+    second = {**listed(8, "second", "Fixes #1"), "closingIssuesReferences": {"nodes": []}}
+    monkeypatch.setattr(approvals, "open_pulls", lambda: listings.append(None) or [second])
+    assert duplicate(1, 8, "second") in approvals.proofs("build", mine, [spec], LOOP)
+    assert duplicate(1, 8, "second") not in approvals.proofs("merge", mine, [spec], LOOP)
+    assert len(listings) == 1  # the build check's, none at merge
+
+
 def test_being_assigned_is_no_go_ahead() -> None:
     claimed = held(specced(1, "kind:enhancement"), "loop")
     assert approvals.proofs("build", pull(), [claimed], LOOP) == [
