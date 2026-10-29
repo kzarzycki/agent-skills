@@ -1336,6 +1336,50 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
         )
 
 
+def test_create_starts_a_claude_worker_or_verifier_lean_unless_the_project_names_its_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {
+            "/v1/agents": agents,
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        }[path]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    ws = str(tmp_path)
+    lean = ["--strict-mcp-config", "--tools", omnigent_agent.LEAN_TOOLS]
+    og = omnigent_agent.Omnigent()
+    for role in ("worker", "verifier"):
+        og.create("claude", "t", workspace=ws, role=f"/x/engineering-loop/{role}.md")
+        assert bodies[-1]["terminal_launch_args"] == lean
+    og.create("claude", "t", workspace=ws, role="/x/worker.md", permission_mode="plan")
+    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "plan", *lean]
+    for role in ("/x/lead.md", None):  # a lead and a plain child start as before
+        og.create("claude", "t", workspace=ws, role=role)
+        assert "terminal_launch_args" not in bodies[-1]
+    og.create("codex", "t", workspace=ws, role="/x/worker.md")  # a claude flag, not codex's
+    assert "terminal_launch_args" not in bodies[-1]
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs" / "agents" / "loop.md").write_text(
+        "# Loop\n\nVerifier tools: full\nWorker tools: Bash,Read,mcp__x\n"
+    )
+    og.create("claude", "t", workspace=ws, role="/x/verifier.md")
+    assert "terminal_launch_args" not in bodies[-1]  # the role keeps every tool and server
+    og.create("claude", "t", workspace=ws, role="/x/worker.md")
+    assert bodies[-1]["terminal_launch_args"] == ["--strict-mcp-config", "--tools", "Bash,Read,mcp__x"]
+
+
 @pytest.mark.parametrize(
     ("names", "name", "picked"),
     [
