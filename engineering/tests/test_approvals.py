@@ -3050,6 +3050,14 @@ if pathlib.Path("flaky.txt").exists() and len(flaky.read_text() if flaky.exists(
     sys.exit(1)
 if pathlib.Path("dirty.txt").exists():
     pathlib.Path("app.py").write_text("changed\\n")
+faults = runs.with_suffix(".faults")
+if pathlib.Path("machine.txt").exists() and len(faults.read_text() if faults.exists() else "") < int(
+    pathlib.Path("machine.txt").read_text()
+):
+    faults.open("a").write("x")
+    pathlib.Path("leftover.txt").write_text("")
+    print("the screen is locked")
+    sys.exit(78)
 sys.exit(1 if pathlib.Path("red.txt").exists() else 0)
 """
 
@@ -3062,7 +3070,8 @@ def lands(
     against a fake GitHub. `open(number, files)` pushes a PR off main writing those files (its branch and
     `refs/pull/<n>/head`), with one approved issue and a satisfied verdict on its head; `gh pr merge` squashes the head
     onto origin's main as GitHub does. The gate fails on a tree holding `red.txt`, and twice on one holding
-    `flaky.txt`, and changes `app.py` on one holding `dirty.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
+    `flaky.txt`, and changes `app.py` on one holding `dirty.txt`; on one holding `machine.txt`, it exits 78 the number of
+    times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     committed(work)
@@ -3301,6 +3310,64 @@ def test_a_red_bare_base_evicts_nobody(lands: dict[str, Any]) -> None:
         [],
     )
     assert lands["lock"]() == ""
+
+
+MACHINE = add(GITHUB_RULE, "loop", "machine_exit: 78\n")
+
+
+def test_a_machine_fault_twice_stops_land_with_nothing_landed_evicted_or_posted(
+    lands: dict[str, Any],
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(MACHINE)
+    lands["open"](7, {"machine.txt": "2"})
+    code, lines = lands["land"]("7")
+    assert code == 1
+    assert (lands["runs"](), lands["merged"](), lands["comments"], lands["calls"]) == (
+        2,
+        [],
+        [],
+        [],
+    )
+    assert "a machine fault, not the change's" in "\n".join(lines)
+    assert "Fix the machine, then land again." in "\n".join(lines)
+    assert lines[-1] == "the screen is locked"  # the log's tail
+    assert lands["lock"]() == ""
+
+
+def test_a_machine_fault_once_runs_the_gate_again_and_the_batch_lands(
+    lands: dict[str, Any],
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(MACHINE)
+    lands["open"](7, {"machine.txt": "1"})
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert (lands["runs"](), lands["merged"]()) == (2, ["7", "8"])
+    assert landed_note(lands, 8)["Batch"] == "#7, #8"
+
+
+def test_without_machine_exit_a_gate_exiting_78_is_red(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"machine.txt": "9"})
+    code, _ = lands["land"]("7")
+    assert code == 1
+    # the batch, #7 alone twice, then the bare base, which is green: #7 is evicted
+    assert (lands["runs"](), lands["merged"]()) == (4, [])
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+
+
+def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(MACHINE)
+    for number in (7, 8):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    refusing(monkeypatch, lambda args: args[2] == "8")
+    codes = iter([0, 78, 78])
+    monkeypatch.setattr(approvals, "ran_gate", lambda cwd=None, out=None: next(codes))
+    code, lines = lands["land"]()
+    assert (code, lands["merged"]()) == (1, ["7"])
+    assert any("a machine fault, not the change's" in line for line in lines)
+    assert landed_note(lands, 7)["Batch"] == "#7"
 
 
 def test_a_low_risk_pr_carrying_approved_merge_is_a_candidate_like_any_other(
@@ -4109,6 +4176,11 @@ def test_a_passing_check_on_the_clean_head_is_recorded(
         ({"head": "b" * 40}, f"the checkout is at {'b' * 40}, PR #7's head is {HEAD}"),
         ({"status": " M app.py\n"}, "the tree has changes"),
         ({"exit": 2}, "mise run check:all exited 2: nothing recorded"),
+        (
+            {"exit": 78, "loop": add(BARE, "loop", "machine_exit: 78\n")},
+            "mise run check:all hit a machine fault (exit 78, loop.md's `machine_exit`): nothing recorded",
+        ),
+        ({"exit": 78}, "mise run check:all exited 78: nothing recorded"),
         ({"after": " M uv.lock\n"}, "mise run check:all changed the checkout"),
     ],
 )

@@ -117,6 +117,9 @@ and the tree it passed on, and `Batch:` the PRs landed together.
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
 the bare base is gated: red, the run stops (exit 1) and evicts nobody, since every PR would fail on that base.
+With loop.md's `machine_exit` (78, say), a gate run in steps 4 and 6 exiting with it is the machine's fault, not the
+tree's: it runs once more on the same tree, and a second such exit stops the run (exit 1), landing nothing, evicting
+nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
 Exit 0 when the named PR merged, or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction, a merge GitHub refused or a red base; 3 while it waits. `land --wait` runs it again every 30 seconds while it
 waits on the lock or on CI, printing each new state once, for up to 2 hours, then exits 3; a wait for the owner ends it
@@ -237,7 +240,7 @@ label is the owner's word. One they added before the last edit is named and chan
 
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue` and `owner`; `spec` holds `auto`.
+the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner` and `machine_exit`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -469,6 +472,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "gate": str,
         "batch_queue": bool,
         "owner": str,
+        "machine_exit": int,
     },
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
@@ -2569,6 +2573,10 @@ class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
 
 
+class MachineFault(Refused):
+    """The gate exited with loop.md's `machine_exit` twice on one tree in `land`: the machine isn't ready."""
+
+
 def read(path: Path) -> str:
     try:
         return path.read_text()
@@ -3101,9 +3109,23 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     ):
         print(f"Tree {tree}: `{command}` passed on it before, reused")
         return tree, "reused"
-    log = work.parent / f"{tree}.log"
-    with log.open("w") as out:
-        code = ran_gate(work, out)
+    log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
+    for again in (False, True):
+        with log.open("w") as out:
+            code = ran_gate(work, out)
+        if code != fault:
+            break
+        if again:
+            raise MachineFault(
+                f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`, twice: a machine fault, not the"
+                " change's, so nothing more lands and nobody is evicted. Fix the machine, then land again."
+                f" The gate's last lines (log {public(str(log))}):\n"
+                + "\n".join(log.read_text(errors="replace").splitlines()[-LOG_TAIL:])
+            )
+        print(
+            f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`: once more on the same tree"
+        )
+        reset(work, commit)
     if not code and (changed := run_in(work, "status", "--porcelain", "--untracked-files=all")):
         with log.open("a") as out:
             out.write(
@@ -3197,8 +3219,11 @@ def merges(
             f" so {tip} is gated now"
         )
         reset(work, tip)
-        if gate_batch(work, [])[1]:
-            publish(tip, {"head": tip, "tree": actual, "command": command})
+        try:
+            if gate_batch(work, [])[1]:
+                publish(tip, {"head": tip, "tree": actual, "command": command})
+        except MachineFault as exc:  # the PRs landed: each still gets its comment
+            print(exc)
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
     for pull, tree, gated, how in done:
         comment(
@@ -3538,6 +3563,11 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
     command, _, env = gate()
     code = ran_gate()
+    if code == settings(project()[1]).get("machine_exit"):
+        raise Refused(
+            f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): nothing recorded; fix the machine,"
+            " then run it again"
+        )
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
     if checkout_state() != before:
