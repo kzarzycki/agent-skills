@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.26.1 - 2026-10-29
+
+`approvals.py land` lands every landable PR as one gated batch under a lock any host sees, so a base that moved costs one gate instead of a merge, a gate and a verdict per PR (#653). A project adopts it by deleting its own merge queue and the deprecated keys from loop.md, and names its merge check in `gate:` when that isn't the default `mise run check:all`; until then `check queue`, `batch`, `batch_queue`, `carry_over_main` and `ci` print a `deprecated:` line, and they go in a later release. Also: `start --top-level` no longer warns about an autocompact window the user's settings don't set (#670).
+
+- engineering-loop: `approvals.py land [<pr>] [--wait]` lands every landable PR into the base as one gated batch: it takes the lock `refs/loop/landing` on `origin` (a stale one, older than 2 hours, is broken), merges the heads of every ready PR whose merge proofs hold onto the base in a temporary worktree, oldest first, gates the result's tree once or reuses the gate's pass on it (never GitHub's required checks in its place), then merges each PR through GitHub in that order (or as a signed squash holding that PR's own change), stopping at a merge GitHub refuses or leaves queued, and checks the base ended at the gated tree, gating the tip when it didn't, commenting `Landed` on each. A conflicting PR is skipped with one comment per head; a red batch lands one PR at a time, evicting a PR red alone twice back to draft with its log's tail, and a red bare base stops the run evicting nobody. The per-PR path is gone: auto-merge, GitHub merge queue handling, the `BEHIND`/`DIRTY` refusals and the approvals-run rerun. `check queue`, `batch`, `batch_queue`, `carry_over_main` and `ci` still work and print a `deprecated:` line each (#653).
+- orchestrating-agents: `start --top-level` warns about a `CLAUDE_CODE_AUTO_COMPACT_WINDOW` that outranks `Lead autocompact:` only when the user's Claude settings set it, since the lead gets the Omnigent runner's environment, never its caller's; a caller started before the setting moved no longer gets a false warning (#670).
+
 ## 0.26.0 - 2026-10-29
 
 `agent-hygiene` is a new skill: host hygiene for dev accounts where coding agents work, moved from dotagents' script (#660). The mutation check is one script, `mutate.py` (#629); `local-ci` runs and keys the project's gate command (#651); the owner's go on a high-risk change is an `owner` commit status on its head (#652). Also: owner questions end the turn as text (#658), a Claude lead compacts at the project's window (#663), and Claude workers and verifiers start with only the tools their role calls (#664).
