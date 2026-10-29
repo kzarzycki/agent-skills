@@ -16,8 +16,11 @@ design, wireframes included for a UI, and delegate the rest.
    and the code it touches, far enough to see what has to change, and research what the
    code can't answer. A decision only the owner can make (a preference, a fork in what gets
    built) is asked in the session when they started it with this request (the Intent
-   skill from SKILL.md's Practice, in rounds, each question with your recommendation);
-   otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
+   skill from SKILL.md's Practice, in rounds, each question with your recommendation), as
+   text that ends your turn `USER NEEDED`, never through a tool that waits for the answer
+   (Claude Code's AskUserQuestion, Codex's requestUserInput), since an open question holds
+   every message to your session, your children's reports and the supervisor's notices
+   included, until the owner replies; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
    yourself: an approval is a person's word or the owner's policy in loop.md. An issue
