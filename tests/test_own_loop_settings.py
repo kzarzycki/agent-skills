@@ -20,6 +20,8 @@ SPEC.loader.exec_module(approvals)
 def test_this_repos_loop_and_tracker_settings_parse() -> None:
     """A refusal raises approvals.Refused with the reader's own message, which fails the test."""
     assert approvals.settings((AGENTS / "loop.md").read_text())
+    # settings() takes any string for `gate`; gate() is what land and local-ci refuse a malformed one with
+    assert approvals.gate()[1]
     tracker = (AGENTS / "issue-tracker.md").read_text()
     assert approvals.tracker_settings(tracker)
     assert approvals.label_names(tracker)["component"]
