@@ -2286,7 +2286,7 @@ def run_of(pid: str) -> str | None:
 
 def run_lines(log: Path, run: str | None) -> list[str] | None:
     """The log's non-blank lines, or with ``run`` only those after its last ``run <run>`` line, the
-    marker the detached recipe (verifier.md) writes before its command starts; None when it is
+    marker the detached recipe (engineering-loop's verifier.md) writes before its command starts; None when it is
     unreadable or holds no such marker, since a reused log path holds the previous run's lines."""
     try:
         lines = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
