@@ -829,6 +829,36 @@ def stale_check(home, dev, git, run, told, hygiene):
         "--floor-gb", "0"
     )  # the relaunched copy: a new Run that must still end in failure
     assert code == 1 and "FAIL dotagents install after a fast-forward: exit 3: boom" in out, out
+    marker = home / ".local/state/agent-hygiene/install-failed"
+    assert marker.read_text() == "exit 3: boom\n", (
+        "the checkout has moved, so only this brings the install back"
+    )
+    os.environ.pop("AGENT_HYGIENE_RELAUNCHED")
+    installer.write_text(f'#!/bin/sh\necho "$@" >> {home}/install.calls\n')
+    calls = sum(
+        line.startswith("install") for line in (home / "install.calls").read_text().splitlines()
+    )
+    code, out = run(
+        "--floor-gb", "0"
+    )  # the next scheduled run, up to date: installs again and runs the new script
+    assert code == 0 and len(relaunched) == 3 and not marker.exists(), out
+    assert (
+        sum(
+            line.startswith("install") for line in (home / "install.calls").read_text().splitlines()
+        )
+        == calls + 1
+    ), "one install, now healthy"
+    relaunched.pop()
+    code, out = run("--floor-gb", "0")  # the relaunched copy: nothing left to install
+    assert (
+        code == 0
+        and len(relaunched) == 2
+        and sum(
+            line.startswith("install") for line in (home / "install.calls").read_text().splitlines()
+        )
+        == calls + 1
+    ), out
+    installer.write_text("#!/bin/sh\necho boom >&2\nexit 3\n")
     os.environ.pop("AGENT_HYGIENE_RELAUNCHED")
     git(checkout, "reset", "-q", "--hard", "HEAD~1")
     os.environ["AGENT_HYGIENE_RELAUNCHED"] = (

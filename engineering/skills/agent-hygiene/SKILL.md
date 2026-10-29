@@ -2,7 +2,7 @@
 name: agent-hygiene
 description: "Keep a dev account where coding agents work clear of what rebuilds itself (merged worktrees, tool caches, idle environments, dead Omnigent terminals) with the agent-hygiene script, settle the routine cases it keeps, and pass on only what needs the owner. Use for a scheduled hygiene round, or when an account runs low on disk or pseudo-terminals."
 metadata:
-  requires: "gh"
+  requires: "gh lsof"
 ---
 
 # Agent hygiene
@@ -124,8 +124,9 @@ The script comes from the engineering pack that the account's dotagents checkout
 that is not a dry run fetches that checkout's `origin/main`. When it is ahead, the checkout
 is on `main` and has no changes to tracked files (untracked files don't block it; git itself
 refuses one that main would overwrite), it runs `git merge --ff-only origin/main`, then
-`bin/dotagents install --no-pull`; a failed install logs `FAIL dotagents install` and the
-run exits 1. When the release moved the pin (`apm.lock.yaml`), the run starts over as the
+`bin/dotagents install --no-pull`; a failed install logs `FAIL dotagents install`, the
+run exits 1, and every later run installs again until one succeeds
+(`~/.local/state/agent-hygiene/install-failed` holds the last failure). When the release moved the pin (`apm.lock.yaml`), the run starts over as the
 newly installed script. When the pin differs from `origin/main`'s and no fast-forward
 happened (tracked changes, another branch, diverged, a dry run), it says to pull and install
 again, once per pair of locks.
