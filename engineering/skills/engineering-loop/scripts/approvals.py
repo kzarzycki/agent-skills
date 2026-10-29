@@ -119,8 +119,9 @@ loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so
 no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
 gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
-with CI, the checks `check merge` waits for passed, and the change is not high risk and has no `approved:merge`, since the
-owner's label covers one head landing alone: such a PR lands through `land`. After its gate the queue posts `batch` on
+with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's `approved:merge`, added after
+the head's push (owner_waits, as `check merge` and `land` read it): the label covers that head, which the queue checks
+again before it merges it. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
 exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
 head with no such pass under the current env. `check merge` takes that comment in place of the CI wait (either kind)
@@ -1721,12 +1722,8 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
         found.append(
             f"{where}: no `local-ci --record` pass on {head} under this environment (approvals.py local-ci --record)"
         )
-    if why := risk(pull, issues, loop):
-        found.append(f"{where} is high risk ({why}): it lands alone through `land`")
-    if MERGE_LABEL in names(pull):
-        found.append(
-            f"{where} has the owner's `{MERGE_LABEL}`, which covers its head alone: it lands through `land`"
-        )
+    # the queue re-runs this before it merges the head, and check merge dates the label against the landed head again
+    found += owner_waits(pull, issues, loop)
     for line in found:
         print(line)
     if found:
