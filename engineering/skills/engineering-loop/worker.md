@@ -13,6 +13,10 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    project's `loop:approvals build` reads the issue from a branch named `<prefix>/<n>-…`)
    and build only once it exits 0, since without a PR nothing else checks that the spec
    was approved.
+   A project's or owner's simplification rule (YAGNI, `ponytail:`) applies to how a spec
+   item is built, never to whether: narrowing or dropping an acceptance item or an
+   Implementation Decision is a question to the lead in `<report>.question`, and that item
+   stops until it is answered, since only the owner changes an approved spec's scope.
    Fixtures are synthetic: nothing in `docs/agents/issue-tracker.md` § Never on GitHub
    goes into code, tests or commits. A changed rule gets its line
    where the project records rules. Review angles you want run as native subagents.
@@ -70,6 +74,12 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    open the browser in the background without taking focus and say in the report which
    test needed it and why. A project whose e2e opens a headed browser by default names the
    headless switch in its `docs/agents/` files.
+   Before the report, mutation-check each production change you add: one patch per
+   condition, branch or value, written as verifier.md, Mutation-check the new tests, says,
+   run with `uv run <this skill's folder>/scripts/mutate.py --test '<tests>' --log <log>
+   <patch>…`, the test command under your heavy lock when your brief names one. A survivor
+   gets a test before the report, which lists the log of the run with none left, since the
+   verifier runs the same tool and a survivor there costs a pass.
    Clean up what you started (servers, temporary files), and only that: stop a process by
    the pid or process group you saved at its launch, or by a pattern holding your own
    worktree path once `lsof -a -p <pid> -d cwd` shows each match runs there, never with
@@ -77,8 +87,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    their runs too. Then write your
    report to a file and send the lead its path: the branch and head SHA, the PR, the gate
    exit codes, your signature (what orchestrating-agents' `scripts/omnigent_agent.py signature` prints, else
-   the `AGENT_SIGNATURE=` line atop your brief), anything left out and why, and what you tried and
-   dropped. A follow-up starts fresh from this report, not your transcript. If you're
+   the `AGENT_SIGNATURE=` line atop your brief), the line `Spec deviations: none` or that line
+   with one bullet per deviation quoting the spec line it narrows (each one already asked,
+   above), anything else left out and why, and what you tried and dropped. The deviations
+   line is fixed, so a narrowed item never sits among harmless choices where the lead skims
+   past it. A follow-up starts fresh from this report, not your transcript. If you're
    blocked, report that and stop. Blocked on a step only the owner can unblock (SKILL.md, Owner
    steps park), first stop that step and release what it holds, then report the exact owner
    action, since the lead parks it and nothing else frees the slot.
