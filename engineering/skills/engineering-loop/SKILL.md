@@ -231,7 +231,9 @@ chain of checks is one task. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in loop.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
-front of the command in `gate`.
+front of the command in `gate`. `local-ci` runs the check in a session of
+its own and follows its log, so a harness that kills the caller's process group leaves the check to finish and record;
+`local-ci --status <head>` then says whether it is running, passed or failed (its docstring names the files).
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,

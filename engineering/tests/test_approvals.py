@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import fnmatch
 import importlib.util
 import itertools
@@ -9,9 +10,11 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import textwrap
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +68,12 @@ REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
 COMMENT = approvals.comment
 OPEN_PULLS = getattr(approvals, "open_pulls", list)
+
+
+@pytest.fixture(autouse=True)
+def attached(monkeypatch: pytest.MonkeyPatch) -> None:
+    """local-ci runs in the test's process, as in a session of its own; the detached tests run the script."""
+    monkeypatch.setattr(approvals, "leads_its_session", lambda: True)
 
 
 @pytest.fixture(autouse=True)
@@ -4705,6 +4714,207 @@ def test_without_github_the_pass_is_recorded_here_and_says_it_is_not_published(
     )
     assert record_at().exists()
     assert approvals.reusable(HEAD)["head"] == HEAD
+
+
+def gate_faked(
+    tmp_path: Path, exit_code: int = 0, seconds: float = 0
+) -> tuple[Path, str, dict[str, str]]:
+    """A clean repo and an environment whose `mise` is a fake gate: it sleeps, prints, counts its runs, exits."""
+    repo = tmp_path / "repo"
+    head = committed(repo)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mise"
+    fake.write_text(
+        f"#!/bin/sh\nsleep {seconds}\necho gate done\necho run >> {tmp_path / 'runs'}\nexit {exit_code}\n"
+    )
+    fake.chmod(0o755)
+    return repo, head, {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def caller(repo: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
+    """`local-ci` run as an agent's harness runs it: in a process group of its own, not leading a session."""
+    return subprocess.Popen(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", *args],
+        cwd=repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        process_group=0,
+    )
+
+
+def polled(until: Callable[[], bool], seconds: float = 30) -> None:
+    deadline = time.monotonic() + seconds
+    while not until():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.05)
+
+
+def test_a_killed_caller_leaves_the_detached_check_to_finish_and_record(tmp_path: Path) -> None:
+    repo, head, env = gate_faked(tmp_path, seconds=2)
+    common = repo / ".git" / "approvals" / "local-ci"
+    run = caller(repo, env, "--record")
+    polled(lambda: (common / f"{head}.pid").exists())
+    os.killpg(run.pid, signal.SIGKILL)
+    run.wait()
+    polled(lambda: (common / f"{head}.exit").exists())
+    assert (common / f"{head}.exit").read_text() == "0\n"
+    [record] = common.glob("*.json")  # keyed by tree and env
+    assert json.loads(record.read_text())["exit"] == 0
+    assert "gate done" in (common / f"{head}.log").read_text()
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (status.returncode, status.stdout.split(":")[0]) == (0, f"passed on {head}")
+
+
+def test_status_never_says_passed_for_a_run_that_recorded_nothing(tmp_path: Path) -> None:
+    """A --record on a checkout with changes exits 0 without a pass on HEAD: --status must not call HEAD passed."""
+    repo, head, env = gate_faked(tmp_path)
+    (repo / "app.py").write_text("value = 3\n")
+    assert caller(repo, env, "--record").wait(timeout=60) == 0
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (status.returncode, status.stdout.split(":")[0]) == (
+        1,
+        f"exited 0 without recording a pass on {head} under the gate's command",
+    )
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "code", "last"),
+    [
+        (0, 0, "{checked} on {head}: recorded in {record}"),
+        (2, 1, "mise run check:all exited 2: nothing recorded"),
+    ],
+)
+def test_a_caller_left_alone_exits_and_prints_as_an_attached_run(
+    tmp_path: Path, exit_code: int, code: int, last: str
+) -> None:
+    repo, head, env = gate_faked(tmp_path, exit_code)
+    out, err = caller(repo, env, "--record").communicate(timeout=60)
+    record = next((repo / ".git" / "approvals" / "local-ci").glob("*.json"), None)
+    # a pass then says it isn't published: the repo has no remote
+    assert (out.splitlines()[:2], err) == (
+        ["gate done", last.format(checked=approvals.CHECKED, head=head, record=record)],
+        "",
+    )
+    assert (
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--record"],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            check=False,
+            start_new_session=True,
+        ).returncode
+        == code
+    )  # leading its session, it runs in place, as before
+
+
+def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
+    repo, head, env = gate_faked(tmp_path, seconds=2)
+    first = caller(repo, env, "--record")
+    polled(lambda: (repo / ".git" / "approvals" / "local-ci" / f"{head}.pid").exists())
+    second = caller(repo, env, "--record")
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
+    assert first.communicate(timeout=60)[0].startswith("gate done\n")
+    second.communicate(timeout=60)
+    assert (first.returncode, second.returncode) == (0, 0)
+    assert (tmp_path / "runs").read_text() == "run\n"  # one gate ran
+
+
+def test_two_callers_started_at_once_run_one_gate(tmp_path: Path) -> None:
+    repo, _, env = gate_faked(tmp_path, seconds=1)
+    callers = [caller(repo, env, "--record") for _ in range(4)]
+    for run in callers:
+        run.communicate(timeout=60)
+    assert [run.returncode for run in callers] == [0] * 4
+    assert (tmp_path / "runs").read_text() == "run\n"  # the pid file's lock let one start
+
+
+def test_a_caller_starts_no_gate_while_another_holds_the_pid_file(tmp_path: Path) -> None:
+    repo, head, env = gate_faked(tmp_path)
+    common = repo / ".git" / "approvals" / "local-ci"
+    common.mkdir(parents=True)
+    with open(common / f"{head}.pid", "a+") as claim:
+        fcntl.flock(claim, fcntl.LOCK_EX)
+        run = caller(repo, env, "--record")
+        time.sleep(2)  # long enough for an unlocked caller to start the gate and finish
+        assert (run.poll(), (tmp_path / "runs").exists()) == (None, False)
+    run.communicate(timeout=30)
+    assert (run.returncode, (tmp_path / "runs").read_text()) == (0, "run\n")
+
+
+def dead_pid() -> int:
+    ended = subprocess.Popen(["true"])
+    ended.wait()
+    return ended.pid
+
+
+def test_a_run_s_start_time_reads_the_same_whatever_the_caller_s_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    german = approvals.since(os.getpid())
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+    assert german is not None and approvals.since(os.getpid()) == german
+
+
+@pytest.mark.parametrize(
+    ("pid", "exit_file"),
+    [
+        (dead_pid, "1\n"),  # an older run left its exit code; this one passes
+        (dead_pid, None),  # an older run was killed before it wrote one
+        (os.getpid, None),  # its pid now belongs to another process, started at another time
+    ],
+)
+def test_a_stale_run_on_the_head_is_replaced_by_a_new_one(
+    tmp_path: Path, pid: Callable[[], int], exit_file: str | None
+) -> None:
+    repo, head, env = gate_faked(tmp_path)
+    common = repo / ".git" / "approvals" / "local-ci"
+    common.mkdir(parents=True)
+    stale = {"pid": pid(), "since": "Thu Jan  1 00:00:00 1970", "argv": ["local-ci", "--record"]}
+    (common / f"{head}.pid").write_text(json.dumps(stale))
+    if exit_file:
+        (common / f"{head}.exit").write_text(exit_file)
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.returncode == 1  # failed, or ended without an exit code: not running (3)
+    run = caller(repo, env, "--record")
+    out, _ = run.communicate(timeout=30)
+    assert (run.returncode, out.splitlines()[0]) == (0, "gate done")
+    assert (common / f"{head}.exit").read_text() == "0\n"
+    assert (tmp_path / "runs").read_text() == "run\n"
 
 
 # --- the owner's policy: specs approved and merges landed without an agent's approval ---
