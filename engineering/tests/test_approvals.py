@@ -3046,6 +3046,7 @@ if pathlib.Path("machine.txt").exists() and len(faults.read_text() if faults.exi
     pathlib.Path("machine.txt").read_text()
 ):
     faults.open("a").write("x")
+    pathlib.Path("leftover.txt").write_text("")
     print("the screen is locked")
     sys.exit(78)
 sys.exit(1 if pathlib.Path("red.txt").exists() else 0)
@@ -3061,7 +3062,7 @@ def lands(
     `refs/pull/<n>/head`), with one approved issue and a satisfied verdict on its head; `gh pr merge` squashes the head
     onto origin's main as GitHub does. The gate fails on a tree holding `red.txt`, and twice on one holding
     `flaky.txt`, and changes `app.py` on one holding `dirty.txt`; on one holding `machine.txt`, it exits 78 the number of
-    times the file says; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
+    times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     committed(work)
