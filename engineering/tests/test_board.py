@@ -11,7 +11,7 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "engineering-loop" / "scripts"
 sys.path.insert(
     0, str(SCRIPTS)
-)  # as when run: board.py reads the label names from approvals.py beside it
+)  # as when run: board.py reads the label names from gatekeeper.py beside it
 SPEC = importlib.util.spec_from_file_location("board", SCRIPTS / "board.py")
 assert SPEC and SPEC.loader
 board = importlib.util.module_from_spec(SPEC)

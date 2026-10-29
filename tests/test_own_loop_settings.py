@@ -1,6 +1,7 @@
-"""This repo's own docs/agents/ files parse with the approvals.py it ships and with the copy installed under
+"""This repo's own docs/agents/ files parse with the gatekeeper it ships and with the copy installed under
 .claude/skills, which is what lands this repo's PRs, so a settings change either copy can't read fails here instead
-of refusing every land in this repo (#548, #613)."""
+of refusing every land in this repo (#548, #613). A copy's reader is its gatekeeper.py, or approvals.py in a release
+before that file, since the shim's names are copies the reader never looks up (#614)."""
 
 from __future__ import annotations
 
@@ -10,10 +11,17 @@ from pathlib import Path
 import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-SCRIPT = Path("skills") / "engineering-loop" / "scripts" / "approvals.py"
+SCRIPTS = Path("skills") / "engineering-loop" / "scripts"
 COPIES = {
-    "shipped": REPOSITORY / "engineering" / SCRIPT,
-    "installed": REPOSITORY / ".claude" / SCRIPT,
+    copy: next(
+        path
+        for name in ("gatekeeper.py", "approvals.py")
+        if (path := root / SCRIPTS / name).exists()
+    )
+    for copy, root in (
+        ("shipped", REPOSITORY / "engineering"),
+        ("installed", REPOSITORY / ".claude"),
+    )
 }
 
 
