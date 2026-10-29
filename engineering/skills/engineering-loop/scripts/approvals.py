@@ -3118,7 +3118,8 @@ def pre_landed(
         pull["headRefOid"],
         run_in(work, "rev-parse", "HEAD"),
     )
-    if not fetched(head):  # so the check can read the head; a head not on origin merged_onto reports
+    # so the check can read the head; a head not on origin is merged_onto's to report
+    if not fetched(head):
         return True
     try:
         ran = subprocess.run(

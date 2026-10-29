@@ -3513,7 +3513,8 @@ def configure_pre_land(lands: dict[str, Any], command: list[str]) -> None:
 
 def test_a_pre_land_refusal_too_long_for_a_comment_posts_its_end(lands: dict[str, Any]) -> None:
     configure_pre_land(
-        lands, [sys.executable, "-c", "print('x' * 70000); print('the reason'); raise SystemExit(1)"]
+        lands,
+        [sys.executable, "-c", "print('x' * 70000); print('the reason'); raise SystemExit(1)"],
     )
     lands["open"](7, {"7.txt": "7\n"})
     assert lands["land"]()[0] == 1
