@@ -152,7 +152,15 @@ def node(
 def issue(
     number: int, *labels: str, body: str = "the spec", comments: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    return node(labels, comments, number=number, body=body, createdAt=WRITTEN, lastEditedAt=None)
+    return node(
+        labels,
+        comments,
+        number=number,
+        body=body,
+        createdAt=WRITTEN,
+        lastEditedAt=None,
+        repository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
+    )
 
 
 def specced(number: int, *labels: str) -> dict[str, Any]:
@@ -5055,7 +5063,13 @@ def listed(number: int, branch: str, body: str, *closing: int) -> dict[str, Any]
         "number": number,
         "headRefName": branch,
         "body": body,
-        "closingIssuesReferences": [{"number": n} for n in closing],
+        "closingIssuesReferences": [
+            {
+                "number": n,
+                "repository": {"name": "scratch-gate-revert", "owner": {"login": "kzarzycki"}},
+            }
+            for n in closing
+        ],
     }
 
 
@@ -5144,6 +5158,25 @@ def test_check_build_passes_as_today_when_no_other_open_pr_closes_its_issue(
     assert capsys.readouterr().out == ""
     assert [args[:2] for args in calls] == [("pr", "list")]
     assert (1, "loop", True) in assigned
+
+
+def test_check_build_counts_only_this_repos_issue_when_another_pr_closes_the_same_number_elsewhere(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`other/project#1` is another issue than this repo's #1, in the body or in GitHub's closing references."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    foreign = listed(8, "foreign", "Closes other/project#1")
+    foreign["closingIssuesReferences"] = [
+        {"number": 1, "repository": {"name": "project", "owner": {"login": "other"}}}
+    ]
+    monkeypatch.setattr(approvals, "gh", lambda *_args, **_kw: json.dumps([foreign]))
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert capsys.readouterr().out == ""
 
 
 def test_being_assigned_is_no_go_ahead() -> None:

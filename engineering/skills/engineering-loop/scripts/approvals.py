@@ -294,7 +294,7 @@ PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSI
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
-  closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
+  closingIssuesReferences(first: 50) {{ nodes {{ repository {{ nameWithOwner }} {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
 # leaves unfinished, and `Implements` for one the owner signs off after landing (`signoff`). ponytail: same-repo `#n`
 # only, add owner/repo#n and issue URLs when a PR here uses one.
@@ -1089,17 +1089,23 @@ def others(issue: dict[str, Any]) -> str | None:
     )
 
 
-def closed(pull: dict[str, Any], loop: str | None) -> set[int]:
-    """The issues a PR finishes: GitHub's closing references and each `#n` after a closing keyword, plus `Implements`
-    where loop.md has a `signoff` rule, which leaves the issue open only for the owner's sign-off. `Part of` builds on
-    an issue without finishing it, so two PRs may share one."""
+def closed(pull: dict[str, Any], repo: str, loop: str | None) -> set[int]:
+    """The issues of `repo` a PR finishes: GitHub's closing references there and each `#n` after a closing keyword,
+    plus `Implements` where loop.md has a `signoff` rule, which leaves the issue open only for the owner's sign-off.
+    `Part of` builds on an issue without finishing it, so two PRs may share one. A reference to another repo's issue
+    is a different issue, whatever its number; a body's `#n` is always `repo`'s (CLOSING)."""
     kinds = {CLOSES, IMPLEMENTS} if "signoff" in settings(loop) else {CLOSES}
     named = {n for n, kind in links(pull.get("body") or "").items() if kind in kinds}
-    return named | {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
+    return named | {
+        issue["number"]
+        for issue in pull["closingIssuesReferences"]["nodes"]
+        if issue["repository"]["nameWithOwner"].lower() == repo.lower()
+    }
 
 
 def open_pulls() -> list[dict[str, Any]]:
-    """Every open PR in the repo with its number, branch, body and closing references, in one call."""
+    """Every open PR in the repo with its number, branch, body and closing references (each naming its
+    issue's repo as `nameWithOwner`, as the PR query does), in one call."""
     found = json.loads(
         gh(
             "pr",
@@ -1113,20 +1119,28 @@ def open_pulls() -> list[dict[str, Any]]:
         )
     )
     for other in found:
-        other["closingIssuesReferences"] = {"nodes": other["closingIssuesReferences"]}
+        nodes = other["closingIssuesReferences"]
+        for issue in nodes:
+            where = issue["repository"]
+            issue["repository"] = {"nameWithOwner": f"{where['owner']['login']}/{where['name']}"}
+        other["closingIssuesReferences"] = {"nodes": nodes}
     return found
 
 
 def duplicates(pull: dict[str, Any], loop: str | None) -> list[str]:
     """One line per issue the PR finishes (closed) that another open PR finishes too, naming that PR and its branch:
     two builds of one issue each run a verifier, a gate and the queue, and one of them is thrown away."""
-    mine = closed(pull, loop)
+    repo = pull["baseRepository"]["nameWithOwner"]
+    mine = closed(pull, repo, loop)
+    if not mine:
+        return []
+    found = open_pulls()
     return [
         f"#{number} is also closed by open PR #{other['number']} (branch `{other['headRefName']}`): one build per"
         " issue, so close one of the PRs, or link it with `Part of`"
-        for other in open_pulls()
+        for other in found
         if other["number"] != pull["number"]
-        for number in sorted(mine & closed(other, loop))
+        for number in sorted(mine & closed(other, repo, loop))
     ]
 
 
