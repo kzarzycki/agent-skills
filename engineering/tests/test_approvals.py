@@ -4434,6 +4434,17 @@ def test_record_head_proof_runs_the_gate_with_the_callers_tier_over_the_gate_lin
     assert github == []
 
 
+def test_record_head_proof_on_a_checkout_with_changes_runs_the_callers_tier_and_publishes_nothing(
+    checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    checkout.update(loop=add(gated, "loop", HEAD_PROOF), status=" M app.py\n")
+    monkeypatch.setenv("GATE_UI_TESTS", "smoke")
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
+    assert checkout["env"]["GATE_UI_TESTS"] == "smoke"
+    assert hub == {}
+
+
 @pytest.mark.parametrize(
     ("loop", "argv"),
     [
