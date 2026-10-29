@@ -3106,6 +3106,7 @@ def gate() -> tuple[str, list[str], dict[str, str]]:
     written = settings(project()[1]).get("gate") or shlex.join(LOCAL_CI)
     lexer = shlex.shlex(written, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     words = list(lexer)
     assigned = len(
         list(

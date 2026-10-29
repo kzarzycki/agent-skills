@@ -4554,6 +4554,11 @@ def test_a_gate_whose_command_is_not_there_is_refused_naming_it(
     assert not (checkout["common"] / "approvals").exists()
 
 
+def test_a_hash_inside_a_word_is_part_of_it(checkout: dict[str, Any]) -> None:
+    checkout["loop"] = add(LOOP, "loop", 'gate: "GATE_X=a#b mise run check:all#x"\n')
+    assert approvals.gate()[1:] == (["mise", "run", "check:all#x"], {"GATE_X": "a#b"})
+
+
 def test_a_variable_set_twice_runs_the_command_with_the_last_value(
     checkout: dict[str, Any],
 ) -> None:
