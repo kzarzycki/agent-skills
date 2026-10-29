@@ -7,6 +7,7 @@ import importlib.util
 import itertools
 import json
 import re
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -4277,9 +4278,12 @@ def checkout(
         )
         return state["status"]
 
-    def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def run(
+        command: list[str], check: bool, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         assert (command, check) == (["mise", "run", "check:all"], False)
         state["runs"] += 1
+        state["env"] = env
         if state["after"]:
             state["status"] = state["after"]
         return subprocess.CompletedProcess(command, state["exit"])
@@ -4382,7 +4386,9 @@ def test_record_on_a_tree_already_green_reuses_it_and_publishes_once(
     assert approvals.main(["local-ci", "--record"]) == 0
     assert approvals.main(["local-ci", "--record"]) == 0
     assert checkout["runs"] == 1
-    assert [s["description"] for s in hub[HEAD]] == [f"Tree {TREE} on {HEAD}"]
+    assert [s["description"] for s in hub[HEAD]] == [
+        f"Tree {TREE} on {HEAD[:12]}: mise run check:all"
+    ]
     out = capsys.readouterr().out
     assert f"Reused by tree from the pass recorded on {HEAD}" in out
 
@@ -4438,7 +4444,7 @@ def test_a_local_ci_comment_names_no_host(
 def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], file: str, record: dict[str, Any]
 ) -> None:
-    where = approvals.recorded(file, {})
+    where = approvals.recorded(file, "mise run check:all")
     where.parent.mkdir(parents=True)
     where.write_text(json.dumps({**record, "head": HEAD, "env": {}, "time": "t", "host": "h"}))
     assert approvals.main(["local-ci", "7"]) == 0
@@ -4457,55 +4463,69 @@ ENV_LOOP = add(LOOP, "loop", "local_ci_env:\n  - GATE_UI_TESTS\n  - GATE_SCOPE\n
 
 def record_at(head: str = HEAD) -> Path:
     """Where this clone records a pass on `head`'s tree under the current env."""
-    return approvals.recorded(approvals.tree_of(head), approvals.local_ci_env())
+    return approvals.recorded(approvals.tree_of(head), approvals.gate()[0])
 
 
 def recorded_pass(checkout: dict[str, Any]) -> dict[str, Any]:
     return json.loads(record_at().read_text())
 
 
-def test_a_pass_recorded_under_another_env_runs_the_check_again(
+def test_the_gate_runs_with_the_names_local_ci_env_lists_cleared_so_an_ambient_tier_changes_no_pass(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    checkout["loop"] = ENV_LOOP
-    monkeypatch.delenv("GATE_SCOPE", raising=False)
-    monkeypatch.setenv("GATE_UI_TESTS", "0")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert recorded_pass(checkout)["env"] == {"GATE_SCOPE": None, "GATE_UI_TESTS": "0"}
-    monkeypatch.delenv("GATE_UI_TESTS")  # unset is the default tier, not the same as 0
-    assert approvals.main(["local-ci", "7"]) == 0
-    assert checkout["runs"] == 2
-    assert github == [
-        (
-            "comment",
-            7,
-            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
-        )
-    ]
-    assert recorded_pass(checkout)["env"] == {"GATE_SCOPE": None, "GATE_UI_TESTS": None}
-
-
-def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
-    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
+    """A host's ambient GATE_UI_TESTS is no part of the gate: it is cleared for the run, and the pass is reused
+    whatever the next host has set."""
     checkout["loop"] = ENV_LOOP
     monkeypatch.setenv("GATE_UI_TESTS", "0")
-    monkeypatch.setenv("GATE_SCOPE", "changed")
+    monkeypatch.setenv("UNLISTED", "kept")
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = recorded_pass(checkout)
+    assert "GATE_UI_TESTS" not in checkout["env"] and checkout["env"]["UNLISTED"] == "kept"
+    assert recorded_pass(checkout)["env"] == {}
+    monkeypatch.setenv("GATE_UI_TESTS", "full")
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
+    [(_, _, body)] = github
+    assert "Env: default\nReused by tree" in body
+
+
+def test_a_gate_that_sets_a_name_runs_with_it_and_names_it(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout["loop"] = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    monkeypatch.setenv("GATE_UI_TESTS", "full")
+    monkeypatch.setenv("GATE_SCOPE", "changed")
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["env"]["GATE_UI_TESTS"] == "0" and "GATE_SCOPE" not in checkout["env"]
     assert github == [
         (
             "comment",
             7,
-            (
-                f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
-                "Env: GATE_SCOPE=changed GATE_UI_TESTS=0\n"
-                f"Reused by tree from the pass recorded on {HEAD} at {record['time']}, not run again.\n"
-            ),
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: GATE_UI_TESTS=0 mise run check:all\nEnv: GATE_UI_TESTS=0\n",
         )
     ]
+
+
+def test_a_name_added_to_local_ci_env_keeps_every_pass(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any]
+) -> None:
+    assert approvals.main(["local-ci", "--record"]) == 0
+    checkout["loop"] = ENV_LOOP
+    assert approvals.reusable(HEAD) is not None
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert checkout["runs"] == 1
+
+
+@pytest.mark.parametrize("gate", ["GATE_UI_TESTS=0", "1GATE=0 mise run check:all", "' '"])
+def test_a_gate_that_runs_nothing_or_sets_no_variable_is_refused(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    gate: str,
+) -> None:
+    checkout["loop"] = add(LOOP, "loop", f"gate: {gate}\n")
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (checkout["runs"], github) == (0, [])
+    assert "loop.md's `gate`" in capsys.readouterr().out
 
 
 def test_a_record_without_env_runs_the_check_again(
@@ -4697,16 +4717,20 @@ def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_
     """Host B fetches the head, finds A's published pass and posts it without running the check, which would fail
     there."""
     head = published_on_a(tmp_path, monkeypatch)
-    assert [s["description"] for s in hub[head]] == [f"Tree {approvals.tree_of(head)} on {head}"]
+    assert [s["description"] for s in hub[head]] == [
+        f"Tree {approvals.tree_of(head)} on {head[:12]}: true"
+    ]
 
     def never(*_args: Any) -> Any:
         raise AssertionError("host B ran the check")
 
     monkeypatch.setattr(approvals, "run_local_ci", never)
-    assert approvals.reusable(head)["head"] == head  # check queue, batch and check merge read this
+    assert (
+        approvals.reusable(head)["head"] == head[:12]
+    )  # check queue, batch and check merge read this
     assert approvals.main(["local-ci", "7"]) == 0
     [(_, _, body)] = github
-    assert f"Reused by tree from the pass recorded on {head} at 2026-01-01T00:00:00Z" in body
+    assert f"Reused by tree from the pass recorded on {head[:12]} at 2026-01-01T00:00:00Z" in body
     assert len(hub[head]) == 1  # already published: not again
 
 
@@ -4735,7 +4759,9 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
 
     monkeypatch.setattr(approvals, "run_local_ci", run_local_ci)
     assert approvals.reusable(head) is None
-    assert merge(merged, [approved(1, "area:web")], no_ci) == [NO_LOCAL_CHECK]
+    assert merge(merged, [approved(1, "area:web")], no_ci) == [
+        f"{NO_LOCAL_CHECK}; its tree passed under `true`, and the gate is now `true --another-tier`"
+    ]
     assert approvals.main(["local-ci", "7"]) == 1
     assert (ran, github) == ([head], [])
 
@@ -4743,13 +4769,27 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
 @pytest.mark.parametrize(
     ("published", "writers"),
     [
-        (status("local-ci/{key}", f"Tree {'f' * 40} on {HEAD}"), {"loop"}),
-        (status("local-ci/000000000000", f"Tree {TREE} on {HEAD}"), {"loop"}),
-        (status("local-ci/{key}", f"Tree {TREE} on {HEAD}", by="contributor"), {"loop"}),
-        (status("local-ci/{key}", f"Tree {TREE} on {HEAD}", state="failure"), {"loop"}),
-        (status("local-ci/{key}", f"Tree {TREE}"), {"loop"}),
+        (status("gate", f"Tree {'f' * 40} on {HEAD}: mise run check:all"), {"loop"}),
+        (status("gate", f"Tree {TREE} on {HEAD[:12]}: mise run check"), {"loop"}),
+        (
+            status("gate", f"Tree {TREE} on {HEAD[:12]}: mise run check:all", by="contributor"),
+            {"loop"},
+        ),
+        (
+            status("gate", f"Tree {TREE} on {HEAD[:12]}: mise run check:all", state="failure"),
+            {"loop"},
+        ),
+        (status("gate", f"Tree {TREE}: mise run check:all"), {"loop"}),
+        (status("local-ci/0123456789ab", f"Tree {TREE} on {HEAD}"), {"loop"}),
     ],
-    ids=["another tree", "another env", "a non-writer", "not a pass", "no commit named"],
+    ids=[
+        "another tree",
+        "another command",
+        "a non-writer",
+        "not a pass",
+        "no commit named",
+        "the old context",
+    ],
 )
 def test_a_published_pass_for_another_tree_or_env_or_by_a_non_writer_runs_the_check(
     github: list[tuple[Any, ...]],
@@ -4761,8 +4801,7 @@ def test_a_published_pass_for_another_tree_or_env_or_by_a_non_writer_runs_the_ch
 ) -> None:
     """Anyone who can only open a PR must not publish a pass: a status counts from the running account or a writer."""
     monkeypatch.setattr(approvals, "writer", lambda login: login in writers)
-    key = approvals.env_key(approvals.local_ci_env())
-    hub[HEAD] = [{**published, "context": published["context"].format(key=key)}]
+    hub[HEAD] = [published]
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 1
 
@@ -4774,12 +4813,11 @@ def test_a_pass_published_by_a_writer_on_the_head_is_reused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
-    key = approvals.env_key(approvals.local_ci_env())
-    hub[HEAD] = [status(f"local-ci/{key}", f"Tree {TREE} on {'c' * 40}", by="maintainer")]
+    hub[HEAD] = [status("gate", f"Tree {TREE} on {'c' * 12}: mise run check:all", by="maintainer")]
     assert approvals.main(["local-ci", "7"]) == 0
     assert checkout["runs"] == 0
     [(_, _, body)] = github
-    assert f"Reused by tree from the pass recorded on {'c' * 40} at 2026-01-01T00:00:00Z" in body
+    assert f"Reused by tree from the pass recorded on {'c' * 12} at 2026-01-01T00:00:00Z" in body
 
 
 def test_two_commits_with_one_tree_and_env_share_a_pass_and_another_tree_runs_it(
@@ -4791,7 +4829,7 @@ def test_two_commits_with_one_tree_and_env_share_a_pass_and_another_tree_runs_it
     checkout["head"] = amended
     assert approvals.main(["local-ci", "--record"]) == 0
     assert checkout["runs"] == 1
-    assert hub[amended][0]["description"] == f"Tree {TREE} on {HEAD}"
+    assert hub[amended][0]["description"] == f"Tree {TREE} on {HEAD[:12]}: mise run check:all"
     checkout["trees"][amended] = "f" * 40  # the same commit name, another tree
     hub.clear()
     assert approvals.main(["local-ci", "--record"]) == 0
@@ -5907,15 +5945,16 @@ def batch_note(head: str, merge: str, batch: str, exit: int = 0, env: str = "def
 
 
 def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
-    """Record a green `local-ci --record` pass on `head`, as run_local_ci() writes it."""
+    """Record a green `local-ci --record` pass on `head`, as run_local_ci() writes it, of a gate that sets `env`."""
     env = {} if env is None else env
     held = approvals.tree_of(head)
-    where = approvals.recorded(held, env)
+    command = shlex.join([*(f"{name}={value}" for name, value in env.items()), *approvals.LOCAL_CI])
+    where = approvals.recorded(held, command)
     where.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "head": head,
         "tree": held,
-        "command": " ".join(approvals.LOCAL_CI),
+        "command": command,
         "exit": 0,
         "env": env,
         "time": "2026-01-01T00:00:00Z",
@@ -6006,13 +6045,19 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
 ) -> None:
     head, merged, batch = batched["head"], batched["merge"], batched["batch"]
     note = batch_note(head, merged, batch)
-    ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
+    ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under the gate command, which a batch never stands in for"
+    other = f"{ungated}; its tree passed under `GATE_UI_TESTS=smoke mise run check:all`, and the gate is now `mise run check:all`"
     assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [ungated]
-    gated_head(head, {"GATE_UI_TESTS": "smoke"})  # gated, but under another env than this one
+    gated_head(
+        head, {"GATE_UI_TESTS": "smoke"}
+    )  # gated, but under another gate command than this one
     assert queued_merge(head, note) == [NO_CHECK]
-    assert queued_reasons(head, note) == [ungated]
-    monkeypatch.setattr(approvals, "local_ci_env", lambda: {"GATE_UI_TESTS": "smoke"})
+    assert queued_reasons(head, note) == [other]
+    smoke = "GATE_UI_TESTS=smoke mise run check:all"
+    monkeypatch.setattr(
+        approvals, "gate", lambda: (smoke, approvals.LOCAL_CI, {"GATE_UI_TESTS": "smoke"})
+    )
     assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [
         f"PR #7: batch {batch} names the head's gate env `default`, its record `GATE_UI_TESTS=smoke`",
@@ -6095,7 +6140,7 @@ def test_with_ci_check_queue_still_needs_the_heads_own_record(
     assert queue_check(capsys) == (
         1,
         [
-            f"PR #7: no `local-ci --record` pass on {HEAD} under this environment (approvals.py local-ci --record)"
+            f"PR #7: no `local-ci --record` pass on {HEAD} under the gate command (approvals.py local-ci --record)"
         ],
     )
 
@@ -6165,9 +6210,10 @@ def test_posted_comments_name_no_host_or_home(
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     # a gate env naming a path under the home directory, posted as `~` and still matching the head's record
     env = {"CACHE": "/Users/owner/cache"}
-    monkeypatch.setattr(approvals, "local_ci_env", lambda: env)
+    command = "CACHE=/Users/owner/cache mise run check:all"
+    monkeypatch.setattr(approvals, "gate", lambda: (command, approvals.LOCAL_CI, env))
     gated_head(batched["head"], env)
-    record = approvals.recorded(approvals.tree_of(batched["head"]), env)
+    record = approvals.recorded(approvals.tree_of(batched["head"]), command)
     record.write_text(record.read_text().replace('"host": "host"', '"host": "owner-MacBook.local"'))
     log = tmp_path / "gate.log"
     log.write_text(
@@ -6266,7 +6312,7 @@ def test_check_queue_refuses_a_head_without_a_recorded_pass(
     assert queue_check(capsys) == (
         1,
         [
-            f"PR #7: no `local-ci --record` pass on {HEAD} under this environment (approvals.py local-ci --record)"
+            f"PR #7: no `local-ci --record` pass on {HEAD} under the gate command (approvals.py local-ci --record)"
         ],
     )
 
@@ -6665,6 +6711,7 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     monkeypatch.setattr(approvals, "git", lambda *args: pytest.fail(f"git {args}"))
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
     monkeypatch.setattr(approvals, "reusable", lambda head: None)  # the merge proof, not a carry
+    monkeypatch.setattr(approvals, "elsewhere", lambda head: "")  # and what its refusal adds
     pr = carried_pull(case)
     assert approvals.judged(pr, NO_CI) is None
     assert merge(pr, [approved(1, "area:web")], NO_CI)[0].startswith(
