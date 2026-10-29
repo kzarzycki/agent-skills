@@ -825,11 +825,12 @@ def stale_check(home, dev, git, run, told, hygiene):
     assert (
         "FAIL dotagents install after a fast-forward: exit 3: boom" in out and len(relaunched) == 2
     ), out
+    marker = home / ".local/state/agent-hygiene/install-failed"
+    assert marker.read_text() == "exit 3: boom\n", "the failing run itself keeps the failure"
     code, out = run(
         "--floor-gb", "0"
     )  # the relaunched copy: a new Run that must still end in failure
     assert code == 1 and "FAIL dotagents install after a fast-forward: exit 3: boom" in out, out
-    marker = home / ".local/state/agent-hygiene/install-failed"
     assert marker.read_text() == "exit 3: boom\n", (
         "the checkout has moved, so only this brings the install back"
     )
@@ -903,12 +904,26 @@ def stale_check(home, dev, git, run, told, hygiene):
     os.environ["DISK_HYGIENE_FAILED"] = (
         "exit 4: old"  # the old disk-hygiene relaunched into this script after a failed install
     )
+    (home / "self.git").rename(
+        home / "self.down"
+    )  # and the remote is unreachable: no fetch, no retry this run
     code, out = run("--floor-gb", "0")
     assert (
         code == 1
         and "FAIL dotagents install after a fast-forward: exit 4: old" in out
         and "DISK_HYGIENE_FAILED" not in os.environ
     ), out
+    assert marker.read_text() == "exit 4: old\n", (
+        "only the marker carries the failure to the next run"
+    )
+    (home / "self.down").rename(home / "self.git")
+    before_installs, before_relaunches = len(installs()), len(relaunched)
+    code, out = run(
+        "--floor-gb", "0"
+    )  # a fresh run, no handover: installs again, now healthy, and starts over
+    assert len(installs()) == before_installs + 1 and len(relaunched) == before_relaunches + 1, out
+    assert code == 0 and not marker.exists(), out
+    os.environ.pop("AGENT_HYGIENE_RELAUNCHED")
     os.execv = real_execv
     copy.write_bytes(lock + b"# released again\n")
     git(checkout, "commit", "-q", "-am", "release again")
