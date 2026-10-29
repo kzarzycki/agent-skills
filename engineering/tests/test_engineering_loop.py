@@ -109,3 +109,15 @@ def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> No
     assert "waited on as a detached run is" in verifier  # the bare gate too
     assert "Rerun all of its repros from one script" in verifier
     assert "the diff since its head and the files it touches" in verifier
+
+
+def test_owner_questions_end_the_turn_rather_than_wait_in_a_tool() -> None:
+    """A tool that waits for the owner's answer holds the turn open, and Omnigent delivers input
+    only at turn end, so every relay and supervisor event queues behind the question (#658)."""
+    cos = " ".join((LOOP.parent / "chief-of-staff" / "SKILL.md").read_text().split())
+    lead = " ".join((LOOP / "lead.md").read_text().split())
+    assert "Ask as text at the end of your turn" in cos
+    assert "as text that ends your turn `USER NEEDED`" in lead
+    for text in (cos, lead):
+        assert "never through a tool that waits for the answer" in text
+        assert "(Claude Code's AskUserQuestion, Codex's requestUserInput)" in text
