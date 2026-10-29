@@ -3,6 +3,7 @@ after every run, a killed one included."""
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 import sys
@@ -65,6 +66,8 @@ def mutate(
             *map(str, patches),
         ],
         cwd=cwd or repo,
+        # a mutate.py run over these tests passes its switch down, which would hide this one lacking it
+        env={k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"},
         capture_output=True,
         text=True,
         check=False,
