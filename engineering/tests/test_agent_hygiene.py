@@ -870,6 +870,15 @@ def stale_check(home, dev, git, run, told, hygiene):
     )
     code, out = run("--floor-gb", "0")  # up to date: nothing to install
     assert len(installs()) == before_installs + 1 and len(relaunched) == before_relaunches, out
+    os.environ["DISK_HYGIENE_FAILED"] = (
+        "exit 4: old"  # the old disk-hygiene relaunched into this script after a failed install
+    )
+    code, out = run("--floor-gb", "0")
+    assert (
+        code == 1
+        and "FAIL dotagents install after a fast-forward: exit 4: old" in out
+        and "DISK_HYGIENE_FAILED" not in os.environ
+    ), out
     os.execv = real_execv
     copy.write_bytes(lock + b"# released again\n")
     git(checkout, "commit", "-q", "-am", "release again")

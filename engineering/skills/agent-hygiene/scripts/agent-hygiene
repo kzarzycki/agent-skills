@@ -715,7 +715,8 @@ def main():
         pass
     start = free()
     run.say(f'agent-hygiene {who}{" (dry run)" if args.dry_run else ""}: {start / GB:.1f} GB free')
-    if carried := os.environ.pop('AGENT_HYGIENE_FAILED', None):
+    # ponytail: DISK_HYGIENE_FAILED is what the old disk-hygiene sets before it relaunches into this script; drop with that link
+    if carried := os.environ.pop('AGENT_HYGIENE_FAILED', None) or os.environ.pop('DISK_HYGIENE_FAILED', None):
         run.failed = True
         run.say(f'FAIL dotagents install after a fast-forward: {carried}')
     asks = []  # what may be wanted: the owner decides
