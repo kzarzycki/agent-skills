@@ -130,7 +130,10 @@ installs the skill it is under the install, such as
 pulls in, `browsing` in `engineering`, and each sits wherever the host installed it (`.agents/skills/<skill>/` under APM,
 `skills/<skill>/` in its plugin under Claude Code). Run a script from the worktree with `uv run`,
 which installs what its inline header declares. `<browsing>/scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
-asked, and screenshots it (worker.md, Report; its docstring has the flags).
+asked, and screenshots it (worker.md, Report; its docstring has the flags). `scripts/mutate.py` applies
+each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
+runs it before its report and the verifier in review (verifier.md, Mutation-check the new tests; its
+docstring has the log format and exit codes).
 This skill's `scripts/approvals.py`, `scripts/gatekeeper.py`, `scripts/board.py`,
 `scripts/labels.py` and `scripts/browse.py` are those scripts' paths before the package split,
 kept for one release line: each runs the script it names after a deprecation line on stderr
