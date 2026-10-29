@@ -1092,9 +1092,11 @@ def autocompact_args(workspace: str) -> list[str]:
     size = project_line(workspace, "Lead autocompact")
     if not size:
         return []
-    found = re.fullmatch(r"(\d+)([kK]?)", size)
-    number = int(found[1]) if found else 0
-    tokens = number * 1000 if found and (found[2] or number <= 1000) else number
+    # Claude Code's spellings: 150000, 150k, 0.15M, and a bare number up to 1000 as thousands
+    found = re.fullmatch(r"(\d+(?:\.\d+)?)([kKmM]?)", size)
+    number = float(found[1]) if found else 0.0
+    unit = found[2].lower() if found else ""
+    tokens = number * (1e6 if unit == "m" else 1000 if unit == "k" or number <= 1000 else 1)
     if not 100_000 <= tokens <= 1_000_000:
         raise Fail(
             f"{LOOP_FILE}: Lead autocompact: {size} is not a size from 100k to 1M, like 150k"
