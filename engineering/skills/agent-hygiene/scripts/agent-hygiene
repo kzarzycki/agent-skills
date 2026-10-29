@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Clear what rebuilds itself on this account; ask the chief of staff about the rest and warn it if the disk stays low.
 
-    disk-hygiene             clean, log, warn under the floor
-    disk-hygiene --dry-run   report what would go, remove nothing
+    agent-hygiene              clean, log, warn under the floor
+    agent-hygiene --dry-run    report what would go, remove nothing
+    agent-hygiene --hold-asks  print each question as an ASK: line instead of telling the chief of staff
 
-Installed by `dotagents install`; run by an Omnigent scheduled task on each dev account. Steps, each skipped when in use:
+The agent-hygiene skill's script (its SKILL.md is the full account), from the engineering pack the account's dotagents
+checkout pins; `dotagents install` links ~/.local/bin/agent-hygiene to it. Run by an Omnigent scheduled task on each
+dev account. Its history before the move: kzarzycki/dotagents, `git log -- home/.local/bin/disk-hygiene`.
+Steps, each skipped when in use:
   worktrees     linked worktrees under ~/dev whose branch has a merged PR (or, detached, whose HEAD is the head of a merged or closed PR), and those with no PR of their own
                 inside one, judged with its PR, innermost first: removed with
                 `git worktree remove` when clean (untracked *.lock files aside, also in an untracked dir), pushed (or in the PR head), unlocked, no process is in
@@ -23,9 +27,9 @@ Installed by `dotagents install`; run by an Omnigent scheduled task on each dev 
 Never touched: agent state (~/.claude, ~/.codex, ~/.omnigent), user files, simulator devices,
 VM or container images. What may be wanted is asked about instead, once, in the chief of staff's
 session: a merged worktree kept for uncommitted work, an unpushed HEAD or ignored files that may
-not rebuild; simulator devices whose runtime is gone; staged ChatGPT updates; this checkout's script differing from
-its origin/main (a missed release); what `dotagents doctor` reports (drift).
-Log: ~/.local/state/disk-hygiene/<UTC time>.log. Exit 0 done, 2 under the floor (the chief of staff
+not rebuild; simulator devices whose runtime is gone; staged ChatGPT updates; the dotagents checkout pinning another
+pack than its origin/main (a missed release); what `dotagents doctor` reports (drift).
+Log: ~/.local/state/agent-hygiene/<UTC time>.log. Exit 0 done, 2 under the floor (the chief of staff
 was told), 1 a step, the process scan or the message failed. Without a process scan nothing is removed.
 """
 import argparse
@@ -47,10 +51,11 @@ import urllib.request
 from pathlib import Path
 
 HOME = Path.home()
-STATE = HOME / '.local/state/disk-hygiene'
+STATE = HOME / '.local/state/agent-hygiene'
+OLD_STATE = HOME / '.local/state/disk-hygiene'  # before the rename: moved once, so nothing already asked is asked again
 OMNIGENT_PYTHON = HOME / '.local/share/uv/tools/omnigent/bin/python'
-REPO = Path(__file__).resolve().parents[3]  # the dotagents checkout this script is linked from
-SELF = 'home/.local/bin/disk-hygiene'
+REPO = HOME / '.dotagents'  # the account's dotagents checkout, whose pinned pack holds this script
+LOCK = 'apm.lock.yaml'  # its pin of that pack
 DOTAGENTS = REPO / 'bin/dotagents'  # its doctor reports what agents' skills need and lack
 GB = 1e9
 WARN_EVERY = 20 * 3600  # one warning per account per day while the disk stays low
@@ -146,7 +151,7 @@ def listing():
 def dead_terminals(run):
     """Kill this user's orphaned Omnigent terminal wrappers whose bridge dir is gone: they hold a pty for good and
     their pool (macOS: 511 machine-wide) runs out. Selection is exact; anything else is left alone."""
-    rows = listing()
+    rows = listing()  # ponytail: its own ps call beside processes(), which lists commands only; merge them for a third user
     if rows is None:
         run.failed = True
         run.say('FAIL terminals: ps failed')
@@ -635,7 +640,7 @@ def drift(run):
 
 def relaunch():
     """Run the new copy of this script in place of this one."""
-    os.environ['DISK_HYGIENE_RELAUNCHED'] = '1'  # a copy that still differs after one fast-forward reports instead of looping
+    os.environ['AGENT_HYGIENE_RELAUNCHED'] = '1'  # a pin that still differs after one fast-forward reports instead of looping
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
@@ -658,26 +663,28 @@ def fast_forward(run):
         if not done or done.returncode:
             run.failed = True
             run.say(f'FAIL dotagents install after a fast-forward: {problem}')
-            os.environ['DISK_HYGIENE_FAILED'] = problem  # the relaunched copy starts a new Run: it reports this and exits 1
+            os.environ['AGENT_HYGIENE_FAILED'] = problem  # the relaunched copy starts a new Run: it reports this and exits 1
     return True
 
 
 def stale(run, dry_run=False):
-    """A line saying this script is not the checkout's origin/main one (a missed release), else None.
-    A checkout that can fast-forward does on any release, and this run starts over as the new copy when the script changed."""
+    """A line saying the dotagents checkout pins another pack than its origin/main (a missed release), else None.
+    A checkout that can fast-forward does on any release, and its install puts in the pack it pins: this run then starts
+    over as the newly installed script when the release moved the pin."""
     if not (REPO / '.git').exists() or git(REPO, 'fetch', '--quiet', 'origin', 'main', timeout=180) is None:
-        return None  # a cached origin/main may be older than this copy: no claim
-    main, mine = git(REPO, 'show', f'origin/main:{SELF}'), Path(__file__).read_bytes()
+        return None  # a cached origin/main may be older than this checkout: no claim
+    main, mine = git(REPO, 'show', f'origin/main:{LOCK}'), (REPO / LOCK).read_bytes() if (REPO / LOCK).is_file() else b''
     differs = main is not None and main.encode() != mine
-    moved = not dry_run and not os.environ.get('DISK_HYGIENE_RELAUNCHED') and fast_forward(run)
+    moved = not dry_run and not os.environ.get('AGENT_HYGIENE_RELAUNCHED') and fast_forward(run)
     if differs and moved:
         relaunch()
         return None
     if not differs:
         return None
     digest = lambda data: hashlib.sha256(data).hexdigest()[:12]
-    return (f'This disk-hygiene ({Path(__file__)}, sha256 {digest(mine)}) is not origin/main\'s ({SELF} in {REPO}, '
-            f'sha256 {digest(main.encode())}): pull that checkout and run `dotagents install`.')
+    return (f'The dotagents checkout {REPO.resolve()} pins another engineering pack than its origin/main ({LOCK} sha256 '
+            f'{digest(mine)}, origin/main\'s {digest(main.encode())}), so agent-hygiene and the pack\'s other skills there are '
+            'old: pull that checkout and run `dotagents install`.')
 
 
 def main():
@@ -686,7 +693,11 @@ def main():
     parser.add_argument('--floor-gb', type=float, default=20)
     parser.add_argument('--idle-days', type=float, default=14)
     parser.add_argument('--dev', type=Path, default=HOME / 'dev')
+    parser.add_argument('--hold-asks', action='store_true',
+                        help='print every question as an ASK: line and tell the chief of staff none of them')
     args = parser.parse_args()
+    if OLD_STATE.is_dir() and not STATE.exists():
+        OLD_STATE.rename(STATE)
     STATE.mkdir(parents=True, exist_ok=True)
     for old in STATE.glob('*.log'):
         if old.stat().st_mtime < time.time() - 30 * 86400:
@@ -699,8 +710,8 @@ def main():
     except (OSError, AttributeError):
         pass
     start = free()
-    run.say(f'disk-hygiene {who}{" (dry run)" if args.dry_run else ""}: {start / GB:.1f} GB free')
-    if carried := os.environ.pop('DISK_HYGIENE_FAILED', None):
+    run.say(f'agent-hygiene {who}{" (dry run)" if args.dry_run else ""}: {start / GB:.1f} GB free')
+    if carried := os.environ.pop('AGENT_HYGIENE_FAILED', None):
         run.failed = True
         run.say(f'FAIL dotagents install after a fast-forward: {carried}')
     asks = []  # what may be wanted: the owner decides
@@ -755,14 +766,19 @@ def main():
         parts.append('dotagents doctor: what this account\'s agents\' skills need and lack, or old skill copies they can reach '
                      '(dotagents README, Skill requirements and doctor):\n' + '\n'.join(f'- {line}' for line in new_drift)
                      + (f'\n- and {len(pending) - ASK_MAX} more, in the log' if len(pending) > ASK_MAX else ''))
-    if fresh := [line for line in dict.fromkeys(asks) if line not in asked]:
+    fresh = [line for line in dict.fromkeys(asks) if line not in asked]
+    if args.hold_asks:  # the round's agent settles the routine ones, then runs again without it to ask about the rest
+        for line in dict.fromkeys(asks):
+            run.say(f'ASK: {line}')
+        fresh = []
+    if fresh:
         parts.append('Kept, since they may hold something wanted. Which may go?\n'
                      + '\n'.join(f'- {line}' for line in fresh[:ASK_MAX])
                      + (f'\n- and {len(fresh) - ASK_MAX} more, in the log' if len(fresh) > ASK_MAX else ''))
     code = 1 if run.failed else 2 if low else 0
     if not parts:
         return code
-    text = f'disk-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n' + '\n\n'.join(parts)
+    text = f'agent-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n' + '\n\n'.join(parts)
     if args.dry_run:
         run.say(f'would tell the chief of staff:\n{text}')
         return code

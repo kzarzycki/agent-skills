@@ -81,13 +81,14 @@ never touched. `--dry-run` lists what it would remove and the message it would p
 The script asks about what it kept but may not be wanted. Settle a case the way the owner
 would, when the answer doesn't depend on what they want:
 
-- **A merged worktree with uncommitted work or an unpushed HEAD.** Look at what holds it.
-  When the work is already on the default branch (the same change landed) or is scratch
-  (debug prints, a reverted edit, generated output), it is not wanted. Otherwise keep it
-  reachable: in the worktree, commit any uncommitted work on a new local branch, then
-  `git tag hygiene/<branch>-<YYYYMMDD> HEAD` in the main checkout. Then
-  `git worktree remove --force <path>`. A tag is local and costs nothing, and it keeps the
-  commits from garbage collection, so nothing is lost; your reply names each tag.
+- **A merged worktree with uncommitted work or an unpushed HEAD.** Look at what holds it
+  (`git status`, `git log @{upstream}..` or the commits past the PR's head). When the work
+  is already on the default branch (the same change landed) or is scratch (debug prints, a
+  reverted edit, generated output), it is not wanted. Otherwise keep it reachable: commit
+  any uncommitted work there (`git add -A && git commit -m 'hygiene: kept work'`), then
+  `git tag hygiene/<branch or short sha>-<YYYYMMDD>` on that commit. A local tag costs
+  nothing and keeps the commits from garbage collection, so nothing is lost. Then
+  `git worktree remove --force <path>` from the main checkout. The reply names each tag.
 - **A worktree with no PR of its own** inside a merged one: the same, judged with that PR.
 
 Leave to the owner, since only they know whether it is wanted: ignored files that may not
