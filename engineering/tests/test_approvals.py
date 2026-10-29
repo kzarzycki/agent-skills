@@ -3372,11 +3372,14 @@ def test_a_pr_the_pre_land_check_refuses_is_left_out_with_one_comment_and_stays_
     # the heads are on origin only, as a PR's are, so the check reads one only once land fetched it
     work = lands["work"]
     git_in(work, "switch", "-q", "--detach", "origin/main")
+    for ref in ("pr7", "pr8"):  # the push's remote-tracking refs
+        git_in(work, "update-ref", "-d", f"refs/remotes/origin/{ref}")
     git_in(work, "reflog", "expire", "--expire=now", "--all")
     git_in(work, "gc", "-q", "--prune=now")
     code, lines = lands["land"]()
     assert code == 1, lines
-    assert lands["merged"]() == ["7"]
+    # one gate: what the check left in the worktree never reaches the batch
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7"])
     assert runs.read_text().splitlines() == [f"{fine} {base}", f"{old} {base}"]
     command = shlex.join(["STALE=old.txt", sys.executable, "check.py", str(runs)])
     assert (
