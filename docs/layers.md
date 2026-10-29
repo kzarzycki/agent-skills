@@ -103,7 +103,7 @@ exceptions:
 | `gatekeeper` | 2 | `gatekeeper`: the gatekeeper CLI and its GitHub adapter |
 | `engineering` | 1 | every craft skill above at layer 1 under `engineering/`, `orchestrating-agents` with its native backend, `browsing` |
 | `omnigent` | 0 | `omnigent-agents` (the runner backend and its driver), `operating-omnigent`, `omnigent-telemetry` |
-| `github` | 0 | `github-tracker` (`github.md`, `board.py`, `labels.py`); `github-project-board-setup` joins it from `utilities` in #616 |
+| `github` | 0 | `github-tracker` (`github.md`, `board.py`, `labels.py`; `local.md` and `issue_batch.py` apply a split manifest to GitHub or to local ticket files, so a local-files project installs it too); `github-project-board-setup` joins it from `utilities` in #616 |
 | `vendoring` | tooling | the capability-pack tool, `ROUTINE.md`, `update-delta-audit` |
 | `research`, `utilities`, `content`, `experimental` | 1 (`overnight-run` 4) | unchanged |
 
@@ -200,3 +200,22 @@ A split stage turns one spec into child items. Its manifest lists each child ite
 - a title;
 - its spec;
 - what blocks it (the other items it waits for).
+
+The manifest is a JSON file, by default `.scratch/<feature-slug>/split-manifest.json`. Titles are
+the items' identities, so `blocked_by` names titles, and a title is unique within the manifest.
+The manifest holds no labels, parent or tracker state: whoever applies it adds those.
+
+```json
+{
+  "version": 1,
+  "items": [
+    {"title": "Expose account status", "spec": "Return the current account status from the API.", "blocked_by": []},
+    {"title": "Render account status", "spec": "Show the account status in the dashboard.", "blocked_by": ["Expose account status"]}
+  ]
+}
+```
+
+The skill that splits only writes this file, so the same file works under the lead, which applies it
+through the tracker (github-tracker's github.md, Publish an issue batch), and under a flow engine,
+which applies it with its own ceiling and cycle checks. A practice skill decides how to split; it
+never writes tracker state, since two writers of one state drift apart.

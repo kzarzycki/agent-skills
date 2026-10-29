@@ -31,7 +31,7 @@ excluded_skills:
 - setup-matt-pocock-skills
 owned_overlays:
 - path: overlays/skills/ask-matt/SKILL.md
-  sha256: 8bda68502faf681b29b91d5d98ddda1adaf06e82d68c5914d1cda5805a64a32e
+  sha256: 00131f2f092b2b0c694bd0d635cf7f6ae5a2a9d0efcb3a58d39c389735580c1b
   mode: '100644'
 - path: overlays/skills/ask-matt/agents/openai.yaml
   sha256: bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c
@@ -184,7 +184,7 @@ owned_overlays:
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
   mode: '100644'
 - path: overlays/skills/to-tickets/SKILL.md
-  sha256: bb83729b13284cd04fd258ffebb395ab3e0ef714bae6ea3f3a2a614241ea9714
+  sha256: 635124c32c0831842a31b57c20add71198d4d32ee009fdea41ca34eda6467052
   mode: '100644'
 - path: overlays/skills/to-tickets/agents/openai.yaml
   sha256: 21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090
@@ -538,7 +538,7 @@ license_files:
   mode: '100644'
 output_files:
 - path: skills/ask-matt/SKILL.md
-  sha256: 8bda68502faf681b29b91d5d98ddda1adaf06e82d68c5914d1cda5805a64a32e
+  sha256: 00131f2f092b2b0c694bd0d635cf7f6ae5a2a9d0efcb3a58d39c389735580c1b
   mode: '100644'
 - path: skills/ask-matt/agents/openai.yaml
   sha256: bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c
@@ -691,7 +691,7 @@ output_files:
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
   mode: '100644'
 - path: skills/to-tickets/SKILL.md
-  sha256: bb83729b13284cd04fd258ffebb395ab3e0ef714bae6ea3f3a2a614241ea9714
+  sha256: 635124c32c0831842a31b57c20add71198d4d32ee009fdea41ca34eda6467052
   mode: '100644'
 - path: skills/to-tickets/agents/openai.yaml
   sha256: 21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090

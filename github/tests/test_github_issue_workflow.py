@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -13,6 +14,12 @@ import yaml
 
 PACKAGE = Path(__file__).resolve().parents[1]
 TEMPLATE = PACKAGE / "skills" / "github-tracker" / "github.md"
+_SPEC = importlib.util.spec_from_file_location(
+    "issue_batch", PACKAGE / "skills" / "github-tracker" / "scripts" / "issue_batch.py"
+)
+assert _SPEC and _SPEC.loader
+issue_batch = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(issue_batch)
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake-gh"
 PROTOCOL_PATTERN = re.compile(
     r"<!-- github-issue-batch-fixture-protocol\n(?P<protocol>.*?)\n-->",
@@ -71,78 +78,9 @@ def _load_protocol() -> dict:
     return protocol
 
 
-def _stable_topological_order(tickets: list[dict]) -> list[dict]:
-    by_title = {ticket["title"]: ticket for ticket in tickets}
-    assert len(by_title) == len(tickets), "ticket titles must be unique"
-    for ticket in tickets:
-        assert set(ticket["blockers"]) <= by_title.keys()
-
-    remaining = set(by_title)
-    ordered: list[dict] = []
-    while remaining:
-        ready = [
-            by_title[title]
-            for title in remaining
-            if not (set(by_title[title]["blockers"]) & remaining)
-        ]
-        assert ready, "ticket blockers must form an acyclic graph"
-        selected = min(ready, key=lambda ticket: ticket["title"].encode("utf-8"))
-        ordered.append(selected)
-        remaining.remove(selected["title"])
-    return ordered
-
-
 def _prepare_batch(tickets: list[dict], protocol: dict) -> PreparedBatch:
-    ordered = _stable_topological_order(tickets)
-    order_by_title = {ticket["title"]: ordinal for ordinal, ticket in enumerate(ordered, start=1)}
-    canonical = [
-        {
-            "title": ticket["title"],
-            "body": ticket["body"],
-            "labels": sorted(set(ticket["labels"])),
-            "blockers": sorted(
-                set(ticket["blockers"]),
-                key=order_by_title.__getitem__,
-            ),
-            "order": order_by_title[ticket["title"]],
-        }
-        for ticket in ordered
-    ]
-    canonical_bytes = json.dumps(
-        canonical,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    batch_sha256 = hashlib.sha256(canonical_bytes).hexdigest()
-    issues = [
-        {
-            **ticket,
-            "marker": protocol["marker"].format(
-                batch_sha256=batch_sha256,
-                ordinal=ticket["order"],
-            ),
-            "marked_body": (
-                f"{ticket['body']}\n\n"
-                + protocol["marker"].format(
-                    batch_sha256=batch_sha256,
-                    ordinal=ticket["order"],
-                )
-            ),
-            "url": None,
-        }
-        for ticket in canonical
-    ]
-    relationships = [
-        {
-            "blocked_order": issue["order"],
-            "blocker_order": order_by_title[blocker],
-            "status": "pending",
-        }
-        for issue in issues
-        for blocker in issue["blockers"]
-    ]
-    return PreparedBatch(batch_sha256, issues, relationships)
+    assert protocol["marker"] == issue_batch.MARKER
+    return PreparedBatch(**issue_batch.prepare(tickets))
 
 
 def _state_path(root: Path, batch: PreparedBatch, protocol: dict) -> Path:
@@ -656,3 +594,252 @@ def test_duplicate_marker_stops_before_approval_create_or_relationship_edit(
     ]
     assert ("approval", "requested") not in result.events
     assert _mutating_invocations(tmp_path) == []
+
+
+LAYERS = PACKAGE.parent / "docs" / "layers.md"
+MANIFEST_FENCE = re.compile(r"## Split manifest.*?```json\n(?P<manifest>.*?)\n```", re.DOTALL)
+
+
+def _documented_manifest(tmp_path: Path) -> Path:
+    match = MANIFEST_FENCE.search(LAYERS.read_text())
+    assert match, "docs/layers.md must show a split manifest"
+    path = tmp_path / "split-manifest.json"
+    path.write_text(match.group("manifest"))
+    return path
+
+
+def test_documented_manifest_round_trips_through_the_apply_step(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    items = json.loads(manifest.read_text())["items"]
+    tickets = issue_batch.tickets_from_manifest(manifest, ["area:engineering"])
+
+    result = _run_batch(tmp_path, tickets=tickets, approval=True)
+
+    assert result.returncode == 0
+    remote = _remote_state(tmp_path)
+    assert [(issue["title"], issue["labels"]) for issue in remote["issues"]] == [
+        (item["title"], ["area:engineering"]) for item in items
+    ]
+    for issue, item in zip(remote["issues"], items, strict=True):
+        assert issue["body"].startswith(f"{item['spec']}\n\n<!-- agent-skills-batch:")
+    assert remote["relationships"] == [
+        {
+            "blocked": "https://github.test/example/repo/issues/2",
+            "blocker": "https://github.test/example/repo/issues/1",
+        }
+    ]
+    writes = len(_mutating_invocations(tmp_path))
+
+    again = _run_batch(tmp_path, tickets=tickets, approval=None)
+
+    assert again.returncode == 0
+    assert len(_mutating_invocations(tmp_path)) == writes
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: m["items"].append(dict(m["items"][0])),
+        lambda m: m["items"][0].update(blocked_by=["No such item"]),
+        lambda m: m["items"][0].update(blocked_by=[m["items"][1]["title"]]),
+        lambda m: m.update(version=2),
+    ],
+    ids=["duplicate-title", "unknown-blocker", "cycle", "version"],
+)
+def test_apply_step_refuses_a_bad_manifest_before_any_gh_call(tmp_path: Path, mutate) -> None:
+    manifest = _documented_manifest(tmp_path)
+    document = json.loads(manifest.read_text())
+    mutate(document)
+    manifest.write_text(json.dumps(document))
+
+    with pytest.raises(issue_batch.BatchError):
+        issue_batch.tickets_from_manifest(manifest, [])
+
+    assert _gh_invocations(tmp_path) == []
+
+
+def test_apply_step_labels_every_issue_ready_for_agent_unless_the_caller_names_labels(
+    tmp_path: Path,
+) -> None:
+    manifest = _documented_manifest(tmp_path)
+
+    default = issue_batch.prepare(
+        issue_batch.tickets_from_manifest(manifest, [issue_batch.DEFAULT_LABEL])
+    )
+    assert {tuple(issue["labels"]) for issue in default["issues"]} == {("ready-for-agent",)}
+
+    printed = subprocess.run(
+        [
+            "python3",
+            str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py"),
+            "github",
+            str(manifest),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(printed.stdout) == default
+
+    named = subprocess.run(
+        [
+            "python3",
+            str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py"),
+            "github",
+            str(manifest),
+            "--label",
+            "b",
+            "--label",
+            "a",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert {tuple(issue["labels"]) for issue in json.loads(named.stdout)["issues"]} == {("a", "b")}
+
+
+def test_cli_refuses_a_bad_manifest_with_exit_1_and_writes_nothing(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    document = json.loads(manifest.read_text())
+    document["items"][0]["blocked_by"] = ["No such item"]
+    manifest.write_text(json.dumps(document))
+    script = str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py")
+
+    for target in ("github", "local"):
+        refused = subprocess.run(
+            ["python3", script, target, str(manifest)], check=False, capture_output=True, text=True
+        )
+        assert refused.returncode == 1
+        assert "unknown" in refused.stderr
+    assert not (tmp_path / "issues").exists()
+
+
+def test_local_files_apply_writes_numbered_tickets_in_the_local_template(tmp_path: Path) -> None:
+    manifest = tmp_path / "split-manifest.json"
+    spec = (
+        "## What to build\n\nShow the status.\n\n## Acceptance criteria\n\n- [ ] One\n- [ ] Two\n\n"
+        "## Blocked by\n\n- Expose account status\n"
+    )
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "items": [
+                    {
+                        "title": "Render account status",
+                        "spec": spec,
+                        "blocked_by": ["Expose account status"],
+                    },
+                    {"title": "Expose account status", "spec": "Return it.", "blocked_by": []},
+                ],
+            }
+        )
+    )
+
+    script = str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py")
+    subprocess.run(["python3", script, "local", str(manifest)], check=True, capture_output=True)
+
+    issues = tmp_path / "issues"
+    assert sorted(path.name for path in issues.iterdir()) == [
+        "01-expose-account-status.md",
+        "02-render-account-status.md",
+    ]
+    assert (issues / "01-expose-account-status.md").read_text() == (
+        "# 01: Expose account status\n\n**What to build:** Return it.\n\n"
+        "**Blocked by:** None (can start immediately)\n\n**Status:** ready-for-agent\n"
+    )
+    assert (issues / "02-render-account-status.md").read_text() == (
+        "# 02: Render account status\n\n**What to build:** Show the status.\n\n"
+        "**Blocked by:** 01 Expose account status\n\n**Status:** ready-for-agent\n\n"
+        "- [ ] One\n- [ ] Two\n"
+    )
+
+
+# Canonical bytes and hash written out by hand, independent of prepare(): sorted keys, compact
+# separators and UTF-8 text unescaped are what github.md's marker identity rests on.
+DOCUMENTED_CANONICAL = (
+    '[{"blockers":[],"body":"Return the current account status from the API.",'
+    '"labels":["ready-for-agent"],"order":1,"title":"Expose account status"},'
+    '{"blockers":["Expose account status"],"body":"Show the account status in the dashboard.",'
+    '"labels":["ready-for-agent"],"order":2,"title":"Render account status"}]'
+)
+DOCUMENTED_SHA256 = "711d6c8da7819e1f4d3e6e8c0a63d2b7c10aef42068a122ef156ddc37bd0e49a"
+UNICODE_ITEM = {
+    "title": "Überwache Größe",
+    "spec": "Zeige den Status: Größe, 状態.",
+    "blocked_by": ["Expose account status"],
+}
+UNICODE_CANONICAL = (
+    DOCUMENTED_CANONICAL[:-1]
+    + ',{"blockers":["Expose account status"],"body":"Zeige den Status: Größe, 状態.",'
+    '"labels":["ready-for-agent"],"order":3,"title":"Überwache Größe"}]'
+)
+UNICODE_SHA256 = "7fa81b9549895e98e76d5d875cec73b652e60b6c18d8ddd1fe09e07235b77143"
+
+
+def test_batch_sha256_matches_a_fixed_vector_of_canonical_bytes(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    document = json.loads(manifest.read_text())
+
+    documented = issue_batch.prepare(
+        issue_batch.tickets_from_manifest(manifest, ["ready-for-agent"])
+    )
+    assert hashlib.sha256(DOCUMENTED_CANONICAL.encode()).hexdigest() == DOCUMENTED_SHA256
+    assert documented["batch_sha256"] == DOCUMENTED_SHA256
+
+    document["items"].append(UNICODE_ITEM)
+    manifest.write_text(json.dumps(document, ensure_ascii=False))
+    unicode_batch = issue_batch.prepare(
+        issue_batch.tickets_from_manifest(manifest, ["ready-for-agent"])
+    )
+    assert hashlib.sha256(UNICODE_CANONICAL.encode()).hexdigest() == UNICODE_SHA256
+    assert unicode_batch["batch_sha256"] == UNICODE_SHA256
+
+
+def test_local_apply_refuses_a_revised_manifest_over_an_earlier_apply(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    script = str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py")
+    run = lambda: subprocess.run(
+        ["python3", script, "local", str(manifest)], check=False, capture_output=True, text=True
+    )
+    assert run().returncode == 0
+    issues = tmp_path / "issues"
+    before = {path.name: path.read_text() for path in issues.iterdir()}
+    assert run().returncode == 0
+    assert {path.name: path.read_text() for path in issues.iterdir()} == before
+
+    document = json.loads(manifest.read_text())
+    document["items"].insert(
+        0, {"title": "Audit account status", "spec": "Log it.", "blocked_by": []}
+    )
+    manifest.write_text(json.dumps(document))
+    refused = run()
+
+    assert refused.returncode == 1
+    assert "01-expose-account-status.md" in refused.stderr
+    assert "02-render-account-status.md" in refused.stderr
+    assert {path.name: path.read_text() for path in issues.iterdir()} == before
+
+    unrelated = issues / "notes.md"
+    unrelated.write_text("mine")
+    (issues / "02-render-account-status.md").write_text(before["02-render-account-status.md"])
+    manifest.write_text(json.dumps(json.loads(_documented_manifest(tmp_path).read_text())))
+    assert run().returncode == 0
+    assert unrelated.read_text() == "mine"
+
+
+def test_local_apply_refuses_to_overwrite_a_ticket_whose_status_moved_on(tmp_path: Path) -> None:
+    manifest = _documented_manifest(tmp_path)
+    script = str(PACKAGE / "skills/github-tracker/scripts/issue_batch.py")
+    subprocess.run(["python3", script, "local", str(manifest)], check=True, capture_output=True)
+    started = tmp_path / "issues" / "01-expose-account-status.md"
+    started.write_text(started.read_text().replace("ready-for-agent", "in-progress"))
+
+    refused = subprocess.run(
+        ["python3", script, "local", str(manifest)], check=False, capture_output=True, text=True
+    )
+
+    assert refused.returncode == 1
+    assert "01-expose-account-status.md" in refused.stderr
+    assert "in-progress" in started.read_text()

@@ -1,6 +1,6 @@
 ---
 name: to-tickets
-description: Break a plan, spec, or the current conversation into tracer-bullet tickets that declare their blocking edges, and publish them to the configured tracker.
+description: Break a plan, spec, or the current conversation into tracer-bullet tickets that declare their blocking edges, and write them as a split manifest file. Writes no tracker state.
 disable-model-invocation: true
 ---
 
@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 Break a plan, spec, or conversation into **tickets**: tracer-bullet vertical slices, each naming the tickets that **block** it.
 
-GitHub Issues is the default tracker; `docs/agents/issue-tracker.md` names its realization file (for GitHub, the `github-tracker` skill's `github.md`), and the repo's agent instructions map the triage labels (default names otherwise). If that file is missing, tell the user to create it: the project template writes one.
+The output is a **split manifest** file; creating issues from it is the caller's step, so a flow engine or a lead can apply it its own way. Never create, edit or close an issue, and never touch a parent issue. If the user wants the tickets on the tracker, point to the realization file `docs/agents/issue-tracker.md` names (for GitHub, the `github-tracker` skill's `github.md`, Publish an issue batch), which takes the manifest as its input.
 
 ## Draft
 
@@ -31,20 +31,28 @@ If even the migrate batches can't stay green alone, they share an integration br
 
 Present the breakdown as a numbered list: title, blocked by, and the end-to-end behaviour each ticket delivers. Ask whether the granularity is right, whether each edge is a real gate, and what to merge or split. Iterate until the user approves.
 
-## Publish
+## Write the manifest
 
-Render the approved tickets as one complete batch, every ticket's title, body, labels and blockers in dependency order (blockers first), and have the user review it before any issue is created. Publish it following the realization file's issue-batch protocol for approval, markers, resume, creation and relationship wiring rather than improvising tracker commands. Don't close or edit a parent issue; linking the tickets to it is the only change it gets.
+Write the approved tickets as one JSON file, `.scratch/<feature-slug>/split-manifest.json` unless the caller names a path:
 
-- **Real tracker** (GitHub, Linear, …): one issue per ticket in the issue template, linked by the platform's native blocking and sub-issue relationships where it has them, otherwise by the "Blocked by" section. Label each `ready-for-agent` unless told otherwise; the tickets are agent-grabbable by construction.
-- **Local files**, when the repo configures them instead: one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` in dependency order, in the local template; never one combined file.
+```json
+{
+  "version": 1,
+  "items": [
+    {"title": "Expose account status", "spec": "<the ticket body>", "blocked_by": []},
+    {"title": "Render account status", "spec": "<the ticket body>", "blocked_by": ["Expose account status"]}
+  ]
+}
+```
 
-Leave file paths and code snippets out of tickets; they go stale. The exception is a prototype snippet (state machine, reducer, schema, type shape) that states a decision more precisely than prose: inline only its decision-rich part and say it came from a prototype.
+- `title` is the ticket's identity and is unique in the file; `blocked_by` lists the titles of its blockers, none for a ticket that can start immediately. Blockers form no cycle and name no ticket outside the file.
+- `spec` is the ticket body in the issue template below, so the tracker step posts it unchanged. Its "Blocked by" section lists the same tickets by title.
+- The manifest has no labels and no parent: the caller adds those, since they depend on the tracker and the project's label map.
+- List tickets in dependency order (blockers first). Leave file paths and code snippets out of specs; they go stale. The exception is a prototype snippet (state machine, reducer, schema, type shape) that states a decision more precisely than prose: inline only its decision-rich part and say it came from a prototype.
+
+Report the manifest's path and stop.
 
 <issue-template>
-
-## Parent
-
-A reference to the parent issue, when the source was one; otherwise omit this section.
 
 ## What to build
 
@@ -60,18 +68,3 @@ The end-to-end behaviour this ticket makes work, from the user's perspective, no
 - A reference to each blocking ticket, or "None (can start immediately)".
 
 </issue-template>
-
-<local-ticket-template>
-
-# <NN>: <Ticket title>
-
-**What to build:** the end-to-end behaviour this ticket makes work, from the user's perspective.
-
-**Blocked by:** the numbers and titles of the gating tickets, or "None (can start immediately)".
-
-**Status:** ready-for-agent
-
-- [ ] Acceptance criterion 1
-- [ ] Acceptance criterion 2
-
-</local-ticket-template>

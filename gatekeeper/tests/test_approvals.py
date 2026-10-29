@@ -510,6 +510,8 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
         },
     }
     assert approvals.settings(None) == approvals.settings(BARE) == {}
+    split = loop_md("practice:\n  split: to-tickets\n")
+    assert approvals.settings(split) == {"practice": {"split": "to-tickets"}}
     commented = loop_md(
         "# a comment\nloop:\n  cap: 3  # passes\nrisk:\n  paths:\n    # a note\n    - a/**\n"
     )
