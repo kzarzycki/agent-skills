@@ -696,7 +696,10 @@ def main():
     parser.add_argument('--hold-asks', action='store_true',
                         help='print every question as an ASK: line and tell the chief of staff none of them')
     args = parser.parse_args()
-    if OLD_STATE.is_dir() and not args.dry_run:  # a dry run's STATE holds only logs, so the old files win
+    global STATE
+    if OLD_STATE.is_dir() and args.dry_run:  # what was asked stays where it is; the log joins it
+        STATE = OLD_STATE
+    elif OLD_STATE.is_dir():  # STATE may hold a dry run's logs, so merge rather than rename
         shutil.copytree(OLD_STATE, STATE, dirs_exist_ok=True)
         shutil.rmtree(OLD_STATE)
     STATE.mkdir(parents=True, exist_ok=True)

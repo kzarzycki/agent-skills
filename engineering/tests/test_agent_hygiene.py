@@ -579,7 +579,10 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     ), out
     assert "would tell the chief of staff" in out and not told, out
     assert "terminals: 0 dead of 0;" in out, out  # main() runs the terminals step
-    assert (old_state / "carried").exists(), "a dry run moves no state"
+    assert (old_state / "carried").exists() and list(old_state.glob("*.log")), (
+        "a dry run moves no state and logs beside it"
+    )
+    hygiene.STATE = home / ".local/state/agent-hygiene"
     (home / "lsof.txt").rename(home / "lsof.saved")  # the fake lsof fails: nothing may go
     code, out = run("--floor-gb", "0")
     assert code == 1 and "FAIL process scan" in out and all(p.exists() for p in kept + removed), out
