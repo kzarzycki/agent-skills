@@ -3676,10 +3676,7 @@ def local_ci_status(head: str) -> int:
         code = int(exit_file.read_text())
     except (OSError, ValueError):
         code = None
-    if (
-        code == 0
-        and not recorded(str(tree_of(head)), gate()[0]).exists()
-    ):
+    if code == 0 and not recorded(str(tree_of(head)), gate()[0]).exists():
         # a run on a checkout with changes, or on another PR's head, exits 0 with no pass on this one
         print(f"exited 0 without recording a pass on {head} under the gate's command: log {log}")
         return 1
