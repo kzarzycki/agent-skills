@@ -11,6 +11,11 @@ A mid worker costs about half a top one per item, and a small item needs no more
 
 Verifier model: mid for not risk:high
 
+Lead autocompact: 150k
+
+A lead re-reads its whole context every turn, so a smaller window costs less per turn; its notes
+file carries the run's state across a compaction. Raise or remove the line if leads lose track.
+
 ## Settings
 
 ```yaml

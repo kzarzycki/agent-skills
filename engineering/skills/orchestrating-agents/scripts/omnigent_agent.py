@@ -187,6 +187,7 @@ ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled 
 LEAN_ROLES = ("worker", "verifier")
 LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
+COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 # an agent record and config field that names or dates one agent, not what it does
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
@@ -819,6 +820,8 @@ class Omnigent:
             args = ["--permission-mode", mode] if mode else []
             if role and (stem := Path(role).stem) in LEAN_ROLES:
                 args += lean_args(str(body["workspace"]), stem)
+            if top_level:
+                args += autocompact_args(str(body["workspace"]))
             if args:
                 body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
@@ -1078,6 +1081,32 @@ def lean_args(workspace: str, role: str) -> list[str]:
     tools = list(dict.fromkeys(LEAN_TOOLS.split(",") + [e for e in extra if e not in servers]))
     args = ["--strict-mcp-config", "--tools", ",".join(tools)]
     return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
+
+
+def autocompact_args(workspace: str) -> list[str]:
+    """``--autocompact <size>`` for a top-level Claude session when the project's ``Lead
+    autocompact:`` line names a size, so the lead compacts there instead of at the user's window;
+    else none. A size Claude Code refuses fails here, since the CLI would exit before the lead
+    starts. ``CLAUDE_CODE_AUTO_COMPACT_WINDOW``, in this environment or the user's Claude settings,
+    outranks the flag, so its presence is reported: set that window as ``autoCompactWindow``."""
+    size = project_line(workspace, "Lead autocompact")
+    if not size:
+        return []
+    found = re.fullmatch(r"(\d+)([kK]?)", size)
+    number = int(found[1]) if found else 0
+    tokens = number * 1000 if found and (found[2] or number <= 1000) else number
+    if not 100_000 <= tokens <= 1_000_000:
+        raise Fail(
+            f"{LOOP_FILE}: Lead autocompact: {size} is not a size from 100k to 1M, like 150k"
+        )
+    user = read_json(Path.home() / ".claude" / "settings.json").get("env") or {}
+    if window := os.environ.get(COMPACT_ENV) or user.get(COMPACT_ENV):
+        print(
+            f"{COMPACT_ENV}={window} outranks --autocompact {size}: the lead keeps that window;"
+            " set it as the autoCompactWindow setting instead",
+            file=sys.stderr,
+        )
+    return ["--autocompact", size]
 
 
 def project_name() -> str:
