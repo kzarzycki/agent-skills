@@ -1378,13 +1378,18 @@ def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_na
     assert bodies[-1]["terminal_launch_args"] == lean
     (repo / "docs" / "agents").mkdir(parents=True)
     (repo / "docs" / "agents" / "loop.md").write_text(
-        "# Loop\n\nVerifier tools: full\nWorker tools: NotebookEdit, docs, mail\n"
+        "# Loop\n\nVerifier tools: full\nWorker tools: NotebookEdit, docs, mail, tracker\n"
     )
     docs = {"command": "docs-mcp"}
     (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"docs": docs}}))
     (tmp_path / "home").mkdir()
     (tmp_path / "home" / ".claude.json").write_text(
-        json.dumps({"mcpServers": {"mail": {"url": "u"}, "calendar": {"url": "c"}}})
+        json.dumps(
+            {
+                "mcpServers": {"mail": {"url": "u"}, "calendar": {"url": "c"}},
+                "projects": {str(repo.resolve()): {"mcpServers": {"tracker": {"url": "t"}}}},
+            }
+        )
     )
     og.create("claude", "t", workspace=ws, role="/x/verifier.md")
     assert "terminal_launch_args" not in bodies[-1]  # the role keeps every tool and server
@@ -1394,7 +1399,7 @@ def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_na
         "--tools",
         tools + ",NotebookEdit",
         "--mcp-config",
-        json.dumps({"mcpServers": {"docs": docs, "mail": {"url": "u"}}}),
+        json.dumps({"mcpServers": {"docs": docs, "mail": {"url": "u"}, "tracker": {"url": "t"}}}),
     ]
 
 
