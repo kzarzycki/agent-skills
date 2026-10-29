@@ -26,7 +26,7 @@ not a team, so it names nothing in the stack, and any skill may name it.
 The test flags, in any file of a skill folder, a mention of a skill the rule forbids. A
 hyphenated name counts as a whole word, which also catches a relative path into that skill
 (`../engineering-loop/scripts`). A one-word name is often a plain word (`pr`, `implement`,
-`playwright` the Python package), so it counts only as a reference to the skill: in
+`research`), so it counts only as a reference to the skill: in
 backticks (`retro`, or invoked as `/retro`), followed by `skill`, or as a path segment
 (`skills/retro/`).
 
@@ -82,13 +82,13 @@ skills:
   communicating-in-mdx: {layer: 1}
   drawio-live: {layer: 1}
   find-conversation: {layer: 1}
-  playwright: {layer: 1}
   github-project-board-setup: {layer: 0, implements: [engineering-loop]}   # tracker and forge ports
   github-tracker: {layer: 0, implements: [engineering-loop, gatekeeper]}   # tracker, forge and evidence ports
   omnigent-agents: {layer: 0, implements: [orchestrating-agents]}   # runner port
   operating-omnigent: {layer: 0, implements: [orchestrating-agents]}   # runner port
   omnigent-telemetry: {layer: 0}
   update-delta-audit: {layer: tooling}
+  vendoring: {layer: tooling}
 
 exceptions:
   omnigent-agents -> engineering-loop: {reason: "the runner starts the loop's roles and reads its deny list and gate-slot directory", removed_by: "#631"}
@@ -103,12 +103,11 @@ exceptions:
 | `gatekeeper` | 2 | `gatekeeper`: the gatekeeper CLI and its GitHub adapter |
 | `engineering` | 1 | every craft skill above at layer 1 under `engineering/`, `orchestrating-agents` with its native backend, `browsing` |
 | `omnigent` | 0 | `omnigent-agents` (the runner backend and its driver), `operating-omnigent`, `omnigent-telemetry` |
-| `github` | 0 | `github-tracker` (`github.md`, `board.py`, `labels.py`); `github-project-board-setup` joins it from `utilities` in #616 |
-| `vendoring` | tooling | the capability-pack tool, `ROUTINE.md`, `update-delta-audit` |
+| `github` | 0 | `github-tracker` (`github.md`, `board.py`, `labels.py`), `github-project-board-setup` |
+| `vendoring` | tooling | `vendoring` (the capability-pack tool and `ROUTINE.md`), `update-delta-audit` |
 | `research`, `utilities`, `content`, `experimental` | 1 (`overnight-run` 4) | unchanged |
 
-The `playwright` plugin is removed in #616. A package declares the packages it uses, and
-installing it installs them:
+A package declares the packages it uses, and installing it installs them:
 
 - Claude Code: `plugin.json` `dependencies` lists each by plugin name, which resolves in
   this marketplace.

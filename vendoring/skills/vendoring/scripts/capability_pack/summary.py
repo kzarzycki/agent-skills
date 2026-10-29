@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tools.capability_pack.model import FileHash, Provenance
+from capability_pack.model import FileHash, Provenance
 
 
 def _names(items: tuple[str, ...]) -> str:

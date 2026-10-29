@@ -13,18 +13,17 @@ from typing import Literal
 
 import yaml
 
-from tools.capability_pack.model import (
+from capability_pack.model import (
     FileHash,
     Provenance,
     QualificationResult,
     SourceMapping,
 )
-from tools.capability_pack.provenance import hash_files, load_provenance, write_provenance
-from tools.capability_pack.summary import render_summary
+from capability_pack.provenance import hash_files, load_provenance, write_provenance
+from capability_pack.summary import render_summary
 
 VENDIR_MANIFEST = "vendir.yml"
 VENDIR_LOCK = "vendir.lock.yml"
-ENGINEERING_SOURCE_URL = "https://github.com/mattpocock/skills.git"
 INTAKE_LEDGER = "upstream-intake.yml"
 TIMEOUT_VARIABLE = "QUALIFY_TIMEOUT"
 
@@ -301,15 +300,17 @@ def _load_manifest(path: Path) -> dict:
 
 
 def _validate_source_policy(package: Path, config: dict, policy: dict) -> None:
-    if package.name != "engineering":
+    """Hold a pack with an upstream.yml to the upstream it declares there."""
+    if not policy:
         return
+    name = package.name
     sources = [
         content.get("git")
         for directory in config["directories"]
         for content in directory["contents"]
     ]
     if not sources or any(not isinstance(source, dict) for source in sources):
-        raise ConfigurationError("engineering source policy requires Git sources only")
+        raise ConfigurationError(f"{name} source policy requires Git sources only")
     urls = {source.get("url") for source in sources}
     refs = {source.get("ref") for source in sources}
     tracked_ref = policy.get("tracked_ref")
@@ -317,18 +318,17 @@ def _validate_source_policy(package: Path, config: dict, policy: dict) -> None:
         ref == tracked_ref or bool(re.fullmatch(r"[0-9a-f]{40}", str(ref))) for ref in refs
     )
     repository = policy.get("repository")
-    if repository != ENGINEERING_SOURCE_URL:
-        raise ConfigurationError("engineering upstream policy has an unsupported repository")
+    if not isinstance(repository, str) or not repository:
+        raise ConfigurationError(f"{name} upstream policy declares no repository")
     if urls != {repository} or not valid_refs:
         raise ConfigurationError(
-            "engineering source policy requires "
-            f"{ENGINEERING_SOURCE_URL} at {tracked_ref} or an exact commit"
+            f"{name} source policy requires {repository} at {tracked_ref} or an exact commit"
         )
     if policy.get("removal_policy") != "block":
-        raise ConfigurationError("engineering removal_policy must be block")
+        raise ConfigurationError(f"{name} removal_policy must be block")
     declared_aliases = policy.get("aliases", {})
     if not isinstance(declared_aliases, dict):
-        raise ConfigurationError("engineering aliases must be a mapping")
+        raise ConfigurationError(f"{name} aliases must be a mapping")
     mapped_sources = {
         PurePosixPath(directory["path"]).name: content.get("newRootPath")
         for directory in config["directories"]
@@ -336,7 +336,7 @@ def _validate_source_policy(package: Path, config: dict, policy: dict) -> None:
         if directory["path"].startswith("skills/")
     }
     if any(mapped_sources.get(name) != source for name, source in declared_aliases.items()):
-        raise ConfigurationError("engineering alias policy differs from vendir mappings")
+        raise ConfigurationError(f"{name} alias policy differs from vendir mappings")
     managed = set(_managed_skills(config))
     source_leaves = {
         PurePosixPath(content.get("newRootPath", "")).name
@@ -344,12 +344,12 @@ def _validate_source_policy(package: Path, config: dict, policy: dict) -> None:
         for content in directory["contents"]
         if content.get("newRootPath")
     }
-    owned = tuple(policy.get("owned_skills", ()))
-    if not owned or any(not isinstance(name, str) for name in owned):
-        raise ConfigurationError("engineering upstream policy requires owned_skills")
+    owned = policy.get("owned_skills", [])
+    if not isinstance(owned, list) or any(not isinstance(skill, str) for skill in owned):
+        raise ConfigurationError(f"{name} owned_skills must be a list of skill names")
     claimed = sorted(set(owned) & (managed | source_leaves))
     missing = sorted(
-        name for name in owned if not (package / "skills" / name / "SKILL.md").is_file()
+        skill for skill in owned if not (package / "skills" / skill / "SKILL.md").is_file()
     )
     if claimed or missing:
         details = []
@@ -358,7 +358,7 @@ def _validate_source_policy(package: Path, config: dict, policy: dict) -> None:
         if missing:
             details.append(f"missing: {', '.join(missing)}")
         raise ConfigurationError(
-            "engineering repository-owned skill policy violated: " + "; ".join(details)
+            f"{name} repository-owned skill policy violated: " + "; ".join(details)
         )
 
 
@@ -529,14 +529,14 @@ def _next_version(version: str, magnitude: str) -> str:
 
 def _version_magnitude(previous: Provenance, source_tag: str | None, added: tuple[str, ...]) -> str:
     pattern = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
-    old = pattern.fullmatch(previous.source_tag or previous.stable_baseline_tag or "")
-    if not old:
-        raise QualificationError("stable upstream version baseline is unavailable")
     new = pattern.fullmatch(source_tag or "")
     if not new:
         # Untagged upstream snapshot: the candidate carries no release to compare
-        # against, so the inventory delta sets the magnitude.
+        # against, so the inventory delta sets the magnitude, and no baseline is needed.
         return "minor" if added else "patch"
+    old = pattern.fullmatch(previous.source_tag or previous.stable_baseline_tag or "")
+    if not old:
+        raise QualificationError("stable upstream version baseline is unavailable")
     old_version = tuple(int(value) for value in old.groups())
     new_version = tuple(int(value) for value in new.groups())
     if new_version <= old_version:
@@ -647,6 +647,7 @@ def _reconcile_inventory(
     owned: tuple[str, ...],
     candidate_commit: str | None = None,
     exclusions: tuple[str, ...] = (),
+    skills_path: str | None = None,
 ) -> tuple[dict, str | None]:
     git_sources = {
         (git.get("url"), git.get("ref"))
@@ -661,6 +662,9 @@ def _reconcile_inventory(
     repository, ref = next(iter(git_sources))
     if not isinstance(repository, str) or not isinstance(ref, str):
         raise ConfigurationError("vendir inventory Git repository and ref must be strings")
+    if not isinstance(skills_path, str):
+        raise ConfigurationError("upstream.yml skills_path must name the upstream skills folder")
+    root = _validate_relative_path(skills_path, label="skills_path")
 
     temporary = Path(tempfile.mkdtemp(prefix=".engineering-inventory-"))
     checkout = temporary / "upstream"
@@ -684,7 +688,7 @@ def _reconcile_inventory(
             raise QualificationError("resolved candidate differs from requested release commit")
         upstream_names = set(
             _git_output(
-                ["ls-tree", "-d", "--name-only", f"{candidate}:skills/engineering"],
+                ["ls-tree", "-d", "--name-only", f"{candidate}:{root}"],
                 cwd=checkout,
             ).splitlines()
         )
@@ -697,7 +701,7 @@ def _reconcile_inventory(
                     "git",
                     "cat-file",
                     "-e",
-                    f"{candidate}:skills/engineering/{name}/SKILL.md",
+                    f"{candidate}:{root}/{name}/SKILL.md",
                 ],
                 cwd=checkout,
                 check=False,
@@ -726,7 +730,7 @@ def _reconcile_inventory(
             continue
         for content in directory["contents"]:
             source = PurePosixPath(content.get("newRootPath", ""))
-            if source.parts[:2] != ("skills", "engineering"):
+            if source.parent != root:
                 continue
             configured[source.name] = destination.name
             if source.name == destination.name and template is None:
@@ -746,15 +750,15 @@ def _reconcile_inventory(
         )
     additions = sorted(upstream_names - set(configured) - set(owned) - set(exclusions))
     if additions and template is None:
-        raise ConfigurationError("no ordinary engineering leaf available as inventory template")
+        raise ConfigurationError(f"no ordinary leaf under {root} available as inventory template")
 
     committed = copy.deepcopy(config)
     for name in additions:
         directory = copy.deepcopy(template)
         directory["path"] = f"skills/{name}"
         content = directory["contents"][0]
-        content["newRootPath"] = f"skills/engineering/{name}"
-        content["includePaths"] = [f"skills/engineering/{name}/**/*"]
+        content["newRootPath"] = f"{root}/{name}"
+        content["includePaths"] = [f"{root}/{name}/**/*"]
         committed["directories"].append(directory)
     committed["directories"].sort(
         key=lambda item: (
@@ -1095,7 +1099,7 @@ def qualify(
         if missing:
             details.append(f"missing: {', '.join(missing)}")
         raise ConfigurationError(
-            "engineering repository-owned skill policy violated: " + "; ".join(details)
+            f"{package.name} repository-owned skill policy violated: " + "; ".join(details)
         )
     original_owned = _owned_manifest(package, owned)
 
@@ -1116,6 +1120,7 @@ def qualify(
                 owned,
                 candidate_commit,
                 tuple(policy.get("exclusions", [])),
+                policy.get("skills_path"),
             )
         managed = _managed_skills(committed_config)
         _sync_manifest(staged, mode)

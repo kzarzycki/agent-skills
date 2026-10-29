@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from tools.capability_pack.model import FileHash, Provenance, SourceMapping
+from capability_pack.model import FileHash, Provenance, SourceMapping
 
 
 def _git_file_mode(path: Path) -> str:

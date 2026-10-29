@@ -77,6 +77,7 @@ def write_package(package: Path, upstream: Path) -> None:
                 "tracked_ref": "origin/main",
                 "stable_tag_pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
                 "removal_policy": "block",
+                "skills_path": "skills/engineering",
                 "exclusions": [],
                 "aliases": {
                     "grilling": "skills/productivity/grilling",
@@ -247,7 +248,7 @@ if "--locked" not in sys.argv:
 """
     )
     vendir.chmod(0o755)
-    qualify_module = importlib.import_module("tools.capability_pack.qualify")
+    qualify_module = importlib.import_module("capability_pack.qualify")
     reconcile = qualify_module._reconcile_inventory
     validate_source_policy = qualify_module._validate_source_policy
 
@@ -257,6 +258,7 @@ if "--locked" not in sys.argv:
         owned: tuple[str, ...],
         candidate_commit: str | None = None,
         exclusions: tuple[str, ...] = (),
+        skills_path: str | None = None,
     ):
         urls = {
             content["git"]["url"]
@@ -266,7 +268,7 @@ if "--locked" not in sys.argv:
         }
         if urls == {"https://github.com/mattpocock/skills.git"}:
             return config, candidate_commit
-        return reconcile(stage, config, owned, candidate_commit, exclusions)
+        return reconcile(stage, config, owned, candidate_commit, exclusions, skills_path)
 
     def validate_fixture_source_policy(package: Path, config: dict, policy: dict) -> None:
         urls = {

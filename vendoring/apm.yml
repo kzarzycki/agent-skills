@@ -1,0 +1,12 @@
+name: vendoring
+version: 0.1.0
+description: "Vendoring for a capability pack: pull skills from an upstream repo by a vendir lock, keep your own overlays, qualify the result and release it, plus a pre-install audit of a software update."
+author: Krzysztof Zarzycki
+targets:
+- claude
+- codex
+dependencies:
+  apm: []
+  mcp: []
+includes: auto
+scripts: {}

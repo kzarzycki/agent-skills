@@ -31,7 +31,7 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
         ".github/workflows/engineering-*.yml",
         ".gitattributes",
         "engineering/**",
-        "tools/capability_pack/**",
+        "vendoring/**",
         "tests/capability_pack/**",
         "tests/automation/**",
         "mise.toml",
@@ -102,7 +102,10 @@ def test_consumer_sync_is_exact_app_authenticated_and_draft_only() -> None:
     assert "git add --all" in commands
     assert "assert-engineering-codex-inventory" in commands
     assert all("${{" not in step.get("run", "") for step in _steps(workflow))
-    assert "resolved_tag" in (ROOT / "tools" / "capability_pack" / "consumer.py").read_text()
+    assert (
+        "resolved_tag"
+        in (ROOT / "vendoring/skills/vendoring/scripts/capability_pack/consumer.py").read_text()
+    )
     assert "reconcile-draft-pr" in proposal["run"]
     assert "automation/engineering-consumer-sync" in proposal["run"]
     assert proposal["env"]["GH_TOKEN"] == "${{ steps.app-token.outputs.token }}"
@@ -128,3 +131,19 @@ def test_consumer_generated_state_triggers_qualification() -> None:
     workflow = _workflow("engineering-ci.yml")
     required = {".agents/**", ".claude/**", "apm.yml", "apm.lock.yaml"}
     assert required <= set(workflow["on"]["push"]["paths"])
+
+
+def test_every_workflow_call_of_the_vendoring_tool_finds_its_package() -> None:
+    """The tool is a package in the vendoring skill's scripts folder, which no environment puts on the path."""
+    calls = [
+        line.strip()
+        for path in WORKFLOWS.glob("engineering-*.yml")
+        for step in _steps(_workflow(path.name))
+        for line in step.get("run", "").splitlines()
+        if "capability_pack" in line
+    ]
+    assert len(calls) == 3
+    for call in calls:
+        found = re.fullmatch(r"PYTHONPATH=(\S+) uv run python -m capability_pack\.cli .*", call)
+        assert found, call
+        assert (ROOT / found.group(1) / "capability_pack" / "cli.py").is_file()

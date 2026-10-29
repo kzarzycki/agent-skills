@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from tools.capability_pack.model import FileHash, Provenance, SourceMapping
-from tools.capability_pack.provenance import hash_files, load_provenance, write_provenance
-from tools.capability_pack.summary import render_summary
+from capability_pack.model import FileHash, Provenance, SourceMapping
+from capability_pack.provenance import hash_files, load_provenance, write_provenance
+from capability_pack.summary import render_summary
 
 
 def _provenance(commit: str, *, skills: tuple[str, ...] = ("alpha",)) -> Provenance:

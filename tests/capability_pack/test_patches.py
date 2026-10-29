@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack import cli
-from tools.capability_pack.qualify import (
+from capability_pack import cli
+from capability_pack.qualify import (
     ConfigurationError,
     QualificationError,
     _apply_substitutions,
@@ -107,11 +107,14 @@ def _install_noop_vendir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     vendir.write_text("#!/bin/sh\nexit 0\n")
     vendir.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    qualify_module = importlib.import_module("tools.capability_pack.qualify")
+    qualify_module = importlib.import_module("capability_pack.qualify")
     monkeypatch.setattr(
         qualify_module,
         "_reconcile_inventory",
-        lambda _stage, config, _owned, _candidate=None, _exclusions=(): (config, _candidate),
+        lambda _stage, config, _owned, _candidate=None, _exclusions=(), _root=None: (
+            config,
+            _candidate,
+        ),
     )
 
 

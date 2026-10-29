@@ -97,8 +97,8 @@ from the remote.
 
 ## Board
 
-A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
-`utilities` plugin creates one, with an Epics view and the Parent issue and Sub-issues
+A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of this
+`github` package creates one, with an Epics view and the Parent issue and Sub-issues
 progress fields shown). `uv run <this skill's folder>/scripts/board.py <issue> <column>` adds the
 issue when it is missing and sets its column, so the board's built-in workflows stay off, as
 they are on a board created through the API, except "Item closed", which sets the column

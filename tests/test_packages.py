@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -22,13 +23,14 @@ from engineering.tests.test_consumer_e2e import (
     _dependencies,
     _file_manifest,
     _isolated_env,
+    _no_bytecode,
     _publish,
     _run,
     _write_manifest,
 )
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-PACKAGES = ("gatekeeper", "loop", "github", "chief-of-staff", "omnigent")
+PACKAGES = ("gatekeeper", "loop", "github", "chief-of-staff", "omnigent", "vendoring")
 # The copies of loop.py's resolver for a skill another package ships: each script must run alone, so none imports it.
 RESOLVER = {
     "gatekeeper": [],
@@ -228,6 +230,8 @@ def test_the_package_packs_and_installs_for_claude_and_codex(name: str, tmp_path
     env = _isolated_env(tmp_path)
     source = tmp_path / "source"
     _copy_package(source)
+    if not (source / name).exists():  # a package engineering does not pull in
+        shutil.copytree(REPOSITORY / name, source / name, ignore=_no_bytecode)
     _publish(tmp_path, env, source)
     package = source / name
 
@@ -247,3 +251,16 @@ def test_the_package_packs_and_installs_for_claude_and_codex(name: str, tmp_path
     lock = (consumer / "apm.lock.yaml").read_text()
     _run(["apm", "install", "--frozen"], cwd=consumer, env=env)
     assert (consumer / "apm.lock.yaml").read_text() == lock
+
+
+def test_every_local_plugin_has_an_area_component() -> None:
+    """Every issue carries an `area:` label, one per top-level plugin plus `ci`, so a plugin's issues can be found."""
+    marketplace = json.loads((REPOSITORY / ".claude-plugin" / "marketplace.json").read_text())
+    plugins = {
+        p["source"].removeprefix("./")
+        for p in marketplace["plugins"]
+        if isinstance(p["source"], str) and p["source"].count("/") == 1
+    }
+    tracker = (REPOSITORY / "docs" / "agents" / "issue-tracker.md").read_text()
+    settings = yaml.safe_load(re.search(r"```yaml\n(.*?)```", tracker, re.DOTALL).group(1))
+    assert set(settings["components"]) == plugins | {"ci"}

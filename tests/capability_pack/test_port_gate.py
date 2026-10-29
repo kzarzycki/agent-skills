@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack.provenance import load_provenance
-from tools.capability_pack.qualify import (
+from capability_pack.provenance import load_provenance
+from capability_pack.qualify import (
     BreakingDriftError,
     ConfigurationError,
     PortRequiredError,
