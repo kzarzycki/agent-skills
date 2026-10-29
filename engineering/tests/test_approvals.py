@@ -62,6 +62,7 @@ VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
 COMMENT = approvals.comment
+OPEN_PULLS = getattr(approvals, "open_pulls", list)
 
 
 @pytest.fixture(autouse=True)
@@ -72,6 +73,14 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
     monkeypatch.setattr(approvals, "merged_high", lambda _branch: [])
+
+
+@pytest.fixture(autouse=True)
+def others_open(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """The repo's open PRs `check build` compares a PR with: none, unless a test adds one."""
+    found: list[dict[str, Any]] = []
+    monkeypatch.setattr(approvals, "open_pulls", lambda: found, raising=False)
+    return found
 
 
 @pytest.fixture(autouse=True)
@@ -169,7 +178,15 @@ def node(
 def issue(
     number: int, *labels: str, body: str = "the spec", comments: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    return node(labels, comments, number=number, body=body, createdAt=WRITTEN, lastEditedAt=None)
+    return node(
+        labels,
+        comments,
+        number=number,
+        body=body,
+        createdAt=WRITTEN,
+        lastEditedAt=None,
+        repository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
+    )
 
 
 def specced(number: int, *labels: str) -> dict[str, Any]:
@@ -5251,6 +5268,176 @@ def test_check_build_refuses_an_issue_assigned_to_anyone_but_its_approver(
     )
     assert approvals.proofs("build", pull(), [found], LOOP) == ([line] if refused else [])
     assert approvals.proofs("merge", pull(reviews=(VERDICT,), labels=OWNED), [found], LOOP) == []
+
+
+def listed(number: int, branch: str, body: str, *closing: int) -> dict[str, Any]:
+    """An open PR as `gh pr list --json number,headRefName,body,closingIssuesReferences` prints it."""
+    return {
+        "number": number,
+        "headRefName": branch,
+        "body": body,
+        "closingIssuesReferences": [
+            {
+                "number": n,
+                "repository": {"name": "scratch-gate-revert", "owner": {"login": "kzarzycki"}},
+            }
+            for n in closing
+        ],
+    }
+
+
+def duplicate(number: int, other: int, branch: str) -> str:
+    return (
+        f"#{number} is also closed by open PR #{other} (branch `{branch}`): one build per issue, so close one of"
+        " the PRs, or link it with `Part of`"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs", "closing"),
+    [
+        ("Closes #1", "Fixes #1", ()),
+        ("Resolves #1", "the change", (1,)),  # GitHub links it, with no line in the body
+        (
+            "Implements #1",
+            "closes #1",
+            (),
+        ),  # under a `signoff` rule, Implements finishes the issue too
+    ],
+)
+def test_check_build_refuses_an_issue_another_open_pr_closes_and_each_names_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine: str,
+    theirs: str,
+    closing: tuple[int, ...],
+) -> None:
+    monkeypatch.setattr(
+        approvals, "project", lambda: (TRACKER, add(LOOP, "signoff", "always: true\n"))
+    )
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    first, second = pull(body=mine), pull(body=theirs)
+    second.update(number=8, headRefName="second")
+    second["closingIssuesReferences"]["nodes"] = [spec for _ in closing]
+    first["closingIssuesReferences"]["nodes"] = [] if "#1" in mine else [spec]
+    pulls = {7: first, 8: second}
+    monkeypatch.setattr(approvals, "pull_request", lambda pr: pulls[pr])
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    listing = json.dumps([listed(7, "feature", mine), listed(8, "second", theirs, *closing)])
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if "graphql" in args:  # the body's unlinked `#1`
+            return json.dumps({"data": {"repository": {"i1": spec}}})
+        assert args[:2] == ("pr", "list")
+        calls.append(args)
+        return listing
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 1
+    assert capsys.readouterr().out.splitlines() == [duplicate(1, 8, "second")]
+    assert approvals.main(["check", "build", "8"]) == 1
+    assert capsys.readouterr().out.splitlines() == [duplicate(1, 7, "feature")]
+    assert len(calls) == 2  # one list call per check
+
+
+def test_check_build_passes_as_today_when_no_other_open_pr_closes_its_issue(
+    monkeypatch: pytest.MonkeyPatch,
+    assigned: list[tuple[Any, ...]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Another PR that only builds on the issue (`Part of`), closes another one, or is this PR itself holds nothing."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    listing = [
+        listed(7, "feature", "Closes #1", 1),
+        listed(8, "part", "Part of #1"),
+        listed(9, "other", "Fixes #2", 2),
+        listed(10, "signed", "Implements #1"),  # no `signoff` rule: a link like `Part of`
+    ]
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        return json.dumps(listing)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert capsys.readouterr().out == ""
+    assert [args[:2] for args in calls] == [("pr", "list")]
+    assert (1, "loop", True) in assigned
+
+
+def test_check_build_counts_only_this_repos_issue_when_another_pr_closes_the_same_number_elsewhere(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`other/project#1` is another issue than this repo's #1, in the body or in GitHub's closing references."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    foreign = listed(8, "foreign", "Closes other/project#1")
+    foreign["closingIssuesReferences"] = [
+        {"number": 1, "repository": {"name": "project", "owner": {"login": "other"}}}
+    ]
+    monkeypatch.setattr(approvals, "gh", lambda *_args, **_kw: json.dumps([foreign]))
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_check_build_refuses_when_the_open_pr_list_reaches_its_limit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A list as long as the limit may have left out the PR that closes the issue too, so the check can't pass."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    monkeypatch.setattr(approvals, "OPEN_LIMIT", 2, raising=False)
+    everyone = [
+        listed(7, "feature", "Closes #1", 1),
+        listed(8, "a", "Fixes #2"),
+        listed(9, "b", "Fixes #1"),
+    ]
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        return json.dumps(everyone[: int(args[args.index("--limit") + 1])])
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        (
+            "the duplicate-build check reads at most 2 open PRs and this repo has at least that many, so it could"
+            " not see every open PR: close stale PRs, or check by hand that no other open PR closes #1"
+        )
+    ]
+    assert len(calls) == 1
+
+
+def test_check_merge_lists_no_open_prs_and_a_duplicate_does_not_hold_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The duplicate check belongs to build: by merge the build it guards has run, and the list costs a request."""
+    spec = approved(1, "kind:bug", "area:web")
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    listings: list[None] = []
+    second = {**listed(8, "second", "Fixes #1"), "closingIssuesReferences": {"nodes": []}}
+    monkeypatch.setattr(approvals, "open_pulls", lambda: listings.append(None) or [second])
+    assert duplicate(1, 8, "second") in approvals.proofs("build", mine, [spec], LOOP)
+    assert duplicate(1, 8, "second") not in approvals.proofs("merge", mine, [spec], LOOP)
+    assert len(listings) == 1  # the build check's, none at merge
 
 
 def test_being_assigned_is_no_go_ahead() -> None:
