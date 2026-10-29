@@ -1222,7 +1222,7 @@ def test_create_files_the_session_under_the_project(
 
 
 def test_create_files_the_session_under_its_caller_s_project(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """A scheduled run is filed in its task's project, whose name its repo's need not match."""
     bodies: list[dict] = []
@@ -1250,7 +1250,8 @@ def test_create_files_the_session_under_its_caller_s_project(
     monkeypatch.setattr(omnigent_agent, "repo_name", lambda: "eng-repo")  # matches no project
     monkeypatch.delenv("OMNIGENT_PROJECT", raising=False)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
-    omnigent_agent.Omnigent().create("claude", "t", top_level=True)
+    # a workspace outside a checkout, so no project line of this repo's applies
+    omnigent_agent.Omnigent().create("claude", "t", top_level=True, workspace=str(tmp_path))
     assert bodies[-1]["project_id"] == "p1"
     assert capsys.readouterr().err == ""
 
