@@ -183,7 +183,7 @@ from urllib.request import Request, urlopen
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 # A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
 # whose schemas and listings it would otherwise re-read every turn; Omnigent's own and plugins'
-# servers stay. A project's `Worker tools:` or `Verifier tools:` line names another list, or `full`.
+# servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
 LEAN_ROLES = ("worker", "verifier")
 LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
@@ -818,9 +818,7 @@ class Omnigent:
         if agent == "claude":
             args = ["--permission-mode", mode] if mode else []
             if role and (stem := Path(role).stem) in LEAN_ROLES:
-                tools = project_line(body["workspace"], f"{stem.capitalize()} tools") or LEAN_TOOLS
-                if tools != "full":
-                    args += ["--strict-mcp-config", "--tools", tools]
+                args += lean_args(str(body["workspace"]), stem)
             if args:
                 body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
@@ -1028,21 +1026,58 @@ class Omnigent:
         return max(times, default=0.0)
 
 
-def project_line(workspace: str, key: str) -> str:
-    """The value of the line ``<key>: <value>`` in the project's ``docs/agents/loop.md`` at the root
-    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout."""
-    root = subprocess.run(
+def checkout_root(workspace: str) -> str:
+    """The root of ``workspace``'s checkout, else empty."""
+    return subprocess.run(
         ["git", "-C", workspace, "rev-parse", "--show-toplevel"],
         capture_output=True,
         text=True,
-        check=False,  # no checkout: no project line
+        check=False,  # no checkout: no project files
     ).stdout.strip()
+
+
+def read_json(path: Path) -> dict:
+    """``path``'s JSON object, else empty: missing, unreadable or not an object."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def project_line(workspace: str, key: str) -> str:
+    """The value of the line ``<key>: <value>`` in the project's ``docs/agents/loop.md`` at the root
+    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout."""
+    root = checkout_root(workspace)
     try:
         text = (Path(root) / LOOP_FILE).read_text() if root else ""
     except FileNotFoundError:
         return ""
     found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
     return found.group(1) if found else ""
+
+
+def lean_args(workspace: str, role: str) -> list[str]:
+    """The launch args of a lean Claude ``role`` child (``LEAN_TOOLS``), plus what the project's
+    ``<Role> tools:`` line names beyond them: a tool, or an MCP server configured for the checkout
+    (the user's, the project's ``.mcp.json`` or the checkout's local one), which goes in its own
+    ``--mcp-config`` beside Omnigent's. ``full`` there is no args: every configured tool and server."""
+    named = project_line(workspace, f"{role.capitalize()} tools")
+    if named == "full":
+        return []
+    root = checkout_root(workspace)
+    user = read_json(Path.home() / ".claude.json")
+    local = (user.get("projects") or {}).get(root) or {} if root else {}
+    known = {
+        **(user.get("mcpServers") or {}),
+        **(read_json(Path(root) / ".mcp.json").get("mcpServers") or {} if root else {}),
+        **(local.get("mcpServers") or {}),
+    }
+    extra = [e.strip() for e in named.split(",") if e.strip()]
+    servers = {e: known[e] for e in extra if e in known}
+    tools = list(dict.fromkeys(LEAN_TOOLS.split(",") + [e for e in extra if e not in servers]))
+    args = ["--strict-mcp-config", "--tools", ",".join(tools)]
+    return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
 
 
 def project_name() -> str:

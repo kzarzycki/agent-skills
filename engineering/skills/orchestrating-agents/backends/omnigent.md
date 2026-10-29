@@ -86,10 +86,12 @@ Skill, ToolSearch, WebFetch, WebSearch) and none of the user's or project's MCP 
 (`--strict-mcp-config`, `--tools`), since every turn re-reads each loaded tool's schema and
 listing; Omnigent's own server and plugins' servers stay. That roughly halves the first turn (49k to
 25k input tokens on a host with a full user configuration). A role that needs more names it in the
-project's own line, `Worker tools: <list>` or `Verifier tools: <list>`, or `full` for the
-configured set (under the engineering loop, in loop.md), which `start` reads from
-`docs/agents/loop.md` at the root of the child's checkout. Leads, the chief of staff and other
-children start as configured.
+project's own line, `Worker tools: <list>` or `Verifier tools: <list>` (under the engineering loop,
+in loop.md), which `start` reads from `docs/agents/loop.md` at the root of the child's checkout:
+each entry is a tool added to the set, or an MCP server configured for the checkout (the user's,
+the project's `.mcp.json` or the checkout's local one), which the child gets in its own
+`--mcp-config`; `full` starts the role with every configured tool and server. Leads, the chief of
+staff and other children start as configured.
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
