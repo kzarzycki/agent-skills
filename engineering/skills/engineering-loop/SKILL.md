@@ -237,7 +237,10 @@ does them on GitHub. A
 installs the skill it is under the install, such as
 `.agents/skills/engineering-loop/scripts/board.py`. Run it from the worktree with `uv run`,
 which installs what its inline header declares. `scripts/browse.py` renders a web UI headless, signed in to an Omnigent server when
-asked, and screenshots it (worker.md, Report; its docstring has the flags).
+asked, and screenshots it (worker.md, Report; its docstring has the flags). `scripts/mutate.py` applies
+each mutation patch alone, runs the tests and restores the tree, writing a log stamped with the head: the worker
+runs it before its report and the verifier in review (verifier.md, Mutation-check the new tests; its
+docstring has the log format and exit codes).
 
 ### Practice
 

@@ -85,7 +85,11 @@ yourself, keeping standards and spec as separate axes.
   changes, even on one line; save the edit as a patch beside your report (`git diff --
   <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
   change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
-  also the repro. A change whose undoing leaves every test green is untested: report it as a
+  also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
+  '<tests>' --log <log> <patch>…` (the test command under the heavy lock when your brief
+  names one), which applies each alone, restores the tree, stops cleanly on a signal and
+  logs the head with each patch's exit code, rather than a harness of your own; the worker
+  ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
   major. Before the report, `git status --porcelain` must match what it showed at the start:
   revert any mutation of yours still applied, and report a tree you cannot clean as a finding
   naming its paths, since the lead's next gate and push run in it (`wait` fails a host

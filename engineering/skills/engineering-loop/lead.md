@@ -101,7 +101,12 @@ design, wireframes included for a UI, and delegate the rest.
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
 7. **Verify** (board: `Verify`). A worker report naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
-   the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before each pass, rerun on the head every
+   the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before a verifier starts,
+   each deviation on the worker report's `Spec deviations:` line is fixed, or taken to the
+   owner as a scope change (SKILL.md, Approvals and proof: rewrite the issue, then
+   `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
+   already said. Then write the PR body's `Spec deviations:` line: `none`, or each deviation
+   with a link to the owner's decision (an issue comment URL or `#n`). Before each pass, rerun on the head every
    proof the spec's acceptance needs whose log names another commit, since the verifier
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
