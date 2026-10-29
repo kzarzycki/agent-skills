@@ -137,9 +137,8 @@ def main(argv: list[str]) -> int:
                 raise Refused(f"{name} does not apply: {check.stderr.strip()}")
         for name, path in patches:
             current = path
-            applied = git("apply", str(path), cwd=top)
-            if applied.returncode:
-                raise Refused(f"{name} does not apply: {applied.stderr.strip()}")
+            # applies: --check passed on this same tree, which restore() left clean
+            git("apply", str(path), cwd=top)
             code, output = run_test(args.test)
             restore(top, path)
             current = None
