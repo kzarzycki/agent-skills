@@ -107,7 +107,8 @@ without a merge is exit 1, and a red required check exit 3. Whatever CI won't cl
 a head CI has passed, and so does a wait of 2 hours.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 The check is the gate: loop.md's `gate` under `loop` (default `mise run check:all`), variables it sets in front of
-its command included (`GATE_UI_TESTS=0 mise run check:all`). It runs with every name loop.md's `local_ci_env` lists
+its command included (`GATE_UI_TESTS=0 mise run check:all`), one command run with no shell, so an operator
+such as `&&` is refused. It runs with every name loop.md's `local_ci_env` lists
 removed from the environment unless the command sets it, so a host's ambient tier never changes what ran and the
 command alone says what a pass proves. A pass also leaves a record keyed by tree and command under the git common dir
 (`approvals/local-ci/<tree>-<key>.json`: head, tree, command, exit, env, time, host, `head` being the commit it ran
@@ -115,7 +116,7 @@ on, `env` the variables the command sets, `<key>` a digest of the command), whic
 commits; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
 records itself. Every pass this clone holds, run or reused, is published as a commit status on the head it covers:
-success, context `gate`, description `Tree <tree> on <commit>: <command>` (the command's digest, `sha256 <key>`, when
+success, context `gate`, description `Tree <tree> on <commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when
 it doesn't fit GitHub's 140 characters), since `gh`'s token can write a status where a check run needs a GitHub App.
 GitHub refusing it (a commit not pushed yet) or unreachable is said and changes nothing else: the record stays local,
 and a later `local-ci` publishes it. A pass is reusable for a commit when this clone's record for its tree holds exit
@@ -3100,14 +3101,40 @@ DESCRIBED = 140
 def gate() -> tuple[str, list[str], dict[str, str]]:
     """loop.md's `gate` under `loop` (default LOCAL_CI): the command as written, its words, and the variables it sets
     in front of them (`GATE_UI_TESTS=0 mise run check:all`). The command alone is the gate: it runs with every name
-    `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran."""
-    words = shlex.split(settings(project()[1]).get("gate") or shlex.join(LOCAL_CI))
-    sets = dict(itertools.takewhile(lambda pair: len(pair) == 2, (w.split("=", 1) for w in words)))
-    if any(not re.fullmatch(r"[A-Za-z_]\w*", name) for name in sets) or len(sets) == len(words):
-        raise Refused(
-            f"loop.md's `gate` is {shlex.join(words)!r}: variables to set, then a command to run"
+    `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran. It runs with no
+    shell, so a shell operator (`&&`, `;`, `|`) is refused: the words after it would be arguments, never a command."""
+    written = settings(project()[1]).get("gate") or shlex.join(LOCAL_CI)
+    lexer = shlex.shlex(written, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    words = list(lexer)
+    assigned = len(
+        list(
+            itertools.takewhile(
+                lambda word: re.fullmatch(r"[A-Za-z_]\w*=.*", word, re.DOTALL), words
+            )
         )
-    return shlex.join(words), words[len(sets) :], sets
+    )
+    if (
+        assigned == len(words)
+        or any(set(word) <= set("();<>|&") for word in words)
+        or re.fullmatch(r"\w*=.*", words[assigned], re.DOTALL)
+    ):
+        raise Refused(
+            f"loop.md's `gate` is {written!r}: variables to set, then one command to run, with no shell operator"
+            " (put a chain of checks in one task)"
+        )
+    sets = dict(word.split("=", 1) for word in words[:assigned])
+    return shlex.join(words), words[assigned:], sets
+
+
+def ran_gate() -> int:
+    """Run the gate (gate) in its environment (gate_env) and return its exit; a command that isn't there is refused,
+    naming the gate, since loop.md is hand-written."""
+    command, words, _ = gate()
+    try:
+        return subprocess.run(words, check=False, env=gate_env()).returncode
+    except OSError as exc:
+        raise Refused(f"loop.md's `gate` {command!r} can't run: {exc}") from None
 
 
 def gate_env() -> dict[str, str]:
@@ -3173,8 +3200,8 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command, words, env = gate()
-    code = subprocess.run(words, check=False, env=gate_env()).returncode
+    command, _, env = gate()
+    code = ran_gate()
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
     if checkout_state() != before:
@@ -3347,8 +3374,7 @@ def local_ci(pr: int | None) -> int:
     if pr is None:
         head, changes = checkout_state()
         if changes:
-            command, words, _ = gate()
-            code = subprocess.run(words, check=False, env=gate_env()).returncode
+            command, code = gate()[0], ran_gate()
             print(
                 f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
             )

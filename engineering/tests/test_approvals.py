@@ -4515,7 +4515,18 @@ def test_a_name_added_to_local_ci_env_keeps_every_pass(
     assert checkout["runs"] == 1
 
 
-@pytest.mark.parametrize("gate", ["GATE_UI_TESTS=0", "1GATE=0 mise run check:all", "' '"])
+@pytest.mark.parametrize(
+    "gate",
+    [
+        "GATE_UI_TESTS=0",
+        "1GATE=0 mise run check:all",
+        "' '",
+        "'mise run a && mise run b'",
+        "'mise run a;mise run b'",
+        "'mise run a | tee log'",
+    ],
+    ids=["nothing to run", "no variable name", "empty", "a chain", "a sequence", "a pipe"],
+)
 def test_a_gate_that_runs_nothing_or_sets_no_variable_is_refused(
     github: list[tuple[Any, ...]],
     checkout: dict[str, Any],
@@ -4526,6 +4537,64 @@ def test_a_gate_that_runs_nothing_or_sets_no_variable_is_refused(
     assert approvals.main(["local-ci", "7"]) == 1
     assert (checkout["runs"], github) == (0, [])
     assert "loop.md's `gate`" in capsys.readouterr().out
+
+
+def test_a_gate_whose_command_is_not_there_is_refused_naming_it(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def missing(*_args: Any, **_kwargs: Any) -> Any:
+        raise FileNotFoundError(2, "No such file or directory", "misee")
+
+    monkeypatch.setattr(approvals.subprocess, "run", missing)
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert "can't run: [Errno 2] No such file or directory: 'misee'" in capsys.readouterr().out
+    assert not (checkout["common"] / "approvals").exists()
+
+
+def test_a_variable_set_twice_runs_the_command_with_the_last_value(
+    checkout: dict[str, Any],
+) -> None:
+    checkout["loop"] = add(LOOP, "loop", "gate: A=1 A=2 mise run check:all\n")
+    assert approvals.gate() == (
+        "A=1 A=2 mise run check:all",
+        ["mise", "run", "check:all"],
+        {"A": "2"},
+    )
+
+
+def test_a_gate_too_long_for_a_status_publishes_its_digest_and_is_reused_from_it(
+    checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """GitHub refuses a description over 140 characters: the command's digest stands in, and still matches it."""
+    long = "GATE_SCOPE=full GATE_UI_TESTS=0 GATE_ANDROID=skip GATE_LINUX=skip mise run check:all"
+    checkout["loop"] = add(LOOP, "loop", f"gate: {long}\n")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    [published] = hub[HEAD]
+    assert len(published["description"]) <= approvals.DESCRIBED
+    assert (
+        published["description"] == f"Tree {TREE} on {HEAD[:12]}: sha256 {approvals.gate_key(long)}"
+    )
+    record_at().unlink()  # another clone: only the status
+    assert approvals.reusable(HEAD)["published"] is True
+
+
+def test_a_record_of_todays_command_under_an_old_key_adds_nothing_to_the_refusal(
+    checkout: dict[str, Any],
+) -> None:
+    """A clone that held passes before the gate was keyed by command keeps them under the old key: the refusal must not
+    name today's command as if it were another."""
+    old = approvals.recorded(TREE, "mise run check:all").with_name(f"{TREE}-0123456789ab.json")
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps({"tree": TREE, "command": "mise run check:all", "exit": 0}))
+    assert approvals.elsewhere(HEAD) == ""
+    other = old.with_name(f"{TREE}-ba9876543210.json")
+    other.write_text(json.dumps({"tree": TREE, "command": "mise run check", "exit": 0}))
+    assert approvals.elsewhere(HEAD) == (
+        "; its tree passed under `mise run check`, and the gate is now `mise run check:all`"
+    )
 
 
 def test_a_record_without_env_runs_the_check_again(

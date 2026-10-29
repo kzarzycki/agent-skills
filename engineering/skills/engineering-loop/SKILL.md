@@ -223,9 +223,11 @@ draft, `mise run check` before each push is its check. With `ci: false` in loop.
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, and is the gate while iterating too: it runs the merge check, loop.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and publishes it as a
-commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing, on this
-host or another, posts that pass for any commit with the same tree and gate command rather
-than running the check again (a rebase or reworded commit keeps its tree). A run on a
+commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing posts
+that pass rather than running the check again: on this host for any commit with the same
+tree and gate command (a rebase or reworded commit keeps its tree), on another for the
+commit whose `gate` status names them. `gate` is one command with no shell operator, so a
+chain of checks is one task. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in loop.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
