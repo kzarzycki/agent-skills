@@ -279,7 +279,7 @@ def verdict_on(
 
 VERDICT = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
 OWNED = ("approved:merge",)
-HELD = "PR #7 waits for the owner's go on its head (`approve merge 7 --by owner`, or their `approved:merge` label), since it is high risk: "
+HELD = f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`, or their `approved:merge` label), since it is high risk: "
 BILLING = HELD + "it matches a risk rule (path `billing/**`)"
 GITHUB = HELD + "it matches a risk rule (path `.github/**`)"
 
@@ -1386,7 +1386,7 @@ def test_an_exact_revert_still_needs_check_and_the_merge_approval(
     assert gated(monkeypatch, capsys, "merge", unapproved) == (
         approvals.WAITING,
         [
-            "PR #2 waits for the owner's go on its head (`approve merge 2 --by owner`, or their `approved:merge` label), since it is high risk: it matches a risk rule (path `billing/**`)"
+            f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`, or their `approved:merge` label), since it is high risk: it matches a risk rule (path `billing/**`)"
         ],
     )
     bare = revert_pr(body="Reverts #1\n", labels=OWNED)
@@ -1437,7 +1437,7 @@ def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_label(
     """The risk of the change a revert undoes (or re-lands) carries over: `risk:high` on an issue the revert closes,
     on the PR it reverts, or that PR's last verdict saying `Risk: high`."""
     low = {**pull(), "number": 1}
-    held = "PR #2 waits for the owner's go on its head (`approve merge 2 --by owner`, or their `approved:merge` label), since it is high risk: "
+    held = f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`, or their `approved:merge` label), since it is high risk: "
     closing = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
     closing["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug", "risk:high")]}
     assert held_revert(monkeypatch, capsys, closing, low) == (
@@ -2001,7 +2001,7 @@ def test_the_owners_go_covers_its_head_only(
     hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
     assert approvals.owner_waits(high, [], LOOP) == []
     assert approvals.owner_waits({**high, "headRefOid": "c" * 40}, [], LOOP) == [
-        HELD + "`risk:high` is on PR #7"
+        HELD.replace(HEAD, "c" * 40) + "`risk:high` is on PR #7"
     ]
     monkeypatch.setattr(approvals, "writer", lambda login: False)
     hub[HEAD] = [status("owner", "The owner's go", by="contributor")]  # anyone can't give it
@@ -2021,6 +2021,27 @@ def test_approve_merge_refuses_a_head_other_than_the_one_the_owner_was_shown(
     assert (github, hub) == ([], {})
     out = capsys.readouterr().out
     assert f"PR #7's head is {HEAD}, not {'c' * 40}" in out and "needs --head <sha>" in out
+    assert "belong to `approve merge`" in out
+
+
+def test_withdrawing_a_go_turned_from_the_label_removes_the_label_so_it_stays_withdrawn(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    labelled = pull(labels=("risk:high", "approved:merge"))
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: labelled)
+    assert (
+        approvals.owner_waits(labelled, [], LOOP) == []
+    )  # land's poll turns the label into the go
+    assert (
+        approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner", "--withdraw"])
+        == 0
+    )
+    assert ("label", 7, "approved:merge", False) in github
+    unlabelled = pull(labels=("risk:high",))  # what GitHub reads back
+    assert approvals.owner_waits(unlabelled, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+    assert [s["state"] for s in hub[HEAD]] == ["failure", "success"]
 
 
 def test_a_newer_failing_owner_status_withdraws_the_go(
@@ -6515,7 +6536,7 @@ def test_an_owner_approved_high_risk_pr_may_enter_the_queue(
         (
             ("risk:high",),
             LABELED,
-            "PR #7 waits for the owner's go on its head (`approve merge 7 --by owner`, or their `approved:merge` label), since it is high risk: `risk:high` is on PR #7",
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`, or their `approved:merge` label), since it is high risk: `risk:high` is on PR #7",
         ),
         (
             ("risk:high", "approved:merge"),

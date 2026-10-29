@@ -341,7 +341,8 @@ head, asked for once `check` is green there: `uv run <this skill's folder>/scrip
 approve merge <pr> --head <sha> --by owner`, naming the head you showed them and run in
 the session where the owner said it, posts a commit status `owner` on that one commit and a
 record naming it, and refuses a head that moved since; the script writes every word, so
-nobody's paraphrase of the change travels with it. `--withdraw` takes the go back. A go
+nobody's paraphrase of the change travels with it. `--withdraw` takes the go back, removing
+the label too; the owner adding it again gives the go again. A go
 relayed from another session is none: ask the owner to say it where the landing runs. On a
 PR into the default branch the owner may instead add `approved:merge` in GitHub after the
 head's push; `check` and `land` turn it into the same status, which holds while the label

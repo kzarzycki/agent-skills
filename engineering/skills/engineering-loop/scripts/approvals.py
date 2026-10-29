@@ -57,7 +57,8 @@ it below, instead; its comment is the trace, never the proof), and, while the ch
 go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
 green. `approve merge <pr> --head <sha> --by owner` posts it on the owner's word with a record (`Approved: merge`,
 `By: owner`, `Head: <sha>`) whose every word the script writes, refusing a head other than the one named, which is
-the one the owner was shown; `--withdraw` posts a newer failing one and a `Withdrawn: merge` record. A status belongs
+the one the owner was shown; `--withdraw` posts a newer failing one and a `Withdrawn: merge` record and removes their label, which given again
+is their go again. A status belongs
 to one commit, so no push carries the go to a head the owner didn't see. The owner's own `approved:merge` label on a
 PR into the default branch, added after the head was pushed, is their go too: `check merge`, `check queue` and `land`
 post it as that status, marked as from the label, which then holds only while the label is on, so removing it
@@ -1892,8 +1893,8 @@ def owner_waits(
     if MERGE_LABEL not in names(pull):
         return [
             (
-                f"{where} waits for the owner's go on its head (`approve merge {pull['number']} --by owner`, or"
-                f" their `{MERGE_LABEL}` label), since it is high risk: {why}"
+                f"{where} waits for the owner's go on its head (`approve merge {pull['number']} --head"
+                f" {pull['headRefOid']} --by owner`, or their `{MERGE_LABEL}` label), since it is high risk: {why}"
             )
         ]
     added = max(
@@ -1971,6 +1972,8 @@ def go(number: int, head: str, withdraw: bool = False) -> int:
         )
     head = pull["headRefOid"]
     if withdraw:
+        # the label off too, or the next check would turn it into the go again
+        label(number, MERGE_LABEL, add=False)
         post_status(head, OWNER_GO, f"The owner withdrew their go on {head[:12]}", state="failure")
         comment(number, f"Withdrawn: merge\nBy: owner\nHead: {head}\n")
         print(f"PR #{number}: the owner's go on {head} is withdrawn")
@@ -2828,7 +2831,7 @@ def landing(
     merge = ["pr", "merge", str(pr), "--squash", "--match-head-commit", head]
     checks = head_checks(pull, required)[0]  # ran() already waits for a draft-only skip
     red = [(name, state) for name, state in checks if state not in GREEN]
-    # GitHub merges once the required checks pass; a red one it never merges past. The owner's label and a local-ci
+    # GitHub merges once the required checks pass; a red one it never merges past. The owner's go and a local-ci
     # record are no check of GitHub's, so either hold ends the wait below instead.
     if watching and auto and not owner and not (no_ci(loop) and checking):
         if not RED.intersection(state for _, state in red):
