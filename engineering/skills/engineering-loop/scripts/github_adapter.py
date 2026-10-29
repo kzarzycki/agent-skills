@@ -42,7 +42,7 @@ PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSI
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
-  closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
+  closingIssuesReferences(first: 50) {{ nodes {{ repository {{ nameWithOwner }} {ISSUE} }} }}"""
 
 
 DEQUEUE = "mutation($id: ID!) { dequeuePullRequest(input: {id: $id}) { clientMutationId } }"
@@ -68,6 +68,51 @@ def merged_labelled(branch: str, name: str) -> list[int]:
         ".[].number",
     )
     return [int(number) for number in found.split()]
+
+
+def open_pulls(limit: int) -> list[dict[str, Any]]:
+    """The repo's open PRs, up to `limit`, each with its number, branch, body and closing references (each naming its
+    issue's repo as `nameWithOwner`, as the PR query does), in one call."""
+    found = json.loads(
+        gh(
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            str(limit),
+            "--json",
+            "number,headRefName,body,closingIssuesReferences",
+        )
+    )
+    for other in found:
+        nodes = other["closingIssuesReferences"]
+        for issue in nodes:
+            where = issue["repository"]
+            issue["repository"] = {"nameWithOwner": f"{where['owner']['login']}/{where['name']}"}
+        other["closingIssuesReferences"] = {"nodes": nodes}
+    return found
+
+
+def statuses(head: str) -> list[dict[str, Any]]:
+    """The commit statuses on `head`, newest first; ponytail: the first 100, which a head reaches only by hand."""
+    out = gh("api", f"repos/{{owner}}/{{repo}}/commits/{head}/statuses?per_page=100")
+    found: list[dict[str, Any]] = json.loads(out)
+    return found
+
+
+def post_status(head: str, context: str, description: str) -> None:
+    gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/statuses/{head}",
+        "-f",
+        "state=success",
+        "-f",
+        f"context={context}",
+        "-f",
+        f"description={description}",
+        "--silent",
+    )
 
 
 def gh(*args: str, data: str | None = None) -> str:
@@ -443,6 +488,7 @@ forge = SimpleNamespace(
     tree=tree,
     head_pushed=head_pushed,
     merged_labelled=merged_labelled,
+    open_pulls=open_pulls,
     required_checks=required_checks,
     queue_required=queue_required,
     auto_merge_allowed=auto_merge_allowed,
@@ -465,4 +511,6 @@ evidence = SimpleNamespace(
     approvals=lambda item: item["comments"],
     verdicts=lambda pull: pull["reviews"],
     checks=lambda pull: pull["comments"],
+    statuses=statuses,
+    post_status=post_status,
 )

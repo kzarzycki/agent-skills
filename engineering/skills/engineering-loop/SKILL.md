@@ -164,7 +164,7 @@ carry_over_main:
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
 | `checks` | `changed`, `check`, `all`, each a shell command | the project's checks: while iterating, before every push (`record checks`), and the full merge check, which `local-ci` runs and records | `record checks` runs `mise run check`, `local-ci` `mise run check:all` |
 | `adapters` | `tracker`, `forge`, `evidence`, each an adapter's name | the tool behind each of the gatekeeper's ports; a name with no adapter is refused | `github` |
-| `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): a clean merge of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
+| `carry_over_main` | `except`, a list of globs, required | the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
 
 issue-tracker.md holds its label and board facts in a block of the same form under its own
 `## Settings`, read by `approvals.py` (`label_names`), `labels.py` and `board.py`, refused the
@@ -243,10 +243,13 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
 draft, `mise run check` before each push is its check. With `ci: false` in gatekeeper.md, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
-instead, committed and clean: it runs the merge check, gatekeeper.md's `checks.all` (else
-`mise run check:all`), and records
-the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
-for the same head, command and environment rather than running the check again. A project
+instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `checks.all` (else
+`mise run check:all`),
+and a clean, green run records itself by tree in the clone's git dir and publishes it as a
+commit status on the head once GitHub has it, so `local-ci <pr>` at landing, on this host or
+another clone, posts that pass for any commit with the same tree, command and environment
+rather than running the check again (a rebase or reworded commit keeps its tree). A run on a
+checkout with changes records nothing. A project
 whose check reads environment variables (a tier, a scope) names them in gatekeeper.md's
 `local_ci_env`: without it a pass recorded under one tier stands in for another, and the
 posted comment names those values.
@@ -405,9 +408,11 @@ waiting PR's verified head onto the base, runs the full gate once on the result 
 the batch, so a base that moved costs one gate, not a merge, a gate and a verdict per PR.
 `uv run <this skill's folder>/scripts/approvals.py check queue <pr> --head <sha>` says whether a head may enter
 it: every merge proof but the CI wait, the head's own `local-ci --record` pass under the
-current environment and, with CI, its `check`, and nothing high risk or
-owner-approved, since the owner's label covers one head landing alone, through `land`. The
-queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
+current environment and, with CI, its `check`, and on a high-risk change the owner's
+`approved:merge` added after the head's push, the test `land` applies. The label covers that
+one head, and the queue keeps it: it runs `check queue` again before it merges a PR into a
+batch, evicting one whose head moved, and `check merge` dates the label against the landed
+head again. The queue posts `approvals.py batch` on each PR it pushed, and `check merge` takes that proof in
 place of the CI wait once git shows the head merged unchanged and without conflict
 resolution into a batch whose gate passed, and the head has its own `local-ci --record` pass
 under the environment the proof names (`approvals.py`'s docstring says how). A batch gate
@@ -418,16 +423,18 @@ re-queues or lands alone at the same head. The queue never resolves a conflict: 
 conflicts goes back to its lead.
 
 With gatekeeper.md's `carry_over_main` section, merging main into a PR head H keeps H's verdict
-when git shows the merge changed nothing the PR's code reads: the merge H' has H as its
-first parent and a commit on main as its second, its tree is `git merge-tree`'s of the two
-(no conflict resolved, nothing added), and main's changes since the merge base touch none of
-the PR's files, and neither the PR's changes nor main's touch an `except` glob, since a
-config change on either side was never reviewed against the other side's code. H's verdict
-then covers H'; `check merge` and `land` print one line naming H, H' and the predicate.
-Anything else (a conflict, an evil merge, an overlapping file, a touched except path, a git
-error) carries nothing: the merge needs its own verifier pass. The gate never carries: H'
+when git shows the merges changed nothing the PR's code reads: every commit from the new
+head H' down its first parents to H is a merge with a commit on main as its second parent,
+its tree is `git merge-tree`'s of its parents (no conflict resolved, nothing added), and
+main's changes since the merge base touch none of the PR's files, and neither the PR's
+changes nor main's touch an `except` glob, since a config change on either side was never
+reviewed against the other side's code. H's verdict then covers H', over one merge of main
+or several; `check merge`, `check queue` and `land` print one line per merge naming it, its
+first parent and the predicate. Anything else (a PR commit after H, new, edited or rebased,
+a conflict, an evil merge, an overlapping file, a touched except path, a git error) carries
+nothing, and the check prints which condition failed: the head needs its own verifier pass. The gate never carries: H'
 runs its own, as CI does, and under `ci: false` that is `local-ci <pr>` on H', since a
-`local-ci` record stands in for CI on one exact head. This skips a review on purpose, so a
+`local-ci` record stands in for CI on one exact tree. This skips a review on purpose, so a
 project opts in by writing the section.
 
 With `opt_out: true` in gatekeeper.md, a developer may keep their own PRs out of the
@@ -737,7 +744,8 @@ Every other file says "the cap", so this is the one place to change it, and
 up to the cap reviews the diff since the previous report and reruns its repros. No fix
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
-its own.
+its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
+none of the PR's files keep the verdict (Approvals and proof).
 
 - **The last pass under the cap leaves a blocker or major open:** stop and ask the owner,
   since the fix keeps regressing and only they decide what happens next. They have two

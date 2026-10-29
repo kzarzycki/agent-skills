@@ -5,6 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
+    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -63,7 +64,18 @@ accepts (``--decline``: declines) every pending approval prompt, never a questio
 tool call it answered; exit 1 when none was pending (naming any pending question and
 ``relay --answer``) or a resolve failed. Whether an agent may
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
-seconds pass (exit 6), so a pending condition is one foreground call. ``run`` and ``wait`` fail, naming
+seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
+waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
+call), prints nothing meanwhile, and ends at the first of: the log's ``exit <n>`` line (the detached
+recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
+exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
+which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
+``--until`` condition settled (``checks``, the default: all done, exit 0 green, 1 red naming them;
+``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged); else ``still running``
+(exit 6; a run's own 6 prints ``exit 6`` and is an end). ``--notify`` also runs ``$LOOP_NOTIFY
+<outcome>`` once it ends, unset nothing, so a
+detached run's wrapper tells the session that started it (e.g. ``LOOP_NOTIFY="python3
+<this script> relay --from gate <session>"``) and that session can end its turn instead of waiting. ``run`` and ``wait`` fail, naming
 the paths, when a host child reports with a tracked change in its workspace that ``run`` did not see
 at the start (a standalone ``wait``: any). ``status`` prints one line per session:
 its state, queued inputs and last assistant message (``(none)`` before its first).
@@ -151,6 +163,7 @@ import http.client
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -348,6 +361,13 @@ LABEL_SECONDS = 60.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
+# wait-for's default budget: under a 10-minute tool call with room for the call's own start and exit
+WAIT_FOR_BUDGET = 570.0
+WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
+WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
+PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
+LOG_TAIL = 30  # the lines of a red run's log wait-for prints
+GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -2206,6 +2226,178 @@ def wait_until(cmd: list[str], every: float, limit: float) -> int:
         time.sleep(min(every, left))
 
 
+def pid_of(pid: str) -> int | None:
+    """``--pid``'s process while it runs: the number itself, else the one in that file. None for a
+    file missing or empty, or a process younger than the file, which is another one the system gave
+    the run's pid to."""
+    if pid.isdigit():
+        return int(pid) if alive(int(pid)) else None
+    try:
+        text = Path(pid).read_text().strip()
+        written = time.time() - Path(pid).stat().st_mtime
+    except OSError:
+        return None
+    if not text.isdigit() or not alive(int(text)):
+        return None
+    age = elapsed(int(text))
+    return int(text) if age is not None and age + PID_SLACK >= written else None
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def elapsed(pid: int) -> float | None:
+    """Seconds since ``pid`` started, from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``), or None once it
+    is gone. A ``Fail`` when ``ps`` cannot say for a live one, since a pid of unknown age may be
+    another process the system gave it to."""
+    try:
+        ps = subprocess.run(
+            ["ps", "-o", "etime=", "-p", str(pid)], capture_output=True, text=True, check=False
+        )
+        out, why = ps.stdout.strip(), ps.stderr.strip() or f"exit {ps.returncode}"
+    except OSError as e:
+        out, why = "", str(e)
+    if not (m := re.fullmatch(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", out)):
+        if not alive(pid):
+            return None
+        raise Fail(f"cannot tell whether pid {pid} is the run's: ps -o etime= failed: {why}")
+    days, hours, minutes, seconds = (int(g or 0) for g in m.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+
+
+def run_of(pid: str) -> str | None:
+    """The pid ``--pid`` names: the number itself, else the one in that file; None for a file
+    missing or empty."""
+    if pid.isdigit():
+        return pid
+    try:
+        text = Path(pid).read_text().strip()
+    except OSError:
+        return None
+    return text if text.isdigit() else None
+
+
+def run_lines(log: Path, run: str | None) -> list[str] | None:
+    """The log's non-blank lines, or with ``run`` only those after its last ``run <run>`` line, the
+    marker the detached recipe (verifier.md) writes before its command starts; None when it is
+    unreadable or holds no such marker, since a reused log path holds the previous run's lines."""
+    try:
+        lines = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return None
+    if run is None:
+        return lines
+    starts = [i for i, line in enumerate(lines) if line.strip() == f"run {run}"]
+    return lines[starts[-1] + 1 :] if starts else None
+
+
+def exit_of(log: Path, run: str | None = None) -> int | None:
+    """The code on the last ``exit <n>`` line of ``run_lines(log, run)``, or None."""
+    ends = [
+        m for line in run_lines(log, run) or [] if (m := re.fullmatch(r"exit (\d+)", line.strip()))
+    ]
+    return int(ends[-1][1]) if ends else None
+
+
+def log_outcome(log: Path, code: int, run: str | None = None) -> str:
+    """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
+    ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
+    lines = run_lines(log, run) or []
+    body = lines[: max(i for i, line in enumerate(lines) if line.strip() == f"exit {code}")]
+    return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
+
+
+def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
+    """PR ``pr``'s ``until`` condition, once it is settled: 0 and a line when it holds, 1 and a line
+    when it never will (closed unmerged, a check red); None while it is pending. The query gets
+    ``timeout`` seconds."""
+    view = gh("pr", "view", str(pr), "--json", "state,statusCheckRollup", timeout=timeout)
+    data = json.loads(view)
+    state = data["state"]
+    if until in ("merged", "closed") and state != "OPEN":
+        held = state == "MERGED" or until == "closed"
+        return (0 if held else 1), f"PR #{pr} {state.lower()}"
+    if until != "checks":
+        return None
+    checks = data.get("statusCheckRollup") or []
+    if not checks:  # a run CI has not registered yet is not a pass
+        return None
+    pending = [
+        c
+        for c in checks
+        if c.get("status", "COMPLETED") != "COMPLETED" or c.get("state") in ("PENDING", "EXPECTED")
+    ]
+    if pending:
+        return None
+    red = [
+        c.get("name") or c.get("context") or "?"
+        for c in checks
+        if (c.get("conclusion") or c.get("state") or "").upper() not in GREEN_CHECKS
+    ]
+    if red:
+        return 1, f"PR #{pr} checks red: {', '.join(red)}"
+    return 0, f"PR #{pr} checks green ({len(checks)})"
+
+
+def wait_for(
+    log: Path | None, pid: str | None, pr: int | None, until: str, budget: float
+) -> tuple[int, str] | None:
+    """Block up to ``budget`` seconds on a run's log exit line, its pid, or PR ``pr``'s ``until``
+    condition, printing nothing meanwhile; return the exit code and the outcome text: the run's own
+    code (0 or 1 for a PR, 1 for a pid gone with no exit line), or None once the budget passes,
+    since a run may itself exit ``LIMIT``."""
+    deadline = time.monotonic() + budget
+    every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
+
+    def ended() -> tuple[int, str] | None:
+        """The log's exit line: with ``--pid``, only one after the marker of the run it names, so a
+        pid file missing or empty trusts no line."""
+        run = run_of(pid) if pid else None
+        if not log or (pid and run is None) or (code := exit_of(log, run)) is None:
+            return None
+        return code, log_outcome(log, code, run)
+
+    while True:
+        if outcome := ended():
+            return outcome
+        if pr is not None:
+            if (left := deadline - time.monotonic()) <= 0:
+                return None
+            try:  # a query may not outlast the budget
+                if outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
+                    return outcome
+            except Fail:  # a GitHub blip: the next poll asks again
+                pass
+        elif pid and pid_of(pid) is None:
+            if outcome := ended():  # written on its way out
+                return outcome
+            if log:
+                return 1, f"gone: pid {pid} ended with no exit line in {log}"
+            return 0, f"pid {pid} ended"
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        time.sleep(min(every, left))
+
+
+def notify(text: str) -> None:
+    """Tell the session that started a run its outcome through ``$LOOP_NOTIFY``, run as ``<command>
+    <text>``, as a merge queue tells a lane; unset, the outcome is only printed."""
+    command = os.environ.get("LOOP_NOTIFY")
+    if not command:
+        return
+    code = subprocess.run([*shlex.split(command), text], check=False).returncode
+    if code:
+        print(f"warning: LOOP_NOTIFY exited {code}", file=sys.stderr)
+
+
 def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
     """The body of the comment ``said`` links that GitHub files on PR ``pr`` of this checkout's
     repository, created after ``since`` (a ``st_mtime_ns``) when given, or None when it links none:
@@ -2262,11 +2454,11 @@ def denied(text: str) -> None:
                 )
 
 
-def gh(*args: str) -> str:
+def gh(*args: str, timeout: float = HTTP_SECONDS) -> str:
     """``gh``'s output, run in this checkout with its login; a failure is a ``Fail``."""
     try:
         return subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=HTTP_SECONDS, check=True
+            ["gh", *args], capture_output=True, text=True, timeout=timeout, check=True
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()
@@ -4054,6 +4246,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--limit", type=float, required=True, help="seconds before giving up")
     p.add_argument("until", nargs=argparse.REMAINDER, metavar="-- CMD")
+    p = sub.add_parser(
+        "wait-for",
+        description="block on a run's log or pid, or a PR condition, up to --budget; print only the outcome",
+    )
+    p.add_argument(
+        "--log",
+        type=Path,
+        help="a run's log, ended by an `exit <n>` line (with --pid, after its `run <pid>` line)",
+    )
+    p.add_argument("--pid", help="a run's pid, or the file holding it")
+    p.add_argument("--pr", type=int, help="a PR, waited on until --until holds")
+    p.add_argument("--until", choices=("checks", "merged", "closed"), default="checks")
+    p.add_argument(
+        "--budget",
+        type=float,
+        default=WAIT_FOR_BUDGET,
+        help=f"seconds before `still running`, exit {LIMIT} (default {WAIT_FOR_BUDGET:.0f})",
+    )
+    p.add_argument(
+        "--notify",
+        action="store_true",
+        help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
+    )
     for p in sub.choices.values():
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
@@ -4083,6 +4298,7 @@ def main(argv: list[str] | None = None) -> int:
             "direct",
             "owner-said",
             "wait-until",
+            "wait-for",
         ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
@@ -4130,6 +4346,20 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2
                 raise usage
             return wait_until(cmd, args.every, args.limit)
+        if args.cmd == "wait-for":
+            if (args.pr is None) == (args.log is None and args.pid is None):
+                usage = Fail("wait-for needs --log and/or --pid, or --pr")
+                usage.code = 2
+                raise usage
+            ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
+            if ended is None:
+                print("still running")
+                return LIMIT
+            code, outcome = ended
+            print(outcome)
+            if args.notify:
+                notify(outcome)
+            return code
         if args.cmd == "capacity":
             ok, line = capacity()
             print(line)
