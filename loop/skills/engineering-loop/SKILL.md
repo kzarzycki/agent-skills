@@ -107,10 +107,13 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
 draft, `mise run check` before each push is its check. With `ci: false` in gatekeeper.md, the
 check on a head you push for review is `uv run <gatekeeper>/scripts/approvals.py local-ci --record`
-instead, committed and clean: it runs the merge check, gatekeeper.md's `checks.all` (else
-`mise run check:all`), and records
-the pass by commit in the clone's git dir, so `local-ci <pr>` at landing posts that pass
-for the same head, command and environment rather than running the check again. A project
+instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `checks.all` (else
+`mise run check:all`),
+and a clean, green run records itself by tree in the clone's git dir and publishes it as a
+commit status on the head once GitHub has it, so `local-ci <pr>` at landing, on this host or
+another clone, posts that pass for any commit with the same tree, command and environment
+rather than running the check again (a rebase or reworded commit keeps its tree). A run on a
+checkout with changes records nothing. A project
 whose check reads environment variables (a tier, a scope) names them in gatekeeper.md's
 `local_ci_env`: without it a pass recorded under one tier stands in for another, and the
 posted comment names those values.
@@ -523,7 +526,8 @@ in its policy. Every other file here says "the cap". Pass 1 reviews the PR's ful
 up to the cap reviews the diff since the previous report and reruns its repros. No fix
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
-its own.
+its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
+none of the PR's files keep the verdict (Approvals and proof).
 
 - **The last pass under the cap leaves a blocker or major open:** stop and ask the owner,
   since the fix keeps regressing and only they decide what happens next. They have two
