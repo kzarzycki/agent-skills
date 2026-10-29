@@ -3850,13 +3850,18 @@ def head_proof(loop: str | None) -> dict[str, Any] | None:
         bad := [name for name in proof["env"] if not re.fullmatch(r"[A-Za-z_]\w*", name)]
     ):
         raise Refused(f"loop.md's `head_proof.env` names {bad[0]!r}, which is no variable name")
+    # a context this script or the approvals workflow posts would let a plain gate pass or a go prove the head
+    if proof and proof["status"] in {PUBLISHED, OWNER_GO, APPROVALS}:
+        raise Refused(
+            f"loop.md's `head_proof.status` is {proof['status']!r}, a status the loop already posts for another proof"
+        )
     return proof
 
 
 def proof_line(record: dict[str, Any], names: list[str]) -> str:
     """A head proof's status description: the tree, the commit the pass ran on, and the value of each of `names` it
     ran under (`default` for none), so the verifier reads the tier off the head."""
-    values = " ".join(f"{name}={record['env'][name]}" for name in names if name in record["env"])
+    values = " ".join(f"{name}={public(record['env'][name])}" for name in names if name in record["env"])
     # ponytail: cut at GitHub's limit, which values past 77 characters reach; a digest if a tier ever gets that long
     return f"Tree {record['tree']} on {record['head'][:12]}: {values or 'default'}"[:DESCRIBED]
 

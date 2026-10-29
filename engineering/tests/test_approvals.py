@@ -4454,8 +4454,22 @@ def test_record_head_proof_on_a_checkout_with_changes_runs_the_callers_tier_and_
             add(LOOP, "loop", "head_proof:\n  status: gate-ui\n  env:\n    - 1GATE\n"),
             ["local-ci", "--record", "--head-proof"],
         ),
+        *(
+            (
+                add(LOOP, "loop", f"head_proof:\n  status: {taken}\n  env:\n    - GATE_UI_TESTS\n"),
+                ["local-ci", "--record", "--head-proof"],
+            )
+            for taken in (approvals.PUBLISHED, approvals.OWNER_GO, approvals.APPROVALS)
+        ),
     ],
-    ids=["no head_proof in loop.md", "with a PR", "an env naming no variable"],
+    ids=[
+        "no head_proof in loop.md",
+        "with a PR",
+        "an env naming no variable",
+        "the gate's own status",
+        "the owner's go",
+        "the approvals status",
+    ],
 )
 def test_head_proof_without_the_setting_or_with_a_pr_is_refused(
     github: list[tuple[Any, ...]],
@@ -4487,6 +4501,14 @@ def test_a_head_proof_description_says_default_for_no_value_and_fits_github() ->
     record = {"tree": TREE, "head": HEAD, "env": {"LONG": "x" * 200}}
     assert approvals.proof_line(record, ["UNSET"]) == f"Tree {TREE} on {HEAD[:12]}: default"
     assert len(approvals.proof_line(record, ["UNSET", "LONG"])) == approvals.DESCRIBED
+
+
+def test_a_head_proof_description_names_no_home_directory() -> None:
+    scope = f"{Path.home()}/work/app"
+    record = {"tree": TREE, "head": HEAD, "env": {"GATE_SCOPE": scope}}
+    line = approvals.proof_line(record, ["GATE_SCOPE"])
+    assert str(Path.home()) not in line
+    assert line.endswith("GATE_SCOPE=~/work/app")
 
 
 def test_a_name_added_to_local_ci_env_keeps_every_pass(
