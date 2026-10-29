@@ -61,7 +61,10 @@ time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
 `OMNIGENT_MODEL_CLAUDE`), else its harness's default (Codex: `~/.codex/config.toml`), a
-verifier included. Pass `--model` only when the owner asked for that model or the project's instructions
+verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
+(`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
+`claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load:
+Omnigent launches an unlisted id on the harness default with no error. Pass `--model` only when the owner asked for that model or the project's instructions
 name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
 tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
 its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
@@ -76,6 +79,30 @@ choice, set in the environment once. Omnigent applies it as the session's
 `terminal_launch_args` when it launches the terminal, so `info` shows it. A Codex child takes
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
 `start` refuses the flag for Codex and ignores the variable.
+
+**Lean children.** A Claude child started with `--role` naming `worker.md` or `verifier.md`
+gets only the built-in tools those roles call (`LEAN_TOOLS`: Bash, Read, Edit, Write, Agent,
+Skill, ToolSearch, WebFetch, WebSearch) and none of the user's or project's MCP servers
+(`--strict-mcp-config`, `--tools`), since every turn re-reads each loaded tool's schema and
+listing; Omnigent's own server and plugins' servers stay. That roughly halves the first turn (49k to
+25k input tokens on a host with a full user configuration). A role that needs more names it in the
+project's own line, `Worker tools: <list>` or `Verifier tools: <list>` (under the engineering loop,
+in loop.md), which `start` reads from `docs/agents/loop.md` at the root of the child's checkout:
+each entry is a tool added to the set, or an MCP server configured for the checkout (the user's,
+the project's `.mcp.json` or the checkout's local one), which the child gets in its own
+`--mcp-config`; `full` starts the role with every configured tool and server. Leads, the chief of
+staff and other children start as configured.
+
+**Lead window.** A Claude session started with `--top-level` compacts at the project's
+`Lead autocompact: <size>` line (under the engineering loop, in loop.md; 100k to 1M, such as
+`150k`), passed as Claude Code's `--autocompact`, since every turn re-reads the whole context and a
+lead's turns otherwise grow to the user's window. Without the line it starts as configured.
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` outranks the flag, so a host whose user settings set the window
+that way keeps it, and `start` says so: set it as the `autoCompactWindow` setting instead, which the
+flag overrides. `start`'s own environment never reaches the lead, which gets the runner's, so it is
+not checked. A chief of staff the owner starts in the UI gets no flag. To give it a smaller window, set
+`autoCompactWindow` in its project's `.claude/settings.json`: it outranks the user's
+`autoCompactWindow`, though not the environment variable.
 
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
@@ -156,13 +183,30 @@ reviewer must be of the other family is the caller's policy.
 elsewhere.
 
 **Signature.** `python3 scripts/omnigent_agent.py signature` prints `<harness>/<model>/<effort>` of the session it
-runs in, read from the harness at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
-however the session started. The `AGENT_SIGNATURE=` line `start` puts atop a brief knows only the launch arguments.
+runs in, read at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and transcript), so it holds
+however the session started. It reads the session's Omnigent record first (`llm_model` once the harness has
+reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
+`AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
+`model_override`, `?` for the harness default), never the id asked for.
 Below it, a child on this host that is not a top-level lead gets `LOOP_HEAVY_LOCK=<path>`, one
 lock per lead (the runner's primary session, which a lead's workers and their children share;
 `$LOOP_HEAVY_LOCK` when the caller has it), so a lead's parallel workers
 take one heavy slot between them (worker.md, Gates and push); a session gets no environment from
 its starter, so the path rides in the brief.
+
+**Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
+<n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed]` blocks up to `--budget`
+seconds (default 570, under a 10-minute tool call), printing nothing until it ends: on the log's
+`exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
+only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
+first, since a reused log path still holds the previous run's line; a log alone is trusted as
+the caller's run); on the pid gone; on the PR's condition settled (red checks named, exit 1); else `still running`, exit 6 (a run that itself
+exits 6 prints `exit 6`, and that is its end).
+It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTIFY <outcome>`
+once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with
+`omnigent_agent.py wait-for --log <log> --notify` and the session that set `LOOP_NOTIFY="python3
+<this skill>/scripts/omnigent_agent.py relay --from gate <its session id>"` gets one message
+when it ends; unset, nothing is sent.
 
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so

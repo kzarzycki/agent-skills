@@ -54,12 +54,14 @@ yourself, keeping standards and spec as separate axes.
   report's head.
 - **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached with its pid, output and exit code
-  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1`
-  (Perl's `setsid`, since macOS has no `setsid` command),
-  and is waited on up to a total budget you state, in as few calls as you can: each call
-  blocks close to the tool's limit (the longest yield your harness allows on a running
-  command, or a sleep loop that checks the log for its exit line), never short polls, since
-  every call re-reads the whole context. A blocker that is only your own call timing out
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; flock <lock> <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
+  (Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
+  run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
+  log path; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
+  and is waited on up to a total budget you state, in as few calls as you can: each call is
+  `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
+  call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
+  loop of your own, since every call re-reads the whole context. A blocker that is only your own call timing out
   spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
   background shells. A gate the machine allows
   by rule is the exception: run it as the bare command (Gates and repros). A queued run or
@@ -83,7 +85,11 @@ yourself, keeping standards and spec as separate axes.
   changes, even on one line; save the edit as a patch beside your report (`git diff --
   <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
   change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
-  also the repro. A change whose undoing leaves every test green is untested: report it as a
+  also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
+  '<tests>' --log <log> <patch>…` (the test command under the heavy lock when your brief
+  names one), which applies each alone, restores the tree, stops cleanly on a signal and
+  logs the head with each patch's exit code, rather than a harness of your own; the worker
+  ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
   major. Before the report, `git status --porcelain` must match what it showed at the start:
   revert any mutation of yours still applied, and report a tree you cannot clean as a finding
   naming its paths, since the lead's next gate and push run in it (`wait` fails a host

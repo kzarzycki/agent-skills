@@ -46,9 +46,9 @@ read as approved.
 
 - **Approval**, `approved:spec` and `approved:plan` on the issue: added with the owner's
   approval (SKILL.md, Approvals and proof), so adding it is how they approve, or as the
-  ready state of a spec loop.md's policy covers. `approved:merge` on the PR is the owner's
-  merge approval, asked for only when the change is high risk (elsewhere the gates are the
-  approval), added by them once `check` is green on the head and removed by a push.
+  ready state of a spec loop.md's policy covers. `approved:merge` on the PR is one way the owner
+  gives their go on a high-risk head, which `check` turns into the commit status `owner` on
+  that head (elsewhere the gates are the approval and the label means nothing).
 - **Risk**, `risk:high` on an issue or PR: its consequences need the owner at merge (money,
   data, security, another team's contract). A person sets it, or the lead at
   triage, and `approvals.py` adds it to a PR when loop.md's `risk` rule matches or the cap
@@ -87,6 +87,9 @@ The assignee says whose issue it is; who is working on it shows in its board col
   go-ahead is still `approved:spec` or the owner's ask, never the assignment.
 - Someone else's issue is theirs: the loop never builds an issue assigned to anyone but
   the person who approved its spec, and `approvals.py check build` refuses one.
+- One build per issue: `check build` refuses a PR that closes an issue another open PR
+  closes too, naming that PR and its branch, since each build runs its own verifier, gate
+  and queue.
 - When building starts and no one is assigned, the loop assigns the approver, and the PR
   gets its issue's assignee (`check build` does both, github.md, Assignee).
 - Parked or dropped, the loop removes only an assignment it made; a claim the owner made

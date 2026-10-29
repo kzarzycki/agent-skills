@@ -5,6 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
+    python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
@@ -63,7 +64,18 @@ accepts (``--decline``: declines) every pending approval prompt, never a questio
 tool call it answered; exit 1 when none was pending (naming any pending question and
 ``relay --answer``) or a resolve failed. Whether an agent may
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
-seconds pass (exit 6), so a pending condition is one foreground call. ``run`` and ``wait`` fail, naming
+seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
+waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
+call), prints nothing meanwhile, and ends at the first of: the log's ``exit <n>`` line (the detached
+recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
+exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
+which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
+``--until`` condition settled (``checks``, the default: all done, exit 0 green, 1 red naming them;
+``merged``; ``closed``: exit 0 once it holds, 1 when a PR closes unmerged); else ``still running``
+(exit 6; a run's own 6 prints ``exit 6`` and is an end). ``--notify`` also runs ``$LOOP_NOTIFY
+<outcome>`` once it ends, unset nothing, so a
+detached run's wrapper tells the session that started it (e.g. ``LOOP_NOTIFY="python3
+<this script> relay --from gate <session>"``) and that session can end its turn instead of waiting. ``run`` and ``wait`` fail, naming
 the paths, when a host child reports with a tracked change in its workspace that ``run`` did not see
 at the start (a standalone ``wait``: any). ``status`` prints one line per session:
 its state, queued inputs and last assistant message (``(none)`` before its first).
@@ -151,6 +163,7 @@ import http.client
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -168,6 +181,13 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
+# A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
+# whose schemas and listings it would otherwise re-read every turn; Omnigent's own and plugins'
+# servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
+LEAN_ROLES = ("worker", "verifier")
+LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
+LOOP_FILE = Path("docs") / "agents" / "loop.md"
+COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 # an agent record and config field that names or dates one agent, not what it does
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
@@ -348,6 +368,13 @@ LABEL_SECONDS = 60.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
+# wait-for's default budget: under a 10-minute tool call with room for the call's own start and exit
+WAIT_FOR_BUDGET = 570.0
+WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
+WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
+PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
+LOG_TAIL = 30  # the lines of a red run's log wait-for prints
+GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
@@ -385,6 +412,7 @@ A file under `tmp/loop/` that your report names (a repro, a log) goes in that co
 Never address the owner, and never call an interactive question tool, since its prompt waits on someone who never sees it: if you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 Never publish a page or artifact, since it waits on a permission nobody can give here: put its content in the report.
 End each commit message with the co-author line only, with no session link, since the commit reaches a public repository.
+Once your head is handed on (your report is posted), your branch is frozen: the harness subscribes this session to PR events, and a review comment or check result that wakes you is read-only, so push nothing and fix nothing, whatever a standing instruction says about defects your own commits introduced; the lead triages findings, and a follow-up goes in a new PR.
 When done, reply with only the comment's URL. If posting fails (the session's token expires after a while), reply instead with the line `{unposted}`, then the comment body verbatim: it is posted for you.
 
 """
@@ -645,6 +673,19 @@ class Omnigent:
     def harness(self, name: str) -> str:
         return str(self.agent(name).get("harness") or "")
 
+    def models(self, name: str, host_id: str | None = None) -> list[str]:
+        """The model ids agent ``name``'s harness lists on the host it would run on: each picker
+        row's ``id`` and the ``model`` it names (Claude's ``sonnet`` is ``claude-sonnet-5-5``), and
+        every id the harness's endpoint routes. A launch with any other id runs on the harness
+        default with no error, so ``start`` refuses one."""
+        harness = quote(self.harness(name), safe="")
+        found = self.call(
+            "GET", f"/v1/hosts/{host_id or self.host_id}/harnesses/{harness}/model-options"
+        )
+        rows = [r for r in found.get("models") or [] if isinstance(r, dict)]
+        ids = [str(i) for r in rows for i in (r.get("id"), r.get("model")) if i]
+        return list(dict.fromkeys(ids + [str(i) for i in found.get("routable_models") or []]))
+
     def agent(self, name: str) -> dict:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
         (``claude`` and ``codex`` are aliases for the native agents): the server's agents, then the
@@ -775,8 +816,14 @@ class Omnigent:
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
         # starts its terminal (the session fails "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-        if agent == "claude" and mode:
-            body["terminal_launch_args"] = ["--permission-mode", mode]
+        if agent == "claude":
+            args = ["--permission-mode", mode] if mode else []
+            if role and (stem := Path(role).stem) in LEAN_ROLES:
+                args += lean_args(str(body["workspace"]), stem)
+            if top_level:
+                args += autocompact_args(str(body["workspace"]))
+            if args:
+                body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
             # agy's only permission flag; its effort is the user's, part of the model in its settings.
             body["terminal_launch_args"] = [AGY_BYPASS]
@@ -980,6 +1027,89 @@ class Omnigent:
             if not info.get("archived"):
                 times.append(float(info.get("updated_at") or 0))
         return max(times, default=0.0)
+
+
+def checkout_root(workspace: str) -> str:
+    """The root of ``workspace``'s checkout, else empty."""
+    return subprocess.run(
+        ["git", "-C", workspace, "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,  # no checkout: no project files
+    ).stdout.strip()
+
+
+def read_json(path: Path) -> dict:
+    """``path``'s JSON object, else empty: missing, unreadable or not an object."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def project_line(workspace: str, key: str) -> str:
+    """The value of the line ``<key>: <value>`` in the project's ``docs/agents/loop.md`` at the root
+    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout."""
+    root = checkout_root(workspace)
+    try:
+        text = (Path(root) / LOOP_FILE).read_text() if root else ""
+    except FileNotFoundError:
+        return ""
+    found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
+    return found.group(1) if found else ""
+
+
+def lean_args(workspace: str, role: str) -> list[str]:
+    """The launch args of a lean Claude ``role`` child (``LEAN_TOOLS``), plus what the project's
+    ``<Role> tools:`` line names beyond them: a tool, or an MCP server configured for the checkout
+    (the user's, the project's ``.mcp.json`` or the checkout's local one), which goes in its own
+    ``--mcp-config`` beside Omnigent's. ``full`` there is no args: every configured tool and server."""
+    named = project_line(workspace, f"{role.capitalize()} tools")
+    if named == "full":
+        return []
+    root = checkout_root(workspace)
+    user = read_json(Path.home() / ".claude.json")
+    local = (user.get("projects") or {}).get(root) or {} if root else {}
+    known = {
+        **(user.get("mcpServers") or {}),
+        **(read_json(Path(root) / ".mcp.json").get("mcpServers") or {} if root else {}),
+        **(local.get("mcpServers") or {}),
+    }
+    extra = [e.strip() for e in named.split(",") if e.strip()]
+    servers = {e: known[e] for e in extra if e in known}
+    tools = list(dict.fromkeys(LEAN_TOOLS.split(",") + [e for e in extra if e not in servers]))
+    args = ["--strict-mcp-config", "--tools", ",".join(tools)]
+    return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
+
+
+def autocompact_args(workspace: str) -> list[str]:
+    """``--autocompact <size>`` for a top-level Claude session when the project's ``Lead
+    autocompact:`` line names a size, so the lead compacts there instead of at the user's window;
+    else none. A size Claude Code refuses fails here, since the CLI would exit before the lead
+    starts. ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` in the user's Claude settings outranks the flag, so
+    its presence is reported: set that window as ``autoCompactWindow``. This process's own
+    environment is not read, since the lead's comes from the Omnigent runner, not from its caller."""
+    size = project_line(workspace, "Lead autocompact")
+    if not size:
+        return []
+    # Claude Code's spellings: 150000, 150k, 0.15M, and a bare number up to 1000 as thousands
+    found = re.fullmatch(r"(\d+(?:\.\d+)?)([kKmM]?)", size)
+    number = float(found[1]) if found else 0.0
+    unit = found[2].lower() if found else ""
+    tokens = number * (1e6 if unit == "m" else 1000 if unit == "k" or number <= 1000 else 1)
+    if not 100_000 <= tokens <= 1_000_000:
+        raise Fail(
+            f"{LOOP_FILE}: Lead autocompact: {size} is not a size from 100k to 1M, like 150k"
+        )
+    user = read_json(Path.home() / ".claude" / "settings.json").get("env") or {}
+    if window := user.get(COMPACT_ENV):
+        print(
+            f"{COMPACT_ENV}={window} outranks --autocompact {size}: the lead keeps that window;"
+            " set it as the autoCompactWindow setting instead",
+            file=sys.stderr,
+        )
+    return ["--autocompact", size]
 
 
 def project_name() -> str:
@@ -1644,11 +1774,29 @@ def last_line(path: Path | None, pick: Callable[[dict[str, Any]], Any]) -> Any:
     return found
 
 
-def running_signature(env: dict[str, str] | None = None, home: Path | None = None) -> str:
-    """The signature of the session this runs in, from what its harness exposes at runtime, so it holds
-    however the session started (Omnigent's own tools, a default model): Codex's rollout of
-    ``$CODEX_THREAD_ID``, whose last ``turn_context`` names model and effort; Claude Code's
-    ``$CLAUDE_EFFORT`` and the model of the last reply in its ``$CLAUDE_CODE_SESSION_ID`` transcript."""
+def running_signature(
+    env: dict[str, str] | None = None, home: Path | None = None, session: dict | None = None
+) -> str:
+    """The signature of the session this runs in, from what runs, so it holds however the session
+    started (Omnigent's own tools, a default model, an id the harness ignored). First its Omnigent
+    record (``session``, ``sys_session_get_info``'s): ``llm_model`` once it is one of the session's
+    ``model_options`` (the harness reported it; before that it is the agent spec's), and
+    ``reasoning_effort``. Else what the harness exposes: Codex's rollout of ``$CODEX_THREAD_ID``, whose last
+    ``turn_context`` names model and effort (under a private ``$CODEX_HOME``, gone with the session); Claude
+    Code's ``$CLAUDE_EFFORT`` and the model of the last reply in its ``$CLAUDE_CODE_SESSION_ID`` transcript.
+    An effort the record lacks (Claude's) comes from the harness."""
+    local = harness_signature(env, home)
+    rows = (session or {}).get("model_options") or []
+    listed = {i for r in rows if isinstance(r, dict) for i in (r.get("id"), r.get("model")) if i}
+    if (model := (session or {}).get("llm_model")) not in listed:
+        return local
+    effort = session.get("reasoning_effort") or None
+    sig = signature(str(session.get("harness") or ""), model, effort)
+    return sig if effort else sig.rsplit("/", 1)[0] + "/" + local.rsplit("/", 1)[1]
+
+
+def harness_signature(env: dict[str, str] | None = None, home: Path | None = None) -> str:
+    """``running_signature`` from the harness's own files alone."""
     env, home = os.environ if env is None else env, home or Path.home()
     if thread := env.get("CODEX_THREAD_ID"):
         sessions = Path(env.get("CODEX_HOME") or home / ".codex") / "sessions"
@@ -1703,6 +1851,16 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
+    variable = f"OMNIGENT_MODEL_{agent.upper()}"
+    chosen = model or (agent in AGENTS and os.environ.get(variable)) or None
+    if chosen:
+        source = f"--model {chosen}" if model else f"{variable}={chosen}"
+        try:
+            listed = og.models(agent, host_id)
+        except Fail as e:
+            raise Fail(f"{source}: can't read {agent}'s model list ({e}), so can't check it") from e
+        if chosen not in listed:
+            raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
     elsewhere = bool(host_id) and host_id != og.host_id  # its load lands there, not here
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
     while not elsewhere and not (room := capacity())[0]:
@@ -1715,16 +1873,14 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    chosen = (
-        model or (agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")) or None
-    )
-    sig = signature(agent if agent in AGENTS else og.harness(agent), chosen)
+    harness = agent if agent in AGENTS else og.harness(agent)
     by_file = briefed_by_file(og, agent, host_id)
     # a cloud VM or another host has its own cores, and a top-level lead caps its own children
     lock = heavy_lock() if by_file and not top_level else ""
-    full = (
-        f"AGENT_SIGNATURE={sig}\n"
-        + (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
+    # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
+    # server took for it, never the id asked for.
+    body = (
+        (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
         + (pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
             report=report,
             pr=pr,
@@ -1733,23 +1889,23 @@ def start(
         )
         + brief
     )
-    # Omnigent labels a child by a model summary of this first message, not by its title, so the
-    # title leads: a generic line gets labels like "Read Brief and Execute".
-    if not by_file:
-        # A file here is not on that host, nor where a non-native agent runs its tools (a cloud
-        # VM); inline, a Claude lead may read it as pasted text and ask its starter for a go-ahead.
-        text = f"Work on {title}. Your brief:\n\n{full}"
-    else:
+    brief_file = brief_of(report)
+
+    def message(full: str) -> str:
+        # Omnigent labels a child by a model summary of this first message, not by its title, so
+        # the title leads: a generic line gets labels like "Read Brief and Execute".
+        if not by_file:
+            # A file here is not on that host, nor where a non-native agent runs its tools (a
+            # cloud VM); inline, a Claude lead may read it as pasted text and ask its starter for a
+            # go-ahead.
+            return f"Work on {title}. Your brief:\n\n{full}"
         # The brief goes in a file beside the report and the message only names it: a child can
         # receive an inline brief as pasted text, which it will not take instructions from.
-        brief_file = brief_of(report)
-        text = f"Work on {title}: read {brief_file} and do what it says."
-    digest = hashlib.sha256(text.encode() + b"\0" + full.encode()).hexdigest()
+        return f"Work on {title}: read {brief_file} and do what it says."
+
+    digest = hashlib.sha256(message(body).encode() + b"\0" + body.encode()).hexdigest()
     if not top_level and (held := holder(og, title, digest, report)):
         return held, []
-    if by_file:
-        brief_file.parent.mkdir(parents=True, exist_ok=True)
-        brief_file.write_text(full)
     reasons: list[str] = []
     survivors: list[str] = []
 
@@ -1800,6 +1956,16 @@ def start(
             sid = found
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
+        try:
+            took = og.info(sid).get("model_override")
+        except Fail as e:  # the session is there, so a brief signed "?" beats none
+            took = None
+            print(f"no model read back for {sid} ({e}): it signs ?", file=sys.stderr)
+        full = f"AGENT_SIGNATURE={signature(harness, took)}\n" + body
+        text = message(full)
+        if by_file:
+            brief_file.parent.mkdir(parents=True, exist_ok=True)
+            brief_file.write_text(full)
         if top_level and subscribe:
             # A top-level lead has no parent to tell: the root of the starter's session tree hears
             # its turn ends and prompts instead, revived if its runner was reaped. Not the starter:
@@ -2156,6 +2322,178 @@ def wait_until(cmd: list[str], every: float, limit: float) -> int:
         time.sleep(min(every, left))
 
 
+def pid_of(pid: str) -> int | None:
+    """``--pid``'s process while it runs: the number itself, else the one in that file. None for a
+    file missing or empty, or a process younger than the file, which is another one the system gave
+    the run's pid to."""
+    if pid.isdigit():
+        return int(pid) if alive(int(pid)) else None
+    try:
+        text = Path(pid).read_text().strip()
+        written = time.time() - Path(pid).stat().st_mtime
+    except OSError:
+        return None
+    if not text.isdigit() or not alive(int(text)):
+        return None
+    age = elapsed(int(text))
+    return int(text) if age is not None and age + PID_SLACK >= written else None
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def elapsed(pid: int) -> float | None:
+    """Seconds since ``pid`` started, from ``ps -o etime=`` (``[[dd-]hh:]mm:ss``), or None once it
+    is gone. A ``Fail`` when ``ps`` cannot say for a live one, since a pid of unknown age may be
+    another process the system gave it to."""
+    try:
+        ps = subprocess.run(
+            ["ps", "-o", "etime=", "-p", str(pid)], capture_output=True, text=True, check=False
+        )
+        out, why = ps.stdout.strip(), ps.stderr.strip() or f"exit {ps.returncode}"
+    except OSError as e:
+        out, why = "", str(e)
+    if not (m := re.fullmatch(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", out)):
+        if not alive(pid):
+            return None
+        raise Fail(f"cannot tell whether pid {pid} is the run's: ps -o etime= failed: {why}")
+    days, hours, minutes, seconds = (int(g or 0) for g in m.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+
+
+def run_of(pid: str) -> str | None:
+    """The pid ``--pid`` names: the number itself, else the one in that file; None for a file
+    missing or empty."""
+    if pid.isdigit():
+        return pid
+    try:
+        text = Path(pid).read_text().strip()
+    except OSError:
+        return None
+    return text if text.isdigit() else None
+
+
+def run_lines(log: Path, run: str | None) -> list[str] | None:
+    """The log's non-blank lines, or with ``run`` only those after its last ``run <run>`` line, the
+    marker the detached recipe (verifier.md) writes before its command starts; None when it is
+    unreadable or holds no such marker, since a reused log path holds the previous run's lines."""
+    try:
+        lines = [line for line in log.read_text(errors="replace").splitlines() if line.strip()]
+    except OSError:
+        return None
+    if run is None:
+        return lines
+    starts = [i for i, line in enumerate(lines) if line.strip() == f"run {run}"]
+    return lines[starts[-1] + 1 :] if starts else None
+
+
+def exit_of(log: Path, run: str | None = None) -> int | None:
+    """The code on the last ``exit <n>`` line of ``run_lines(log, run)``, or None."""
+    ends = [
+        m for line in run_lines(log, run) or [] if (m := re.fullmatch(r"exit (\d+)", line.strip()))
+    ]
+    return int(ends[-1][1]) if ends else None
+
+
+def log_outcome(log: Path, code: int, run: str | None = None) -> str:
+    """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
+    ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
+    lines = run_lines(log, run) or []
+    body = lines[: max(i for i, line in enumerate(lines) if line.strip() == f"exit {code}")]
+    return "\n".join([f"exit {code}", *(body[-LOG_TAIL:] if code else body[-1:])])
+
+
+def pr_outcome(pr: int, until: str, timeout: float) -> tuple[int, str] | None:
+    """PR ``pr``'s ``until`` condition, once it is settled: 0 and a line when it holds, 1 and a line
+    when it never will (closed unmerged, a check red); None while it is pending. The query gets
+    ``timeout`` seconds."""
+    view = gh("pr", "view", str(pr), "--json", "state,statusCheckRollup", timeout=timeout)
+    data = json.loads(view)
+    state = data["state"]
+    if until in ("merged", "closed") and state != "OPEN":
+        held = state == "MERGED" or until == "closed"
+        return (0 if held else 1), f"PR #{pr} {state.lower()}"
+    if until != "checks":
+        return None
+    checks = data.get("statusCheckRollup") or []
+    if not checks:  # a run CI has not registered yet is not a pass
+        return None
+    pending = [
+        c
+        for c in checks
+        if c.get("status", "COMPLETED") != "COMPLETED" or c.get("state") in ("PENDING", "EXPECTED")
+    ]
+    if pending:
+        return None
+    red = [
+        c.get("name") or c.get("context") or "?"
+        for c in checks
+        if (c.get("conclusion") or c.get("state") or "").upper() not in GREEN_CHECKS
+    ]
+    if red:
+        return 1, f"PR #{pr} checks red: {', '.join(red)}"
+    return 0, f"PR #{pr} checks green ({len(checks)})"
+
+
+def wait_for(
+    log: Path | None, pid: str | None, pr: int | None, until: str, budget: float
+) -> tuple[int, str] | None:
+    """Block up to ``budget`` seconds on a run's log exit line, its pid, or PR ``pr``'s ``until``
+    condition, printing nothing meanwhile; return the exit code and the outcome text: the run's own
+    code (0 or 1 for a PR, 1 for a pid gone with no exit line), or None once the budget passes,
+    since a run may itself exit ``LIMIT``."""
+    deadline = time.monotonic() + budget
+    every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
+
+    def ended() -> tuple[int, str] | None:
+        """The log's exit line: with ``--pid``, only one after the marker of the run it names, so a
+        pid file missing or empty trusts no line."""
+        run = run_of(pid) if pid else None
+        if not log or (pid and run is None) or (code := exit_of(log, run)) is None:
+            return None
+        return code, log_outcome(log, code, run)
+
+    while True:
+        if outcome := ended():
+            return outcome
+        if pr is not None:
+            if (left := deadline - time.monotonic()) <= 0:
+                return None
+            try:  # a query may not outlast the budget
+                if outcome := pr_outcome(pr, until, min(HTTP_SECONDS, left)):
+                    return outcome
+            except Fail:  # a GitHub blip: the next poll asks again
+                pass
+        elif pid and pid_of(pid) is None:
+            if outcome := ended():  # written on its way out
+                return outcome
+            if log:
+                return 1, f"gone: pid {pid} ended with no exit line in {log}"
+            return 0, f"pid {pid} ended"
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        time.sleep(min(every, left))
+
+
+def notify(text: str) -> None:
+    """Tell the session that started a run its outcome through ``$LOOP_NOTIFY``, run as ``<command>
+    <text>``, as a merge queue tells a lane; unset, the outcome is only printed."""
+    command = os.environ.get("LOOP_NOTIFY")
+    if not command:
+        return
+    code = subprocess.run([*shlex.split(command), text], check=False).returncode
+    if code:
+        print(f"warning: LOOP_NOTIFY exited {code}", file=sys.stderr)
+
+
 def pr_report(said: str, pr: int, since: int | None = None) -> str | None:
     """The body of the comment ``said`` links that GitHub files on PR ``pr`` of this checkout's
     repository, created after ``since`` (a ``st_mtime_ns``) when given, or None when it links none:
@@ -2212,11 +2550,11 @@ def denied(text: str) -> None:
                 )
 
 
-def gh(*args: str) -> str:
+def gh(*args: str, timeout: float = HTTP_SECONDS) -> str:
     """``gh``'s output, run in this checkout with its login; a failure is a ``Fail``."""
     try:
         return subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=HTTP_SECONDS, check=True
+            ["gh", *args], capture_output=True, text=True, timeout=timeout, check=True
         ).stdout
     except (OSError, subprocess.SubprocessError) as e:
         why = (getattr(e, "stderr", "") or str(e)).strip()
@@ -4004,6 +4342,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--limit", type=float, required=True, help="seconds before giving up")
     p.add_argument("until", nargs=argparse.REMAINDER, metavar="-- CMD")
+    p = sub.add_parser(
+        "wait-for",
+        description="block on a run's log or pid, or a PR condition, up to --budget; print only the outcome",
+    )
+    p.add_argument(
+        "--log",
+        type=Path,
+        help="a run's log, ended by an `exit <n>` line (with --pid, after its `run <pid>` line)",
+    )
+    p.add_argument("--pid", help="a run's pid, or the file holding it")
+    p.add_argument("--pr", type=int, help="a PR, waited on until --until holds")
+    p.add_argument("--until", choices=("checks", "merged", "closed"), default="checks")
+    p.add_argument(
+        "--budget",
+        type=float,
+        default=WAIT_FOR_BUDGET,
+        help=f"seconds before `still running`, exit {LIMIT} (default {WAIT_FOR_BUDGET:.0f})",
+    )
+    p.add_argument(
+        "--notify",
+        action="store_true",
+        help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
+    )
     for p in sub.choices.values():
         if p.prog.split()[-1] in ("run", "start", "send", "wait"):
             p.add_argument(
@@ -4033,6 +4394,7 @@ def main(argv: list[str] | None = None) -> int:
             "direct",
             "owner-said",
             "wait-until",
+            "wait-for",
         ):
             p.add_argument("--timeout", type=float, default=3 * 3600, help="seconds (default 3h)")
         if p.prog.split()[-1] in ("run", "start", "send", "wait", "reap", "direct"):
@@ -4067,7 +4429,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{sid}: {'not ' * args.off}driven by the owner directly")
             return 0
         if args.cmd == "signature":
-            print(running_signature())
+            try:  # outside a session, or no server: the harness's files alone
+                session = Omnigent(args.server or "").info(own) if (own := own_id()) else None
+            except (Fail, OSError):
+                session = None
+            print(running_signature(session=session))
             return 0
         if args.cmd == "wait-until":
             cmd = args.until[1:] if args.until[:1] == ["--"] else args.until
@@ -4076,6 +4442,20 @@ def main(argv: list[str] | None = None) -> int:
                 usage.code = 2
                 raise usage
             return wait_until(cmd, args.every, args.limit)
+        if args.cmd == "wait-for":
+            if (args.pr is None) == (args.log is None and args.pid is None):
+                usage = Fail("wait-for needs --log and/or --pid, or --pr")
+                usage.code = 2
+                raise usage
+            ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
+            if ended is None:
+                print("still running")
+                return LIMIT
+            code, outcome = ended
+            print(outcome)
+            if args.notify:
+                notify(outcome)
+            return code
         if args.cmd == "capacity":
             ok, line = capacity()
             print(line)
