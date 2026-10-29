@@ -696,8 +696,9 @@ def main():
     parser.add_argument('--hold-asks', action='store_true',
                         help='print every question as an ASK: line and tell the chief of staff none of them')
     args = parser.parse_args()
-    if OLD_STATE.is_dir() and not STATE.exists():
-        OLD_STATE.rename(STATE)
+    if OLD_STATE.is_dir() and not args.dry_run:  # a dry run's STATE holds only logs, so the old files win
+        shutil.copytree(OLD_STATE, STATE, dirs_exist_ok=True)
+        shutil.rmtree(OLD_STATE)
     STATE.mkdir(parents=True, exist_ok=True)
     for old in STATE.glob('*.log'):
         if old.stat().st_mtime < time.time() - 30 * 86400:

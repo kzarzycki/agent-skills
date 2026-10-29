@@ -566,6 +566,11 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "idle/.venv",
         )
     ]
+    old_state = (
+        home / ".local/state/disk-hygiene"
+    )  # the state before the rename moves on the first real run
+    old_state.mkdir(parents=True)
+    (old_state / "carried").touch()
     code, out = run("--dry-run", "--floor-gb", "0")
     assert code == 0 and all(p.exists() for p in kept + removed), out
     assert (
@@ -574,11 +579,13 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     ), out
     assert "would tell the chief of staff" in out and not told, out
     assert "terminals: 0 dead of 0;" in out, out  # main() runs the terminals step
+    assert (old_state / "carried").exists(), "a dry run moves no state"
     (home / "lsof.txt").rename(home / "lsof.saved")  # the fake lsof fails: nothing may go
     code, out = run("--floor-gb", "0")
     assert code == 1 and "FAIL process scan" in out and all(p.exists() for p in kept + removed), out
     assert len(told) == 1 and "2 simulator devices whose runtime is gone" in told[0], told
     (home / "lsof.saved").rename(home / "lsof.txt")
+    assert not old_state.exists() and (home / ".local/state/agent-hygiene/carried").exists()
     code, out = run("--floor-gb", "0")
     assert code == 0, out
     assert all(p.exists() for p in kept), out
