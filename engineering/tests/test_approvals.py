@@ -3505,6 +3505,51 @@ def test_without_pre_land_no_check_runs(lands: dict[str, Any]) -> None:
     assert not runs.exists()
 
 
+def configure_pre_land(lands: dict[str, Any], command: list[str]) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", f"pre_land: {shlex.join(command)}\n")
+    )
+
+
+def test_a_pre_land_refusal_too_long_for_a_comment_posts_its_end(lands: dict[str, Any]) -> None:
+    configure_pre_land(
+        lands, [sys.executable, "-c", "print('x' * 70000); print('the reason'); raise SystemExit(1)"]
+    )
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]()[0] == 1
+    [body] = [body for _, body in lands["comments"] if body.startswith(approvals.PRE_LAND)]
+    assert "x\nthe reason\n````\n" in body
+    assert len(body) <= 65536
+
+
+def test_a_pre_land_whose_command_is_not_there_is_refused_naming_it(
+    lands: dict[str, Any],
+) -> None:
+    configure_pre_land(lands, ["misee", "run", "pre-land"])
+    lands["open"](7, {"7.txt": "7\n"})
+    code, lines = lands["land"]()
+    assert code == 1
+    assert any("can't run: [Errno 2] No such file or directory: 'misee'" in line for line in lines)
+
+
+def test_a_head_missing_from_origin_is_not_judged_by_pre_land(lands: dict[str, Any]) -> None:
+    runs = pre_land(lands)
+    head = lands["open"](7, {"7.txt": "7\n"})
+    work = lands["work"]
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    for ref in ("refs/heads/pr7", "refs/pull/7/head"):
+        git_in(lands["origin"], "update-ref", "-d", ref)
+    git_in(work, "update-ref", "-d", "refs/remotes/origin/pr7")
+    for repo in (work, lands["origin"]):
+        git_in(repo, "reflog", "expire", "--expire=now", "--all")
+        git_in(repo, "gc", "-q", "--prune=now")
+    code, lines = lands["land"]()
+    assert code == 1
+    assert f"PR #7: its head {head} is not on origin: push it, then land again" in lines
+    assert not runs.exists()
+    assert not [body for _, body in lands["comments"] if body.startswith(approvals.PRE_LAND)]
+
+
 def test_a_pre_land_with_a_shell_operator_is_refused() -> None:
     with pytest.raises(
         approvals.Refused, match="loop.md's `pre_land` is 'a && b': variables to set"
