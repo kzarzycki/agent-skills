@@ -15,8 +15,9 @@ killed the patch; one that passes means no test covers that change, and the patc
 It refuses a tracked change or an untracked file that isn't ignored, the check `approvals.py local-ci` makes, so
 patches under a gitignored `tmp/loop/` don't count, and it refuses any patch that doesn't apply before running a test.
 On SIGINT or SIGTERM it stops the test command, undoes the applied patch and then dies of that signal, so a killed run
-leaves no mutation in the tree. It takes no lock: a test command that needs the host's heavy slot carries the
-project's wrapper itself.
+leaves no mutation in the tree. The test command runs with PYTHONDONTWRITEBYTECODE=1, since a .pyc written in the
+same second as its source would hide the next same-sized patch of that file. It takes no lock: a test command that
+needs the host's heavy slot carries the project's wrapper itself.
 
 The log: line 1 is `git rev-parse HEAD`, line 2 this command line, then `<patch>: exit <n> killed|survived` per
 patch, then each patch's test output under a `== <patch> ==` header. It is rewritten after every patch, so a stopped
