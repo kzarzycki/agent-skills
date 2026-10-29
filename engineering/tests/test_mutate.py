@@ -53,7 +53,7 @@ def patch(repo: Path, name: str, old: str, new: str) -> Path:
 
 
 def mutate(
-    repo: Path, *patches: Path, test: str = TESTS, cwd: Path | None = None
+    repo: Path, *patches: Path, test: str = TESTS, cwd: Path | None = None, to: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -62,7 +62,7 @@ def mutate(
             "--test",
             test,
             "--log",
-            str(log_path(repo)),
+            str(to or log_path(repo)),
             *map(str, patches),
         ],
         cwd=cwd or repo,
@@ -74,11 +74,12 @@ def mutate(
     )
 
 
-def stopped(repo: Path, tmp_path: Path, *signals: signal.Signals) -> int:
-    """Send `signals` to a run while its patch is applied and its test command sleeps; its exit code."""
+def stopped(repo: Path, tmp_path: Path, *signals: signal.Signals, first: str = "") -> int:
+    """Send `signals` to a run while its patch is applied and its test command sleeps, after running `first`; its
+    exit code."""
     killed = patch(repo, "add.patch", "a + b", "a - b")
     started = tmp_path / "started"
-    command = [sys.executable, str(MUTATE), "--test", f"touch {started} && sleep 60"]
+    command = [sys.executable, str(MUTATE), "--test", f"{first}touch {started} && sleep 60"]
     run = subprocess.Popen([*command, "--log", str(log_path(repo)), str(killed)], cwd=repo)
     deadline = time.monotonic() + 30
     while not started.exists():
@@ -184,6 +185,13 @@ def test_a_test_command_that_leaves_a_file_fails_the_restore_and_names_it(repo: 
     assert result.returncode == 2
     assert "could not be restored" in result.stderr and "stray.txt" in result.stderr
     assert (repo / "calc.py").read_text() == MODULE
+    # the test had finished: its result and output stay in the log beside the refusal
+    lines = log(repo)
+    assert lines[2:4] == [
+        f"{killed}: exit 1 killed",
+        f"refused: the tree could not be restored after {killed}:",
+    ]
+    assert f"== {killed} ==" in lines
     (repo / "stray.txt").unlink()
     assert clean(repo)
 
@@ -210,3 +218,29 @@ def test_outside_a_git_checkout_it_refuses(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 2 and "not in a git checkout" in result.stderr
+
+
+def test_a_signal_whose_restore_fails_is_refused_with_exit_2(repo: Path, tmp_path: Path) -> None:
+    code = stopped(repo, tmp_path, signal.SIGTERM, first="echo edited >> docs/README.md; ")
+    assert code == 2
+    assert (repo / "calc.py").read_text() == MODULE
+    assert log(repo)[-1].startswith("refused: the tree could not be restored")
+
+
+def test_test_output_that_is_not_utf8_is_logged_and_the_tree_restored(repo: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, killed, test=f"printf '\\377'; {TESTS}")
+    assert result.returncode == 0, result.stderr
+    assert clean(repo) and f"{killed}: exit 1 killed" in log(repo)
+
+
+@pytest.mark.parametrize("target", ["tracked", "patch"])
+def test_a_log_path_that_is_tracked_or_a_patch_is_refused_and_left_as_it_was(
+    repo: Path, target: str
+) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    path = repo / "docs" / "README.md" if target == "tracked" else killed
+    before = path.read_text()
+    result = mutate(repo, killed, to=path)
+    assert result.returncode == 2 and "the log" in result.stderr
+    assert path.read_text() == before and clean(repo)

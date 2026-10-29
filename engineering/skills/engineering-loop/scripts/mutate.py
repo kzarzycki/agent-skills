@@ -22,7 +22,9 @@ needs the host's heavy slot carries the project's wrapper itself.
 The log: line 1 is `git rev-parse HEAD`, line 2 this command line, then `<patch>: exit <n> killed|survived` per
 patch, then each patch's test output under a `== <patch> ==` header. It is rewritten after every patch, so a stopped
 run keeps what it finished. Exit 0 when every patch was killed, 1 when one survived (the log names it), 2 when it
-refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). Standard library and git.
+refuses, a patch doesn't apply, or the tree can't be restored (stderr names the paths). The log goes outside the
+checkout or to an ignored path, never a tracked file or a patch, since writing it would destroy that file. Standard
+library and git.
 """
 
 from __future__ import annotations
@@ -79,7 +81,9 @@ def run_test(command: str) -> tuple[int, str]:
         shell=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # a test may print bytes that aren't UTF-8; strict decoding would raise with the patch still applied
+        encoding="utf-8",
+        errors="replace",
         start_new_session=True,
         # a .pyc written in the same second as its source hides the next same-sized patch of it
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
@@ -115,11 +119,29 @@ def main(argv: list[str]) -> int:
     top = Path(git("rev-parse", "--show-toplevel").stdout.strip())
     # git apply run in a subdirectory skips paths outside it, so every apply runs at the top
     patches = [(name, name.resolve()) for name in args.patches]
+    # the log is written before the tree is checked: a tracked file or a patch there would be lost to it
+    where = args.log.resolve()
+    if where in {path for _, path in patches} or (
+        where.is_relative_to(top.resolve())
+        and git("check-ignore", "-q", str(where), cwd=top).returncode
+    ):
+        print(
+            f"mutate: the log {args.log} is a patch, or a path in the checkout that isn't ignored: write it under an"
+            " ignored folder such as tmp/loop/, or outside the checkout",
+            file=sys.stderr,
+        )
+        return 2
     lines = [head.stdout.strip(), shlex.join(sys.argv)]
     outputs: list[str] = []
 
     def write_log() -> None:
         args.log.write_text("\n".join(lines + outputs) + "\n")
+
+    def refused(refusal: Refused) -> int:
+        lines.append(f"refused: {str(refusal).splitlines()[0]}")
+        write_log()
+        print(f"mutate: {refusal}", file=sys.stderr)
+        return 2
 
     write_log()
     signal.signal(signal.SIGINT, on_signal)
@@ -141,15 +163,19 @@ def main(argv: list[str]) -> int:
             # applies: --check passed on this same tree, which restore() left clean
             git("apply", str(path), cwd=top)
             code, output = run_test(args.test)
-            restore(top, path)
-            current = None
             survived |= code == 0
+            # logged before the restore, so a restore that refuses keeps the result it followed
             lines.append(f"{name}: exit {code} {'survived' if code == 0 else 'killed'}")
             outputs += ["", f"== {name} ==", output.rstrip("\n")]
             write_log()
+            restore(top, path)
+            current = None
     except Interrupted as stop:
         if current:
-            restore(top, current)
+            try:
+                restore(top, current)
+            except Refused as refusal:
+                return refused(refusal)
         lines.append(f"stopped by {signal.Signals(stop.signum).name}")
         write_log()
         signal.signal(stop.signum, signal.SIG_DFL)
@@ -157,10 +183,12 @@ def main(argv: list[str]) -> int:
         return 128 + stop.signum
     except Refused as refusal:
         # nothing is applied here: git apply is all or nothing, and a failed restore names what it left
-        lines.append(f"refused: {str(refusal).splitlines()[0]}")
-        write_log()
-        print(f"mutate: {refusal}", file=sys.stderr)
-        return 2
+        return refused(refusal)
+    except BaseException:
+        # any other failure still undoes the applied patch, since the next gate or push runs in this tree
+        if current:
+            git("apply", "-R", str(current), cwd=top)
+        raise
     return 1 if survived else 0
 
 
