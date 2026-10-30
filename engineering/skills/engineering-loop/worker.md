@@ -94,4 +94,4 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    past it. A follow-up starts fresh from this report, not your transcript. If you're
    blocked, report that and stop. Blocked on a step only the owner can unblock (SKILL.md, Owner
    steps park), first stop that step and release what it holds, then report the exact owner
-   action, since the lead parks it and nothing else frees the slot.
+   action, since the lead parks it and nothing else frees the slot. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).

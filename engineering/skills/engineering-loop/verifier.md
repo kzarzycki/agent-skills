@@ -124,7 +124,7 @@ yourself, keeping standards and spec as separate axes.
   verdict without them would be repeated once the logs exist.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run with the exact owner action, since parking it is
-  the lead's.
+  the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 - **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
   (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
