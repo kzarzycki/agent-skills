@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.26.3 - 2026-10-30
+
+Review rounds get shorter (#707): a fix round's verifier starts on the pushed head while its gate runs, the fix round's gate can select only what changed since the last green head, and a correctness finding lists its siblings so one fix covers the class. Also: a claude-cloud start no longer waits on this host's capacity (#704).
+
+- `orchestrating-agents`: a claude-cloud start no longer waits on this host's capacity, since its session runs in a cloud VM (#704).
+- `engineering-loop`: a fix round pushes before its gate and reports the gate's log and pid, so the lead starts the next verifier on that head while the gate runs and waits on the gate itself; `land` still needs both on the same head. A fix round runs its check with `GATE_BASE` (or the variable loop.md's optional `Gate base:` line names, which `local_ci_env` names too) set to the last green head the lead names in the brief, so a check that reads it selects only what changed since; the head that lands keeps the full selection. A correctness finding lists the sibling inputs the verifier can see, and its fix covers those the same change fixes in files the PR already touches; the rest are filed as their own issue (#707).
+
 ## 0.26.2 - 2026-10-30
 
 `land` keeps a project's careful landing rules (#684): loop.md's `machine_exit` names a gate exit as the machine's fault, so it runs once more and then stops the run with nothing landed and nobody evicted (#685). `pre_land` is a check the base's version runs on each PR before it joins a batch (#686). `head_proof` requires each head's own proof under a tier the lead picks, published as its own commit status (#687). Also: `local-ci` runs its check detached, so a harness that kills the caller can't take it down unrecorded (#625).
