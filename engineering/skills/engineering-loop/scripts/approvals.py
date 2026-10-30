@@ -99,7 +99,11 @@ the proof. With loop.md's `head_proof`, the head also carries its head proof (be
 names the command that records it. `land <pr>` on a draft marks it ready first, never on a missing proof, since ready starts CI; while the
 checks that starts are required, it waits (exit 3). A named PR that is no candidate says why: a missing proof exits 1,
 a wait for the owner or a pending required check 3, a red required check 1.
-3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it merges each candidate's head
+3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
+`pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
+(the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
+it. A non-zero exit leaves that PR out of this batch, with a comment, once per head, holding the check's output; it is
+not red, so it is neither evicted nor turned back to draft. Then it merges each candidate's head
 (`git merge --no-ff`). A PR that conflicts is skipped, with a comment, once per head, saying it conflicts with the base
 plus the PRs merged before it, so it needs the base merged in.
 4. It gates the result's tree. A pass is reused when the gate command passed on that tree before (reusable, below):
@@ -251,8 +255,8 @@ label is the owner's word. One they added before the last edit is named and chan
 
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit` and
-`head_proof`; `spec` holds `auto`.
+the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
+`pre_land` and `head_proof`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -485,6 +489,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "batch_queue": bool,
         "owner": str,
         "machine_exit": int,
+        "pre_land": str,
         "head_proof": Table(status=str, env=list),
     },
     "spec": {"auto": SPEC_KINDS},
@@ -2985,6 +2990,7 @@ def batched(
     if candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
+            candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
             landed = merge_batch(candidates, base, work, failed)
             if landed:
                 merges(landed, base, tip, work, loop, failed)
@@ -3086,6 +3092,7 @@ def reset(work: Path, commit: str) -> None:
 
 
 CONFLICTS = "Conflicts in the landing batch"
+PRE_LAND = "Refused by the pre-land check"
 EVICTED = "Evicted from the landing batch"
 
 
@@ -3117,6 +3124,58 @@ def merged_onto(
             pull["number"],
             f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
             " get a verdict on the merge (lead.md step 8), then land again.\n",
+        )
+    return False
+
+
+def pre_landed(
+    pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
+) -> bool:
+    """Whether loop.md's `pre_land` passes the PR, True without one. It runs in `work` at the base's tip, with
+    LAND_HEAD and LAND_BASE set, so the base's tree holds the check that judges a PR, never the PR's own. Non-zero
+    leaves the PR out of this batch with its output said once per head on the PR; it isn't red, so it stays ready."""
+    if not (written := settings(loop).get("pre_land")):
+        return True
+    command, words, sets = command_line(written, "pre_land")
+    where, head, tip = (
+        f"PR #{pull['number']}",
+        pull["headRefOid"],
+        run_in(work, "rev-parse", "HEAD"),
+    )
+    # so the check can read the head; a head not on origin is merged_onto's to report
+    if not fetched(head):
+        return True
+    try:
+        ran = subprocess.run(
+            words,
+            cwd=work,
+            env=os.environ | sets | {"LAND_HEAD": head, "LAND_BASE": tip},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise Refused(f"loop.md's `pre_land` {command!r} can't run: {exc}") from None
+    reset(work, tip)  # the batch merges onto the base as it is, whatever the check left
+    if not ran.returncode:
+        return True
+    failed.add(pull["number"])
+    print(
+        f"{where}: `{command}` refused it against {base} at {tip}, exiting {ran.returncode}: left out of this batch"
+    )
+    if not any(
+        note["body"].startswith(PRE_LAND) and f"Head: {head}" in note["body"]
+        for note in notes(pull)
+    ):
+        comment(
+            pull["number"],
+            f"{PRE_LAND}\nHead: {head}\n\n`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix"
+            " what it says, then land again.\n\n````\n"
+            # its end, where a check says why, within GitHub's 65536 characters a comment holds
+            + ran.stdout.rstrip("\n")[-60000:]
+            + "\n````\n",
         )
     return False
 
@@ -3479,11 +3538,18 @@ DESCRIBED = 140
 def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict[str, str]]:
     """loop.md's `gate` under `loop` (default LOCAL_CI): the command as written, its words, and the variables it sets
     in front of them (`GATE_UI_TESTS=0 mise run check:all`). The command alone is the gate: it runs with every name
-    `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran. It runs with no
-    shell, so a shell operator (`&&`, `;`, `|`) is refused: the words after it would be arguments, never a command.
-    With `passed`, a head proof's names (head_proof), each one this process's environment sets is set to that value,
-    over the command's own assignment of it, and the command returned names it, so its record and status say so."""
-    written = settings(project()[1]).get("gate") or shlex.join(LOCAL_CI)
+    `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran. With `passed`, a
+    head proof's names (head_proof), each one this process's environment sets is set to that value, over the
+    command's own assignment of it, and the command returned names it, so its record and status say so."""
+    return command_line(settings(project()[1]).get("gate") or shlex.join(LOCAL_CI), "gate", passed)
+
+
+def command_line(
+    written: str, key: str, passed: list[str] | tuple[str, ...] = ()
+) -> tuple[str, list[str], dict[str, str]]:
+    """loop.md's command `key` (`gate`, `pre_land`) as written: its words, and the variables it sets in front of them,
+    each of `passed` this process's environment sets taking that value (gate). It runs with no shell, so a shell
+    operator (`&&`, `;`, `|`) is refused: the words after it would be arguments, never a command."""
     lexer = shlex.shlex(written, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -3501,7 +3567,7 @@ def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict
         or re.fullmatch(r"\w*=.*", words[assigned], re.DOTALL)
     ):
         raise Refused(
-            f"loop.md's `gate` is {written!r}: variables to set, then one command to run, with no shell operator"
+            f"loop.md's `{key}` is {written!r}: variables to set, then one command to run, with no shell operator"
             " (put a chain of checks in one task)"
         )
     sets = dict(word.split("=", 1) for word in words[:assigned])
