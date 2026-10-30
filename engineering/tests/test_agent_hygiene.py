@@ -730,6 +730,44 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     assert len(list((home / ".local/state/agent-hygiene").glob("*.log"))) >= 1
     stale_check(home, dev, git, run, told, hygiene)
     drift_check(home, run, told, hygiene)
+    uv_check(home, run, told)
+
+
+def uv_check(home, run, told):
+    """A uv prune stopped only by another account's files passes and is told once; any other failure fails."""
+    uv = home / "fakebin/uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        '[ "$1 $2" = "cache dir" ] && { echo uvc; exit 0; }\n'
+        "echo 'Pruning cache at: uvc'\n"
+        "echo 'error: Failed to prune cache at: uvc' >&2\n"
+        "echo '  cause: failed to remove file `uvc/environments-v2/stale-abc/sub/f`: "
+        "Permission denied (os error 13)' >&2\n"
+        "exit 2\n"
+    )
+    before = len(told)
+    code, out = run("--floor-gb", "0")
+    assert code == 0 and "FAIL uv" not in out, out
+    assert "skip uv: uvc holds files another account owns" in out, out
+    assert (
+        len(told) == before + 1 and "- uv cache uvc: another account owns part of it" in told[-1]
+    ), told[-1:]
+    assert "stale-abc" not in told[-1], "the told-once line names no run-varying path"
+    code, out = run("--floor-gb", "0")
+    assert code == 0 and len(told) == before + 1, "told once while unchanged"
+    uv.write_text("#!/bin/sh\necho 'error: No space left on device (os error 28)' >&2\nexit 2\n")
+    code, out = run("--floor-gb", "0")
+    assert (
+        code == 1 and "FAIL uv: exit 2: error: No space left" in out and len(told) == before + 1
+    ), out
+    uv.write_text("#!/bin/sh\necho pruned\n")
+    npm = (
+        home / "fakebin/npm"
+    )  # only uv's cache is shared: another tool's permission error still fails
+    npm.write_text("#!/bin/sh\necho 'EACCES: Permission denied' >&2\nexit 1\n")
+    code, out = run("--floor-gb", "0")
+    assert code == 1 and "FAIL npm: exit 1" in out and len(told) == before + 1, out
+    npm.write_text("#!/bin/sh\ntrue\n")
 
 
 def stale_check(home, dev, git, run, told, hygiene):
