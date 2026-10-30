@@ -2871,6 +2871,9 @@ def test_a_start_on_another_host_does_not_wait_on_this_host_s_load(
         omnigent_agent.start(
             og, "claude", "u", "do Y", tmp_path / "u.md", None, 0, top_level=True, host_id="h"
         )
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # bridged here, run in a cloud VM
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
+    assert sid in og.sessions
 
 
 def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(

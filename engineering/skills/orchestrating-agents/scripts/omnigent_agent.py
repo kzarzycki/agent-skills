@@ -1839,7 +1839,7 @@ def start(
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
-    session on another host is not held back by this host's load."""
+    session on another host or in the cloud is not held back by this host's load."""
     agy = agent not in AGENTS and og.harness(agent) == AGY_HARNESS
     if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
         raise Fail(
@@ -1861,7 +1861,9 @@ def start(
             raise Fail(f"{source}: can't read {agent}'s model list ({e}), so can't check it") from e
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
-    elsewhere = bool(host_id) and host_id != og.host_id  # its load lands there, not here
+    harness = agent if agent in AGENTS else og.harness(agent)
+    # its load lands there, not here: on another host, or in a cloud VM bridged from this one
+    elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
     while not elsewhere and not (room := capacity())[0]:
         if time.monotonic() >= deadline:
@@ -1873,7 +1875,6 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    harness = agent if agent in AGENTS else og.harness(agent)
     by_file = briefed_by_file(og, agent, host_id)
     # a cloud VM or another host has its own cores, and a top-level lead caps its own children
     lock = heavy_lock() if by_file and not top_level else ""
