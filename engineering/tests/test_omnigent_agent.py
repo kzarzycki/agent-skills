@@ -7540,3 +7540,35 @@ def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path
         time.sleep(0.1)
     assert log.read_text() == "exit 3\n"
     assert int(pid.read_text()) != os.getpid()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/scheduled-tasks",
+        "/v1/scheduled-tasks/t1",
+        "/v1/policies/p1",
+        "/v1/sessions/s1/policies",
+    ],
+)
+@pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+def test_a_write_to_an_approval_gated_resource_waits_for_the_owner(
+    monkeypatch: pytest.MonkeyPatch, method: str, path: str
+) -> None:
+    """A lead whose held tool call it read as a hang made the same change over REST (#696)."""
+    sent: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        sent.append(req.get_method())
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    with pytest.raises(omnigent_agent.Fail, match="the owner's to make"):
+        og.call(method, path, {})
+    assert sent == []
+    og.call("GET", path)
+    og.call(method, path, {}, owner=True)
+    og.call(method, "/v1/sessions/s1", {})  # a session's own write stays open
+    assert sent == ["GET", method, method]

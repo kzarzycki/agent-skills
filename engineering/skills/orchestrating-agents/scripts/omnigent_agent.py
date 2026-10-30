@@ -228,6 +228,9 @@ TRANSIENT = (
     ssl.SSLEOFError,
 )
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
+# Writes Omnigent holds for the owner's approval when made as a tool call: the client refuses
+# them without `owner=True`, so an agent whose call waits on the owner can't make it over REST.
+APPROVAL_GATED = re.compile(r"/v1/(scheduled-tasks|policies|sessions/[^/]+/policies)(/|\?|$)")
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
@@ -626,9 +629,15 @@ class Omnigent:
             )
         return out.stdout.strip()
 
-    def call(self, method: str, path: str, body: object = None) -> dict:
+    def call(self, method: str, path: str, body: object = None, *, owner: bool = False) -> dict:
         """One request; a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
-        status. A ``POST`` never is: it may have taken effect."""
+        status. A ``POST`` never is: it may have taken effect. A write to an ``APPROVAL_GATED``
+        path is refused unless the owner makes it (``owner=True``)."""
+        if method != "GET" and not owner and APPROVAL_GATED.match(path):
+            raise Fail(
+                f"{method} {path}: an approval-gated write is the owner's to make (owner=True);"
+                " a tool call held for approval waits for them, never route around it"
+            )
         retries = list(RETRY_SECONDS) if method == "GET" else []
         refreshed = False
         while True:
