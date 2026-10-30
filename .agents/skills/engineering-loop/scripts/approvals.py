@@ -18,6 +18,8 @@
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
     uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
+    uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
+    uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
@@ -93,10 +95,15 @@ another land stays theirs.
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
 own output) green on its head. Under `ci: false` the head needs no `local-ci` pass of its own: the gate on the batch is
-the proof. `land <pr>` on a draft marks it ready first, never on a missing proof, since ready starts CI; while the
+the proof. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
+names the command that records it. `land <pr>` on a draft marks it ready first, never on a missing proof, since ready starts CI; while the
 checks that starts are required, it waits (exit 3). A named PR that is no candidate says why: a missing proof exits 1,
 a wait for the owner or a pending required check 3, a red required check 1.
-3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it merges each candidate's head
+3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
+`pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
+(the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
+it. A non-zero exit leaves that PR out of this batch, with a comment, once per head, holding the check's output; it is
+not red, so it is neither evicted nor turned back to draft. Then it merges each candidate's head
 (`git merge --no-ff`). A PR that conflicts is skipped, with a comment, once per head, saying it conflicts with the base
 plus the PRs merged before it, so it needs the base merged in.
 4. It gates the result's tree. A pass is reused when the gate command passed on that tree before (reusable, below):
@@ -116,6 +123,9 @@ and the tree it passed on, and `Batch:` the PRs landed together.
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
 the bare base is gated: red, the run stops (exit 1) and evicts nobody, since every PR would fail on that base.
+With loop.md's `machine_exit` (78, say), a gate run in steps 4 and 6 exiting with it is the machine's fault, not the
+tree's: it runs once more on the same tree, and a second such exit stops the run (exit 1), landing nothing, evicting
+nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
 Exit 0 when the named PR merged, or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction, a merge GitHub refused or a red base; 3 while it waits. `land --wait` runs it again every 30 seconds while it
 waits on the lock or on CI, printing each new state once, for up to 2 hours, then exits 3; a wait for the owner ends it
@@ -143,7 +153,18 @@ command alone says what a pass proves. A pass also leaves a record keyed by tree
 on, `env` the variables the command sets, `<key>` a digest of the command), which every worktree sees and nothing
 commits; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
 nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
-records itself. Every pass this clone holds, run or reused, is published as a commit status on the head it covers:
+records itself.
+Unless it already leads its own session, `local-ci` starts itself again in a new one, stdin from /dev/null, and follows
+it, exiting with its exit code: a caller killed with its process group (a harness capping a background command) leaves
+the check running, and it still records its pass or failure. Beside the records it writes `<head>.log` (its output),
+`<head>.pid` (its pid and start time, so a pid the system has given another process reads as gone) and, once it
+ends, `<head>.exit` (its exit code), keyed by the commit it started on. A `local-ci` on a head whose run is still going
+follows that run instead of starting another (after it, one with other arguments runs its own), and `local-ci --status
+<head>` says whether it is running (exit 3), passed (0, only when a pass on the head's tree is recorded) or failed (1,
+naming the exit), with the log's path. The run's stderr goes to the same log, so a caller prints the check's stderr and
+a refusal (`exited N: nothing recorded`) on its stdout. Stopping the caller, Ctrl-C included, leaves the run going:
+`kill -- -<pid>`, with the pid `<head>.pid` holds, stops its process group.
+Every pass this clone holds, run or reused, is published as a commit status on the head it covers:
 success, context `gate`, description `Tree <tree> on <commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when
 it doesn't fit GitHub's 140 characters), since `gh`'s token can write a status where a check run needs a GitHub App.
 GitHub refusing it (a commit not pushed yet) or unreachable is said and changes nothing else: the record stays local,
@@ -157,6 +178,15 @@ other command the tree passed under, from this clone's records and the head's st
 in the record: nothing `approvals.py` posts names it, and posted text writes the home directory `~` (public), since a
 public board would show both. The posted comment names the gate's command and the variables it sets (`Env: A=1`, or
 `Env: default`).
+With loop.md's `head_proof` under `loop` (`status: <context>`, `env: [<names>]`), each head proves itself under a tier
+the lead picks, which the batch gate's fixed tier doesn't. `local-ci --record --head-proof` runs the gate as `--record`
+does, but takes each `env` name the caller's environment sets from it instead of clearing it, over the gate line's own
+assignment of that name, so the command it records names the value (`GATE_UI_TESTS=smoke mise run check:all`). It
+publishes the pass as the commit status `<context>` instead of `gate`, described `Tree <tree> on <commit's first 12>:
+<name>=<value> ...` for the `env` names it ran with (`default` for none), so the verifier reads the tier off the head.
+`land` reads it as it reads `gate`: a green status of that context on the head commit itself, naming the head's tree,
+by the account running this or a writer. A status on an older head never counts, since a status belongs to one commit.
+Which tier a change needs is the project's rule; `land` checks only that a head proof exists.
 Deprecated: a project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
 full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
 loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
@@ -225,7 +255,8 @@ label is the owner's word. One they added before the last edit is named and chan
 
 loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
-the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue` and `owner`; `spec` holds `auto`.
+the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
+`pre_land` and `head_proof`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
 `bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
 `sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
@@ -265,6 +296,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import fnmatch
 import hashlib
 import io
@@ -456,6 +488,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "gate": str,
         "batch_queue": bool,
         "owner": str,
+        "machine_exit": int,
+        "pre_land": str,
+        "head_proof": Table(status=str, env=list),
     },
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
@@ -533,7 +568,11 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
         kind = schema.get(key) if isinstance(schema, dict) else schema
         if kind is None:
             raise Refused(f"{file} has an unknown setting {where}")
-        if isinstance(kind, tuple):  # true, false, or a list naming some of the tuple's values
+        if isinstance(kind, dict):  # a section within the section, such as `loop.head_proof`
+            if not isinstance(value, dict):
+                raise Refused(f"{file}'s {where} must be a section holding `{'`, `'.join(kind)}`")
+            typed(value, kind, f"{name}.{key}", file)
+        elif isinstance(kind, tuple):  # true, false, or a list naming some of the tuple's values
             if not (
                 isinstance(value, bool)
                 or isinstance(value, list)
@@ -2556,6 +2595,10 @@ class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
 
 
+class MachineFault(Refused):
+    """The gate exited with loop.md's `machine_exit` twice on one tree in `land`: the machine isn't ready."""
+
+
 def read(path: Path) -> str:
     try:
         return path.read_text()
@@ -2889,6 +2932,13 @@ def landable(
         for line in holds(pull, issues, loop) + found:
             print(line)
         return 1, False
+    if (proof := head_proof(loop)) and not proved(pull["headRefOid"], proof["status"]):
+        names = f", with the tier set in {', '.join(proof['env'])}" if proof["env"] else ""
+        print(
+            f"{where}: its head {pull['headRefOid']} has no green `{proof['status']}` status for its tree (loop.md"
+            f" `head_proof`): run `approvals.py local-ci --record --head-proof` on a clean checkout of it{names}"
+        )
+        return 1, False
     if local and (why := unsignable(pull, *local)):
         print(why)
         return 1, False
@@ -2940,6 +2990,7 @@ def batched(
     if candidates:
         with batch_tree(base) as work:
             tip = run_in(work, "rev-parse", "HEAD")
+            candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
             landed = merge_batch(candidates, base, work, failed)
             if landed:
                 merges(landed, base, tip, work, loop, failed)
@@ -3041,6 +3092,7 @@ def reset(work: Path, commit: str) -> None:
 
 
 CONFLICTS = "Conflicts in the landing batch"
+PRE_LAND = "Refused by the pre-land check"
 EVICTED = "Evicted from the landing batch"
 
 
@@ -3076,6 +3128,58 @@ def merged_onto(
     return False
 
 
+def pre_landed(
+    pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
+) -> bool:
+    """Whether loop.md's `pre_land` passes the PR, True without one. It runs in `work` at the base's tip, with
+    LAND_HEAD and LAND_BASE set, so the base's tree holds the check that judges a PR, never the PR's own. Non-zero
+    leaves the PR out of this batch with its output said once per head on the PR; it isn't red, so it stays ready."""
+    if not (written := settings(loop).get("pre_land")):
+        return True
+    command, words, sets = command_line(written, "pre_land")
+    where, head, tip = (
+        f"PR #{pull['number']}",
+        pull["headRefOid"],
+        run_in(work, "rev-parse", "HEAD"),
+    )
+    # so the check can read the head; a head not on origin is merged_onto's to report
+    if not fetched(head):
+        return True
+    try:
+        ran = subprocess.run(
+            words,
+            cwd=work,
+            env=os.environ | sets | {"LAND_HEAD": head, "LAND_BASE": tip},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise Refused(f"loop.md's `pre_land` {command!r} can't run: {exc}") from None
+    reset(work, tip)  # the batch merges onto the base as it is, whatever the check left
+    if not ran.returncode:
+        return True
+    failed.add(pull["number"])
+    print(
+        f"{where}: `{command}` refused it against {base} at {tip}, exiting {ran.returncode}: left out of this batch"
+    )
+    if not any(
+        note["body"].startswith(PRE_LAND) and f"Head: {head}" in note["body"]
+        for note in notes(pull)
+    ):
+        comment(
+            pull["number"],
+            f"{PRE_LAND}\nHead: {head}\n\n`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix"
+            " what it says, then land again.\n\n````\n"
+            # its end, where a check says why, within GitHub's 65536 characters a comment holds
+            + ran.stdout.rstrip("\n")[-60000:]
+            + "\n````\n",
+        )
+    return False
+
+
 def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     """The tree checked out in `work` and how it passed the gate (`run` or `reused`), empty when red. A pass is reused
     when the gate command passed on the tree before (reusable), on the batch's commit or a PR's head with that tree;
@@ -3088,9 +3192,23 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     ):
         print(f"Tree {tree}: `{command}` passed on it before, reused")
         return tree, "reused"
-    log = work.parent / f"{tree}.log"
-    with log.open("w") as out:
-        code = ran_gate(work, out)
+    log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
+    for again in (False, True):
+        with log.open("w") as out:
+            code = ran_gate(work, out)
+        if code != fault:
+            break
+        if again:
+            raise MachineFault(
+                f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`, twice: a machine fault, not the"
+                " change's, so nothing more lands and nobody is evicted. Fix the machine, then land again."
+                f" The gate's last lines (log {public(str(log))}):\n"
+                + "\n".join(log.read_text(errors="replace").splitlines()[-LOG_TAIL:])
+            )
+        print(
+            f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`: once more on the same tree"
+        )
+        reset(work, commit)
     if not code and (changed := run_in(work, "status", "--porcelain", "--untracked-files=all")):
         with log.open("a") as out:
             out.write(
@@ -3184,8 +3302,11 @@ def merges(
             f" so {tip} is gated now"
         )
         reset(work, tip)
-        if gate_batch(work, [])[1]:
-            publish(tip, {"head": tip, "tree": actual, "command": command})
+        try:
+            if gate_batch(work, [])[1]:
+                publish(tip, {"head": tip, "tree": actual, "command": command})
+        except MachineFault as exc:  # the PRs landed: each still gets its comment
+            print(exc)
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
     for pull, tree, gated, how in done:
         comment(
@@ -3414,12 +3535,21 @@ LOCAL_CI = ["mise", "run", "check:all"]
 DESCRIBED = 140
 
 
-def gate() -> tuple[str, list[str], dict[str, str]]:
+def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict[str, str]]:
     """loop.md's `gate` under `loop` (default LOCAL_CI): the command as written, its words, and the variables it sets
     in front of them (`GATE_UI_TESTS=0 mise run check:all`). The command alone is the gate: it runs with every name
-    `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran. It runs with no
-    shell, so a shell operator (`&&`, `;`, `|`) is refused: the words after it would be arguments, never a command."""
-    written = settings(project()[1]).get("gate") or shlex.join(LOCAL_CI)
+    `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran. With `passed`, a
+    head proof's names (head_proof), each one this process's environment sets is set to that value, over the
+    command's own assignment of it, and the command returned names it, so its record and status say so."""
+    return command_line(settings(project()[1]).get("gate") or shlex.join(LOCAL_CI), "gate", passed)
+
+
+def command_line(
+    written: str, key: str, passed: list[str] | tuple[str, ...] = ()
+) -> tuple[str, list[str], dict[str, str]]:
+    """loop.md's command `key` (`gate`, `pre_land`) as written: its words, and the variables it sets in front of them,
+    each of `passed` this process's environment sets taking that value (gate). It runs with no shell, so a shell
+    operator (`&&`, `;`, `|`) is refused: the words after it would be arguments, never a command."""
     lexer = shlex.shlex(written, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
@@ -3437,36 +3567,47 @@ def gate() -> tuple[str, list[str], dict[str, str]]:
         or re.fullmatch(r"\w*=.*", words[assigned], re.DOTALL)
     ):
         raise Refused(
-            f"loop.md's `gate` is {written!r}: variables to set, then one command to run, with no shell operator"
+            f"loop.md's `{key}` is {written!r}: variables to set, then one command to run, with no shell operator"
             " (put a chain of checks in one task)"
         )
     sets = dict(word.split("=", 1) for word in words[:assigned])
+    if caller := {name: os.environ[name] for name in passed if name in os.environ}:
+        sets |= caller
+        words = [*(f"{name}={value}" for name, value in sets.items()), *words[assigned:]]
+        assigned = len(sets)
     return shlex.join(words), words[assigned:], sets
 
 
-def ran_gate(cwd: Path | None = None, out: Any = None) -> int:
-    """Run the gate (gate) in its environment (gate_env), in `cwd` with its output to `out` when given, and return its
-    exit; a command that isn't there is refused, naming the gate, since loop.md is hand-written."""
-    command, words, _ = gate()
+def ran_gate(
+    cwd: Path | None = None, out: Any = None, passed: list[str] | tuple[str, ...] = ()
+) -> int:
+    """Run the gate (gate, with `passed`) in its environment (gate_env), in `cwd` with its output to `out` when given,
+    and return its exit; a command that isn't there is refused, naming the gate, since loop.md is hand-written."""
+    command, words, _ = gate(passed)
     where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
     try:
-        return subprocess.run(words, check=False, env=gate_env(), **where).returncode
+        return subprocess.run(words, check=False, env=gate_env(passed), **where).returncode
     except OSError as exc:
         raise Refused(f"loop.md's `gate` {command!r} can't run: {exc}") from None
 
 
-def gate_env() -> dict[str, str]:
+def gate_env(passed: list[str] | tuple[str, ...] = ()) -> dict[str, str]:
     """The environment the gate runs in: this process's, without the names `local_ci_env` lists unless the gate's
-    command sets them."""
-    cleared, sets = set(local_ci_env()), gate()[2]
+    command sets them, or `passed` takes them from this process's (gate)."""
+    cleared, sets = set(local_ci_env()), gate(passed)[2]
     return {name: value for name, value in os.environ.items() if name not in cleared} | sets
 
 
-def recorded(tree: str, command: str) -> Path:
-    """Where a local-ci pass of `command` on `tree` is recorded: the git common dir, which every worktree of the clone
-    shares and no commit carries."""
+def local_ci_dir() -> Path:
+    """Where local-ci keeps its records and runs: the git common dir, which every worktree of the clone shares and no
+    commit carries."""
     common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
-    return common / "approvals" / "local-ci" / f"{tree}-{gate_key(command)}.json"
+    return common / "approvals" / "local-ci"
+
+
+def recorded(tree: str, command: str) -> Path:
+    """Where a local-ci pass of `command` on `tree` is recorded."""
+    return local_ci_dir() / f"{tree}-{gate_key(command)}.json"
 
 
 def gate_key(command: str) -> str:
@@ -3508,9 +3649,12 @@ def checkout_state() -> tuple[str, str]:
     return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
 
-def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
-    """Run `mise run check:all` on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by tree and
-    env; refuse a check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
+def run_local_ci(
+    pr: int | None, head: str | None, passed: list[str] | tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """Run the gate (with `passed`, gate) on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by
+    tree and command; refuse a check off the head, on a changed tree, failing, or changing the tree, recording
+    nothing."""
     before = checkout_state()
     if head and before[0] != head:
         raise Refused(
@@ -3518,8 +3662,13 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command, _, env = gate()
-    code = ran_gate()
+    command, _, env = gate(passed)
+    code = ran_gate(passed=passed)
+    if code == settings(project()[1]).get("machine_exit"):
+        raise Refused(
+            f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): nothing recorded; fix the machine,"
+            " then run it again"
+        )
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
     if checkout_state() != before:
@@ -3541,6 +3690,141 @@ def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
     return record
 
 
+DETACHED = "APPROVALS_LOCAL_CI_HEAD"
+
+
+def leads_its_session() -> bool:
+    """Whether this process leads its own session, so no caller's process group or terminal takes it down."""
+    return os.getsid(0) == os.getpid()
+
+
+def run_files(head: str) -> tuple[Path, Path, Path]:
+    """The detached local-ci run's log, pid and exit files on `head`, beside the records: a run is keyed by the commit
+    it was started on, since its tree and env are known only once it runs."""
+    where = local_ci_dir() / head
+    return where.with_suffix(".log"), where.with_suffix(".pid"), where.with_suffix(".exit")
+
+
+def since(pid: int) -> str | None:
+    """When process `pid` started, as ps prints it in the C locale (so the write and every check read the same
+    text), or None for no such process."""
+    shown = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return shown.stdout.strip() or None
+
+
+def lives(run: dict[str, Any]) -> bool:
+    """Whether the pid file's run still lives: its pid and that process's start time, since the system hands a dead
+    run's pid to the next process it starts."""
+    now = since(run["pid"])
+    return now is not None and now == run.get("since")
+
+
+def going(started: str, exit_file: Path) -> dict[str, Any] | None:
+    """The pid file's run, while it has written no exit code and its process lives; else None."""
+    try:
+        run = json.loads(started)
+        return run if not exit_file.exists() and lives(run) else None
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def detach(argv: list[str]) -> int:
+    """Run `local-ci` again in a session of its own, stdin from /dev/null and output to the log, and follow the log,
+    exiting with its exit code, so a caller killed with its process group leaves the check to finish and record. A run
+    already going on the head is followed instead; one started with other arguments is followed to its end, then this
+    one starts."""
+    head = git("rev-parse", "HEAD").strip()
+    log, pid, exit_file = run_files(head)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        with open(pid, "a+") as claim:
+            fcntl.flock(claim, fcntl.LOCK_EX)  # two callers at once start one run
+            claim.seek(0)
+            run, started = None, going(claim.read(), exit_file)
+            if started is None:
+                exit_file.unlink(missing_ok=True)
+                with open(log, "wb") as out, open(os.devnull) as nothing:
+                    run = subprocess.Popen(
+                        [sys.executable, os.path.abspath(__file__), *argv],
+                        stdin=nothing,
+                        stdout=out,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                        env={**os.environ, DETACHED: head},
+                    )
+                started = {"pid": run.pid, "since": since(run.pid), "argv": argv}
+                claim.truncate(0)
+                claim.write(json.dumps(started))
+        code = follow(log, exit_file, started, run)
+        if started["argv"] == argv:
+            return code
+
+
+def follow(
+    log: Path, exit_file: Path, started: dict[str, Any], child: subprocess.Popen[bytes] | None
+) -> int:
+    """Print the log as it grows until the run ends; its exit code, or 1 for a run that ended without writing one."""
+    with open(log, "rb") as lines:
+        while True:
+            # a run this call started is its child: poll reaps it, where a zombie would still show in ps
+            running = child.poll() is None if child else lives(started)
+            # checked before the read, so the last read holds everything
+            ended = exit_file.exists() or not running
+            sys.stdout.buffer.write(lines.read())
+            sys.stdout.flush()
+            if ended:
+                break
+            time.sleep(0.2)
+    try:
+        return int(exit_file.read_text())
+    except (OSError, ValueError):
+        print(f"the detached local-ci run ended without an exit code: its log is {log}")
+        return 1
+
+
+def finished(head: str, code: int) -> None:
+    """The detached run's last step: its exit code, written whole, after all its output."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    _, _, exit_file = run_files(head)
+    partial = exit_file.with_suffix(".exit-partial")
+    partial.write_text(f"{code}\n")
+    os.replace(partial, exit_file)
+
+
+def local_ci_status(head: str) -> int:
+    """Say whether the detached local-ci run on `head` is running (exit 3), passed (0) or failed (1), with its log;
+    passed only when a pass on `head`'s tree under this environment is recorded."""
+    head = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
+    log, pid, exit_file = run_files(head)
+    try:
+        code = int(exit_file.read_text())
+    except (OSError, ValueError):
+        code = None
+    if code == 0 and not recorded(str(tree_of(head)), gate()[0]).exists():
+        # a run on a checkout with changes, or on another PR's head, exits 0 with no pass on this one
+        print(f"exited 0 without recording a pass on {head} under the gate's command: log {log}")
+        return 1
+    if code is not None:
+        print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}: log {log}")
+        return 0 if code == 0 else 1
+    started = going(pid.read_text() if pid.exists() else "", exit_file)
+    if started:
+        print(f"running on {head} (pid {started['pid']}): log {log}")
+        return 3
+    if log.exists():
+        print(f"ended without an exit code on {head}: log {log}")
+    else:
+        print(f"no detached local-ci run on {head}")
+    return 1
+
+
 def local_ci_env() -> dict[str, str | None]:
     """The value of each variable loop.md's `local_ci_env` names, None for one unset; {} without the setting."""
     names = settings(project()[1]).get("local_ci_env", [])
@@ -3557,13 +3841,14 @@ def env_line(env: dict[str, str | None]) -> str:
     return f"Env: {' '.join(named) or 'default'}\n"
 
 
-def reusable(head: str) -> dict[str, Any] | None:
-    """A green pass on `head`'s tree under today's gate command, or None: this clone's record, made on any
-    commit with that tree, else one published on `head` itself (published). The record's `head` is the commit the
-    pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it ran."""
+def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, Any] | None:
+    """A green pass on `head`'s tree under today's gate command (with `passed`, gate), or None: this clone's record,
+    made on any commit with that tree, else one published on `head` itself (published). The record's `head` is the
+    commit the pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it
+    ran."""
     if (held := tree_of(head)) is None:
         return None
-    command, _, env = gate()
+    command, _, env = gate(passed)
     try:
         record = json.loads(recorded(held, command).read_text())
     except (OSError, ValueError):
@@ -3576,14 +3861,39 @@ def reusable(head: str) -> dict[str, Any] | None:
         == (held, command, 0, env)
     ):
         return record
-    return published(head, held, command)
+    return published(head, held, command, env)
 
 
-def published(head: str, held: str, command: str) -> dict[str, Any] | None:
-    """A pass of `command` on `head` another clone published (publish), as a record, or None. It counts only from the
-    account running this or a writer, since a status is the repo's to write and a PR's author may hold no more than a
-    fork; and only for `head`'s own tree `held` and that command (described). GitHub unreachable: None, so the check
-    runs."""
+def published(
+    head: str, held: str, command: str, env: dict[str, str] | None = None
+) -> dict[str, Any] | None:
+    """A pass of `command` (setting `env`, default the gate's) on `head` another clone published (publish), as a
+    record, or None: a `gate` status (stated) for `head`'s own tree `held` and that command (described)."""
+    found = stated(
+        head,
+        PUBLISHED,
+        lambda status, named: status["description"] == described(held, named[2], command),
+    )
+    if found is None:
+        return None
+    status, named = found
+    return {
+        "head": named[2],
+        "tree": held,
+        "command": command,
+        "exit": 0,
+        "env": gate()[2] if env is None else env,
+        "time": status["created_at"],
+        "published": True,
+    }
+
+
+def stated(
+    head: str, context: str, wanted: Callable[[dict[str, Any], re.Match[str]], bool]
+) -> tuple[dict[str, Any], re.Match[str]] | None:
+    """The newest green status `context` on `head` whose description reads as a pass (PASSED) and is `wanted`, with
+    that reading, or None. It counts only from the account running this or a writer, since a status is the repo's to
+    write and a PR's author may hold no more than a fork. GitHub unreachable: None, so the check runs."""
     try:
         found = statuses(head)
     except (subprocess.CalledProcessError, OSError, ValueError):
@@ -3591,23 +3901,47 @@ def published(head: str, held: str, command: str) -> dict[str, Any] | None:
     for status in found:  # newest first
         named = PASSED.fullmatch(status.get("description") or "")
         login = (status.get("creator") or {}).get("login")
-        if (status.get("context"), status.get("state")) != (PUBLISHED, "success") or not named:
+        if (status.get("context"), status.get("state")) != (context, "success") or not named:
             continue
-        if (
-            status["description"] == described(held, named[2], command)
-            and login is not None
-            and (login == viewer() or writer(login))
-        ):
-            return {
-                "head": named[2],
-                "tree": held,
-                "command": command,
-                "exit": 0,
-                "env": gate()[2],
-                "time": status["created_at"],
-                "published": True,
-            }
+        if wanted(status, named) and login is not None and (login == viewer() or writer(login)):
+            return status, named
     return None
+
+
+def head_proof(loop: str | None) -> dict[str, Any] | None:
+    """loop.md's `head_proof` (`status`, the commit status `land` requires on each head, and `env`, the names
+    `local-ci --record --head-proof` takes from the caller), or None without it."""
+    proof: dict[str, Any] | None = settings(loop).get("head_proof")
+    if proof and (
+        bad := [name for name in proof["env"] if not re.fullmatch(r"[A-Za-z_]\w*", name)]
+    ):
+        raise Refused(f"loop.md's `head_proof.env` names {bad[0]!r}, which is no variable name")
+    # a context this script or the approvals workflow posts would let a plain gate pass or a go prove the head
+    if proof and proof["status"] in {PUBLISHED, OWNER_GO, APPROVALS}:
+        raise Refused(
+            f"loop.md's `head_proof.status` is {proof['status']!r}, a status the loop already posts for another proof"
+        )
+    return proof
+
+
+def proof_line(record: dict[str, Any], names: list[str]) -> str:
+    """A head proof's status description: the tree, the commit the pass ran on, and the value of each of `names` it
+    ran under (`default` for none), so the verifier reads the tier off the head."""
+    values = " ".join(
+        f"{name}={public(record['env'][name])}" for name in names if name in record["env"]
+    )
+    # ponytail: cut at GitHub's limit, which values past 77 characters reach; a digest if a tier ever gets that long
+    return f"Tree {record['tree']} on {record['head'][:12]}: {values or 'default'}"[:DESCRIBED]
+
+
+def proved(head: str, status: str) -> bool:
+    """Whether `head` itself carries a green `status`, the head proof, naming its own tree (stated): a status on an
+    older head never counts, since a status belongs to one commit."""
+    held = tree_of(head)
+    return (
+        held is not None
+        and stated(head, status, lambda _status, named: named[1] == held) is not None
+    )
 
 
 def elsewhere(head: str) -> str:
@@ -3651,20 +3985,28 @@ def statuses(head: str) -> list[dict[str, Any]]:
     return found
 
 
-def publish(head: str, record: dict[str, Any]) -> None:
+def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = None) -> None:
     """Publish a pass as a commit status on `head`, unless one already does: success under the context `gate`, its
     description the tree, the commit the pass ran on and the command (described), so another clone's reusable() finds
-    it. A status, since gh's token can write one and only an account that can push may (a check run needs a GitHub
-    App). GitHub refusing or unreachable: say so, and the record stays in this clone."""
-    if published(head, record["tree"], record["command"]):
-        return
+    it; with `proof`, loop.md's `head_proof`, under its `status` instead, the description naming the values of its
+    `env` (proof_line), which `land` reads (proved). A status, since gh's token can write one and only an account that
+    can push may (a check run needs a GitHub App). GitHub refusing or unreachable: say so, and the record stays in
+    this clone."""
+    if proof is None:
+        context, line = PUBLISHED, described(record["tree"], record["head"], record["command"])
+        if published(head, record["tree"], record["command"]):
+            return
+    else:
+        context, line = proof["status"], proof_line(record, proof["env"])
+        if stated(head, context, lambda status, _named: status["description"] == line):
+            return
     try:
-        post_status(head, PUBLISHED, described(record["tree"], record["head"], record["command"]))
+        post_status(head, context, line)
     except (subprocess.CalledProcessError, OSError) as exc:
         why = (getattr(exc, "stderr", None) or str(exc)).strip()
         print(f"not published on GitHub, so only this clone reuses it: {why}")
         return
-    print(f"published on {head} as the commit status `{PUBLISHED}`")
+    print(f"published on {head} as the commit status `{context}`")
 
 
 def post_status(head: str, context: str, description: str, state: str = "success") -> None:
@@ -3685,24 +4027,29 @@ def reused(record: dict[str, Any]) -> str:
     return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}, not run again."
 
 
-def local_ci(pr: int | None) -> int:
+def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
     """With a PR: post a pass on its head, from a recorded pass on its tree or from a run now. Without one: on a
     clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
-    check and record nothing. Either publishes a pass this clone holds (publish)."""
+    check and record nothing. Either publishes a pass this clone holds (publish). With `proof`, loop.md's
+    `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
+    published as the head proof instead."""
     if pr is None:
+        passed = proof["env"] if proof else ()
         head, changes = checkout_state()
         if changes:
-            command, code = gate()[0], ran_gate()
+            command, code = gate(passed)[0], ran_gate(passed=passed)
             print(
                 f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
             )
             return code
-        if record := reusable(head):
+        if record := reusable(head, passed):
             print(f"{CHECKED} on {head}: {reused(record)}")
         else:
-            record = run_local_ci(None, None)
+            record = run_local_ci(None, None, passed)
             print(f"{CHECKED} on {head}: recorded in {recorded(record['tree'], record['command'])}")
-        if not record.get("published"):
+        if proof:
+            publish(head, record, proof)
+        elif not record.get("published"):
             publish(head, record)
         return 0
     head = pull_request(pr)["headRefOid"]
@@ -3805,6 +4152,8 @@ def main(argv: list[str]) -> int:
     recording = commands.add_parser("local-ci")
     recording.add_argument("pr", type=int, nargs="?")
     recording.add_argument("--record", action="store_true")
+    recording.add_argument("--status", metavar="HEAD")
+    recording.add_argument("--head-proof", action="store_true")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="?")
     merging.add_argument("--wait", action="store_true")
@@ -3847,11 +4196,20 @@ def main(argv: list[str]) -> int:
         if args.command == "delegate":
             return delegate(args.pr)
         if args.command == "local-ci":
+            if args.status is not None:
+                if args.pr is not None or args.record:
+                    raise Refused("local-ci --status takes a head alone")
+                return local_ci_status(args.status)
             if (args.pr is None) != args.record:
                 raise Refused(
                     "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
                 )
-            return local_ci(args.pr)
+            proof = None
+            if args.head_proof and (proof := head_proof(project()[1])) is None:
+                raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
+            if args.head_proof and not args.record:
+                raise Refused("--head-proof goes with --record: the head proof is the checkout's")
+            return local_ci(args.pr, proof) if leads_its_session() else detach(argv)
         if args.command == "land":
             return land(args.pr, args.wait)
         if args.command == "brief":
@@ -3869,4 +4227,10 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    detached = os.environ.pop(
+        DETACHED, None
+    )  # set by detach() for the run it starts, and for no process under it
+    code = main(sys.argv[1:])
+    if detached:
+        finished(detached, code)
+    sys.exit(code)

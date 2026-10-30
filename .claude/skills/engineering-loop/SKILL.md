@@ -84,6 +84,12 @@ loop:
   opt_out: true
   batch_queue: true   # deprecated with ci and carry_over_main: land batches every landable PR
   owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
+  machine_exit: 78   # the gate's exit for "this machine isn't ready": land runs it again, then stops
+  pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
+  head_proof:      # the status land requires on each head, and the names its recording takes from the caller
+    status: gate-ui
+    env:
+      - GATE_UI_TESTS
 
 practice:
   plan: writing-plans
@@ -137,7 +143,10 @@ carry_over_main:
 | | `ci` | deprecated, goes in the next release (Approvals and proof); `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
+| | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `land` runs that gate once more on the same tree, and a second one stops the run landing, evicting and posting nothing, and `local-ci` refuses it as a machine fault (`approvals.py`'s docstring) | every non-zero exit is red |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
+| | `pre_land` | a check `land` runs for each PR before batching it, parsed as `gate` is, from the base's tree with `LAND_HEAD` and `LAND_BASE` set, such as one refusing a branch forked before a restructuring; non-zero leaves that PR out of the batch with one comment per head holding its output, and it stays ready (`approvals.py`'s docstring says how) | no check |
+| | `head_proof` | `status`, a commit status `land` requires on each head, and `env`, the variables `local-ci --record --head-proof` takes from the caller for that run, both required (Approvals and proof) | the batch gate is the only proof |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
@@ -231,7 +240,9 @@ chain of checks is one task. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in loop.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
-front of the command in `gate`.
+front of the command in `gate`. `local-ci` runs the check in a session of
+its own and follows its log, so a harness that kills the caller's process group leaves the check to finish and record;
+`local-ci --status <head>` then says whether it is running, passed or failed (its docstring names the files).
 
 [coding-standards.md](coding-standards.md) is the generic half of the standards, read
 with the project's. Issue states, categories, sizes and board columns are the method's,
@@ -383,6 +394,14 @@ it was never gated on:
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
+- With loop.md's `head_proof`, a candidate's head also carries a green status of its `status`
+  name for its own tree, since the batch gate runs one fixed tier and some changes need
+  another (a UI test tier). The lead records it on a clean checkout of the head with the tier
+  set in the caller's environment, `GATE_UI_TESTS=smoke uv run <this skill's folder>/scripts/approvals.py
+  local-ci --record --head-proof`: the caller's value of each `env` name wins over the gate
+  line's, and the status names the values, so the verifier sees the tier. Which tier a change
+  needs is the project's rule, in its own docs; `land` checks only that the proof is there,
+  and its refusal names the command.
 - It merges their heads onto the base in a temporary worktree, oldest first, skipping a PR
   that conflicts with a comment saying so, and gates the result's tree once, or reuses the
   gate's pass on that tree, never GitHub's required checks in its place: a PR already up to
