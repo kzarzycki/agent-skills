@@ -5,6 +5,13 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.26.4 - 2026-10-30
+
+A tool call held for the owner's approval now waits for them: an agent never makes its change another way, and the Omnigent client refuses a write to scheduled tasks or policies unless the owner makes it (#696). Also: agent-hygiene no longer fails a round on a uv cache shared with another account (#712).
+
+- engineering-loop, orchestrating-agents: a tool call held for the owner's approval waits for them, not a hang, and its change is never made another way (SKILL.md, Owner steps park, and one sentence in each role file). `omnigent_agent.py`'s client refuses a write to scheduled tasks or policies unless the caller passes `owner=True`, so a lead can't make it over REST (#696).
+- `agent-hygiene`: a `uv cache prune` that stops only on files another account owns (a uv cache shared between two macOS accounts) no longer fails the round; the chief of staff is told once, naming the cache folder and how to share or split it. Any other uv failure still fails the round (#712).
+
 ## 0.26.3 - 2026-10-30
 
 Review rounds get shorter (#707): a fix round's verifier starts on the pushed head while its gate runs, the fix round's gate can select only what changed since the last green head, and a correctness finding lists its siblings so one fix covers the class. Also: a claude-cloud start no longer waits on this host's capacity (#704).
