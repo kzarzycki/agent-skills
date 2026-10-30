@@ -35,6 +35,10 @@ yourself, keeping standards and spec as separate axes.
   say how that input arises in use (`docs/agents/loop.md` § In use). Also report a spec or design
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
+- **Siblings.** Under a correctness finding, list the sibling inputs you can see: the other
+  cases the same code handles the same way (other states, callers, boundary values), each
+  marked failing with its evidence, fine, or not run. They belong to that finding, not to the
+  verdict's counts, so the fix can cover the class in one round instead of one case a pass.
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
 - **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
   has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
