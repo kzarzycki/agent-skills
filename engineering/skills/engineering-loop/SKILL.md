@@ -546,6 +546,10 @@ or the owner's private network.
   dialog, a locked screen, a device, a permission prompt or classifier denial, a
   credential, an approval link that expires) is stopped at its first sign, so a hang
   becomes a failure, and whatever it holds (a gate slot, a lock, an instance) is released.
+  A tool call held for approval is waiting for the owner, not hung: never make its change by
+  another route (REST, another tool, a script), since the approval is the owner's control
+  over what agents change and any agent holding a token could step around it. Carry on with
+  other work, or, in a session the owner reads, end your turn `USER NEEDED` naming the prompt.
   Comment `Owner step: <the exact action>, unblocks <what>` on its issue or PR, unless an
   `Owner step:` for the same action is already there, since a second copy reads as a second
   ask; add
