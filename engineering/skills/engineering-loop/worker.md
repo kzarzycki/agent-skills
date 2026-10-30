@@ -38,11 +38,11 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    its gate, since the lead starts the next verifier on that head while the gate runs: once
    `test:changed` and the mutation check (Report) pass, commit and push, start the gate
    detached on the pushed head (below), and report its log and pid in place of its exit code,
-   never waiting on it. When loop.md has a `Gate base:` line, the brief names the last green
-   head (the newest head whose gate passed) and `git merge-base --is-ancestor <it> HEAD` exits
-   0, put that line's variable, set to it, in front of `mise run check`, so it selects only what
-   changed since that head; with `ci: false` run the check that way, never `local-ci --record`,
-   which clears the variable. The head that lands keeps the full selection, since `land`, CI
+   never waiting on it. When the brief names the last green head (the newest head whose gate
+   passed) and `git merge-base --is-ancestor <it> HEAD` exits 0, put `GATE_BASE=<it>` (or the
+   variable loop.md's `Gate base:` line names) in front of `mise run check`, so a check that
+   reads it selects only what changed since that head; with `ci: false` run the check that way,
+   never `local-ci --record`, which clears the variable. The head that lands keeps the full selection, since `land`, CI
    and `local-ci` never set it. The lead merges your branch and opens the PR: a
    brief that asks for a PR means push the branch and report it. A spec or plan the brief
    asks for goes in a file under `tmp/loop/`, and you report its path: the lead
