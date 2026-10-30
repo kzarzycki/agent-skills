@@ -2961,6 +2961,7 @@ def test_a_run_stopped_by_a_signal_writes_its_failed_line_and_restores_the_handl
     assert signal.getsignal(signal.SIGTERM) == before
 
 
+@pytest.mark.skip(reason="Flaky: #591, skipped from the blocking gate after its third occurrence")
 def test_a_run_process_killed_mid_wait_leaves_its_failed_line_within_one_poll(
     tmp_path: Path,
 ) -> None:
