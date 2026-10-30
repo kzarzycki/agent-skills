@@ -3927,7 +3927,9 @@ def head_proof(loop: str | None) -> dict[str, Any] | None:
 def proof_line(record: dict[str, Any], names: list[str]) -> str:
     """A head proof's status description: the tree, the commit the pass ran on, and the value of each of `names` it
     ran under (`default` for none), so the verifier reads the tier off the head."""
-    values = " ".join(f"{name}={public(record['env'][name])}" for name in names if name in record["env"])
+    values = " ".join(
+        f"{name}={public(record['env'][name])}" for name in names if name in record["env"]
+    )
     # ponytail: cut at GitHub's limit, which values past 77 characters reach; a digest if a tier ever gets that long
     return f"Tree {record['tree']} on {record['head'][:12]}: {values or 'default'}"[:DESCRIBED]
 
