@@ -320,8 +320,8 @@ archive it with `reap <session>`.
 It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a host other
 than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
 in the first message, because its file would be on this host, so a Claude lead may read it as
-pasted text and ask for a go-ahead; and the report is written there, so follow the lead with
-`watch`, never `wait`. With `--pr <n>` (a cloud worker) the report is instead the path here
+pasted text and ask for a go-ahead; and the report is written there, so `wait` takes its path
+as given and reads it, and its `.question`, through the session's file API on that host. With `--pr <n>` (a cloud worker) the report is instead the path here
 that `wait --pr <n>` writes the PR comment to.
 
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`

@@ -3684,15 +3684,15 @@ def test_settled_needs_the_turn_ended_at_every_look_for_turn_end_seconds(
     report = aged(tmp_path / "r.md", 120)  # a draft written long before
     idle, running = {"status": "idle"}, {"status": "running"}
     ended: dict[str, float] = {}
-    assert not omnigent_agent.settled(report, idle, [], ended, "a")  # one idle look is no turn end
+    assert not omnigent_agent.settled(report.stat().st_mtime_ns, idle, [], ended, "a")  # one idle look is no turn end
     ended["a"] = time.time() - 61
-    assert omnigent_agent.settled(report, idle, [], ended, "a")
-    assert not omnigent_agent.settled(report, running, [told("x", 0)], ended, "a")
+    assert omnigent_agent.settled(report.stat().st_mtime_ns, idle, [], ended, "a")
+    assert not omnigent_agent.settled(report.stat().st_mtime_ns, running, [told("x", 0)], ended, "a")
     assert "a" not in ended  # a running look restarts the count
-    assert not omnigent_agent.settled(report, idle, [], ended, "a")
+    assert not omnigent_agent.settled(report.stat().st_mtime_ns, idle, [], ended, "a")
     ended["a"] = time.time() - 61
     aged(report, 10)  # rewritten while out of its turn
-    assert not omnigent_agent.settled(report, idle, [], ended, "a")
+    assert not omnigent_agent.settled(report.stat().st_mtime_ns, idle, [], ended, "a")
 
 
 def test_check_reads_the_report_again_after_it_settled(
@@ -3702,8 +3702,8 @@ def test_check_reads_the_report_again_after_it_settled(
     report.write_text("SATISFIED: yes\n")
     og = Owing([told("brief", 120)], {})
 
-    def rewritten(r: Path, *_: object) -> bool:
-        r.write_text("revising")  # the verdict is gone by the time it settled
+    def rewritten(*_: object) -> bool:
+        report.write_text("revising")  # the verdict is gone by the time it settled
         return True
 
     monkeypatch.setattr(omnigent_agent, "settled", rewritten)
@@ -7630,3 +7630,28 @@ def test_a_write_to_an_approval_gated_resource_waits_for_the_owner(
     og.call(method, path, {}, owner=True)
     og.call(method, "/v1/sessions/s1", {})  # a session's own write stays open
     assert sent == ["GET", method, method]
+
+
+def test_wait_reads_a_remote_sessions_report_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class Far(FakeOmnigent):
+        files = {"tmp/loop/r.md": "done"}
+
+        def info(self, sid: str) -> dict:
+            return {**super().info(sid), "host_id": "mac"}
+
+        def read_file(self, sid: str, path: str) -> str:
+            return self.files[path]
+
+        def modified(self, sid: str, path: str) -> float:
+            if path not in self.files:
+                raise omnigent_agent.Gone(path)
+            return time.time() - 3600
+
+    og = Far()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)  # nothing at tmp/loop/r.md here
+    sid = og.create("claude", "t")
+    assert omnigent_agent.main(["wait", sid, "tmp/loop/r.md", "--keep"]) == 0
+    assert capsys.readouterr().out.strip() == "tmp/loop/r.md"  # not resolved on this host

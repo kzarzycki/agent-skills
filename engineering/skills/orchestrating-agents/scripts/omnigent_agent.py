@@ -2067,6 +2067,7 @@ def wait(
     message; a second of either fails, naming the first.
     """
     deadline = time.monotonic() + timeout
+    far = False  # on another host (no ``pr``): its files are read through its file API, not here
     idle_since, nudged = None, False
     recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
     continued: float | None = None  # when the stalled session was told to continue
@@ -2080,23 +2081,33 @@ def wait(
         else str(report)
     )
 
-    def counts() -> bool:
-        if pr:
-            return False
+    def stamp(path: Path) -> int | None:
+        """``path``'s mtime in ns on the session's host, None when it is not there."""
+        if not far:
+            try:
+                return path.stat().st_mtime_ns
+            except FileNotFoundError:
+                return None
         try:
-            mtime = report.stat().st_mtime_ns
-        except FileNotFoundError:
+            return int(og.modified(sid, str(path)) * 1e9) or None
+        except Gone:
+            return None
+
+    def counts() -> bool:
+        if pr or (mtime := stamp(report)) is None:
             return False
+        text = og.read_file(sid, str(report)) if far else report.read_text()
         return (
             (since is None or mtime > since)
-            and not launcher_failed(report)
-            and (not verdict or bool(VERDICT.search(report.read_text())))
+            and not FAILED_LINE.fullmatch(text)
+            and (not verdict or bool(VERDICT.search(text)))
         )
 
     while True:
-        if question.exists():
-            raise Asked(str(question))
         info = og.info(sid)
+        far = not pr and bool(info.get("host_id")) and str(info["host_id"]) != og.host_id
+        if stamp(question) is not None:
+            raise Asked(str(question))
         status = str(info.get("status"))
         error = (info.get("last_task_error") or {}).get("message") or ""
         if status in RUNNING or continued and time.monotonic() - continued >= CONTINUE_SECONDS:
@@ -2112,7 +2123,7 @@ def wait(
         items = og.items(sid)
         last = last_message(items)
         said = last_said(items)
-        if counts() and settled(report, info, items, ended, sid) and counts():
+        if counts() and settled(stamp(report), info, items, ended, sid) and counts():
             if status in RUNNING and not prompts_of(info):
                 print(
                     f"session {sid} still reads {status}, but its report and history were quiet"
@@ -2166,7 +2177,7 @@ def wait(
             break  # the turn has ended on the comment's URL: nothing rewrites it now
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
-            if question.exists():
+            if stamp(question) is not None:
                 raise Asked(str(question))
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
@@ -2755,19 +2766,19 @@ def instructed(items: list[dict], resume: str) -> tuple[float, float]:
     return since, max(resent, default=0.0)
 
 
-def settled(report: Path, info: dict, items: list[dict], ended: dict[str, float], sid: str) -> bool:
-    """Whether ``report``, one that counts, is final: the session has been out of its turn (not
+def settled(
+    stamp: int | None, info: dict, items: list[dict], ended: dict[str, float], sid: str
+) -> bool:
+    """Whether the report, one that counts, written at ``stamp`` (ns, None when absent) is final: the session has been out of its turn (not
     running, or blocked on a prompt nothing answers) at every look for ``TURN_END_SECONDS`` and the
     file unchanged as long, or the file and the history were both quiet for ``SETTLE_SECONDS``
     while it still reads running, a lost turn end. ``ended`` holds when each session was first seen
     out of its turn, the caller's across looks; a look that finds it running clears it. Until its
     turn ends a child can rewrite its report: a verifier revising its verdict, a lead writing
     progress there."""
-    try:
-        mtime = report.stat().st_mtime
-    except FileNotFoundError:
+    if stamp is None:
         return False
-    now = time.time()
+    mtime, now = stamp / 1e9, time.time()
     if str(info.get("status")) not in RUNNING or prompts_of(info):
         out = ended.setdefault(sid, now)
         return now - max(out, mtime) >= TURN_END_SECONDS
@@ -2828,7 +2839,8 @@ def check(
         )
 
     if counts():
-        if settled(report, info, items, {} if ended is None else ended, sid) and counts():
+        stamp = report.stat().st_mtime_ns if report.exists() else None
+        if settled(stamp, info, items, {} if ended is None else ended, sid) and counts():
             return f"{head}: report written: {report}", since
         return "", since  # in its turn, or not out of it for long: it may rewrite the report
     if written(question_of(report), since):
@@ -4559,11 +4571,10 @@ def main(argv: list[str] | None = None) -> int:
             supervise(og, owed, args.silent_seconds, args.timeout)  # it prints each line
             return 0
         if args.cmd == "wait":
-            print(
-                wait(
-                    og, args.session, args.report.resolve(), args.timeout, args.verdict, pr=args.pr
-                )
-            )
+            # a path on the session's host, which this one neither resolves nor reads (as start's)
+            host = None if args.pr else og.info(args.session).get("host_id")
+            report = args.report if host and str(host) != og.host_id else args.report.resolve()
+            print(wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr))
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             if not args.keep:
