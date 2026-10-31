@@ -5210,7 +5210,9 @@ def test_a_killed_caller_leaves_the_detached_check_to_finish_and_record(tmp_path
     repo, head, env = gate_faked(tmp_path, seconds=2)
     common = repo / ".git" / "approvals" / "local-ci"
     run = caller(repo, env, "--record")
-    polled(lambda: (common / f"{head}.pid").exists())
+    pid = common / f"{head}.pid"
+    # detach() fills the pid file only after the child's setsid, so the kill can't reach it (#732)
+    polled(lambda: pid.exists() and pid.read_text())
     os.killpg(run.pid, signal.SIGKILL)
     run.wait()
     polled(lambda: (common / f"{head}.exit").exists())
