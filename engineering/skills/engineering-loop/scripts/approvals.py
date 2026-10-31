@@ -60,22 +60,23 @@ of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
 it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
 go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
-green. `approve merge <pr> --head <sha> --by owner` posts it on the owner's word with a record (`Approved: merge`,
-`By: owner`, `Head: <sha>`) whose every word the script writes, refusing a head other than the one named, which is
-the one the owner was shown; `--withdraw` posts a newer failing one and a `Withdrawn: merge` record and removes their label, which given again
-is their go again. A status belongs
-to one commit, so no push carries the go to a head the owner didn't see. The owner's own `approved:merge` label on a
-PR into the default branch, added after the head was pushed, is their go too: `check merge`, `check queue` and `land`
-post it as that status, marked as from the label, which then holds only while the label is on, so removing it
-withdraws the go. On a change that is not high risk the label means nothing. High risk is `risk:high` on the
+green, and the PR holds the owner's record (`Approved: merge`, `By: owner`, `Head: <sha>`) naming that head.
+`approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the record's every word the script
+writes, refusing a head other than the one named, which is the one the owner was shown; `--withdraw` posts a newer
+failing status and a `Withdrawn: merge` record and removes the `approved:merge` label. A status belongs to one
+commit, so no push carries the go to a head the owner didn't see. Into the default branch that is the only go: a
+label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
+an `owner` status an older gate wrote from the label (marked as from it). On a change that is not high risk the
+label means nothing. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
-failure to add it and carrying on. A label added before the head's push is no go, the push time being GitHub's
-repository activity for the head branch, and the approvals workflow removes it on `synchronize`. On a PR into a feature branch (any base but the repository's
-default branch) the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
-`By: delegate`), and refuses a PR into the default branch. There a label no newer than such a record is no approval,
-since only the owner approves a merge to the default branch; and a PR from a branch into the default branch is high
-risk while any PR merged into that branch carries `risk:high`, so a feature branch's merge waits for the owner.
+failure to add it and carrying on. On a PR into a feature branch (any base but the repository's default branch)
+`approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
+the head branch; a label added before the push is no go, and the approvals workflow removes it on `synchronize`. There
+the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
+`By: delegate`), and refuses a PR into the default branch, whose merge only the owner approves. A PR from a branch
+into the default branch is high risk while any PR merged into that branch carries `risk:high`, so a feature
+branch's merge waits for the owner.
 Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
 the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
@@ -344,7 +345,8 @@ DELEGATE = "delegate"
 MERGE_LABEL = "approved:merge"
 # the owner's go on a high-risk head, a commit status on that one commit (approve merge), so no push carries it over
 OWNER_GO = "owner"
-# how an OWNER_GO status turned from the owner's `approved:merge` label ends, which then holds only while the label is on
+# how an OWNER_GO status the gate once turned from the `approved:merge` label ends: no go, since the label can be a
+# delegate's
 LABELLED = f"from their `{MERGE_LABEL}` label"
 # a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
@@ -1979,22 +1981,28 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while the change is high risk (risk) and the owner's go is not on the head (owned) nor their
-    `approved:merge` label on the PR, added after the head's push; on a PR into the default branch, a label no newer
-    than a delegated record (delegate) is the delegate's, not the owner's, and the owner's label is posted as their go
-    on the head, which holds while the label is on. `pushed(pull)` is when the head was pushed (default: GitHub's
-    repository activity)."""
+    """A line while the change is high risk (risk) and the owner's go is not on the head (owned). Into the default
+    branch only that go counts, since a delegate acting through the owner's account adds a label no differently from
+    the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
+    owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
+    activity)."""
     where, found = f"PR #{pull['number']}", []
     why = risk(pull, issues, loop)
-    if why is None:
+    if why is None or owned(pull):
         return found
-    if owned(pull):
-        return found
+    command = f"`approve merge {pull['number']} --head {pull['headRefOid']} --by owner`"
+    if default(pull):
+        return [
+            (
+                f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
+                f" is no go), since it is high risk: {why}"
+            )
+        ]
     if MERGE_LABEL not in names(pull):
         return [
             (
-                f"{where} waits for the owner's go on its head (`approve merge {pull['number']} --head"
-                f" {pull['headRefOid']} --by owner`, or their `{MERGE_LABEL}` label), since it is high risk: {why}"
+                f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is high"
+                f" risk: {why}"
             )
         ]
     added = max(
@@ -2014,30 +2022,14 @@ def owner_waits(
         found.append(
             f"{where}: `{MERGE_LABEL}` was added before the head was pushed: the owner adds it again"
         )
-    elif default(pull) and any(
-        (parsed(note["body"], "merge") or {}).get("by") == DELEGATE and note["createdAt"] >= added
-        for note in notes(pull)
-    ):
-        found.append(
-            f"{where}: `{MERGE_LABEL}` is the delegated approval, which covers a PR into a feature branch, not into"
-            f" {pull['baseRefName']}: the owner removes it and adds it again"
-        )
-    if not found and default(pull):
-        # the owner's label on this head becomes their go on it, which no later push carries over; a delegate's label
-        # covers a feature branch only, so it stays a label
-        with contextlib.suppress(subprocess.CalledProcessError, OSError):
-            post_status(
-                pull["headRefOid"],
-                OWNER_GO,
-                f"The owner's go on {pull['headRefOid'][:12]}, {LABELLED}",
-            )
     return found
 
 
 def owned(pull: dict[str, Any]) -> bool:
-    """Whether the owner's go (OWNER_GO) is on the PR's head: the newest `owner` status there by the account running
-    this or a writer (a status is the repo's to write) is green, so a later one the owner withdrew it with (go) wins,
-    and one turned from their label (LABELLED) holds only while the label is on. GitHub unreachable: no go."""
+    """Whether the owner's go (go) is on the PR's head: the newest `owner` status there by the account running this
+    or a writer (a status is the repo's to write) is green, so a later one the owner withdrew it with wins, and the
+    PR holds the `Approved: merge` record by the owner naming that head. A status once turned from the label
+    (LABELLED) is no go. GitHub unreachable: no go."""
     try:
         found = statuses(pull["headRefOid"])
     except (subprocess.CalledProcessError, OSError, ValueError):
@@ -2050,10 +2042,10 @@ def owned(pull: dict[str, Any]) -> bool:
             or not (login == viewer() or writer(login))
         ):
             continue
-        if status.get("state") != "success":
-            return False
-        return not (status.get("description") or "").endswith(LABELLED) or MERGE_LABEL in names(
-            pull
+        return (
+            status.get("state") == "success"
+            and not (status.get("description") or "").endswith(LABELLED)
+            and current(pull, "merge", "head", pull["headRefOid"], "owner")
         )
     return False
 
@@ -2072,7 +2064,7 @@ def go(number: int, head: str, withdraw: bool = False) -> int:
         )
     head = pull["headRefOid"]
     if withdraw:
-        # the label off too, or the next check would turn it into the go again
+        # the label off too, since into a feature branch it is a go of its own
         label(number, MERGE_LABEL, add=False)
         post_status(head, OWNER_GO, f"The owner withdrew their go on {head[:12]}", state="failure")
         comment(number, f"Withdrawn: merge\nBy: owner\nHead: {head}\n")
@@ -3409,8 +3401,8 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
 
 def delegate(number: int) -> int:
     """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
-    label, then the record that names it the delegate's, so owner_waits refuses it once the PR targets the default
-    branch, whose merge only the owner approves. Into the default branch it is refused."""
+    label, then the record that names it the delegate's. Into the default branch, whose merge only the owner approves
+    and where a label is no go, it is refused."""
     pull = pull_request(number)
     if default(pull):
         raise Refused(
@@ -3421,7 +3413,7 @@ def delegate(number: int) -> int:
     try:
         comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
     except subprocess.CalledProcessError:
-        # a label with no record reads as the owner's once the PR targets the default branch: take it off again
+        # a label with no record names no one: take it off again
         label(number, MERGE_LABEL, add=False)
         raise
     return 0
