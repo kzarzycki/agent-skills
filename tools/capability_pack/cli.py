@@ -44,7 +44,7 @@ def write_deltas(directory: Path, error: PortRequiredError) -> list[dict]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="capability-pack")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("update", "check"):
+    for command in ("update", "check", "regenerate"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("package", type=Path)
         subparser.add_argument("--summary", type=Path)
@@ -92,7 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "release-check":
             validate_release_candidate(args.package, args.tag)
             return 0
-        mode = "update" if args.command == "update" else "locked"
+        mode = "locked" if args.command == "check" else args.command
         result = qualify(args.package, mode, args.summary)
     except PortRequiredError as error:
         print(error, file=sys.stderr)

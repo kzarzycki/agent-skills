@@ -1033,14 +1033,14 @@ def _replace_atomically(package: Path, staged: Path) -> None:
 
 def qualify(
     package_root: Path,
-    mode: Literal["update", "locked"],
+    mode: Literal["update", "locked", "regenerate"],
     summary_path: Path | None = None,
     *,
     source_tag: str | None = None,
     candidate_commit: str | None = None,
 ) -> QualificationResult:
     package = package_root.resolve()
-    if mode not in {"update", "locked"}:
+    if mode not in {"update", "locked", "regenerate"}:
         raise ValueError(f"unknown qualification mode: {mode}")
     if not package.is_dir():
         raise ConfigurationError(f"package does not exist: {package}")
@@ -1103,7 +1103,8 @@ def qualify(
                 tuple(policy.get("exclusions", [])),
             )
         managed = _managed_skills(committed_config)
-        _sync_manifest(staged, mode)
+        # regenerate writes like update but syncs the lock's commit, so an overlay edit stays local.
+        _sync_manifest(staged, "update" if mode == "update" else "locked")
         if mode == "update":
             (staged / VENDIR_MANIFEST).write_text(yaml.safe_dump(committed_config, sort_keys=False))
         _validate_symlinks(staged)
@@ -1138,10 +1139,10 @@ def qualify(
         source_commit = _source_commit(staged)
         source_mappings = _source_mappings(committed_config, source_commit, inventory)
         license_files = _license_manifest(staged, previous, (committed_config,))
-        if mode == "update" and previous and previous.license_files != license_files:
+        if mode != "locked" and previous and previous.license_files != license_files:
             raise LicenseDriftError("upstream license files changed; explicit review is required")
         tuned = tuple(sorted(set(overlay_names) & set(managed)))
-        if mode == "update" and previous:
+        if mode != "locked" and previous:
             _require_ported(package, previous, source_files, source_commit, tuned, source_mappings)
         patch_files: tuple[FileHash, ...] = ()
         try:
@@ -1222,7 +1223,7 @@ def qualify(
         has_versioned_metadata = (staged / "apm.yml").exists() or (
             staged / ".claude-plugin" / "plugin.json"
         ).exists()
-        if mode == "update" and content_changed and has_versioned_metadata:
+        if mode != "locked" and content_changed and has_versioned_metadata:
             proposed_version = _update_package_version(
                 staged,
                 _version_magnitude(previous, source_tag, (*added, *retired)),
@@ -1243,7 +1244,7 @@ def qualify(
             transitioned_to_owned=overlay_names,
             retired=retired,
         )
-        if mode == "update":
+        if mode != "locked":
             if summary_path:
                 summary_path.write_text(summary)
             _replace_atomically(package, staged)
