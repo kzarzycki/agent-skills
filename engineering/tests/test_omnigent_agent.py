@@ -7659,3 +7659,39 @@ def test_wait_reads_a_remote_sessions_report_on_its_host(
     sid = og.create("claude", "t")
     assert omnigent_agent.main(["wait", sid, "tmp/loop/r.md", "--keep"]) == 0
     assert capsys.readouterr().out.strip() == "tmp/loop/r.md"  # not resolved on this host
+
+
+def test_wait_reads_a_remote_sessions_question_and_report_text_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is at these paths on this host: a question, a report without its verdict and a launcher's failure
+    line are each seen only through the session's file API."""
+    files: dict[str, str] = {}
+
+    class Far(FakeOmnigent):
+        def info(self, sid: str) -> dict:
+            return {**super().info(sid), "host_id": "mac"}
+
+        def read_file(self, sid: str, path: str) -> str:
+            return files[path]
+
+        def modified(self, sid: str, path: str) -> float:
+            if path not in files:
+                raise omnigent_agent.Gone(path)
+            return time.time() - 3600
+
+    og = Far()
+    monkeypatch.chdir(tmp_path)
+    sid, report = og.create("codex", "t"), Path("tmp/loop/r.md")
+    files["tmp/loop/r.md.question"] = "which base?"
+    with pytest.raises(omnigent_agent.Asked, match=r"r\.md\.question"):
+        omnigent_agent.wait(og, sid, report, timeout=0)
+    del files["tmp/loop/r.md.question"]
+    files["tmp/loop/r.md"] = "## Standards\n"
+    with pytest.raises(omnigent_agent.Fail, match="no verdict after 0s"):
+        omnigent_agent.wait(og, sid, report, timeout=0, verdict=True)
+    files["tmp/loop/r.md"] += "SATISFIED: yes\n"
+    assert omnigent_agent.wait(og, sid, report, timeout=0, verdict=True) == str(report)
+    files["tmp/loop/r.md"] = "FAILED: codex: no such model\n"
+    with pytest.raises(omnigent_agent.Fail, match="no report after 0s"):
+        omnigent_agent.wait(og, sid, report, timeout=0)
