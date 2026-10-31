@@ -181,6 +181,13 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
+# A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
+# whose schemas and listings it would otherwise re-read every turn; Omnigent's own and plugins'
+# servers stay. A project's `Worker tools:` or `Verifier tools:` line names more, or `full`.
+LEAN_ROLES = ("worker", "verifier")
+LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
+LOOP_FILE = Path("docs") / "agents" / "loop.md"
+COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
 # an agent record and config field that names or dates one agent, not what it does
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
@@ -221,6 +228,9 @@ TRANSIENT = (
     ssl.SSLEOFError,
 )
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
+# Writes Omnigent holds for the owner's approval when made as a tool call: the client refuses
+# them without `owner=True`, so an agent whose call waits on the owner can't make it over REST.
+APPROVAL_GATED = re.compile(r"/v1/(scheduled-tasks|policies|sessions/[^/]+/policies)(/|\?|$)")
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
@@ -619,9 +629,15 @@ class Omnigent:
             )
         return out.stdout.strip()
 
-    def call(self, method: str, path: str, body: object = None) -> dict:
+    def call(self, method: str, path: str, body: object = None, *, owner: bool = False) -> dict:
         """One request; a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
-        status. A ``POST`` never is: it may have taken effect."""
+        status. A ``POST`` never is: it may have taken effect. A write to an ``APPROVAL_GATED``
+        path is refused unless the owner makes it (``owner=True``)."""
+        if method != "GET" and not owner and APPROVAL_GATED.match(path):
+            raise Fail(
+                f"{method} {path}: an approval-gated write is the owner's to make (owner=True);"
+                " a tool call held for approval waits for them, never route around it"
+            )
         retries = list(RETRY_SECONDS) if method == "GET" else []
         refreshed = False
         while True:
@@ -809,8 +825,14 @@ class Omnigent:
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
         # starts its terminal (the session fails "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
-        if agent == "claude" and mode:
-            body["terminal_launch_args"] = ["--permission-mode", mode]
+        if agent == "claude":
+            args = ["--permission-mode", mode] if mode else []
+            if role and (stem := Path(role).stem) in LEAN_ROLES:
+                args += lean_args(str(body["workspace"]), stem)
+            if top_level:
+                args += autocompact_args(str(body["workspace"]))
+            if args:
+                body["terminal_launch_args"] = args
         elif mode == BYPASS and agent not in AGENTS and self.harness(agent) == AGY_HARNESS:
             # agy's only permission flag; its effort is the user's, part of the model in its settings.
             body["terminal_launch_args"] = [AGY_BYPASS]
@@ -1014,6 +1036,89 @@ class Omnigent:
             if not info.get("archived"):
                 times.append(float(info.get("updated_at") or 0))
         return max(times, default=0.0)
+
+
+def checkout_root(workspace: str) -> str:
+    """The root of ``workspace``'s checkout, else empty."""
+    return subprocess.run(
+        ["git", "-C", workspace, "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,  # no checkout: no project files
+    ).stdout.strip()
+
+
+def read_json(path: Path) -> dict:
+    """``path``'s JSON object, else empty: missing, unreadable or not an object."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def project_line(workspace: str, key: str) -> str:
+    """The value of the line ``<key>: <value>`` in the project's ``docs/agents/loop.md`` at the root
+    of ``workspace``'s checkout, else empty: none there, or a workspace outside a checkout."""
+    root = checkout_root(workspace)
+    try:
+        text = (Path(root) / LOOP_FILE).read_text() if root else ""
+    except FileNotFoundError:
+        return ""
+    found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
+    return found.group(1) if found else ""
+
+
+def lean_args(workspace: str, role: str) -> list[str]:
+    """The launch args of a lean Claude ``role`` child (``LEAN_TOOLS``), plus what the project's
+    ``<Role> tools:`` line names beyond them: a tool, or an MCP server configured for the checkout
+    (the user's, the project's ``.mcp.json`` or the checkout's local one), which goes in its own
+    ``--mcp-config`` beside Omnigent's. ``full`` there is no args: every configured tool and server."""
+    named = project_line(workspace, f"{role.capitalize()} tools")
+    if named == "full":
+        return []
+    root = checkout_root(workspace)
+    user = read_json(Path.home() / ".claude.json")
+    local = (user.get("projects") or {}).get(root) or {} if root else {}
+    known = {
+        **(user.get("mcpServers") or {}),
+        **(read_json(Path(root) / ".mcp.json").get("mcpServers") or {} if root else {}),
+        **(local.get("mcpServers") or {}),
+    }
+    extra = [e.strip() for e in named.split(",") if e.strip()]
+    servers = {e: known[e] for e in extra if e in known}
+    tools = list(dict.fromkeys(LEAN_TOOLS.split(",") + [e for e in extra if e not in servers]))
+    args = ["--strict-mcp-config", "--tools", ",".join(tools)]
+    return args + (["--mcp-config", json.dumps({"mcpServers": servers})] if servers else [])
+
+
+def autocompact_args(workspace: str) -> list[str]:
+    """``--autocompact <size>`` for a top-level Claude session when the project's ``Lead
+    autocompact:`` line names a size, so the lead compacts there instead of at the user's window;
+    else none. A size Claude Code refuses fails here, since the CLI would exit before the lead
+    starts. ``CLAUDE_CODE_AUTO_COMPACT_WINDOW`` in the user's Claude settings outranks the flag, so
+    its presence is reported: set that window as ``autoCompactWindow``. This process's own
+    environment is not read, since the lead's comes from the Omnigent runner, not from its caller."""
+    size = project_line(workspace, "Lead autocompact")
+    if not size:
+        return []
+    # Claude Code's spellings: 150000, 150k, 0.15M, and a bare number up to 1000 as thousands
+    found = re.fullmatch(r"(\d+(?:\.\d+)?)([kKmM]?)", size)
+    number = float(found[1]) if found else 0.0
+    unit = found[2].lower() if found else ""
+    tokens = number * (1e6 if unit == "m" else 1000 if unit == "k" or number <= 1000 else 1)
+    if not 100_000 <= tokens <= 1_000_000:
+        raise Fail(
+            f"{LOOP_FILE}: Lead autocompact: {size} is not a size from 100k to 1M, like 150k"
+        )
+    user = read_json(Path.home() / ".claude" / "settings.json").get("env") or {}
+    if window := user.get(COMPACT_ENV):
+        print(
+            f"{COMPACT_ENV}={window} outranks --autocompact {size}: the lead keeps that window;"
+            " set it as the autoCompactWindow setting instead",
+            file=sys.stderr,
+        )
+    return ["--autocompact", size]
 
 
 def project_name() -> str:
@@ -1743,7 +1848,7 @@ def start(
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
-    session on another host is not held back by this host's load."""
+    session on another host or in the cloud is not held back by this host's load."""
     agy = agent not in AGENTS and og.harness(agent) == AGY_HARNESS
     if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
         raise Fail(
@@ -1765,7 +1870,9 @@ def start(
             raise Fail(f"{source}: can't read {agent}'s model list ({e}), so can't check it") from e
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
-    elsewhere = bool(host_id) and host_id != og.host_id  # its load lands there, not here
+    harness = agent if agent in AGENTS else og.harness(agent)
+    # its load lands there, not here: on another host, or in a cloud VM bridged from this one
+    elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
     while not elsewhere and not (room := capacity())[0]:
         if time.monotonic() >= deadline:
@@ -1777,7 +1884,6 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    harness = agent if agent in AGENTS else og.harness(agent)
     by_file = briefed_by_file(og, agent, host_id)
     # a cloud VM or another host has its own cores, and a top-level lead caps its own children
     lock = heavy_lock() if by_file and not top_level else ""
@@ -3167,8 +3273,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
-    ``revived`` once, and whether any standing ``decisions`` exist; ``head`` is the ``report_head``
-    of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
+    ``revived`` once, ``offline`` (no live runner), and whether any standing ``decisions`` exist;
+    ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
     ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
     and only picks the route, since its input holds a lead's own words. Only its ``act`` on a
@@ -3202,6 +3308,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
         if wait != "unknown":
+            if event.get("offline"):  # nothing wakes it: its wait can never end
+                return "rule", "revive", f"no live runner while it {waits(wait)}: revive it"
             return "rule", "act", f"no progress while it {waits(wait)}: inspect the wait"
         if event.get("nudged"):
             return "rule", "act", "no progress after its nudge"
@@ -3591,6 +3699,7 @@ def supervise_registry(
             "revived": bool(lead.get("revives")),
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
+            "offline": not info.get("runner_online", True),
         }
 
         def ask() -> tuple[str, str]:
@@ -3628,7 +3737,8 @@ def supervise_registry(
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
             act_on(eid, [(sid, "nudge", LEAD_NUDGE)])
         elif action == "revive":
-            lead["revives"] = lead.get("revives", 0) + 1
+            if kind == "failed":  # its one revive after a failure; a lost runner is no failure
+                lead["revives"] = lead.get("revives", 0) + 1
             act_on(eid, [(sid, "revive", LEAD_REVIVE)])
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
@@ -4529,6 +4639,12 @@ def main(argv: list[str] | None = None) -> int:
             raise Fail(
                 "run --top-level: a lead asks the owner in its own session, so there is no question"
                 " for run to return; use start --top-level, then watch <session>"
+            )
+        # --pr is a cloud worker's report channel; a native worker given it runs its build on this host
+        if args.pr and og.harness(args.agent) != CLOUD_HARNESS:
+            raise Fail(
+                f"--pr {args.pr}: {args.agent} is not a cloud agent; start claude-cloud for a cloud"
+                " worker, or drop --pr for one on this host"
             )
         brief = text_or_file(args.brief)[0]
         verifier = bool(args.role and "verifier" in args.role)

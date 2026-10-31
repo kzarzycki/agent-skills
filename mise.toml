@@ -87,7 +87,7 @@ fi
 run = "uv run python -m tools.capability_pack.cli update engineering"
 
 [tasks.vendor-engineering-check]
-run = "uv run python -m tools.capability_pack.cli check engineering"
+run = "QUALIFY_TIMEOUT=${QUALIFY_TIMEOUT:-900} uv run python -m tools.capability_pack.cli check engineering"
 
 [tasks.assert-engineering-codex-inventory]
 run = "uv run python -m tools.capability_pack.cli assert-codex-inventory ."

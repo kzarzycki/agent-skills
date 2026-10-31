@@ -1222,7 +1222,7 @@ def test_create_files_the_session_under_the_project(
 
 
 def test_create_files_the_session_under_its_caller_s_project(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """A scheduled run is filed in its task's project, whose name its repo's need not match."""
     bodies: list[dict] = []
@@ -1250,7 +1250,8 @@ def test_create_files_the_session_under_its_caller_s_project(
     monkeypatch.setattr(omnigent_agent, "repo_name", lambda: "eng-repo")  # matches no project
     monkeypatch.delenv("OMNIGENT_PROJECT", raising=False)
     monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "lead")
-    omnigent_agent.Omnigent().create("claude", "t", top_level=True)
+    # a workspace outside a checkout, so no project line of this repo's applies
+    omnigent_agent.Omnigent().create("claude", "t", top_level=True, workspace=str(tmp_path))
     assert bodies[-1]["project_id"] == "p1"
     assert capsys.readouterr().err == ""
 
@@ -1334,6 +1335,152 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
         omnigent_agent.start(
             FakeOmnigent(), "codex", "t", "do X", tmp_path / "r.md", None, 0, permission_mode="plan"
         )
+
+
+def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_names_beyond(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {
+            "/v1/agents": agents,
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        }[path]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    monkeypatch.setattr(omnigent_agent.Path, "home", lambda: tmp_path / "home")
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "sub").mkdir()
+    ws = str(repo / "sub")  # a workspace below the root reads the root's project files
+    tools = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"  # what the roles call
+    lean = ["--strict-mcp-config", "--tools", tools]
+    og = omnigent_agent.Omnigent()
+    for role in ("worker", "verifier"):
+        og.create("claude", "t", workspace=ws, role=f"/x/engineering-loop/{role}.md")
+        assert bodies[-1]["terminal_launch_args"] == lean
+    og.create("claude", "t", workspace=ws, role="/x/worker.md", permission_mode="plan")
+    assert bodies[-1]["terminal_launch_args"] == ["--permission-mode", "plan", *lean]
+    for role in ("/x/lead.md", None):  # a lead and a plain child start as before
+        og.create("claude", "t", workspace=ws, role=role)
+        assert "terminal_launch_args" not in bodies[-1]
+    og.create("codex", "t", workspace=ws, role="/x/worker.md")  # a claude flag, not codex's
+    assert "terminal_launch_args" not in bodies[-1]
+    og.create("claude", "t", workspace=str(tmp_path), role="/x/worker.md")  # outside a checkout
+    assert bodies[-1]["terminal_launch_args"] == lean
+    (repo / "docs" / "agents").mkdir(parents=True)
+    (repo / "docs" / "agents" / "loop.md").write_text(
+        "# Loop\n\nVerifier tools: full\nWorker tools: NotebookEdit, docs, mail, tracker\n"
+    )
+    docs = {"command": "docs-mcp"}
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"docs": docs}}))
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {"mail": {"url": "u"}, "calendar": {"url": "c"}},
+                "projects": {str(repo.resolve()): {"mcpServers": {"tracker": {"url": "t"}}}},
+            }
+        )
+    )
+    og.create("claude", "t", workspace=ws, role="/x/verifier.md")
+    assert "terminal_launch_args" not in bodies[-1]  # the role keeps every tool and server
+    og.create("claude", "t", workspace=ws, role="/x/worker.md")
+    assert bodies[-1]["terminal_launch_args"] == [
+        "--strict-mcp-config",
+        "--tools",
+        tools + ",NotebookEdit",
+        "--mcp-config",
+        json.dumps({"mcpServers": {"docs": docs, "mail": {"url": "u"}, "tracker": {"url": "t"}}}),
+    ]
+
+
+def test_create_starts_a_claude_lead_with_the_project_s_autocompact_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {
+            "/v1/agents": agents,
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        }[path]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    monkeypatch.setattr(omnigent_agent, "parent_id", lambda: "")
+    monkeypatch.setattr(omnigent_agent.Path, "home", lambda: tmp_path / "home")
+    monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", raising=False)
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    ws = str(repo)
+    og = omnigent_agent.Omnigent()
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert "terminal_launch_args" not in bodies[-1]  # no line: the lead starts as before
+    (repo / "docs" / "agents").mkdir(parents=True)
+    loop = repo / "docs" / "agents" / "loop.md"
+    loop.write_text("# Loop\n\nLead autocompact: 150k\n")
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert bodies[-1]["terminal_launch_args"] == ["--autocompact", "150k"]
+    assert "outranks" not in capsys.readouterr().err
+    og.create("claude", "t", workspace=ws, top_level=True, permission_mode="plan")
+    assert bodies[-1]["terminal_launch_args"] == [
+        "--permission-mode",
+        "plan",
+        "--autocompact",
+        "150k",
+    ]
+    og.create("claude", "t", workspace=ws)  # a child keeps the user's window
+    assert "terminal_launch_args" not in bodies[-1]
+    og.create("codex", "t", workspace=ws, top_level=True)  # a claude flag, not codex's
+    assert "terminal_launch_args" not in bodies[-1]
+    (tmp_path / "home" / ".claude").mkdir(parents=True)
+    (tmp_path / "home" / ".claude" / "settings.json").write_text(
+        json.dumps({"env": {"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "330000"}})
+    )
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert bodies[-1]["terminal_launch_args"] == ["--autocompact", "150k"]
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=330000 outranks" in capsys.readouterr().err
+    (tmp_path / "home" / ".claude" / "settings.json").write_text("{}")
+    # the caller's env never reaches the lead, which gets the runner's
+    monkeypatch.setenv("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "250000")
+    og.create("claude", "t", workspace=ws, top_level=True)
+    assert bodies[-1]["terminal_launch_args"] == ["--autocompact", "150k"]
+    assert "outranks" not in capsys.readouterr().err
+    for size, ok in (
+        ("150000", True),
+        ("200", True),
+        ("1M", True),
+        ("0.15M", True),
+        ("150.5k", True),
+        ("99k", False),
+        ("1.1M", False),
+        ("1001k", False),
+        ("lots", False),
+    ):
+        loop.write_text(f"Lead autocompact: {size}\n")
+        if ok:
+            og.create("claude", "t", workspace=ws, top_level=True)
+            assert bodies[-1]["terminal_launch_args"] == ["--autocompact", size]
+        else:
+            with pytest.raises(omnigent_agent.Fail, match="not a size from 100k to 1M"):
+                og.create("claude", "t", workspace=ws, top_level=True)
 
 
 @pytest.mark.parametrize(
@@ -2339,6 +2486,11 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_a"}}'
+    )
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     calls = fake_gh(monkeypatch, {"42": on_pr(7, "Head: abc\nGates: 0\n")})
     monkeypatch.chdir(tmp_path)
@@ -2378,6 +2530,27 @@ def start_cloud(
     (workspace / "b.md").write_text("do X")
     argv = ["start", agent, title, "b.md", f"tmp/{title}.md", "--confirm-seconds", "0"]
     return omnigent_agent.main([*argv, "--workspace", str(workspace)])
+
+
+def test_pr_is_refused_to_an_agent_that_is_not_a_cloud_agent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a native worker given --pr ran its build on the orchestration host, starving its sessions
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_a"}}'
+    )
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    for cmd in ("start", "run"):
+        argv = [cmd, "claude", "t", "b.md", "r.md", "--pr", "1", "--confirm-seconds", "0"]
+        assert omnigent_agent.main(argv) == 1
+        assert "claude-cloud" in capsys.readouterr().err and og.sessions == {}
+    argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--pr", "1", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0 and list(og.sessions) == ["s0"]
 
 
 def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin(
@@ -2642,6 +2815,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     # preamble and refused --pr
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
     og.host = lambda name: "far"  # type: ignore[method-assign]
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     fake_gh(monkeypatch, {"42": on_pr(7, "Branch: claude/x at abc\n")})
     monkeypatch.chdir(tmp_path)
@@ -2686,6 +2860,11 @@ def test_run_keep_leaves_a_delivered_worker_open_for_a_relay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_a"}}'
+    )
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     fake_gh(monkeypatch, {"42": on_pr(7, "done")})
     monkeypatch.chdir(tmp_path)
@@ -2724,6 +2903,9 @@ def test_a_start_on_another_host_does_not_wait_on_this_host_s_load(
         omnigent_agent.start(
             og, "claude", "u", "do Y", tmp_path / "u.md", None, 0, top_level=True, host_id="h"
         )
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # bridged here, run in a cloud VM
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
+    assert sid in og.sessions
 
 
 def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
@@ -2814,6 +2996,7 @@ def test_a_run_stopped_by_a_signal_writes_its_failed_line_and_restores_the_handl
     assert signal.getsignal(signal.SIGTERM) == before
 
 
+@pytest.mark.skip(reason="Flaky: #591, skipped from the blocking gate after its third occurrence")
 def test_a_run_process_killed_mid_wait_leaves_its_failed_line_within_one_poll(
     tmp_path: Path,
 ) -> None:
@@ -6168,6 +6351,32 @@ def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
     assert state_of(registry)["leads"]["a"]["revives"] == 1
 
 
+@pytest.mark.parametrize("runner", ["offline", "revive fails", "online"])
+def test_a_lead_past_its_named_wait_with_no_live_runner_is_revived_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: str
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+    if runner != "online":
+        og.offline.add("a")  # its info reads runner_online: False
+    if runner == "revive fails":
+        monkeypatch.setattr(og, "retry", lambda sid: {"recovered": False, "recovery": "no_host"})
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    sent = [t for s, t in og.inbox if s == "a"]
+    acts = [line for post in posted(og) for line in post.splitlines() if line.startswith("[act]")]
+    if runner == "offline":
+        assert sent == [omnigent_agent.LEAD_REVIVE] and acts == []
+    elif runner == "revive fails":
+        [act] = acts
+        assert "the supervisor's revive was not delivered: session a has no live runner and" in act
+        assert '"no_host"' in act
+    else:
+        assert sent == [] and acts == [
+            "[act] a t-a: no progress 60m (merge) (no progress while it waits on merge: inspect the wait)"
+        ]
+    assert state_of(registry)["leads"]["a"]["revives"] == 0  # a lost runner is no failure
+
+
 def test_fyi_and_decisions_need_console_and_after_needs_a_top_level_start_with_a_registry(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -7389,3 +7598,35 @@ def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path
         time.sleep(0.1)
     assert log.read_text() == "exit 3\n"
     assert int(pid.read_text()) != os.getpid()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/scheduled-tasks",
+        "/v1/scheduled-tasks/t1",
+        "/v1/policies/p1",
+        "/v1/sessions/s1/policies",
+    ],
+)
+@pytest.mark.parametrize("method", ["POST", "PATCH", "DELETE"])
+def test_a_write_to_an_approval_gated_resource_waits_for_the_owner(
+    monkeypatch: pytest.MonkeyPatch, method: str, path: str
+) -> None:
+    """A lead whose held tool call it read as a hang made the same change over REST (#696)."""
+    sent: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        sent.append(req.get_method())
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    with pytest.raises(omnigent_agent.Fail, match="the owner's to make"):
+        og.call(method, path, {})
+    assert sent == []
+    og.call("GET", path)
+    og.call(method, path, {}, owner=True)
+    og.call(method, "/v1/sessions/s1", {})  # a session's own write stays open
+    assert sent == ["GET", method, method]

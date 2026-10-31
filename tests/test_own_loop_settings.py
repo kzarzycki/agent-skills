@@ -27,5 +27,7 @@ def test_this_repos_policy_and_tracker_settings_parse(copy: str, monkeypatch) ->
     monkeypatch.setattr(approvals, "toplevel", lambda: REPOSITORY)
     tracker, policy = approvals.project()
     assert approvals.settings(policy)["risk"]["paths"]
+    # settings() takes any string for `gate`; gate() is what land and local-ci refuse a malformed one with
+    assert approvals.gate()[1]
     assert approvals.tracker_settings(tracker)
     assert approvals.label_names(tracker)["component"]

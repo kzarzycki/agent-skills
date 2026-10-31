@@ -43,6 +43,7 @@ skills:
   overnight-run: {layer: 4}   # the chief of staff's procedure for an unattended run
   engineering-loop: {layer: 3}
   # layer 2 has no skill yet: the gatekeeper is engineering-loop's approvals.py until #614 and #615
+  agent-hygiene: {layer: 1}
   ask-matt: {layer: 1}
   audit-third-party-software: {layer: 1}
   claude-handoff: {layer: 1}

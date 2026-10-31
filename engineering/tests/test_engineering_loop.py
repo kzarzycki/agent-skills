@@ -121,3 +121,16 @@ def test_owner_questions_end_the_turn_rather_than_wait_in_a_tool() -> None:
     for text in (cos, lead):
         assert "never through a tool that waits for the answer" in text
         assert "(Claude Code's AskUserQuestion, Codex's requestUserInput)" in text
+
+
+def test_a_held_approval_prompt_is_never_routed_around() -> None:
+    """A lead read a call held for the owner's approval as a hang and made the change over REST (#696)."""
+    skill = " ".join((LOOP / "SKILL.md").read_text().split())
+    assert "A tool call held for approval is waiting for the owner, not hung" in skill
+    assert "never make its change by another route (REST, another tool, a script)" in skill
+    for role in ("lead.md", "worker.md", "verifier.md"):
+        text = " ".join((LOOP / role).read_text().split())
+        assert (
+            "A tool call held for approval waits for the owner, not a hang: never make its change"
+            " by another route, since the approval is theirs to give (SKILL.md, Owner steps park)."
+        ) in text, role

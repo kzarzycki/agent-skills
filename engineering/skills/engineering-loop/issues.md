@@ -46,9 +46,9 @@ read as approved.
 
 - **Approval**, `approved:spec` and `approved:plan` on the issue: added with the owner's
   approval (SKILL.md, Approvals and proof), so adding it is how they approve, or as the
-  ready state of a spec gatekeeper.md's policy covers. `approved:merge` on the PR is the owner's
-  merge approval, asked for only when the change is high risk (elsewhere the gates are the
-  approval), added by them once `check` is green on the head and removed by a push.
+  ready state of a spec gatekeeper.md's policy covers. `approved:merge` on the PR is one way the owner
+  gives their go on a high-risk head, which `check` turns into the commit status `owner` on
+  that head (elsewhere the gates are the approval and the label means nothing).
 - **Risk**, `risk:high` on an issue or PR: its consequences need the owner at merge (money,
   data, security, another team's contract). A person sets it, or the lead at
   triage, and `approvals.py` adds it to a PR when gatekeeper.md's `risk` rule matches or the cap
