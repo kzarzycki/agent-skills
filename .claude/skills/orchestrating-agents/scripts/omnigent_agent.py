@@ -228,6 +228,9 @@ TRANSIENT = (
     ssl.SSLEOFError,
 )
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
+# Writes Omnigent holds for the owner's approval when made as a tool call: the client refuses
+# them without `owner=True`, so an agent whose call waits on the owner can't make it over REST.
+APPROVAL_GATED = re.compile(r"/v1/(scheduled-tasks|policies|sessions/[^/]+/policies)(/|\?|$)")
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
@@ -626,9 +629,15 @@ class Omnigent:
             )
         return out.stdout.strip()
 
-    def call(self, method: str, path: str, body: object = None) -> dict:
+    def call(self, method: str, path: str, body: object = None, *, owner: bool = False) -> dict:
         """One request; a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
-        status. A ``POST`` never is: it may have taken effect."""
+        status. A ``POST`` never is: it may have taken effect. A write to an ``APPROVAL_GATED``
+        path is refused unless the owner makes it (``owner=True``)."""
+        if method != "GET" and not owner and APPROVAL_GATED.match(path):
+            raise Fail(
+                f"{method} {path}: an approval-gated write is the owner's to make (owner=True);"
+                " a tool call held for approval waits for them, never route around it"
+            )
         retries = list(RETRY_SECONDS) if method == "GET" else []
         refreshed = False
         while True:
@@ -1839,7 +1848,7 @@ def start(
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
-    session on another host is not held back by this host's load."""
+    session on another host or in the cloud is not held back by this host's load."""
     agy = agent not in AGENTS and og.harness(agent) == AGY_HARNESS
     if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
         raise Fail(
@@ -1861,7 +1870,9 @@ def start(
             raise Fail(f"{source}: can't read {agent}'s model list ({e}), so can't check it") from e
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
-    elsewhere = bool(host_id) and host_id != og.host_id  # its load lands there, not here
+    harness = agent if agent in AGENTS else og.harness(agent)
+    # its load lands there, not here: on another host, or in a cloud VM bridged from this one
+    elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
     while not elsewhere and not (room := capacity())[0]:
         if time.monotonic() >= deadline:
@@ -1873,7 +1884,6 @@ def start(
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
-    harness = agent if agent in AGENTS else og.harness(agent)
     by_file = briefed_by_file(og, agent, host_id)
     # a cloud VM or another host has its own cores, and a top-level lead caps its own children
     lock = heavy_lock() if by_file and not top_level else ""
