@@ -6685,6 +6685,17 @@ def test_posted_text_names_no_account_in_a_temp_path(monkeypatch: pytest.MonkeyP
     assert approvals.public(text) == (
         "FAILED <tmp>/test_x0/a.py\n<tmp>/b\n<tmp>/x.log <tmp>\n~/tmp/y tmp/loop/z.log /tmpfoo ~/c"
     )
+    # a temp dir under home or under /tmp, and one this process doesn't know
+    for tmp in ("/Users/owner/tmp", "/tmp/build"):
+        monkeypatch.setattr(approvals.tempfile, "gettempdir", lambda tmp=tmp: tmp)
+        assert (
+            approvals.public(f"{tmp}/pytest-of-owner/pytest-3/a /Users/owner/tmpx")
+            == "<tmp>/a ~/tmpx"
+        )
+    assert (
+        approvals.public("/scratch/pytest-of-owner/pytest-3/a")
+        == "/scratch/pytest-of-<user>/pytest-3/a"
+    )
 
 
 @pytest.fixture

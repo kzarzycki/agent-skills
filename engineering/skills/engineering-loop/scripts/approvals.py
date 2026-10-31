@@ -2530,19 +2530,18 @@ def public(text: str) -> str:
     """`text` as posted: the home directory written `~` and the temp dir `<tmp>`, pytest's `pytest-of-<user>/pytest-<n>`
     under it included, since a path under either (a log's, a cache's, a failing test's) names the person whose machine
     posted it, and GitHub's edit history keeps a comment's first text for good."""
+    # the longest temp dir first and home last, since a temp dir can sit under /tmp or under home
+    # ponytail: this process's temp dir and /tmp; another TMPDIR's paths stay, with only the account name masked
+    tmps = {tempfile.gettempdir(), os.path.realpath(tempfile.gettempdir()), "/tmp"}
+    for tmp in sorted(filter(None, (t.rstrip("/") for t in tmps)), key=len, reverse=True):
+        text = re.sub(
+            r"(?<![\w.~-])" + re.escape(tmp) + r"(?:/pytest-of-[^/\s]+(?:/pytest-\w+)?)?(?![\w.-])",
+            "<tmp>",
+            text,
+        )
     if home := str(Path.home()).rstrip("/"):
         text = re.sub(re.escape(home) + r"(?![\w.-])", "~", text)
-    # ponytail: this process's temp dir and /tmp; a gate run under another TMPDIR posts that one's paths as they are
-    for tmp in {tempfile.gettempdir(), os.path.realpath(tempfile.gettempdir()), "/tmp"}:
-        if tmp := tmp.rstrip("/"):
-            text = re.sub(
-                r"(?<![\w.~-])"
-                + re.escape(tmp)
-                + r"(?:/pytest-of-[^/\s]+(?:/pytest-\w+)?)?(?![\w.-])",
-                "<tmp>",
-                text,
-            )
-    return text
+    return re.sub(r"pytest-of-[^/\s]+", "pytest-of-<user>", text)
 
 
 def comment(number: int, body: str) -> None:
