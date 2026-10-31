@@ -10,7 +10,7 @@ that lands as a PR runs it, from the owner's request to the merge: tooling, agen
 configuration and files under `~/` too, through the repo that owns them. Each step
 prevents a failure, and leaves proof on GitHub that `approvals.py` checks. Size changes who
 builds and how long the spec is, never which steps run: a step is skipped only when the
-owner asks for that change, and the PR body says so. Where loop.md allows an opt-out, a
+owner asks for that change, and the PR body says so. Where gatekeeper.md allows an opt-out, a
 developer whose personal instructions hold the line `Engineering loop: off` works outside
 it (Approvals and proof); no step runs for their changes.
 
@@ -33,7 +33,8 @@ question for the owner, not a guess:
 | Where | Sections | Read at |
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` on each pushed head, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
-| `docs/agents/loop.md` | Settings (the block `approvals.py` reads, below); Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
+| `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -43,9 +44,12 @@ evidence and anything this skill already states go in the PR or issue that set t
 
 ### Settings
 
-loop.md opens with its settings, a fenced `yaml` block under `## Settings`, which
-`approvals.py` reads; the prose below it is for people and agents: why a path is critical,
-how to judge a finding, the risk criteria in words. The block is YAML because a person
+gatekeeper.md holds the gatekeeper's policy, a fenced `yaml` block under `## Policy`, which
+`approvals.py` reads, so a team that takes only the gatekeeper writes no loop file; loop.md
+keeps the prose for people and agents: why a path is critical, how to judge a finding, the
+risk criteria in words. A project without gatekeeper.md may keep the block under loop.md's
+`## Settings` for now: `approvals.py` reads it there with a deprecation line, and refuses a
+project with both, since two sources of the bar would drift. The block is YAML because a person
 reads and edits it by hand as `key: value` under section names, a list one item per line,
 and it is typed (a boolean, a number and a list are each their own kind, so none is a
 string the reader guesses at). A string needs no quotes unless YAML would read it otherwise:
@@ -57,7 +61,7 @@ a glob, a skill, a branch, a kind of spec), never a rule in words: which specs t
 approves is a list of kinds, not a phrase such as `auto unless risk` whose meaning lives in
 the reader, so a person reads the policy off the block and may name any part of it.
 `approvals.py` refuses, naming the key, a section or key it doesn't know and a value of the
-wrong type, and refuses a loop.md without the block, so a mistyped setting is never read as
+wrong type, and refuses a policy file without the block, so a mistyped setting is never read as
 a rule nobody wrote.
 
 The scripts read the block with PyYAML, the one package they need beyond the standard
@@ -228,9 +232,9 @@ A PR stays a draft until no core finding is open (Review trail on the PR), so CI
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) and push runs have no draft and run as before. While a PR is a
-draft, `mise run check` on each pushed head is its check. With `ci: false` in loop.md, the
+draft, `mise run check` on each pushed head is its check. With `ci: false` in gatekeeper.md, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
-instead, and is the gate while iterating too: it runs the merge check, loop.md's `gate`
+instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and publishes it as a
 commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing posts
 that pass rather than running the check again: on this host for any commit with the same
@@ -238,7 +242,7 @@ tree and gate command (a rebase or reworded commit keeps its tree), on another f
 commit whose `gate` status names them. `gate` is one command with no shell operator, so a
 chain of checks is one task. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
-tier, a scope) names them in loop.md's `local_ci_env`, and they are cleared for the run, so a
+tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
 front of the command in `gate`. `local-ci` runs the check in a session of
 its own and follows its log, so a harness that kills the caller's process group leaves the check to finish and record;
@@ -259,7 +263,7 @@ docstring has the log format and exit codes).
 
 ### Practice
 
-loop.md's `practice` names the skill that fills a stage, one key each, such as
+gatekeeper.md's `practice` names the skill that fills a stage, one key each, such as
 `spec: brainstorming`; a stage it does not name runs its default. Either way the stage
 produces what this table says:
 
@@ -267,7 +271,7 @@ produces what this table says:
 |---|---|---|
 | Intent | open questions settled, or asked in the issue | `grilling` |
 | Spec | the spec in the issue, or linked from it, with acceptance examples and the reference each checks against | `to-spec` |
-| Plan, only when loop.md's `practice` names a `plan` skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
+| Plan, only when gatekeeper.md's `practice` names a `plan` skill | ordered slices, each with its check, as a `## Plan` comment on the issue | none |
 | Build | commits on the branch, with `check` green | the worker role |
 | Review | findings with path, cost and repro, then the verdict lines | `code-review`, run by the verifier |
 | Land | the PR body | `pr` |
@@ -280,7 +284,7 @@ merging or state-keeping is overridden, because two writers of one state drift a
 
 Only people approve: the owner, or a teammate where loop.md asks for one. No agent writes
 an approval record, since an agent approving its own work is no approval; where nobody
-was asked, the authority is the owner's standing policy in loop.md's settings, which
+was asked, the authority is the owner's standing policy in gatekeeper.md, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
 `uv run <this skill's folder>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
 owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
@@ -289,7 +293,7 @@ what changed and minimizes the records it supersedes as outdated. The verifier o
 the verdict, which `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
 
-loop.md's settings hold the policy (Settings):
+gatekeeper.md's policy (Settings) holds:
 
 - `spec.auto`, a list, approves by policy, with no record or label, the spec of each
   kind it names: `bug`, a `kind:bug`; `follow-up`, an issue whose body has a `Found while
@@ -376,7 +380,7 @@ a person approves by adding `approved:<point>`, by saying so in the session, or,
 on a repo with a board, by moving the issue to `Ready` while it has `needs-owner` (`uv run
 <this skill's folder>/scripts/board.py column <issue>` prints `Ready`), and then you run `approve --by owner`,
 which records their word, adds the label and removes `needs-owner`. With `owner: <login>`
-under loop.md's `loop`, `check` and `land` do that themselves for a label that login added
+under gatekeeper.md's `loop`, `check` and `land` do that themselves for a label that login added
 after the spec's last edit, since nothing in it needs an agent's judgment. Changing an
 approved spec's scope or acceptance is a decision the owner never saw: rewrite the issue
 body, comment briefly what changed and why, remove `approved:spec`, add `needs-owner`, stop
@@ -394,7 +398,7 @@ it was never gated on:
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
-- With loop.md's `head_proof`, a candidate's head also carries a green status of its `status`
+- With gatekeeper.md's `head_proof`, a candidate's head also carries a green status of its `status`
   name for its own tree, since the batch gate runs one fixed tier and some changes need
   another (a UI test tier). The lead records it on a clean checkout of the head with the tier
   set in the caller's environment, `GATE_UI_TESTS=smoke uv run <this skill's folder>/scripts/approvals.py
@@ -414,8 +418,8 @@ it was never gated on:
 
 With `--wait` it is one background command that ends when the batch landed or needs someone
 (exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
-ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo without
-`docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
+ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
+neither `docs/agents/gatekeeper.md` nor `docs/agents/loop.md` has no rules: `land` there needs each named issue to carry
 `approved:spec` and not `needs-owner`, and the PR's own proofs. A post that names a private project, its repo or a host can't be taken back, since
 GitHub's edit history keeps a comment's first text: every comment and review `approvals.py`
 posts, and a cloud worker's report (`omnigent_agent.py` then has the worker reply with it
@@ -431,9 +435,9 @@ A project's own batching merge queue (`check queue`, `batch`, `batch_queue`), `c
 and `ci: false` still work for one release and print a `deprecated:` line each, so a project
 keeps landing while it adopts the batch `land`: `land` gates the merged result itself, so a
 queue of its own, a carried verdict and a `local-ci` pass on the head add nothing. Adopting
-means deleting the project's queue and those keys from loop.md.
+means deleting the project's queue and those keys from gatekeeper.md.
 
-Deprecated: with loop.md's `carry_over_main` section, merging main into a PR head H keeps H's verdict
+Deprecated: with gatekeeper.md's `carry_over_main` section, merging main into a PR head H keeps H's verdict
 when git shows the merges changed nothing the PR's code reads: every commit from the new
 head H' down its first parents to H is a merge with a commit on main as its second parent,
 its tree is `git merge-tree`'s of its parents (no conflict resolved, nothing added), and
@@ -448,7 +452,7 @@ runs its own, as CI does, and under `ci: false` that is `local-ci <pr>` on H', s
 `local-ci` record stands in for CI on one exact tree. This skips a review on purpose, so a
 project opts in by writing the section.
 
-With `opt_out: true` in loop.md, a developer may keep their own PRs out of the
+With `opt_out: true` in gatekeeper.md, a developer may keep their own PRs out of the
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
 PR. `check merge` then reads a PR with no loop trail (no verifier review, no
 `Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
@@ -536,7 +540,7 @@ or the owner's private network.
 - **The owner is on the loop, not in it.** They read specs, never code: gates, tests and
   the verifier are the review. Ask them only at a fork that changes what gets built,
   before something hard to undo (deploy, publish, send, spend), for a credential only
-  they hold, or at an approval loop.md's settings require. A technical fork they can't judge is your call. Run commands yourself; when
+  they hold, or at an approval gatekeeper.md's policy requires. A technical fork they can't judge is your call. Run commands yourself; when
   a guard blocks one, ask once for a scoped approval, then propose a narrow allow rule,
   never an interpreter-wide one. While they are away, make the reversible decisions, log
   each in one decision-log issue, wait out a usage limit and resume, and leave a handoff
@@ -754,13 +758,13 @@ A rejected finding is not real, so it gets no issue.
 
 ## The cap
 
-The cap is 5 passes, unless the project's loop.md sets its own with `cap` under `loop` in its settings.
+The cap is 5 passes, unless the project's gatekeeper.md sets its own with `cap` under `loop` in its policy.
 Every other file says "the cap", so this is the one place to change it, and
 `approvals.py` reads the same value. Pass 1 reviews the PR's full diff; each later pass
 up to the cap reviews the diff since the previous report and reruns its repros. No fix
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
-its own. The one exception is loop.md's `carry_over_main`: clean merges of main that touch
+its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
 none of the PR's files keep the verdict (Approvals and proof).
 
 - **The last pass under the cap leaves a blocker or major open:** stop and ask the owner,
