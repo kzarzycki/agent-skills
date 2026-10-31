@@ -3273,8 +3273,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
-    ``revived`` once, and whether any standing ``decisions`` exist; ``head`` is the ``report_head``
-    of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
+    ``revived`` once, ``offline`` (no live runner), and whether any standing ``decisions`` exist;
+    ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
     ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
     and only picks the route, since its input holds a lead's own words. Only its ``act`` on a
@@ -3308,6 +3308,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
         if wait != "unknown":
+            if event.get("offline"):  # nothing wakes it: its wait can never end
+                return "rule", "revive", f"no live runner while it {waits(wait)}: revive it"
             return "rule", "act", f"no progress while it {waits(wait)}: inspect the wait"
         if event.get("nudged"):
             return "rule", "act", "no progress after its nudge"
@@ -3697,6 +3699,7 @@ def supervise_registry(
             "revived": bool(lead.get("revives")),
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
+            "offline": not info.get("runner_online", True),
         }
 
         def ask() -> tuple[str, str]:
@@ -3734,7 +3737,8 @@ def supervise_registry(
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
             act_on(eid, [(sid, "nudge", LEAD_NUDGE)])
         elif action == "revive":
-            lead["revives"] = lead.get("revives", 0) + 1
+            if kind == "failed":  # its one revive after a failure; a lost runner is no failure
+                lead["revives"] = lead.get("revives", 0) + 1
             act_on(eid, [(sid, "revive", LEAD_REVIVE)])
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
