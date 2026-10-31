@@ -7809,5 +7809,6 @@ def test_send_to_a_remote_session_waits_past_the_question_it_answered(
     # a launcher's failure line there is no report, though stamped later than the next write
     del og.files["tmp/loop/r.md.question"]
     og.files["tmp/loop/r.md"], og.times["tmp/loop/r.md"] = "FAILED: timeout: x\n", 2**31
-    (tmp_path / "a.md").write_text("use dev")
+    argv[2] = "use dev"  # inline: nothing here for the follow-up's file to sit beside
     assert omnigent_agent.main(argv) == 0
+    assert not (tmp_path / "tmp").exists()
