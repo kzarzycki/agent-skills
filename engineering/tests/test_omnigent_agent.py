@@ -3905,6 +3905,7 @@ class Fleet:
         self.written: dict[str, float | Exception] = {}  # what modified finds (or raises), by path
         self.stats: list[str] = []  # each modified read
         self.pages = 0  # history pages read back
+        self.host_id = "h"  # this host
 
     def read_file(self, sid: str, path: str) -> str:
         if path not in self.files:
@@ -5136,7 +5137,7 @@ def test_send_arms_only_once_its_message_is_in_the_history(
     def reporting(s: str) -> dict:
         if not stale and f"{sid}=" in (registry.read_text() if registry.exists() else ""):
             since, _ = omnigent_agent.instructed(og.items(sid), "")
-            stale.append(omnigent_agent.written(report, since))  # the supervisor's view once armed
+            stale.append(report.stat().st_mtime > since)  # the supervisor's view once armed
             report.write_text("fixed")
         return info(s)
 
@@ -7695,3 +7696,118 @@ def test_wait_reads_a_remote_sessions_question_and_report_text_on_its_host(
     files["tmp/loop/r.md"] = "FAILED: codex: no such model\n"
     with pytest.raises(omnigent_agent.Fail, match="no report after 0s"):
         omnigent_agent.wait(og, sid, report, timeout=0)
+
+
+class FarFiles:
+    """A session on another host (``mac``), whose files are only in ``files``, each written at
+    ``times`` (else a minute ago); nothing is at those paths on this host."""
+
+    host_id = "h"  # this host
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[call-arg]
+        self.files: dict[str, str] = {}
+        self.times: dict[str, float] = {}
+
+    def info(self, sid: str) -> dict:
+        return {**super().info(sid), "host_id": "mac"}  # type: ignore[misc]
+
+    def read_file(self, sid: str, path: str) -> str:
+        if path not in self.files:
+            raise omnigent_agent.Gone(path)
+        return self.files[path]
+
+    def modified(self, sid: str, path: str) -> float:
+        if path not in self.files:
+            raise omnigent_agent.Gone(path)
+        return self.times.get(path, time.time() - 60)
+
+
+def test_check_reads_a_remote_sessions_report_and_question_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The supervisor sees a remote session's question, a launcher's failure line and its report
+    only through the session's file API: it nudged or gave up on a session that had finished."""
+
+    class Far(FarFiles, Owing):
+        pass
+
+    monkeypatch.chdir(tmp_path)
+    og, report = Far([told("brief", 120)], {}), Path("tmp/loop/r.md")
+
+    def look() -> str:
+        return omnigent_agent.check(og, "a", report, 3600, {}, set(), print)[0]
+
+    og.files["tmp/loop/r.md.question"] = "which base?"
+    assert look() == "a coord: asked: tmp/loop/r.md.question"
+    del og.files["tmp/loop/r.md.question"]
+    og.files["tmp/loop/r.md"] = "FAILED: codex: no such model\n"
+    assert look() == ""
+    og.files["tmp/loop/r.md"] = "done"
+    assert look() == "a coord: report written: tmp/loop/r.md"
+    og.times["tmp/loop/r.md"] = time.time() - 600  # older than the brief: the turn before's
+    assert look() == ""
+
+
+def test_check_counts_a_report_that_is_not_utf8(tmp_path: Path) -> None:
+    report = tmp_path / "r.md"
+    report.write_bytes(b"\xff report")
+    event, _ = omnigent_agent.check(
+        Owing([told("brief", 120)], {}), "a", report, 3600, {}, set(), print
+    )
+    assert event == f"a coord: report written: {report}"
+
+
+def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copy that landed after the question on the session's host is the first one: a retry
+    sends nothing. A file at that path on this host is not that question, so it stays."""
+
+    class Far(FarFiles, FakeOmnigent):
+        pass
+
+    og, report = Far(), Path("tmp/loop/r.md")
+    monkeypatch.chdir(tmp_path)
+    sid = og.create("claude", "t")
+    og.files["tmp/loop/r.md.question"] = "which base?"
+    og.send(sid, "use main")  # the first copy, which landed
+    here = omnigent_agent.question_of(report)
+    here.parent.mkdir(parents=True)
+    here.write_text("another session's")
+    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True) == "already"
+    assert og.posts == 1
+    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True) == "delivered"
+    assert here.read_text() == "another session's"
+
+
+def test_send_to_a_remote_session_waits_past_the_question_it_answered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The question stays on the session's host, since this one can't delete it there: wait counts
+    only a question or report written after it, takes the report path as given, and writes no
+    follow-up file beside it here."""
+
+    class Far(FarFiles, FakeOmnigent):
+        def land(self, sid: str, text: str) -> None:
+            super().land(sid, text)
+            self.files["tmp/loop/r.md"], self.times["tmp/loop/r.md"] = "done", time.time()
+
+    og = Far(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    sid = og.create("claude", "t", workspace="/elsewhere/repo")  # no such path here
+    og.files["tmp/loop/r.md.question"] = "which base?"
+    og.times["tmp/loop/r.md.question"] = time.time() - 120
+    (tmp_path / "a.md").write_text("use main")
+    argv = ["send", sid, "a.md", "tmp/loop/r.md", "--confirm-seconds", "0", "--timeout", "5"]
+    assert omnigent_agent.main(argv) == 0
+    assert capsys.readouterr().out.strip() == "tmp/loop/r.md"
+    assert not (tmp_path / "tmp").exists()
+    assert omnigent_agent.main(argv) == 0  # a retry: the copy landed after the question there
+    assert og.posts == 1
+    # a launcher's failure line there is no report, though stamped later than the next write
+    del og.files["tmp/loop/r.md.question"]
+    og.files["tmp/loop/r.md"], og.times["tmp/loop/r.md"] = "FAILED: timeout: x\n", 2**31
+    (tmp_path / "a.md").write_text("use dev")
+    assert omnigent_agent.main(argv) == 0
