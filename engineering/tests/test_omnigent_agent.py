@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shutil
 import signal
 import ssl
 import subprocess
@@ -2624,6 +2625,15 @@ def test_a_local_agent_is_refused_in_the_main_checkout_cloud_sessions_launch_fro
         err = capsys.readouterr().err
         assert "start claude-cloud" in err and "worktree" in err and og.sessions == {}
     assert start_cloud(og, main, title="c") == 0 and len(og.sessions) == 1
+    apart = tmp_path / "apart"  # its git dir lives outside it
+    subprocess.run(
+        ["git", "init", "-q", "--separate-git-dir", str(tmp_path / "gd"), str(apart)], check=True
+    )
+    shutil.copytree(main / ".claude", apart / ".claude")
+    (apart / "b.md").write_text("do X")
+    monkeypatch.chdir(apart)
+    argv = ["start", agent, "t", "b.md", "t.md", "--confirm-seconds", "0", "--workspace", "."]
+    assert omnigent_agent.main(argv) == 1 and len(og.sessions) == 1
     monkeypatch.chdir(tree)
     assert start_cloud(og, tree, title="c") == 0  # pins the worktree
     assert start_cloud(og, tree, agent, title="n") == 0 and len(og.sessions) == 3
