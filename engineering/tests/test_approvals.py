@@ -6634,6 +6634,45 @@ def test_batch_posts_the_proof_check_merge_reads(
     assert queued_merge(batched["head"], body) == []
 
 
+def test_batch_posts_a_proof_for_a_head_admitted_on_its_head_proof_and_refuses_one_with_neither(
+    batched: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """A head that entered the queue on loop.md's head proof (a light gate's green status for its own tree) and has
+    no `local-ci --record` pass gets a proof naming that status and tree, which queued() and check merge read; a head
+    with neither is refused, and a proof claiming a stand-in the head lacks proves nothing."""
+    head, merged, batch = batched["head"], batched["merge"], batched["batch"]
+    loop = add(QUEUED, "loop", HEAD_PROOF)
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda _number, body: posted.append(body))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    log = tmp_path / "gate.log"
+    log.write_text("gate: green\n")
+    args = ["batch", "7", "--merge", merged, "--batch", batch, "--exit", "0", "--log", str(log)]
+    assert approvals.main(args) == 1
+    assert posted == []
+    tree = approvals.tree_of(head)
+    entry = f"gate-ui status on tree {tree}"
+    forged = f"{approvals.BATCHED}\nHead: {head}\nMerge: {merged}\nBatch: {batch}\nExit: 0\nAdmitted: {entry}\n"
+    pr = pull(reviews=(verdict_on(head),), comments=(forged,), checks=())
+    pr["headRefOid"] = head
+    assert approvals.queued(pr, loop) is not None
+    assert merge(pr, [approved(1, "area:web")], loop) == [NO_CHECK]
+    hub[head] = [status("gate-ui", f"Tree {tree} on {head[:12]}: GATE_UI_TESTS=smoke")]
+    assert approvals.main(args) == 0
+    [body] = posted
+    assert body.startswith(forged + f"Log: {log}\n") and "Env:" not in body and "Gated:" not in body
+    pr = pull(reviews=(verdict_on(head),), comments=(body,), checks=())
+    pr["headRefOid"] = head
+    assert approvals.queued(pr, loop) is None
+    assert merge(pr, [approved(1, "area:web")], loop) == []
+    # without the setting the status stands in for nothing
+    assert approvals.queued(pr, QUEUED) is not None
+
+
 def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every body comment() hands gh, from a fake host whose name and home name its owner."""
     sent: list[str] = []
