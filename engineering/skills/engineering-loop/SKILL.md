@@ -357,17 +357,16 @@ approve merge <pr> --head <sha> --by owner`, naming the head you showed them and
 the session where the owner said it, posts a commit status `owner` on that one commit and a
 record naming it, and refuses a head that moved since; the script writes every word, so
 nobody's paraphrase of the change travels with it. `--withdraw` takes the go back, removing
-the label too; the owner adding it again gives the go again. A go
-relayed from another session is none: ask the owner to say it where the landing runs. On a
-PR into the default branch the owner may instead add `approved:merge` in GitHub after the
-head's push; `check` and `land` turn it into the same status, which holds while the label
-is on, so removing it withdraws the go. A status covers one commit, so it never covers code
-the owner did not see. On a
-change that is not high risk `approved:merge` means nothing. On a PR into a feature branch (any base but the default branch), that
-label may be the delegated approver's, where loop.md names one: once the gate is green and a
-satisfied verdict from the verifier's top model covers the head, it runs `approvals.py
-delegate <pr>`, which adds the label and a record naming it the delegate's. So dependent work
-can go on landing behind a high-risk change. `land` refuses such a label on a PR into the default branch, and the branch's own
+the `approved:merge` label too. A go relayed from another session is none: ask the owner to
+say it where the landing runs. A status covers one commit, so it never covers code the owner
+did not see. Into the default branch this is the only go: anyone with triage rights can add
+a label, so `approved:merge` there is no go. On a change that is not high risk
+`approved:merge` means nothing. On a PR into a feature branch (any base but the default
+branch) the label added after the head's push is a go too, and it may be the delegated
+approver's, where loop.md names one: once the gate is green and a satisfied verdict from the
+verifier's top model covers the head, it runs `approvals.py delegate <pr>`, which adds the
+label and a record naming it the delegate's. So dependent work can go on landing behind a
+high-risk change. `delegate` refuses a PR into the default branch, and the branch's own
 merge to the default branch is high risk while any PR merged into the branch carries
 `risk:high`: the owner approves the stream once, as a whole. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
 the merge approval is the gates themselves: every verifier review on the newest pass's

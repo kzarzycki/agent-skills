@@ -289,7 +289,23 @@ def verdict_on(
 
 VERDICT = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
 OWNED = ("approved:merge",)
-HELD = f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`, or their `approved:merge` label), since it is high risk: "
+HELD = f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: "
+
+
+def given_go(pr: dict[str, Any], hub: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """`pr` with the owner's go on its head as `approve merge` leaves it: the record on the PR, the status in `hub`."""
+    head = pr["headRefOid"]
+    pr["comments"]["nodes"].append(note(record("merge", "owner", head=head)))
+    hub.setdefault(head, []).insert(0, status("owner", f"The owner's go on {head[:12]}"))
+    return pr
+
+
+def into_feature(pr: dict[str, Any]) -> dict[str, Any]:
+    """`pr` into a feature branch, where `approved:merge` added after the head's push is a go too."""
+    pr["baseRefName"] = "stream"
+    return pr
+
+
 BILLING = HELD + "it matches a risk rule (path `billing/**`)"
 GITHUB = HELD + "it matches a risk rule (path `.github/**`)"
 
@@ -924,8 +940,10 @@ def test_a_demo_linked_instead_of_embedded_fails_check_merge_naming_demo_sh(
     assert merge(pull(comments=(embedded, outdated), **done), issues) == []
 
 
-def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_a_merge_waits_for_check_and_the_owners_go_and_fails_a_missing_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     def gated(pr: dict[str, Any]) -> tuple[int, list[str]]:
         pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
@@ -939,7 +957,9 @@ def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
         approvals.WAITING,
         ["PR #7: `check` is IN_PROGRESS on the head commit", BILLING],
     )
-    assert gated(pull(reviews=(VERDICT,), labels=OWNED, files=("billing/a.py",))) == (0, [])
+    labelled = pull(reviews=(VERDICT,), labels=OWNED, files=("billing/a.py",))
+    assert gated(labelled) == (approvals.WAITING, [BILLING])  # into main the label is no go
+    assert gated(given_go(labelled, hub)) == (0, [])
     assert gated(pull(labels=OWNED, checks=(("check", "IN_PROGRESS"),))) == (
         1,
         [
@@ -954,16 +974,17 @@ def test_a_label_added_before_the_heads_push_is_no_approval(
 ) -> None:
     billing = ("billing/a.py",)
     stale = pull(reviews=(VERDICT,), labels=OWNED, labeled="2026-10-01T09:59:59Z", files=billing)
-    assert merge(stale, [approved(1, "area:web")]) == [
+    assert merge(into_feature(stale), [approved(1, "area:web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
     same_second = pull(reviews=(VERDICT,), labels=OWNED, labeled=PUSHED, files=billing)
-    assert merge(same_second, [approved(1, "area:web")]) == [
+    assert merge(into_feature(same_second), [approved(1, "area:web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: None)
     assert merge(
-        pull(reviews=(VERDICT,), labels=OWNED, files=billing), [approved(1, "area:web")]
+        into_feature(pull(reviews=(VERDICT,), labels=OWNED, files=billing)),
+        [approved(1, "area:web")],
     ) == [
         f"PR #7: GitHub lists no push of the head {HEAD}, so `approved:merge` can't be dated after it"
     ]
@@ -981,24 +1002,25 @@ def test_a_label_added_again_after_the_push_is_the_approval() -> None:
 DELEGATED = note(record("merge", "delegate"), createdAt="2026-10-01T11:00:01Z")
 
 
-def test_a_delegated_label_approves_a_merge_into_a_feature_branch_only() -> None:
-    """The delegate's record is newer than the label it names; the owner's label added after it is the owner's."""
+def test_a_label_approves_a_high_risk_merge_into_a_feature_branch_only(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """A delegate acting through the owner's account labels no differently from the owner, so into the default branch
+    no label is the go, with a delegate record or without; only the owner's `approve merge` is."""
     high = ("risk:high", "approved:merge")
-    into_main = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
-    assert merge(into_main, [approved(1, "area:web")]) == [
-        (
-            "PR #7: `approved:merge` is the delegated approval, which covers a PR into a feature branch, not into"
-            " main: the owner removes it and adds it again"
-        )
+    held = [HELD + "`risk:high` is on PR #7"]
+    delegated = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
+    assert merge(delegated, [approved(1, "area:web")]) == held
+    by_hand = pull(reviews=(VERDICT,), labels=high)  # no delegate record
+    assert merge(by_hand, [approved(1, "area:web")]) == held
+    assert hub == {}  # and it never becomes a go on the head
+    assert merge(into_feature(delegated), [approved(1, "area:web")]) == []
+    assert merge(given_go(by_hand, hub), [approved(1, "area:web")]) == []
+    feature = into_feature(pull(reviews=(VERDICT,), labels=("risk:high",)))
+    assert merge(feature, [approved(1, "area:web")]) == [
+        HELD.replace("; into main `approved:merge` is no go", ", or `approved:merge`")
+        + "`risk:high` is on PR #7"
     ]
-    into_feature = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
-    into_feature["baseRefName"] = "stream"
-    assert merge(into_feature, [approved(1, "area:web")]) == []
-    owners = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
-    owners["timelineItems"]["nodes"].append(
-        {"createdAt": "2026-10-01T12:00:00Z", "label": {"name": "approved:merge"}}
-    )
-    assert merge(owners, [approved(1, "area:web")]) == []
 
 
 def test_a_branchs_merge_to_the_default_branch_carries_its_high_risk_prs(
@@ -1244,7 +1266,9 @@ def test_a_pr_without_its_proof_names_each_missing_one() -> None:
     assert "PR #7: no `check` on the head commit yet" in merge(pull(checks=()), [], BARE)
 
 
-def test_a_risk_path_rule_holds_only_a_pr_touching_its_path() -> None:
+def test_a_risk_path_rule_holds_only_a_pr_touching_its_path(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
     rule = loop_md("risk:\n  paths:\n    - billing/**\n")
     billing = pull(files=("billing/invoice.py",), reviews=(VERDICT,))
     assert merge(billing, [approved(1, "area:web")], rule) == [BILLING]
@@ -1252,11 +1276,7 @@ def test_a_risk_path_rule_holds_only_a_pr_touching_its_path() -> None:
         merge(pull(files=("web/app.ts",), reviews=(VERDICT,)), [approved(1, "area:web")], rule)
         == []
     )
-    billing["labels"]["nodes"] = [{"name": "approved:merge"}]
-    billing["timelineItems"]["nodes"] = [
-        {"createdAt": LABELED, "label": {"name": "approved:merge"}}
-    ]
-    assert merge(billing, [approved(1, "area:web")], rule) == []
+    assert merge(given_go(billing, hub), [approved(1, "area:web")], rule) == []
 
 
 # --- sign-off: the owner checks a landed change in use ---
@@ -1431,9 +1451,12 @@ def gated(
 
 
 def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
-    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    recorded: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    done = revert_pr(labels=OWNED)
+    done = given_go(revert_pr(), hub)
     assert gated(monkeypatch, capsys, "build", done) == (0, [])
     assert gated(monkeypatch, capsys, "merge", done) == (0, [])
     # the inverse comes from GitHub's own diff of #1, not from anything approvals.py writes
@@ -1454,20 +1477,20 @@ def test_an_exact_revert_still_needs_check_and_the_merge_approval(
     capsys: pytest.CaptureFixture[str],
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    red = revert_pr(labels=OWNED, checks=(("check", "FAILURE"),))
+    red = given_go(revert_pr(checks=(("check", "FAILURE"),)), hub)
     assert gated(monkeypatch, capsys, "merge", red) == (
         approvals.WAITING,
         ["PR #2: `check` is FAILURE on the head commit"],
     )
-    hub.clear()  # the label made its go a status on the head: another head has none
+    hub.clear()
     unapproved = revert_pr(body="Reverts #1\n\n## Evidence\n\n#1 set the wrong rate.\n")
     assert gated(monkeypatch, capsys, "merge", unapproved) == (
         approvals.WAITING,
         [
-            f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`, or their `approved:merge` label), since it is high risk: it matches a risk rule (path `billing/**`)"
+            f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: it matches a risk rule (path `billing/**`)"
         ],
     )
-    bare = revert_pr(body="Reverts #1\n", labels=OWNED)
+    bare = given_go(revert_pr(body="Reverts #1\n"), hub)
     assert gated(monkeypatch, capsys, "merge", bare) == (
         1,
         ["PR #2: its body has no `## Evidence` section with content"],
@@ -1475,9 +1498,12 @@ def test_an_exact_revert_still_needs_check_and_the_merge_approval(
 
 
 def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
-    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    recorded: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    plus = revert_pr(3, labels=OWNED)
+    plus = given_go(revert_pr(3), hub)
     assert gated(monkeypatch, capsys, "merge", plus) == (
         1,
         [
@@ -1509,13 +1535,16 @@ def held_revert(
     return code, capsys.readouterr().out.splitlines()
 
 
-def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_label(
-    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_go(
+    recorded: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     """The risk of the change a revert undoes (or re-lands) carries over: `risk:high` on an issue the revert closes,
     on the PR it reverts, or that PR's last verdict saying `Risk: high`."""
     low = {**pull(), "number": 1}
-    held = f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`, or their `approved:merge` label), since it is high risk: "
+    held = f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: "
     closing = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
     closing["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug", "risk:high")]}
     assert held_revert(monkeypatch, capsys, closing, low) == (
@@ -1544,8 +1573,8 @@ def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_label(
         approvals.WAITING,
         [held + "it matches a risk rule (label `area:web`)"],
     )
-    # the owner's label clears each, and a revert of a low-risk PR lands without it
-    assert held_revert(monkeypatch, capsys, revert_pr(labels=OWNED), high) == (0, [])
+    # the owner's go clears each, and a revert of a low-risk PR lands without it
+    assert held_revert(monkeypatch, capsys, given_go(revert_pr(), hub), high) == (0, [])
     assert held_revert(monkeypatch, capsys, revert_pr(), low) == (0, [])
 
 
@@ -2073,10 +2102,13 @@ def test_approve_merge_refuses_a_closed_pr(
 def test_the_owners_go_covers_its_head_only(
     hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A status belongs to one commit: a push moves the head off it, with no label to remove."""
+    """A status belongs to one commit: a push moves the head off it, with no label to remove. The status needs the
+    owner's record naming the head beside it, so a status alone is no go."""
     high = pull(labels=("risk:high",))
     assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
     hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
+    assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+    high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
     assert approvals.owner_waits(high, [], LOOP) == []
     assert approvals.owner_waits({**high, "headRefOid": "c" * 40}, [], LOOP) == [
         HELD.replace(HEAD, "c" * 40) + "`risk:high` is on PR #7"
@@ -2102,24 +2134,21 @@ def test_approve_merge_refuses_a_head_other_than_the_one_the_owner_was_shown(
     assert "belong to `approve merge`" in out
 
 
-def test_withdrawing_a_go_turned_from_the_label_removes_the_label_so_it_stays_withdrawn(
+def test_withdrawing_a_go_removes_the_label_so_it_stays_withdrawn_into_a_feature_branch(
     github: list[tuple[Any, ...]],
     hub: dict[str, list[dict[str, Any]]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    labelled = pull(labels=("risk:high", "approved:merge"))
+    labelled = into_feature(pull(labels=("risk:high", "approved:merge")))
     monkeypatch.setattr(approvals, "pull_request", lambda _n: labelled)
-    assert (
-        approvals.owner_waits(labelled, [], LOOP) == []
-    )  # land's poll turns the label into the go
+    assert approvals.owner_waits(labelled, [], LOOP) == []
     assert (
         approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner", "--withdraw"])
         == 0
     )
     assert ("label", 7, "approved:merge", False) in github
-    unlabelled = pull(labels=("risk:high",))  # what GitHub reads back
-    assert approvals.owner_waits(unlabelled, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
-    assert [s["state"] for s in hub[HEAD]] == ["failure", "success"]
+    unlabelled = into_feature(pull(labels=("risk:high",)))  # what GitHub reads back
+    assert approvals.owner_waits(unlabelled, [], LOOP)
 
 
 def test_a_newer_failing_owner_status_withdraws_the_go(
@@ -2130,6 +2159,8 @@ def test_a_newer_failing_owner_status_withdraws_the_go(
     high = pull(labels=("risk:high",))
     monkeypatch.setattr(approvals, "pull_request", lambda _n: high)
     assert approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner"]) == 0
+    # what GitHub reads back
+    high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
     assert approvals.owner_waits(high, [], LOOP) == []
     assert (
         approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner", "--withdraw"])
@@ -2140,26 +2171,21 @@ def test_a_newer_failing_owner_status_withdraws_the_go(
     assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
 
 
-def test_a_go_turned_from_the_label_lapses_when_the_label_comes_off(
+def test_a_go_once_turned_from_the_label_is_no_go(hub: dict[str, list[dict[str, Any]]]) -> None:
+    """An owner status the gate wrote from the label stays on old heads; the label can be a delegate's, so it is no go."""
+    high = pull(labels=("risk:high",))
+    high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
+    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]} {approvals.LABELLED}")]
+    assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+
+
+def test_the_label_into_the_default_branch_is_no_go_and_writes_nothing(
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     labelled = pull(labels=("risk:high", "approved:merge"))
-    assert approvals.owner_waits(labelled, [], LOOP) == []
-    assert hub[HEAD][0]["description"].endswith(approvals.LABELLED)
-    unlabelled = pull(labels=("risk:high",))
-    assert approvals.owner_waits(unlabelled, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
-
-
-def test_the_owners_label_into_the_default_branch_becomes_their_go_on_the_head(
-    hub: dict[str, list[dict[str, Any]]],
-) -> None:
-    labelled = pull(labels=("risk:high", "approved:merge"))
-    assert approvals.owner_waits(labelled, [], LOOP) == []
-    assert [s["context"] for s in hub[HEAD]] == ["owner"]
-    assert approvals.owner_waits({**labelled, "baseRefName": "stream"}, [], LOOP) == []
-    hub.clear()
-    assert approvals.owner_waits({**labelled, "baseRefName": "stream"}, [], LOOP) == []
-    assert hub == {}  # into a feature branch the label may be a delegate's: it stays a label
+    assert approvals.owner_waits(labelled, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+    assert approvals.owner_waits(into_feature(labelled), [], LOOP) == []
+    assert hub == {}  # the gate writes no status from a label
 
 
 def test_approved_merge_on_a_change_that_is_not_high_risk_changes_nothing(
@@ -2733,14 +2759,14 @@ def test_a_review_on_an_older_commit_never_covers_the_head() -> None:
 
 
 def capped(*reviews: dict[str, Any], loop: str = BARE, **fields: Any) -> list[str]:
-    """owner_waits on a project whose loop.md has no risk rule: only the cap asks for the owner's label."""
+    """owner_waits on a project whose loop.md has no risk rule: only the cap asks for the owner's go."""
     return approvals.owner_waits(pull(reviews=reviews, files=("app.py",), **fields), [], loop)
 
 
 def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass(
     hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their label."""
+    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their go."""
     open_at_cap = verdict_on(
         OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
     )
@@ -2752,12 +2778,8 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
-    assert capped(open_at_cap, pass6, labels=OWNED) == []
-    hub.clear()  # the label made its go a status on the head: another head has none
-    stale = capped(open_at_cap, pass6, labels=OWNED, labeled="2026-10-01T09:00:00Z")
-    assert stale == [
-        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
-    ]
+    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
+    assert capped(open_at_cap, pass6, comments=(record("merge", "owner", head=HEAD),)) == []
 
 
 @pytest.mark.parametrize(
@@ -5677,7 +5699,11 @@ def test_a_low_risk_agent_pr_lands_with_no_approval_record_and_no_label(
     ids=["label-on-the-pr", "label-on-its-issue", "risk-path", "risk-label"],
 )
 def test_a_high_risk_merge_waits_for_the_owner_and_says_why(
-    labels: tuple[str, ...], issue_labels: tuple[str, ...], files: tuple[str, ...], why: str
+    labels: tuple[str, ...],
+    issue_labels: tuple[str, ...],
+    files: tuple[str, ...],
+    why: str,
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     loop = loop_md(
         "spec:\n  auto:\n    - bug\n    - follow-up\n    - sub-issue\nrisk:\n  labels:\n    - size:L\n    - size:XL\n    - area:api\n  paths:\n    - billing/**\n"
@@ -5686,7 +5712,7 @@ def test_a_high_risk_merge_waits_for_the_owner_and_says_why(
     assert merge(pull(reviews=(VERDICT,), labels=labels, files=files), [found], loop) == [
         HELD + why
     ]
-    signed = pull(reviews=(VERDICT,), labels=(*labels, *OWNED), files=files)
+    signed = given_go(pull(reviews=(VERDICT,), labels=labels, files=files), hub)
     assert merge(signed, [found], loop) == []
 
 
@@ -5694,6 +5720,7 @@ def test_check_merge_adds_risk_high_when_it_infers_high_risk_and_holds_for_the_o
     landing: dict[str, Any],
     capsys: pytest.CaptureFixture[str],
     added: list[tuple[int, str, bool]],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     landing["pull"]["files"]["nodes"] = [{"path": ".github/ci.yml"}]
     code, lines = gate(capsys, "check", "merge", "7")
@@ -5703,7 +5730,9 @@ def test_check_merge_adds_risk_high_when_it_infers_high_risk_and_holds_for_the_o
     landing["pull"]["labels"]["nodes"] = [{"name": "risk:high"}]
     gate(capsys, "check", "merge", "7")
     assert added == []  # already on the PR
-    signed = pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high", *OWNED))
+    signed = given_go(
+        pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high",)), hub
+    )
     signed["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     landing["pull"] = signed
     assert gate(capsys, "check", "merge", "7")[0] == 0
@@ -6225,6 +6254,7 @@ def test_risk_high_another_word_or_no_line_waits_for_the_owner_and_flags_the_pr(
     added: list[tuple[int, str, bool]],
     risk: str | None,
     said: str,
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     state, comments = gating
     state["pull"] = judged_pr(judging(risk))
@@ -6234,7 +6264,7 @@ def test_risk_high_another_word_or_no_line_waits_for_the_owner_and_flags_the_pr(
     assert added == [(7, "risk:high", True)]
     assert [number for number, _ in comments] == [7]
     assert comments[0][1].startswith(f"{approvals.FLAGGED}, since {why}.")
-    signed = judged_pr(judging(risk), labels=("risk:high", *OWNED))
+    signed = given_go(judged_pr(judging(risk), labels=("risk:high",)), hub)
     assert merge(signed, signed["closingIssuesReferences"]["nodes"], VERIFIED) == []
 
 
@@ -6860,10 +6890,14 @@ def owner_labels(pr: dict[str, Any], labels: tuple[str, ...], at: str) -> None:
 
 
 def test_an_owner_approved_high_risk_pr_may_enter_the_queue(
-    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    """The owner's label added after the head's push covers that head, in a batch as through `land`."""
+    """The owner's go on the head covers that head, in a batch as through `land`; their label alone does not."""
     owner_labels(queueing["pull"], ("risk:high", "approved:merge"), LABELED)
+    assert queue_check(capsys)[0] == 1
+    given_go(queueing["pull"], hub)
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
 
 
@@ -6873,12 +6907,12 @@ def test_an_owner_approved_high_risk_pr_may_enter_the_queue(
         (
             ("risk:high",),
             LABELED,
-            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`, or their `approved:merge` label), since it is high risk: `risk:high` is on PR #7",
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: `risk:high` is on PR #7",
         ),
         (
             ("risk:high", "approved:merge"),
-            "2026-10-01T09:00:00Z",
-            "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again",
+            LABELED,
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: `risk:high` is on PR #7",
         ),
     ],
 )
@@ -6896,24 +6930,22 @@ def test_check_queue_keeps_out_a_high_risk_pr_the_owner_has_not_approved_at_its_
 def test_check_merge_takes_the_batch_proof_of_an_owner_approved_high_risk_pr(
     batched: dict[str, str], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    """Once the queue landed it, the batch stands in for the CI wait, and the label is dated against the landed head
-    again: a head pushed after the label still waits for the owner."""
+    """Once the queue landed it, the batch stands in for the CI wait, and the owner's go covers the landed head only:
+    another head still waits for the owner."""
     head = batched["head"]
     gated_head(head)
     pr = pull(
         reviews=(verdict_on(head),),
         comments=(batch_note(head, batched["merge"], batched["batch"]),),
-        labels=("risk:high", "approved:merge"),
+        labels=("risk:high",),
         checks=(),
     )
     pr["headRefOid"] = head
     loop = add(LOOP, "loop", "ci: false\nbatch_queue: true\n")
-    assert merge(pr, [approved(1, "area:web")], loop) == []
-    hub.clear()  # the label made its go a status on the head: another head has none
-    pr["timelineItems"]["nodes"] = []
-    owner_labels(pr, ("risk:high", "approved:merge"), "2026-10-01T09:00:00Z")
+    assert merge(given_go(pr, hub), [approved(1, "area:web")], loop) == []
+    hub.clear()
     assert merge(pr, [approved(1, "area:web")], loop) == [
-        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
+        HELD.replace(HEAD, head) + "`risk:high` is on PR #7"
     ]
 
 
