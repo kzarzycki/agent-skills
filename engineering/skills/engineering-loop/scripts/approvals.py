@@ -2527,10 +2527,21 @@ def assign(number: int, login: str, add: bool) -> None:
 
 
 def public(text: str) -> str:
-    """`text` as posted: the home directory written `~`, since a path under it (a log's, a cache's) names the person
-    whose machine posted it, and GitHub's edit history keeps a comment's first text for good."""
-    home = str(Path.home()).rstrip("/")
-    return re.sub(re.escape(home) + r"(?![\w.-])", "~", text) if home else text
+    """`text` as posted: the home directory written `~` and the temp dir `<tmp>`, pytest's `pytest-of-<user>/pytest-<n>`
+    under it included, since a path under either (a log's, a cache's, a failing test's) names the person whose machine
+    posted it, and GitHub's edit history keeps a comment's first text for good."""
+    # the longest temp dir first and home last, since a temp dir can sit under /tmp or under home
+    # ponytail: this process's temp dir and /tmp; another TMPDIR's paths stay, with only the account name masked
+    tmps = {tempfile.gettempdir(), os.path.realpath(tempfile.gettempdir()), "/tmp"}
+    for tmp in sorted(filter(None, (t.rstrip("/") for t in tmps)), key=len, reverse=True):
+        text = re.sub(
+            r"(?<![\w.~-])" + re.escape(tmp) + r"(?:/pytest-of-[^/\s]+(?:/pytest-\w+)?)?(?![\w.-])",
+            "<tmp>",
+            text,
+        )
+    if home := str(Path.home()).rstrip("/"):
+        text = re.sub(re.escape(home) + r"(?![\w.-])", "~", text)
+    return re.sub(r"pytest-of-[^/\s]+", "pytest-of-<user>", text)
 
 
 def comment(number: int, body: str) -> None:
