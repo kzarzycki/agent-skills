@@ -6672,6 +6672,21 @@ def test_a_posted_review_names_no_home_however_it_is_spelled(
     assert (review["body"], review["comments"][0]["body"]) == ("cache ~/cache", "at ~")
 
 
+def test_posted_text_names_no_account_in_a_temp_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing test's path under pytest's `pytest-of-<user>` names the account; a relative `tmp/` path stays."""
+    monkeypatch.setenv("HOME", "/Users/owner")
+    monkeypatch.setattr(approvals.tempfile, "gettempdir", lambda: "/var/folders/ab/T")
+    text = (
+        "FAILED /tmp/pytest-of-owner/pytest-12/test_x0/a.py\n"
+        "/var/folders/ab/T/pytest-of-owner/pytest-current/b\n"
+        "/var/folders/ab/T/x.log /tmp\n"
+        "~/tmp/y tmp/loop/z.log /tmpfoo /Users/owner/c"
+    )
+    assert approvals.public(text) == (
+        "FAILED <tmp>/test_x0/a.py\n<tmp>/b\n<tmp>/x.log <tmp>\n~/tmp/y tmp/loop/z.log /tmpfoo ~/c"
+    )
+
+
 @pytest.fixture
 def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`landing` with `ci: false`, and a local-ci pass recorded on HEAD under the current env."""

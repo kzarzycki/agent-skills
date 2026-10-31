@@ -2527,10 +2527,22 @@ def assign(number: int, login: str, add: bool) -> None:
 
 
 def public(text: str) -> str:
-    """`text` as posted: the home directory written `~`, since a path under it (a log's, a cache's) names the person
-    whose machine posted it, and GitHub's edit history keeps a comment's first text for good."""
-    home = str(Path.home()).rstrip("/")
-    return re.sub(re.escape(home) + r"(?![\w.-])", "~", text) if home else text
+    """`text` as posted: the home directory written `~` and the temp dir `<tmp>`, pytest's `pytest-of-<user>/pytest-<n>`
+    under it included, since a path under either (a log's, a cache's, a failing test's) names the person whose machine
+    posted it, and GitHub's edit history keeps a comment's first text for good."""
+    if home := str(Path.home()).rstrip("/"):
+        text = re.sub(re.escape(home) + r"(?![\w.-])", "~", text)
+    # ponytail: this process's temp dir and /tmp; a gate run under another TMPDIR posts that one's paths as they are
+    for tmp in {tempfile.gettempdir(), os.path.realpath(tempfile.gettempdir()), "/tmp"}:
+        if tmp := tmp.rstrip("/"):
+            text = re.sub(
+                r"(?<![\w.~-])"
+                + re.escape(tmp)
+                + r"(?:/pytest-of-[^/\s]+(?:/pytest-\w+)?)?(?![\w.-])",
+                "<tmp>",
+                text,
+            )
+    return text
 
 
 def comment(number: int, body: str) -> None:
