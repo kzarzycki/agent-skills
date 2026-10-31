@@ -6319,6 +6319,32 @@ def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
     assert state_of(registry)["leads"]["a"]["revives"] == 1
 
 
+@pytest.mark.parametrize("runner", ["offline", "revive fails", "online"])
+def test_a_lead_past_its_named_wait_with_no_live_runner_is_revived_not_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: str
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+    if runner != "online":
+        og.offline.add("a")  # its info reads runner_online: False
+    if runner == "revive fails":
+        monkeypatch.setattr(og, "retry", lambda sid: {"recovered": False, "recovery": "no_host"})
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    sent = [t for s, t in og.inbox if s == "a"]
+    acts = [line for post in posted(og) for line in post.splitlines() if line.startswith("[act]")]
+    if runner == "offline":
+        assert sent == [omnigent_agent.LEAD_REVIVE] and acts == []
+    elif runner == "revive fails":
+        [act] = acts
+        assert "the supervisor's revive was not delivered: session a has no live runner and" in act
+        assert '"no_host"' in act
+    else:
+        assert sent == [] and acts == [
+            "[act] a t-a: no progress 60m (merge) (no progress while it waits on merge: inspect the wait)"
+        ]
+    assert state_of(registry)["leads"]["a"]["revives"] == 0  # a lost runner is no failure
+
+
 def test_fyi_and_decisions_need_console_and_after_needs_a_top_level_start_with_a_registry(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -557,7 +557,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | `PARKED`, a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
-| `deadline` | rule | a named wait: act; unknown: the nudge, then act at the deadline after it; parked: none |
+| `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
 | failed | rule | the first time a revive, after it act |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
