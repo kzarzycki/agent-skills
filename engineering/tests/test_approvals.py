@@ -6634,6 +6634,48 @@ def test_batch_posts_the_proof_check_merge_reads(
     assert queued_merge(batched["head"], body) == []
 
 
+def test_batch_posts_a_proof_for_a_head_admitted_on_its_head_proof_and_refuses_one_with_neither(
+    batched: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """A head that entered the queue on loop.md's head proof (a light gate's green status for its own tree) and has
+    no `local-ci --record` pass gets a proof naming that status and tree, which queued() and check merge read; a head
+    with neither is refused, and a proof claiming a stand-in the head lacks proves nothing."""
+    head, merged, batch = batched["head"], batched["merge"], batched["batch"]
+    loop = add(QUEUED, "loop", HEAD_PROOF)
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda _number, body: posted.append(body))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    log = tmp_path / "gate.log"
+    log.write_text("gate: green\n")
+    args = ["batch", "7", "--merge", merged, "--batch", batch, "--exit", "0", "--log", str(log)]
+    assert approvals.main(args) == 1
+    assert posted == []
+    tree = approvals.tree_of(head)
+    entry = f"gate-ui status on tree {tree}"
+    forged = f"{approvals.BATCHED}\nHead: {head}\nMerge: {merged}\nBatch: {batch}\nExit: 0\nAdmitted: {entry}\n"
+    pr = pull(reviews=(verdict_on(head),), comments=(forged,), checks=())
+    pr["headRefOid"] = head
+    assert approvals.queued(pr, loop) is not None
+    assert merge(pr, [approved(1, "area:web")], loop) == [NO_CHECK]
+    hub[head] = [status("gate-ui", f"Tree {tree} on {head[:12]}: GATE_UI_TESTS=smoke")]
+    assert approvals.main(args) == 0
+    [body] = posted
+    assert body.startswith(forged + f"Log: {log}\n") and "Env:" not in body and "Gated:" not in body
+    pr = pull(reviews=(verdict_on(head),), comments=(body,), checks=())
+    pr["headRefOid"] = head
+    assert approvals.queued(pr, loop) is None
+    assert merge(pr, [approved(1, "area:web")], loop) == []
+    # without the setting the status stands in for nothing
+    assert approvals.queued(pr, QUEUED) is not None
+    # a record made after the proof leaves it valid: the proof's `Admitted:` line, not today's record, picks the check
+    gated_head(head)
+    assert approvals.queued(pr, loop) is None
+
+
 def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every body comment() hands gh, from a fake host whose name and home name its owner."""
     sent: list[str] = []
@@ -6763,6 +6805,27 @@ def test_a_verified_head_with_its_recorded_pass_may_enter_the_queue(
 ) -> None:
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
     assert queueing["calls"] == []
+
+
+def test_check_queue_admits_a_head_without_a_recorded_pass_on_its_head_proof(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "ci: false\nbatch_queue: true\n" + HEAD_PROOF)
+    )
+    queueing["records"] = set()
+    monkeypatch.setattr(approvals, "tree_of", lambda _commit: "e" * 40)
+    monkeypatch.setattr(approvals, "elsewhere", lambda _head: "")  # no other gate command's records
+    refused = (
+        f"PR #7: no `local-ci --record` pass on {HEAD} under the gate command (approvals.py local-ci --record),"
+        " nor its loop.md `head_proof` status"
+    )
+    assert queue_check(capsys) == (1, [refused])
+    hub[HEAD] = [status("gate-ui", f"Tree {'e' * 40} on {HEAD[:12]}: GATE_UI_TESTS=smoke")]
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
 
 
 def test_check_queue_refuses_another_head(

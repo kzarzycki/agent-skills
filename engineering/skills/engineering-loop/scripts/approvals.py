@@ -192,14 +192,17 @@ full gate once on the result, push the batch) instead of one `land` per PR, opti
 loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
 no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
-gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
+gate on the batch replaces, the head has its own `local-ci --record` pass under the current env, or loop.md's
+`head_proof` status green for its tree, such as a light gate's pass (either is what `batch` needs) and,
 with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's go on that head
 (owner_waits, as `check merge` and `land` read it), which the queue checks again before it merges it. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
-exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
-head with no such pass under the current env. `check merge` takes that comment in place of the CI wait (either kind)
-once it holds: the exit is 0, the head has its own green `local-ci --record` pass under the current env and the env
-the comment names, since a batch gate never stands in for the head's, the merge commit's second parent is the head
+exit, the env and time of the head's own `local-ci --record` pass, or for a head with none an `Admitted:` line naming
+the head proof status and tree it entered on, and the log and its last lines; `batch` refuses a head with neither.
+`check merge` takes that comment in place of the CI wait (either kind) once it holds: the exit is 0, the head has its
+own green `local-ci --record` pass under the current env and the env the comment names, or the head proof status
+green for its tree that the `Admitted:` line names, since a batch gate never stands in for a head's own pass or its
+head proof, the merge commit's second parent is the head
 (the head landed unchanged), its tree is what
 `git merge-tree` makes of its parents (the queue resolved no conflict and added nothing), and the batch commit
 contains it; a commit the checkout lacks is fetched from `origin` first. Only a comment by the account running this
@@ -1671,7 +1674,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
     tree under today's gate command (reusable)."""
     where = f"PR #{pull['number']}"
-    if batch_queue(loop) and queued(pull) is None:
+    if batch_queue(loop) and queued(pull, loop) is None:
         return []
     if no_ci(loop):
         # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
@@ -1694,7 +1697,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     return found
 
 
-def queued(pull: dict[str, Any]) -> list[str] | None:
+def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
     """None when a merge queue's batch proof (batch) on the head, by the account running this or a writer, holds
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
@@ -1711,7 +1714,7 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
         }
         if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
             continue
-        if (why := unproven(head, fields)) is None:
+        if (why := unproven(head, fields, loop)) is None:
             return None
         found.append(f"{where}: {why}")
     return found
@@ -1728,21 +1731,31 @@ def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> 
     return login == viewer() or writer(login)
 
 
-def unproven(head: str, fields: dict[str, str]) -> str | None:
+def unproven(head: str, fields: dict[str, str], loop: str | None = None) -> str | None:
     """Why a batch proof's fields prove nothing about `head`, or None: its gate exited 0, the head has its own green
-    local-ci pass under the gate command, the env the proof names, since a batch gate never stands in for the head's,
-    its merge commit's second parent is the head, so the head landed unchanged, its tree is the clean merge of its
-    parents, so the queue resolved no conflict and added nothing, and the batch commit contains it."""
+    local-ci pass under the gate command, the env the proof names, or entered the queue on its head proof (admitted),
+    the stand-in the proof names, since a batch gate never stands in for the head's own pass, its merge commit's second
+    parent is the head, so the head landed unchanged, its tree is the clean merge of its parents, so the queue resolved
+    no conflict and added nothing, and the batch commit contains it."""
     merge, batch, code = (fields.get(key, "").lower() for key in ("Merge", "Batch", "Exit"))
     if code != "0":
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
-    if (record := reusable(head)) is None:
+    # the proof's own line says which it entered on, so a record made later doesn't void an `Admitted:` proof
+    if "Admitted" in fields:
+        if (entry := admitted(head, loop)) is None:
+            return (
+                f"batch {batch} names the stand-in `{fields['Admitted']}`, but the head {head} has no green loop.md"
+                f" `head_proof` status for its tree"
+            )
+        if fields["Admitted"] != entry:
+            return f"batch {batch} names the head's stand-in `{fields['Admitted']}`, its head proof `{entry}`"
+    elif (record := reusable(head)) is None:
         return (
             f"the head {head} has no green `local-ci --record` pass of its own under the gate command, which a batch"
             f" never stands in for{elsewhere(head)}"
         )
     # the comment names the env as posted, its home written `~` (public)
-    if (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
+    elif (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
         return (
             f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
         )
@@ -1909,10 +1922,11 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
     found += missing
     if not no_ci(loop):
         found += ran(pull, loop)
-    if reusable(head) is None:  # with CI too: batch refuses a head without one, so it may not enter
+    # with CI too: batch refuses a head with neither, so it may not enter
+    if reusable(head) is None and admitted(head, loop) is None:
         found.append(
             f"{where}: no `local-ci --record` pass on {head} under the gate command (approvals.py local-ci --record)"
-            f"{elsewhere(head)}"
+            f"{nor_head_proof(loop)}{elsewhere(head)}"
         )
     # the queue re-runs this before it merges the head, and check merge reads the owner's go on the landed head again
     found += owner_waits(pull, issues, loop)
@@ -1927,22 +1941,29 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
 def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
     """Post a merge queue's batch proof on PR `pr`, which queued() reads: the head (the merge's second parent), the
     merge, the batch, the gate's exit, the head's own local-ci pass and its env, the log, and the log's last LOG_TAIL
-    lines. Refused for a head with no green pass of its own under the gate command."""
+    lines. A head with no such pass that entered the queue on its head proof (admitted) gets an `Admitted:` line naming
+    that status and its tree in place of the env and time. Refused for a head with neither."""
     if not fetched(merge.lower()):
         raise Refused(f"merge {merge} is not a commit here or on origin")
     head = git("rev-parse", f"{merge}^2").strip()
-    if (record := reusable(head)) is None:
+    record, entry, loop = reusable(head), None, project()[1]
+    if record is None and (entry := admitted(head, loop)) is None:
         raise Refused(
-            f"the head {head} has no green `local-ci --record` pass of its own under the gate command: no batch proof"
-            f" without it{elsewhere(head)}"
+            f"the head {head} has no green `local-ci --record` pass of its own under the gate command"
+            f"{nor_head_proof(loop)}: no batch proof without it{elsewhere(head)}"
         )
     try:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
     body = (
-        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n{env_line(record['env'])}"
-        f"Gated: {record['time']}\nLog: {log}\n"
+        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
+        + (
+            f"{env_line(record['env'])}Gated: {record['time']}\n"
+            if record
+            else f"Admitted: {entry}\n"
+        )
+        + f"Log: {log}\n"
     )
     if tail:
         body += (
@@ -3969,6 +3990,21 @@ def proved(head: str, status: str) -> bool:
         held is not None
         and stated(head, status, lambda _status, named: named[1] == held) is not None
     )
+
+
+def admitted(head: str, loop: str | None) -> str | None:
+    """The stand-in for `head`'s own local-ci pass that let it into a merge queue, `<status> status on tree <tree>`, or
+    None: loop.md's head proof (head_proof), such as a light gate's pass, green on the head for its own tree (proved).
+    It is the only stand-in, so no queue entry records one: the status on the head says it."""
+    proof = head_proof(loop)
+    if proof is None or not proved(head, proof["status"]):
+        return None
+    return f"{proof['status']} status on tree {tree_of(head)}"
+
+
+def nor_head_proof(loop: str | None) -> str:
+    """A refusal's mention of the head proof that would also have let the head in, when loop.md sets one."""
+    return ", nor its loop.md `head_proof` status" if head_proof(loop) else ""
 
 
 def elsewhere(head: str) -> str:
