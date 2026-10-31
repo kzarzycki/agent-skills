@@ -2606,6 +2606,29 @@ def test_a_cloud_start_with_no_environment_pin_is_refused_before_a_session_exist
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_a_local_agent_is_refused_in_the_main_checkout_cloud_sessions_launch_from(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, agent: str
+) -> None:
+    """A local agent there switched the shared checkout's branch under every later start, and
+    carried another worker's uncommitted edits along. A worktree's copied pin is its own."""
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    main, tree = checkout_with_worktree(tmp_path, {"remote": {"defaultEnvironmentId": "env_a"}})
+    monkeypatch.chdir(main)
+    (main / "b.md").write_text("do X")
+    for cmd in ("start", "run"):
+        argv = [cmd, agent, "t", "b.md", "tmp/t.md", "--confirm-seconds", "0", "--workspace", "."]
+        assert omnigent_agent.main(argv) == 1
+        err = capsys.readouterr().err
+        assert "start claude-cloud" in err and "worktree" in err and og.sessions == {}
+    assert start_cloud(og, main, title="c") == 0 and len(og.sessions) == 1
+    monkeypatch.chdir(tree)
+    assert start_cloud(og, tree, title="c") == 0  # pins the worktree
+    assert start_cloud(og, tree, agent, title="n") == 0 and len(og.sessions) == 3
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_a_native_start_needs_no_environment_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: str
 ) -> None:

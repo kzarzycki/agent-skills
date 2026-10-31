@@ -134,7 +134,10 @@ would run its build on this host, where a heavy one starves every other session.
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
 `remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` copy a
 worktree's missing pin from its main checkout (keeping the file's other settings) and refuse
-when neither has one. `wait` (and so `run`) with `--pr <n>` fetches
+when neither has one. They refuse a local agent in a main checkout whose own file names the pin, naming
+`claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
+and a local agent working there switches its branch under every later start. A worktree's copied
+pin is its own, so a local agent there is accepted. `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
