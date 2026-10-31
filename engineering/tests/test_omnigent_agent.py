@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import shutil
 import signal
 import ssl
 import subprocess
@@ -2603,6 +2604,39 @@ def test_a_cloud_start_with_no_environment_pin_is_refused_before_a_session_exist
         assert "default environment" in err and "defaultEnvironmentId" in err
         assert not (workspace / ".claude" / "settings.local.json").exists()
     assert og.sessions == {}
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_a_local_agent_is_refused_in_the_main_checkout_cloud_sessions_launch_from(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, agent: str
+) -> None:
+    """A local agent there switched the shared checkout's branch under every later start, and
+    carried another worker's uncommitted edits along. A worktree's copied pin is its own."""
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    main, tree = checkout_with_worktree(tmp_path, {"remote": {"defaultEnvironmentId": "env_a"}})
+    monkeypatch.chdir(main)
+    (main / "b.md").write_text("do X")
+    (main / "sub").mkdir()
+    for cmd, ws in (("start", "."), ("run", "."), ("start", "sub")):  # a folder in it is it
+        argv = [cmd, agent, "t", "b.md", f"{ws}/t.md", "--confirm-seconds", "0", "--workspace", ws]
+        assert omnigent_agent.main(argv) == 1
+        err = capsys.readouterr().err
+        assert "start claude-cloud" in err and "worktree" in err and og.sessions == {}
+    assert start_cloud(og, main, title="c") == 0 and len(og.sessions) == 1
+    apart = tmp_path / "apart"  # its git dir lives outside it
+    subprocess.run(
+        ["git", "init", "-q", "--separate-git-dir", str(tmp_path / "gd"), str(apart)], check=True
+    )
+    shutil.copytree(main / ".claude", apart / ".claude")
+    (apart / "b.md").write_text("do X")
+    monkeypatch.chdir(apart)
+    argv = ["start", agent, "t", "b.md", "t.md", "--confirm-seconds", "0", "--workspace", "."]
+    assert omnigent_agent.main(argv) == 1 and len(og.sessions) == 1
+    monkeypatch.chdir(tree)
+    assert start_cloud(og, tree, title="c") == 0  # pins the worktree
+    assert start_cloud(og, tree, agent, title="n") == 0 and len(og.sessions) == 3
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

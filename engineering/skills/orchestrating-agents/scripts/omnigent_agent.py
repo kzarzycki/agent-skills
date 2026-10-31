@@ -1701,37 +1701,61 @@ BYPASS = "bypassPermissions"
 SETTINGS = Path(".claude") / "settings.local.json"
 
 
+def own_settings(root: Path) -> dict:
+    """``root``'s untracked Claude Code settings, ``{}`` without the file."""
+    try:
+        data = json.loads((root / SETTINGS).read_text())
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        raise Fail(f"{root / SETTINGS} is not JSON: {e}") from e
+    return data if isinstance(data, dict) else {}
+
+
+def environment_pin(data: dict) -> str:
+    """The claude.ai environment a settings dict pins cloud sessions to, else ``""``."""
+    remote = data.get("remote")
+    return str(remote.get("defaultEnvironmentId") or "") if isinstance(remote, dict) else ""
+
+
+def git_dirs(workspace: Path) -> list[str]:
+    """``workspace``'s git dir, common dir (equal in a main checkout) and checkout root; fewer than
+    three lines outside a checkout or in a bare repo."""
+    return subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute"]
+        + ["--git-dir", "--git-common-dir", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.splitlines()
+
+
+def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
+    """A main checkout pinned for cloud sessions is where they are launched from: a local agent
+    working there switched its branch under every later start, and carried another worker's
+    uncommitted edits along. A worktree's pin, copied in by ``pin_environment``, is its own. A
+    folder inside the main checkout is the checkout, so the pin is read at its root, which git
+    names even when its git dir lives elsewhere (``--separate-git-dir``)."""
+    dirs = git_dirs(workspace)
+    if len(dirs) == 3 and dirs[0] == dirs[1] and environment_pin(own_settings(Path(dirs[2]))):
+        raise Fail(
+            f"{workspace} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
+            f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
+            " give the local agent a worktree of it (--workspace)"
+        )
+
+
 def pin_environment(workspace: Path) -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
     worktree lacks, and without it lands in the account's default environment. A worktree missing
     the pin takes its main checkout's; with neither, fail before any session exists."""
-
-    def settings(root: Path) -> dict:
-        try:
-            data = json.loads((root / SETTINGS).read_text())
-        except FileNotFoundError:
-            return {}
-        except ValueError as e:
-            raise Fail(f"{root / SETTINGS} is not JSON: {e}") from e
-        return data if isinstance(data, dict) else {}
-
-    def pin(data: dict) -> str:
-        remote = data.get("remote")
-        return str(remote.get("defaultEnvironmentId") or "") if isinstance(remote, dict) else ""
-
-    own = settings(workspace)
-    if pin(own):
+    own = own_settings(workspace)
+    if environment_pin(own):
         return
-    dirs = subprocess.run(
-        ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute"]
-        + ["--git-dir", "--git-common-dir"],
-        capture_output=True,
-        text=True,
-        check=False,  # no checkout: no main to copy from
-    ).stdout.splitlines()
-    main = Path(dirs[1]).parent if len(dirs) == 2 and dirs[0] != dirs[1] else None
-    if main and (env := pin(settings(main))):
+    dirs = git_dirs(workspace)  # no checkout: no main to copy from
+    main = Path(dirs[1]).parent if len(dirs) == 3 and dirs[0] != dirs[1] else None
+    if main and (env := environment_pin(own_settings(main))):
         remote = own.get("remote") if isinstance(own.get("remote"), dict) else {}
         own["remote"] = {**remote, "defaultEnvironmentId": env}
         (workspace / SETTINGS).parent.mkdir(exist_ok=True)
@@ -4681,6 +4705,8 @@ def main(argv: list[str] | None = None) -> int:
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
+        elif not remote:
+            refuse_pinned_checkout(args.agent, workspace)
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # what the child's tree held before it ran: wait fails only on a change it made
