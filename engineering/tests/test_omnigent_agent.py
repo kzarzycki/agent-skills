@@ -5816,7 +5816,7 @@ def test_a_remote_sessions_file_is_written_and_deleted_on_its_host(
         "/v1/sessions/s9",
         f"DELETE {FS}/tmp/gone?base=host",
         "/v1/sessions/s9",
-        f"{FS}/tmp?limit=1000&base=host",  # the 404 is believed once a listing agrees
+        f"{FS}/tmp/gone?limit=1000&base=host",  # the 404 is believed once a read agrees
     ]
 
 
@@ -7824,10 +7824,12 @@ def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
 
 
 def test_send_fails_when_a_remote_question_survives_its_delete(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A 404 on the delete while a read still finds the question (a host without the route) is a
-    failure: passed as gone, send reported delivered and the next wait read the answered question."""
+    failure: passed as gone, send reported delivered and the next wait read the answered question.
+    The folder's listing is no witness: it pages, so a question past its first page is missing
+    from it. The CLI still arms the follow-up, as the answer landed, and then fails."""
 
     class Far(FarFiles, FakeOmnigent):
         def filesystem(self, sid: str, path: str, method: str = "GET", body: object = None) -> dict:
@@ -7835,12 +7837,21 @@ def test_send_fails_when_a_remote_question_survives_its_delete(
                 raise omnigent_agent.Gone("404")
             return super().filesystem(sid, path, method, body)
 
+        def modified(self, sid: str, path: str) -> float:
+            raise omnigent_agent.Gone(path)  # past the listing's first page
+
     og, report = Far(), Path("tmp/loop/r.md")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)
-    sid = og.create("claude", "t")
+    sid = og.create("claude", "t", workspace="/elsewhere/repo")
     og.files["tmp/loop/r.md.question"] = "which base?"
-    with pytest.raises(omnigent_agent.Fail, match="not deleted"):
+    with pytest.raises(omnigent_agent.Undeleted, match="not deleted"):
         omnigent_agent.send(og, sid, "use main", report, 0, far=True)
+    registry = tmp_path / "registry"
+    argv = ["send", sid, "use dev", "tmp/loop/r.md", "--confirm-seconds", "0", "--timeout", "5"]
+    assert omnigent_agent.main([*argv, "--registry", str(registry)]) == 1
+    assert "was not deleted on the session's host" in capsys.readouterr().err
+    assert registry.read_text() == f"{sid}=tmp/loop/r.md\ttmp/loop/r.md.followup\n"
 
 
 def test_send_to_a_remote_session_answers_its_question_on_its_host(

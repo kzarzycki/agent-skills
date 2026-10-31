@@ -511,6 +511,10 @@ class Gone(Fail):
     code = GONE
 
 
+class Undeleted(Fail):
+    """A file a remote delete answered 404 for is still there: a host without the route."""
+
+
 class Queued(Fail):
     code = QUEUED
 
@@ -2821,9 +2825,13 @@ def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
     try:
         og.filesystem(sid, str(path), "DELETE")
     except Gone as e:
-        # a 404 is a missing file only if a read agrees: a host without the route answers 404 too
-        if file_mtime(og, sid, path, far) is not None:
-            raise Fail(f"{path} was not deleted on the session's host: {e}") from e
+        # a 404 is a missing file only if a read of the file agrees, since a host without the
+        # route answers 404 too; the file itself, not its folder's listing, which pages
+        try:
+            og.read_file(sid, str(path))
+        except Gone:
+            return
+        raise Undeleted(f"{path} was not deleted on the session's host: {e}") from e
 
 
 def check(
@@ -4687,7 +4695,11 @@ def main(argv: list[str] | None = None) -> int:
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
-            send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
+            undeleted = None
+            try:
+                send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
+            except Undeleted as e:  # the answer landed: supervise it, then fail on the question
+                undeleted = e
             # armed once the message is in the history, as start arms: before it, the report or
             # question of the turn before reads as newer than the last instruction; never for
             # --pr, as start skips it
@@ -4700,6 +4712,8 @@ def main(argv: list[str] | None = None) -> int:
                     verdict=args.verdict,
                     far=far,
                 )
+            if undeleted:
+                raise undeleted
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
             )
