@@ -3622,6 +3622,20 @@ def test_land_marks_a_named_draft_ready_and_waits_for_the_required_checks_it_sta
     assert (lands["runs"](), lands["merged"]()) == (1, ["7"])
 
 
+def test_the_lock_is_taken_broken_and_released_past_a_pre_push_hook_that_fails(
+    lands: dict[str, Any],
+) -> None:
+    # the lock commit holds the base's own tree, so a project's pre-push checks have nothing of it to check
+    lands["open"](7, {"7.txt": "7\n"})
+    lock_commit(lands, 3 * 60 * 60)
+    hook = lands["work"] / ".git/hooks/pre-push"
+    hook.write_text("#!/bin/sh\necho the hook ran >&2\nexit 1\n")
+    hook.chmod(0o755)
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
+
+
 def test_the_lock_is_released_when_land_fails(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

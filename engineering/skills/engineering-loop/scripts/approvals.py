@@ -2850,7 +2850,15 @@ def landing(pr: int | None) -> tuple[int, bool]:
     finally:
         # only while it is still ours: a lock broken as stale and taken by another land stays theirs
         released = subprocess.run(
-            ["git", "push", "-q", f"--force-with-lease={LOCK}:{ours}", "origin", f":{LOCK}"],
+            [
+                "git",
+                "push",
+                "-q",
+                "--no-verify",
+                f"--force-with-lease={LOCK}:{ours}",
+                "origin",
+                f":{LOCK}",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -2874,7 +2882,7 @@ def locked(base: str) -> str | None:
     ).strip()
     for _ in range(2):
         pushed = subprocess.run(
-            ["git", "push", "-q", "origin", f"{ours}:{LOCK}"],
+            ["git", "push", "-q", "--no-verify", "origin", f"{ours}:{LOCK}"],
             capture_output=True,
             text=True,
             check=False,
@@ -2902,7 +2910,15 @@ def locked(base: str) -> str | None:
             f"the landing lock {LOCK} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
         )
         subprocess.run(
-            ["git", "push", "-q", f"--force-with-lease={LOCK}:{held[0]}", "origin", f":{LOCK}"],
+            [
+                "git",
+                "push",
+                "-q",
+                "--no-verify",
+                f"--force-with-lease={LOCK}:{held[0]}",
+                "origin",
+                f":{LOCK}",
+            ],
             capture_output=True,
             check=False,
         )
