@@ -1740,14 +1740,20 @@ def unproven(head: str, fields: dict[str, str], loop: str | None = None) -> str 
     merge, batch, code = (fields.get(key, "").lower() for key in ("Merge", "Batch", "Exit"))
     if code != "0":
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
-    if (record := reusable(head)) is None:
+    # the proof's own line says which it entered on, so a record made later doesn't void an `Admitted:` proof
+    if "Admitted" in fields:
         if (entry := admitted(head, loop)) is None:
             return (
-                f"the head {head} has no green `local-ci --record` pass of its own under the gate command"
-                f"{nor_head_proof(loop)}, which a batch never stands in for{elsewhere(head)}"
+                f"batch {batch} names the stand-in `{fields['Admitted']}`, but the head {head} has no green loop.md"
+                f" `head_proof` status for its tree"
             )
-        if fields.get("Admitted") != entry:
-            return f"batch {batch} names the head's stand-in `{fields.get('Admitted', '')}`, its head proof `{entry}`"
+        if fields["Admitted"] != entry:
+            return f"batch {batch} names the head's stand-in `{fields['Admitted']}`, its head proof `{entry}`"
+    elif (record := reusable(head)) is None:
+        return (
+            f"the head {head} has no green `local-ci --record` pass of its own under the gate command, which a batch"
+            f" never stands in for{elsewhere(head)}"
+        )
     # the comment names the env as posted, its home written `~` (public)
     elif (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
         return (
