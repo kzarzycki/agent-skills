@@ -704,8 +704,10 @@ def gatekeeper_md(settings: str = "") -> str:
 
 @pytest.fixture
 def agents(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """A checkout's docs/agents/ under tmp_path, empty, and no deprecation line printed yet this run."""
+    """A checkout's docs/agents/ under tmp_path, empty, and no deprecation line of either kind printed yet this run,
+    so a test's stderr doesn't depend on which tests ran before it."""
     monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    monkeypatch.setattr(approvals, "DEPRECATED", set())
     approvals.moved.cache_clear()
     (tmp_path / "docs" / "agents").mkdir(parents=True)
     return tmp_path / "docs" / "agents"
@@ -716,9 +718,9 @@ def test_the_policy_is_read_from_gatekeeper_md_under_its_policy_heading(
 ) -> None:
     """loop.md keeps its prose: a gatekeeper.md beside it is the one source of the bar, and its messages name it."""
     (agents / "loop.md").write_text("# Loop facts\n\nWorker model: mid\n")
-    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: false\n"))
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  gate: mise run check\n"))
     _, policy = approvals.project()
-    assert approvals.no_ci(policy)
+    assert approvals.settings(policy)["gate"] == "mise run check"
     assert capsys.readouterr().err == ""
     (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: no-ish\n"))
     with pytest.raises(approvals.Refused, match="gatekeeper.md's `loop.ci` must be true or false"):
@@ -733,9 +735,9 @@ def test_the_policy_is_read_from_gatekeeper_md_under_its_policy_heading(
 def test_loop_md_settings_without_gatekeeper_md_are_read_with_one_deprecation_line(
     agents: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (agents / "loop.md").write_text(loop_md("loop:\n  ci: false\n"))
+    (agents / "loop.md").write_text(loop_md("loop:\n  gate: mise run check\n"))
     for _ in range(2):
-        assert approvals.no_ci(approvals.project()[1])
+        assert approvals.settings(approvals.project()[1])["gate"] == "mise run check"
     assert capsys.readouterr().err == (
         "docs/agents/loop.md's ## Settings is deprecated: move the block to docs/agents/gatekeeper.md under"
         " ## Policy (SKILL.md § Settings)\n"
