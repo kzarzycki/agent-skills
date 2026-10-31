@@ -77,6 +77,31 @@ def test_paths_follow_the_dotagents_checkout(tmp_path, monkeypatch):
     assert hygiene.STATE == tmp_path / ".local/state/agent-hygiene"
 
 
+def test_brew_skips_a_prefix_whose_lock_folder_it_cannot_write(tmp_path, monkeypatch):
+    """An admin account can write Cellar but not the locks folder the owner's first run created."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hygiene = load("agent_hygiene_brew")
+    prefix = tmp_path / "homebrew"
+    (prefix / "Cellar").mkdir(parents=True)
+    locks = prefix / "var/homebrew/locks"
+    locks.mkdir(parents=True)
+    monkeypatch.setattr(hygiene, "CACHES", [c for c in hygiene.CACHES if c[0] == "brew"])
+    monkeypatch.setattr(hygiene.shutil, "which", lambda cmd: cmd)
+    monkeypatch.setattr(hygiene, "sh", lambda args, **_: f"{prefix}\n")
+
+    def said():
+        run = hygiene.Run(True, tmp_path / "log")
+        hygiene.caches(run, [], [])
+        return (tmp_path / "log").read_text()
+
+    assert "would run brew cleanup" in said()
+    locks.chmod(0o555)
+    try:
+        assert said().endswith(f"skip brew: this account does not own {prefix}\n")
+    finally:
+        locks.chmod(0o755)
+
+
 def test_agent_hygiene(tmp_path, monkeypatch):
     """agent-hygiene against a temporary home: real git checkouts, fake tools, lsof, ps and gh."""
     home = tmp_path.resolve()

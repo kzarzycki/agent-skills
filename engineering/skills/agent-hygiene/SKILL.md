@@ -31,8 +31,9 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
 ## What it clears
 
 - **Caches:** `uv cache prune`, `pnpm store prune`, `npm cache clean --force`,
-  `go clean -cache`, `pre-commit gc`, `brew cleanup --prune=all -s` (only in the account
-  that owns the Homebrew prefix), `docker builder prune -f --filter until=24h` (build cache
+  `go clean -cache`, `pre-commit gc`, `brew cleanup --prune=all -s` (only in an account
+  that can write both the prefix's `Cellar` and its `var/homebrew/locks`, since cleanup
+  takes a lock there), `docker builder prune -f --filter until=24h` (build cache
   no build used for a day; images, containers and volumes stay; skipped when no Docker
   daemon answers). A tool that isn't installed is skipped. A tool with a running process
   is skipped, and one still running after its timeout is stopped and logged as in use:

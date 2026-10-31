@@ -205,7 +205,10 @@ def caches(run, commands, asks):
             continue
         if name == 'brew':
             prefix = (sh(['brew', '--prefix']) or '').strip()
-            if not os.access(Path(prefix) / 'Cellar', os.W_OK):
+            # cleanup also takes a lock under var/homebrew/locks, which brew creates owned by whoever ran it first
+            locks = Path(prefix) / 'var/homebrew/locks'
+            if not (os.access(Path(prefix) / 'Cellar', os.W_OK)
+                    and (not locks.exists() or os.access(locks, os.W_OK))):
                 run.say(f'skip brew: this account does not own {prefix or "the Homebrew prefix"}')
                 continue
         if name == 'docker' and sh(['docker', 'info']) is None:
