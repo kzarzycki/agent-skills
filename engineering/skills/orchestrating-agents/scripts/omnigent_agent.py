@@ -528,9 +528,10 @@ def held_of(report: Path) -> Path:
     return report.with_name(report.name + ".held")
 
 
-def briefs_for(report: Path, listed: list[Path]) -> list[Path]:
-    """The brief files a revived session reads: the registry's, else the one ``start`` wrote."""
-    return listed or [b for b in [brief_of(report)] if b.exists()]
+def briefs_for(report: Path, listed: list[Path], far: bool = False) -> list[Path]:
+    """The brief files a revived session reads: the registry's, else the one ``start`` wrote. A
+    session on another host (``far``) was briefed inline: a file here is none of its own."""
+    return listed or [b for b in [brief_of(report)] if not far and b.exists()]
 
 
 def revive_line(report: Path, briefs: list[Path]) -> str:
@@ -950,8 +951,10 @@ class Omnigent:
             default=0.0,
         )
 
-    def filesystem(self, sid: str, path: str) -> dict:
-        """``read_file``'s answer as the server gives it: a file's ``content`` or a folder's ``data``."""
+    def filesystem(self, sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+        """``read_file``'s answer as the server gives it: a file's ``content`` or a folder's
+        ``data``. ``method`` ``PUT`` (``body`` ``{"content": text}``) writes ``path`` instead, and
+        ``DELETE`` removes it, on the session's host as the read does."""
         if path.startswith("/"):
             try:  # no workspace known: the absolute read reports its own error
                 root = str(self.info(sid).get("workspace") or "").rstrip("/") + "/"
@@ -960,11 +963,10 @@ class Omnigent:
             path = path[len(root) :] if root != "/" and path.startswith(root) else path
         segments = "/".join(quote(s, safe="") for s in path.split("/") if s)
         url = f"/v1/sessions/{sid}/resources/environments/default/filesystem/{segments}"
+        # a directory lists 20 entries unless asked; 1000 is the server's most
+        query = ["limit=1000"] * (method == "GET") + ["base=host"] * path.startswith("/")
         try:
-            # a directory lists 20 entries unless asked; 1000 is the server's most
-            out = self.call(
-                "GET", url + "?limit=1000" + ("&base=host" if path.startswith("/") else "")
-            )
+            out = self.call(method, url + "?" * bool(query) + "&".join(query), body)
         except Fail as e:
             if isinstance(e.__cause__, HTTPError) and e.__cause__.code == 404:
                 raise Gone(f"{path}: not found") from e
@@ -1302,9 +1304,8 @@ def send(
     not replied to yet is that first copy.
     """
     text, question = brief.strip(), question_of(report) if report else None
-    # Read once, first: the sender of the first copy deletes the question once that copy lands.
-    # On another host it reads it there, and can't delete it: wait and check count a question
-    # only when it is newer than the follow-up's baseline, so the one left there stays answered.
+    # Read once, first: the sender of the first copy deletes the question once that copy lands,
+    # on the session's host (``far``: another one), where it reads it.
     at = file_mtime(og, sid, question, far) if question else None
     asked: float | None = None if at is None else at / 1e9
     # History before info: Omnigent persists a copy before it drops it from pending_inputs, so a
@@ -1339,8 +1340,8 @@ def send(
         asked is not None and any(float(i.get("created_at") or 0) >= asked for i in copies(items))
     ) or (question is None and copies(items[replied + 1 :])):
         print(f"session {sid}: this message already landed", file=sys.stderr)
-        if question and not far:
-            question.unlink(missing_ok=True)
+        if question:
+            file_unlink(og, sid, question, far)
         return "already"
     # or it landed between the two reads
     if pending(info) or any(str(i.get("id")) not in old for i in copies(og.items(sid))):
@@ -1371,8 +1372,8 @@ def send(
                 " start a fresh run instead"
             )
         time.sleep(POLL_SECONDS)
-    if question and not far:
-        question.unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
+    if question:  # kept until the answer lands, for the fresh run
+        file_unlink(og, sid, question, far)
     return "delivered"
 
 
@@ -2096,14 +2097,10 @@ def wait(
             and (not verdict or bool(VERDICT.search(text)))
         )
 
-    def asked() -> bool:
-        # newer than ``since`` only: a follow-up's sender can't delete a question on another host
-        return (at := stamp(question)) is not None and (since is None or at > since)
-
     while True:
         info = og.info(sid)
         far = not pr and elsewhere(og, info)
-        if asked():
+        if stamp(question) is not None:
             raise Asked(str(question))
         status = str(info.get("status"))
         error = (info.get("last_task_error") or {}).get("message") or ""
@@ -2174,7 +2171,7 @@ def wait(
             break  # the turn has ended on the comment's URL: nothing rewrites it now
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
-            if asked():
+            if stamp(question) is not None:
                 raise Asked(str(question))
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
@@ -2808,6 +2805,25 @@ def file_text(og: Omnigent, sid: str, path: Path, far: bool) -> str:
     return og.read_file(sid, str(path)) if far else path.read_text(errors="replace")
 
 
+def file_write(og: Omnigent, sid: str, path: Path, text: str, far: bool) -> None:
+    """Write ``text`` to ``path`` on ``sid``'s host (``far``: another one)."""
+    if far:
+        og.filesystem(sid, str(path), "PUT", {"content": text})
+    else:
+        path.write_text(text)
+
+
+def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
+    """Remove ``path`` on ``sid``'s host (``far``: another one), if it is there."""
+    if not far:
+        path.unlink(missing_ok=True)
+        return
+    try:
+        og.filesystem(sid, str(path), "DELETE")
+    except Gone:
+        pass
+
+
 def check(
     og: Omnigent,
     sid: str,
@@ -2879,7 +2895,7 @@ def check(
         say(f"{head}: revived (no live runner)")
         unsent.add(sid)
     if sid in unsent:  # once online, the revived runner never comes this way again: retry here
-        og.send(sid, revive_line(report, briefs_for(report, briefs or [])))
+        og.send(sid, revive_line(report, briefs_for(report, briefs or [], far)))
         unsent.discard(sid)
         return "", since
     resent = max(resent, resumed.get(sid, 0.0))
@@ -3073,10 +3089,12 @@ def arm(
     verdict: bool = False,
     followed: bool = False,
     after: str = "",
+    far: bool = False,
 ) -> None:
     """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
     ``followed`` or ``after``, that field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
-    goes after the brief files the line had, else after the one ``start`` wrote."""
+    goes after the brief files the line had, else after the one ``start`` wrote (``far``: the
+    session runs on another host, and ``start`` wrote none)."""
 
     def names(line: str) -> bool:
         return line.partition("=")[0].strip() == sid
@@ -3097,7 +3115,7 @@ def arm(
                 had = entry(mine[-1])[2] if mine else []
             except Fail:
                 had = []
-            files = [b for b in briefs_for(report, had) if b != then] + [then]
+            files = [b for b in briefs_for(report, had, far) if b != then] + [then]
         flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
         flag += [AFTER_FIELD + after] if after else []
         flag += [DIRECT_FIELD] * direct
@@ -3136,12 +3154,23 @@ def arm_quietly(
     verdict: bool = False,
     followed: bool = False,
     after: str = "",
+    far: bool = False,
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
     if path:
         try:
-            arm(path, sid, report, briefs, then, verdict=verdict, followed=followed, after=after)
+            arm(
+                path,
+                sid,
+                report,
+                briefs,
+                then,
+                verdict=verdict,
+                followed=followed,
+                after=after,
+                far=far,
+            )
         except OSError as e:
             print(
                 f"registry {path}: {sid} not {'armed' if report else 'disarmed'}: {e}",
@@ -4649,11 +4678,10 @@ def main(argv: list[str] | None = None) -> int:
                 since = at
                 break
             text, then = text_or_file(args.brief)
-            if far:  # a file here names nothing its session can read: the text went inline
-                then = None
-            elif then is None:  # the registry lists a file, for the revive line to name
+            # the registry lists a file on its session's host, for the revive line to name
+            if then is None or far:
                 then = report.with_name(report.name + ".followup")
-                then.write_text(text)
+                file_write(og, args.session, then, text, far)
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
@@ -4666,8 +4694,9 @@ def main(argv: list[str] | None = None) -> int:
                     registry,
                     args.session,
                     report,
-                    then=then and then.resolve(),
+                    then=then if far else then.resolve(),
                     verdict=args.verdict,
+                    far=far,
                 )
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)

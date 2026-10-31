@@ -5713,6 +5713,15 @@ def serve_files(monkeypatch: pytest.MonkeyPatch, files: dict[str, dict]) -> list
             self.end_headers()
             self.wfile.write(json.dumps(body or {}).encode())
 
+        def do_PUT(self) -> None:  # and DELETE: seen as "<method> <path> <body>"
+            sent = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()
+            seen.append(f"{self.command} {self.path} {sent}".rstrip())
+            self.send_response(200 if f"{self.command} {self.path}" in files else 404)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        do_DELETE = do_PUT
+
         def log_message(self, *args: object) -> None:
             pass
 
@@ -5784,6 +5793,29 @@ def test_modified_reads_the_files_time_from_its_folders_listing(
     assert og.modified("s9", "/tmp/loop/r.md") == 7.0
     assert seen[-1] == f"{FS}/tmp/loop?limit=1000&base=host"  # one listing, not the file
     assert og.modified("s9", "/tmp/loop/gone.md") == 0.0
+
+
+def test_a_remote_sessions_file_is_written_and_deleted_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)  # a write that went here lands there
+    files = {
+        "/v1/sessions/s9": {"workspace": "/Users/k/ws"},
+        f"PUT {FS}/tmp/r.md.followup": {},
+        f"DELETE {FS}/tmp/r.md.question?base=host": {},
+    }
+    seen = serve_files(monkeypatch, files)
+    og = omnigent_agent.Omnigent()
+    omnigent_agent.file_write(og, "s9", Path("tmp/r.md.followup"), "use main", far=True)
+    omnigent_agent.file_unlink(og, "s9", Path("/tmp/r.md.question"), far=True)
+    omnigent_agent.file_unlink(og, "s9", Path("/tmp/gone"), far=True)  # 404: nothing there
+    assert seen == [
+        f'PUT {FS}/tmp/r.md.followup {{"content": "use main"}}',
+        "/v1/sessions/s9",
+        f"DELETE {FS}/tmp/r.md.question?base=host",
+        "/v1/sessions/s9",
+        f"DELETE {FS}/tmp/gone?base=host",
+    ]
 
 
 def test_report_exits_4_naming_a_missing_file_and_1_for_other_statuses(
@@ -7722,6 +7754,13 @@ class FarFiles:
             raise omnigent_agent.Gone(path)
         return self.times.get(path, time.time() - 60)
 
+    def filesystem(self, sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+        if method == "PUT":
+            self.files[path], self.times[path] = body["content"], time.time()  # type: ignore[index]
+        elif method != "DELETE" or self.files.pop(path, None) is None:
+            raise omnigent_agent.Gone(path)
+        return {}
+
 
 def test_check_reads_a_remote_sessions_report_and_question_on_its_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -7777,21 +7816,26 @@ def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
     here.write_text("another session's")
     assert omnigent_agent.send(og, sid, "use main", report, 0, far=True) == "already"
     assert og.posts == 1
+    assert "tmp/loop/r.md.question" not in og.files  # answered: deleted on its host
     assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True) == "delivered"
     assert here.read_text() == "another session's"
 
 
-def test_send_to_a_remote_session_waits_past_the_question_it_answered(
+def test_send_to_a_remote_session_answers_its_question_on_its_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The question stays on the session's host, since this one can't delete it there: wait counts
-    only a question or report written after it, takes the report path as given, and writes no
-    follow-up file beside it here."""
+    """Once the answer lands, the question goes on the session's host, as a local one does: left
+    there, a plain wait reads it as asked again, and a later follow-up took it as its baseline and
+    returned the report before. The follow-up's file goes there too, for the revive line to name,
+    and nothing is written beside the report path here."""
 
     class Far(FarFiles, FakeOmnigent):
+        reporting = True
+
         def land(self, sid: str, text: str) -> None:
             super().land(sid, text)
-            self.files["tmp/loop/r.md"], self.times["tmp/loop/r.md"] = "done", time.time()
+            if self.reporting:
+                self.files["tmp/loop/r.md"], self.times["tmp/loop/r.md"] = "done", time.time()
 
     og = Far(reply="done")
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
@@ -7800,15 +7844,57 @@ def test_send_to_a_remote_session_waits_past_the_question_it_answered(
     og.files["tmp/loop/r.md.question"] = "which base?"
     og.times["tmp/loop/r.md.question"] = time.time() - 120
     (tmp_path / "a.md").write_text("use main")
+    registry = tmp_path / "registry"
     argv = ["send", sid, "a.md", "tmp/loop/r.md", "--confirm-seconds", "0", "--timeout", "5"]
+    argv += ["--registry", str(registry)]
     assert omnigent_agent.main(argv) == 0
     assert capsys.readouterr().out.strip() == "tmp/loop/r.md"
     assert not (tmp_path / "tmp").exists()
-    assert omnigent_agent.main(argv) == 0  # a retry: the copy landed after the question there
-    assert og.posts == 1
+    assert "tmp/loop/r.md.question" not in og.files
+    # a brief file here names nothing its session can read: its text goes there
+    assert og.files["tmp/loop/r.md.followup"] == "use main"
+    assert omnigent_agent.wait(og, sid, Path("tmp/loop/r.md"), timeout=0) == "tmp/loop/r.md"
+    # a later follow-up whose turn writes no report is not answered by the one before; a brief
+    # file at that path here is another session's
+    og.reporting = False
+    here = tmp_path / omnigent_agent.brief_of(Path("tmp/loop/r.md"))
+    here.parent.mkdir(parents=True)
+    here.write_text("another session's")
+    argv[2] = "use dev"  # inline
+    assert omnigent_agent.main(argv) == 1
+    assert "ended (idle) without tmp/loop/r.md\n" in capsys.readouterr().err
+    assert og.files["tmp/loop/r.md.followup"] == "use dev"
+    # still armed, as the wait failed: a revive names the file there
+    assert registry.read_text() == f"{sid}=tmp/loop/r.md\ttmp/loop/r.md.followup\n"
     # a launcher's failure line there is no report, though stamped later than the next write
-    del og.files["tmp/loop/r.md.question"]
+    og.reporting = True
     og.files["tmp/loop/r.md"], og.times["tmp/loop/r.md"] = "FAILED: timeout: x\n", 2**31
-    argv[2] = "use dev"  # inline: nothing here for the follow-up's file to sit beside
+    argv[2] = "use prod"
     assert omnigent_agent.main(argv) == 0
-    assert not (tmp_path / "tmp").exists()
+    assert list((tmp_path / "tmp").rglob("*.*")) == [here]
+
+
+def test_a_revived_remote_session_is_named_only_the_files_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote session was briefed inline: a brief file at that path here is another session's.
+    The follow-up's file the registry lists is on its host, and named."""
+
+    class Far(FarFiles, Owing):
+        pass
+
+    monkeypatch.chdir(tmp_path)
+    report = Path("tmp/loop/r.md")
+    omnigent_agent.brief_of(report).parent.mkdir(parents=True)
+    omnigent_agent.brief_of(report).write_text("another session's")
+    for listed, read in (
+        ([], ""),
+        ([Path("tmp/loop/r.md.followup")], " Read your brief: tmp/loop/r.md.followup."),
+    ):
+        og = Far([told("brief", 60)], {"runner_online": False}, {"runner_online": True}, {})
+        omnigent_agent.check(og, "a", report, 3600, {}, set(), print, listed)
+        assert og.sent == [f"{omnigent_agent.REVIVED}{read} Write your report to {report}."]
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={report}\n")
+    omnigent_agent.arm(registry, "a", report, then=Path("tmp/loop/r.md.followup"), far=True)
+    assert registry.read_text() == f"a={report}\ttmp/loop/r.md.followup\n"
