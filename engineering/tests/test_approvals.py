@@ -5284,7 +5284,8 @@ def test_a_caller_left_alone_exits_and_prints_as_an_attached_run(
 def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
     repo, head, env = gate_faked(tmp_path, seconds=2)
     first = caller(repo, env, "--record")
-    polled(lambda: (repo / ".git" / "approvals" / "local-ci" / f"{head}.pid").exists())
+    pid = repo / ".git" / "approvals" / "local-ci" / f"{head}.pid"
+    polled(lambda: pid.exists() and pid.read_text())  # detach() writes it once the child runs
     second = caller(repo, env, "--record")
     status = subprocess.run(
         [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
