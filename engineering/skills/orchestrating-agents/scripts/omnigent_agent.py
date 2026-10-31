@@ -511,6 +511,10 @@ class Gone(Fail):
     code = GONE
 
 
+class Undeleted(Fail):
+    """A file a remote delete answered 404 for is still there: a host without the route."""
+
+
 class Queued(Fail):
     code = QUEUED
 
@@ -528,9 +532,10 @@ def held_of(report: Path) -> Path:
     return report.with_name(report.name + ".held")
 
 
-def briefs_for(report: Path, listed: list[Path]) -> list[Path]:
-    """The brief files a revived session reads: the registry's, else the one ``start`` wrote."""
-    return listed or [b for b in [brief_of(report)] if b.exists()]
+def briefs_for(report: Path, listed: list[Path], far: bool = False) -> list[Path]:
+    """The brief files a revived session reads: the registry's, else the one ``start`` wrote. A
+    session on another host (``far``) was briefed inline: a file here is none of its own."""
+    return listed or [b for b in [brief_of(report)] if not far and b.exists()]
 
 
 def revive_line(report: Path, briefs: list[Path]) -> str:
@@ -950,8 +955,10 @@ class Omnigent:
             default=0.0,
         )
 
-    def filesystem(self, sid: str, path: str) -> dict:
-        """``read_file``'s answer as the server gives it: a file's ``content`` or a folder's ``data``."""
+    def filesystem(self, sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+        """``read_file``'s answer as the server gives it: a file's ``content`` or a folder's
+        ``data``. ``method`` ``PUT`` (``body`` ``{"content": text}``) writes ``path`` instead, and
+        ``DELETE`` removes it, on the session's host as the read does."""
         if path.startswith("/"):
             try:  # no workspace known: the absolute read reports its own error
                 root = str(self.info(sid).get("workspace") or "").rstrip("/") + "/"
@@ -960,11 +967,10 @@ class Omnigent:
             path = path[len(root) :] if root != "/" and path.startswith(root) else path
         segments = "/".join(quote(s, safe="") for s in path.split("/") if s)
         url = f"/v1/sessions/{sid}/resources/environments/default/filesystem/{segments}"
+        # a directory lists 20 entries unless asked; 1000 is the server's most
+        query = ["limit=1000"] * (method == "GET") + ["base=host"] * path.startswith("/")
         try:
-            # a directory lists 20 entries unless asked; 1000 is the server's most
-            out = self.call(
-                "GET", url + "?limit=1000" + ("&base=host" if path.startswith("/") else "")
-            )
+            out = self.call(method, url + "?" * bool(query) + "&".join(query), body)
         except Fail as e:
             if isinstance(e.__cause__, HTTPError) and e.__cause__.code == 404:
                 raise Gone(f"{path}: not found") from e
@@ -1285,10 +1291,12 @@ def send(
     report: Path | None,
     confirm_seconds: float,
     queued_after: float | None = None,
+    far: bool = False,
 ) -> str:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
     ``delivered``, or ``already`` when a copy had landed before. With ``queued_after`` (a relay),
-    ``queued`` once the copy has been pending that long instead.
+    ``queued`` once the copy has been pending that long instead. ``far``: the session runs on
+    another host (``elsewhere``), where ``report`` and its question are.
 
     Omnigent hands a message to the harness at once, also mid-turn: that is steering (the web
     composer's queue and its "Always steer" live only in the browser). The session lists it under
@@ -1300,11 +1308,10 @@ def send(
     not replied to yet is that first copy.
     """
     text, question = brief.strip(), question_of(report) if report else None
-    # Read once, first: the sender of the first copy deletes the question once that copy lands.
-    try:
-        asked: float | None = question.stat().st_mtime if question else None
-    except FileNotFoundError:
-        asked = None
+    # Read once, first: the sender of the first copy deletes the question once that copy lands,
+    # on the session's host (``far``: another one), where it reads it.
+    at = file_mtime(og, sid, question, far) if question else None
+    asked: float | None = None if at is None else at / 1e9
     # History before info: Omnigent persists a copy before it drops it from pending_inputs, so a
     # copy seen pending is not among the ``old`` ids and its landing shows up as a new item.
     items = og.items(sid)
@@ -1338,7 +1345,7 @@ def send(
     ) or (question is None and copies(items[replied + 1 :])):
         print(f"session {sid}: this message already landed", file=sys.stderr)
         if question:
-            question.unlink(missing_ok=True)
+            file_unlink(og, sid, question, far)
         return "already"
     # or it landed between the two reads
     if pending(info) or any(str(i.get("id")) not in old for i in copies(og.items(sid))):
@@ -1369,8 +1376,8 @@ def send(
                 " start a fresh run instead"
             )
         time.sleep(POLL_SECONDS)
-    if question:
-        question.unlink(missing_ok=True)  # kept until the answer lands, for the fresh run
+    if question:  # kept until the answer lands, for the fresh run
+        file_unlink(og, sid, question, far)
     return "delivered"
 
 
@@ -2082,21 +2089,12 @@ def wait(
     )
 
     def stamp(path: Path) -> int | None:
-        """``path``'s mtime in ns on the session's host, None when it is not there."""
-        if not far:
-            try:
-                return path.stat().st_mtime_ns
-            except FileNotFoundError:
-                return None
-        try:
-            return int(og.modified(sid, str(path)) * 1e9) or None
-        except Gone:
-            return None
+        return file_mtime(og, sid, path, far)
 
     def counts() -> bool:
         if pr or (mtime := stamp(report)) is None:
             return False
-        text = og.read_file(sid, str(report)) if far else report.read_text()
+        text = file_text(og, sid, report, far)
         return (
             (since is None or mtime > since)
             and not FAILED_LINE.fullmatch(text)
@@ -2105,7 +2103,7 @@ def wait(
 
     while True:
         info = og.info(sid)
-        far = not pr and bool(info.get("host_id")) and str(info["host_id"]) != og.host_id
+        far = not pr and elsewhere(og, info)
         if stamp(question) is not None:
             raise Asked(str(question))
         status = str(info.get("status"))
@@ -2228,8 +2226,7 @@ def wait(
             )
         time.sleep(POLL_SECONDS)
     workspace = info.get("workspace")
-    here = not info.get("host_id") or str(info["host_id"]) == og.host_id
-    if workspace and here and not pr:
+    if workspace and not elsewhere(og, info) and not pr:
         before = set(baseline or [])
         if left := [line for line in tracked_changes(Path(workspace)) if line not in before]:
             raise Fail(
@@ -2787,11 +2784,54 @@ def settled(
     return now - max(mtime, newest) >= SETTLE_SECONDS
 
 
-def written(path: Path, since: float) -> bool:
+def elsewhere(og: Omnigent, info: dict) -> bool:
+    """Whether the session ``info`` describes runs on another host than this one: its report and
+    question are paths on that host, read through its file API (``far`` to ``file_mtime`` and
+    ``file_text``), never resolved or read here."""
+    return bool(info.get("host_id")) and str(info["host_id"]) != og.host_id
+
+
+def file_mtime(og: Omnigent, sid: str, path: Path, far: bool) -> int | None:
+    """``path``'s mtime in ns on ``sid``'s host (``far``: another one), None when it is not there."""
+    if not far:
+        try:
+            return path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return None
     try:
-        return path.stat().st_mtime > since
-    except FileNotFoundError:
-        return False
+        return int(og.modified(sid, str(path)) * 1e9) or None
+    except Gone:
+        return None
+
+
+def file_text(og: Omnigent, sid: str, path: Path, far: bool) -> str:
+    """``path``'s text on ``sid``'s host (``far``: another one)."""
+    return og.read_file(sid, str(path)) if far else path.read_text(errors="replace")
+
+
+def file_write(og: Omnigent, sid: str, path: Path, text: str, far: bool) -> None:
+    """Write ``text`` to ``path`` on ``sid``'s host (``far``: another one)."""
+    if far:
+        og.filesystem(sid, str(path), "PUT", {"content": text})
+    else:
+        path.write_text(text)
+
+
+def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
+    """Remove ``path`` on ``sid``'s host (``far``: another one), if it is there."""
+    if not far:
+        path.unlink(missing_ok=True)
+        return
+    try:
+        og.filesystem(sid, str(path), "DELETE")
+    except Gone as e:
+        # a 404 is a missing file only if a read of the file agrees, since a host without the
+        # route answers 404 too; the file itself, not its folder's listing, which pages
+        try:
+            og.read_file(sid, str(path))
+        except Gone:
+            return
+        raise Undeleted(f"{path} was not deleted on the session's host: {e}") from e
 
 
 def check(
@@ -2831,19 +2871,23 @@ def check(
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
 
+    far = elsewhere(og, info)  # its report and question are on its host, read there
+
+    def written(path: Path) -> bool:
+        return (at := file_mtime(og, sid, path, far)) is not None and at / 1e9 > since
+
     def counts() -> bool:
-        return (
-            written(report, since)
-            and not launcher_failed(report)
-            and (not verdict or bool(VERDICT.search(report.read_text())))
-        )
+        if not written(report):
+            return False
+        text = file_text(og, sid, report, far)
+        return not FAILED_LINE.fullmatch(text) and (not verdict or bool(VERDICT.search(text)))
 
     if counts():
-        stamp = report.stat().st_mtime_ns if report.exists() else None
+        stamp = file_mtime(og, sid, report, far)
         if settled(stamp, info, items, {} if ended is None else ended, sid) and counts():
             return f"{head}: report written: {report}", since
         return "", since  # in its turn, or not out of it for long: it may rewrite the report
-    if written(question_of(report), since):
+    if written(question_of(report)):
         return f"{head}: asked: {question_of(report)}", since
     if prompts := prompts_of(info):
         return f"{head}: blocked on a prompt: {'; '.join(prompts)}", since
@@ -2861,7 +2905,7 @@ def check(
         say(f"{head}: revived (no live runner)")
         unsent.add(sid)
     if sid in unsent:  # once online, the revived runner never comes this way again: retry here
-        og.send(sid, revive_line(report, briefs_for(report, briefs or [])))
+        og.send(sid, revive_line(report, briefs_for(report, briefs or [], far)))
         unsent.discard(sid)
         return "", since
     resent = max(resent, resumed.get(sid, 0.0))
@@ -3055,10 +3099,12 @@ def arm(
     verdict: bool = False,
     followed: bool = False,
     after: str = "",
+    far: bool = False,
 ) -> None:
     """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
     ``followed`` or ``after``, that field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
-    goes after the brief files the line had, else after the one ``start`` wrote."""
+    goes after the brief files the line had, else after the one ``start`` wrote (``far``: the
+    session runs on another host, and ``start`` wrote none)."""
 
     def names(line: str) -> bool:
         return line.partition("=")[0].strip() == sid
@@ -3079,7 +3125,7 @@ def arm(
                 had = entry(mine[-1])[2] if mine else []
             except Fail:
                 had = []
-            files = [b for b in briefs_for(report, had) if b != then] + [then]
+            files = [b for b in briefs_for(report, had, far) if b != then] + [then]
         flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
         flag += [AFTER_FIELD + after] if after else []
         flag += [DIRECT_FIELD] * direct
@@ -3118,12 +3164,23 @@ def arm_quietly(
     verdict: bool = False,
     followed: bool = False,
     after: str = "",
+    far: bool = False,
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
     if path:
         try:
-            arm(path, sid, report, briefs, then, verdict=verdict, followed=followed, after=after)
+            arm(
+                path,
+                sid,
+                report,
+                briefs,
+                then,
+                verdict=verdict,
+                followed=followed,
+                after=after,
+                far=far,
+            )
         except OSError as e:
             print(
                 f"registry {path}: {sid} not {'armed' if report else 'disarmed'}: {e}",
@@ -4572,28 +4629,33 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "wait":
             # a path on the session's host, which this one neither resolves nor reads (as start's)
-            host = None if args.pr else og.info(args.session).get("host_id")
-            report = args.report if host and str(host) != og.host_id else args.report.resolve()
+            far = not args.pr and elsewhere(og, og.info(args.session))
+            report = args.report if far else args.report.resolve()
             print(wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr))
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             if not args.keep:
                 archive_delivered(og, args.session)
             return 0
+        # a follow-up's paths are its session's host's, wherever that runs
+        session = og.info(args.session) if args.cmd == "send" else {}
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
-        remote = host != og.host_id  # paths on another host: neither resolved nor checked here
+        # paths on another host: neither resolved nor checked here
+        remote = elsewhere(og, session) or host != og.host_id
         here = not remote or bool(args.pr)  # with --pr the report is the file wait writes here
         report = args.report.resolve() if here else args.report
         if args.cmd != "send" and args.host and not args.top_level:
             raise Fail("--host needs --top-level: Omnigent runs a child on its parent's runner")
-        if remote and not (
-            args.workspace and args.workspace.is_absolute() and report.is_absolute()
+        if (
+            remote
+            and args.cmd != "send"
+            and not (args.workspace and args.workspace.is_absolute() and report.is_absolute())
         ):
             raise Fail(
                 f"--host {args.host} is another host: --workspace and the report are absolute paths there"
             )
         if args.cmd == "send":  # a live session keeps its own workspace, wherever this runs
-            workspace = Path(og.info(args.session).get("workspace") or Path.cwd()).resolve()
+            workspace = Path(session.get("workspace") or Path.cwd()).resolve()
         else:
             workspace = getattr(args, "workspace", None) or Path.cwd()
             if not remote:
@@ -4617,30 +4679,41 @@ def main(argv: list[str] | None = None) -> int:
             # A report older than the question the follow-up answers, else than the send, is the
             # turn before's. The question first: a rerun after the first send died must not take
             # the report that answer already produced as the old one.
+            far = remote and not args.pr  # its files are on its host: read there, written never
             since = None
             for path in (question_of(report), report):
-                if launcher_failed(path):  # no report: whatever replaces it is new
-                    continue
-                try:
-                    since = path.stat().st_mtime_ns
-                    break
-                except FileNotFoundError:
-                    pass
+                at = file_mtime(og, args.session, path, far)
+                if at is None or FAILED_LINE.fullmatch(file_text(og, args.session, path, far)):
+                    continue  # no report: whatever replaces it is new
+                since = at
+                break
             text, then = text_or_file(args.brief)
-            if then is None:  # the registry lists a file, for the revive line to name
+            # the registry lists a file on its session's host, for the revive line to name
+            if then is None or far:
                 then = report.with_name(report.name + ".followup")
-                then.write_text(text)
+                file_write(og, args.session, then, text, far)
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
-            send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds)
+            undeleted = None
+            try:
+                send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
+            except Undeleted as e:  # the answer landed: supervise it, then fail on the question
+                undeleted = e
             # armed once the message is in the history, as start arms: before it, the report or
             # question of the turn before reads as newer than the last instruction; never for
             # --pr, as start skips it
             if not args.pr:
                 arm_quietly(
-                    registry, args.session, report, then=then.resolve(), verdict=args.verdict
+                    registry,
+                    args.session,
+                    report,
+                    then=then if far else then.resolve(),
+                    verdict=args.verdict,
+                    far=far,
                 )
+            if undeleted:
+                raise undeleted
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
             )
