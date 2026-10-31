@@ -2617,8 +2617,9 @@ def test_a_local_agent_is_refused_in_the_main_checkout_cloud_sessions_launch_fro
     main, tree = checkout_with_worktree(tmp_path, {"remote": {"defaultEnvironmentId": "env_a"}})
     monkeypatch.chdir(main)
     (main / "b.md").write_text("do X")
-    for cmd in ("start", "run"):
-        argv = [cmd, agent, "t", "b.md", "tmp/t.md", "--confirm-seconds", "0", "--workspace", "."]
+    (main / "sub").mkdir()
+    for cmd, ws in (("start", "."), ("run", "."), ("start", "sub")):  # a folder in it is it
+        argv = [cmd, agent, "t", "b.md", f"{ws}/t.md", "--confirm-seconds", "0", "--workspace", ws]
         assert omnigent_agent.main(argv) == 1
         err = capsys.readouterr().err
         assert "start claude-cloud" in err and "worktree" in err and og.sessions == {}

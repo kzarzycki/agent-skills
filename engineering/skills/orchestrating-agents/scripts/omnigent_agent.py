@@ -1732,9 +1732,14 @@ def git_dirs(workspace: Path) -> list[str]:
 def refuse_pinned_checkout(agent: str, workspace: Path) -> None:
     """A main checkout pinned for cloud sessions is where they are launched from: a local agent
     working there switched its branch under every later start, and carried another worker's
-    uncommitted edits along. A worktree's pin, copied in by ``pin_environment``, is its own."""
+    uncommitted edits along. A worktree's pin, copied in by ``pin_environment``, is its own. A
+    folder inside the main checkout is the checkout, so the pin is read at its root."""
     dirs = git_dirs(workspace)
-    if len(dirs) == 2 and dirs[0] == dirs[1] and environment_pin(own_settings(workspace)):
+    if (
+        len(dirs) == 2
+        and dirs[0] == dirs[1]
+        and environment_pin(own_settings(Path(dirs[0]).parent))
+    ):
         raise Fail(
             f"{workspace} is the main checkout cloud sessions launch from ({SETTINGS} pins an"
             f" environment), so {agent} would work in it: start claude-cloud for cloud work, or"
