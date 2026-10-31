@@ -3684,10 +3684,14 @@ def test_settled_needs_the_turn_ended_at_every_look_for_turn_end_seconds(
     report = aged(tmp_path / "r.md", 120)  # a draft written long before
     idle, running = {"status": "idle"}, {"status": "running"}
     ended: dict[str, float] = {}
-    assert not omnigent_agent.settled(report.stat().st_mtime_ns, idle, [], ended, "a")  # one idle look is no turn end
+    assert not omnigent_agent.settled(
+        report.stat().st_mtime_ns, idle, [], ended, "a"
+    )  # one idle look is no turn end
     ended["a"] = time.time() - 61
     assert omnigent_agent.settled(report.stat().st_mtime_ns, idle, [], ended, "a")
-    assert not omnigent_agent.settled(report.stat().st_mtime_ns, running, [told("x", 0)], ended, "a")
+    assert not omnigent_agent.settled(
+        report.stat().st_mtime_ns, running, [told("x", 0)], ended, "a"
+    )
     assert "a" not in ended  # a running look restarts the count
     assert not omnigent_agent.settled(report.stat().st_mtime_ns, idle, [], ended, "a")
     ended["a"] = time.time() - 61
@@ -7635,17 +7639,17 @@ def test_a_write_to_an_approval_gated_resource_waits_for_the_owner(
 def test_wait_reads_a_remote_sessions_report_on_its_host(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    class Far(FakeOmnigent):
-        files = {"tmp/loop/r.md": "done"}
+    files = {"tmp/loop/r.md": "done"}
 
+    class Far(FakeOmnigent):
         def info(self, sid: str) -> dict:
             return {**super().info(sid), "host_id": "mac"}
 
         def read_file(self, sid: str, path: str) -> str:
-            return self.files[path]
+            return files[path]
 
         def modified(self, sid: str, path: str) -> float:
-            if path not in self.files:
+            if path not in files:
                 raise omnigent_agent.Gone(path)
             return time.time() - 3600
 
