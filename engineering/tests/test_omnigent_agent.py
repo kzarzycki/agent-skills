@@ -5815,6 +5815,8 @@ def test_a_remote_sessions_file_is_written_and_deleted_on_its_host(
         f"DELETE {FS}/tmp/r.md.question?base=host",
         "/v1/sessions/s9",
         f"DELETE {FS}/tmp/gone?base=host",
+        "/v1/sessions/s9",
+        f"{FS}/tmp?limit=1000&base=host",  # the 404 is believed once a listing agrees
     ]
 
 
@@ -7819,6 +7821,26 @@ def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
     assert "tmp/loop/r.md.question" not in og.files  # answered: deleted on its host
     assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True) == "delivered"
     assert here.read_text() == "another session's"
+
+
+def test_send_fails_when_a_remote_question_survives_its_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 404 on the delete while a read still finds the question (a host without the route) is a
+    failure: passed as gone, send reported delivered and the next wait read the answered question."""
+
+    class Far(FarFiles, FakeOmnigent):
+        def filesystem(self, sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+            if method == "DELETE":
+                raise omnigent_agent.Gone("404")
+            return super().filesystem(sid, path, method, body)
+
+    og, report = Far(), Path("tmp/loop/r.md")
+    monkeypatch.chdir(tmp_path)
+    sid = og.create("claude", "t")
+    og.files["tmp/loop/r.md.question"] = "which base?"
+    with pytest.raises(omnigent_agent.Fail, match="not deleted"):
+        omnigent_agent.send(og, sid, "use main", report, 0, far=True)
 
 
 def test_send_to_a_remote_session_answers_its_question_on_its_host(

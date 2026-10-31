@@ -2820,8 +2820,10 @@ def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
         return
     try:
         og.filesystem(sid, str(path), "DELETE")
-    except Gone:
-        pass
+    except Gone as e:
+        # a 404 is a missing file only if a read agrees: a host without the route answers 404 too
+        if file_mtime(og, sid, path, far) is not None:
+            raise Fail(f"{path} was not deleted on the session's host: {e}") from e
 
 
 def check(
