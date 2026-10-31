@@ -128,7 +128,9 @@ session, so the launcher passes none. An unknown name fails before a session is 
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
 on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
-and end its turn with only the comment's URL. A cloud session (harness `acp:claude-cloud`)
+and end its turn with only the comment's URL. They refuse `--pr` to an agent whose harness isn't
+`acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
+would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
 `remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` copy a
 worktree's missing pin from its main checkout (keeping the file's other settings) and refuse

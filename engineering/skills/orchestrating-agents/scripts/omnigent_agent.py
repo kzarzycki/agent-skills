@@ -4640,6 +4640,12 @@ def main(argv: list[str] | None = None) -> int:
                 "run --top-level: a lead asks the owner in its own session, so there is no question"
                 " for run to return; use start --top-level, then watch <session>"
             )
+        # --pr is a cloud worker's report channel; a native worker given it runs its build on this host
+        if args.pr and og.harness(args.agent) != CLOUD_HARNESS:
+            raise Fail(
+                f"--pr {args.pr}: {args.agent} is not a cloud agent; start claude-cloud for a cloud"
+                " worker, or drop --pr for one on this host"
+            )
         brief = text_or_file(args.brief)[0]
         verifier = bool(args.role and "verifier" in args.role)
         if args.author == args.agent and verifier and not args.same_family:

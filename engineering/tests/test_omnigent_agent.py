@@ -2486,6 +2486,11 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_a"}}'
+    )
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     calls = fake_gh(monkeypatch, {"42": on_pr(7, "Head: abc\nGates: 0\n")})
     monkeypatch.chdir(tmp_path)
@@ -2525,6 +2530,27 @@ def start_cloud(
     (workspace / "b.md").write_text("do X")
     argv = ["start", agent, title, "b.md", f"tmp/{title}.md", "--confirm-seconds", "0"]
     return omnigent_agent.main([*argv, "--workspace", str(workspace)])
+
+
+def test_pr_is_refused_to_an_agent_that_is_not_a_cloud_agent(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a native worker given --pr ran its build on the orchestration host, starving its sessions
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_a"}}'
+    )
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    for cmd in ("start", "run"):
+        argv = [cmd, "claude", "t", "b.md", "r.md", "--pr", "1", "--confirm-seconds", "0"]
+        assert omnigent_agent.main(argv) == 1
+        assert "claude-cloud" in capsys.readouterr().err and og.sessions == {}
+    argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--pr", "1", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0 and list(og.sessions) == ["s0"]
 
 
 def test_a_cloud_start_from_a_worktree_takes_its_main_checkout_s_environment_pin(
@@ -2789,6 +2815,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     # preamble and refused --pr
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
     og.host = lambda name: "far"  # type: ignore[method-assign]
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     fake_gh(monkeypatch, {"42": on_pr(7, "Branch: claude/x at abc\n")})
     monkeypatch.chdir(tmp_path)
@@ -2833,6 +2860,11 @@ def test_run_keep_leaves_a_delivered_worker_open_for_a_relay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_a"}}'
+    )
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     fake_gh(monkeypatch, {"42": on_pr(7, "done")})
     monkeypatch.chdir(tmp_path)
