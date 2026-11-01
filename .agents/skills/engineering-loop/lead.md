@@ -102,7 +102,7 @@ design, wireframes included for a UI, and delegate the rest.
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
-7. **Verify** (board: `Verify`). A worker report naming a test that passed only on its
+7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
    the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before a verifier starts,
    each deviation on the worker report's `Spec deviations:` line is fixed, or taken to the
@@ -146,12 +146,20 @@ design, wireframes included for a UI, and delegate the rest.
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
    verifier, running at the same time, gets its own detached worktree the same way. Triage every finding (SKILL.md) and hand the fixes to a worker,
-   or make them yourself (`worker.md`, Trail): the fixer replies on each fixed thread with
+   or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
+   gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
+   covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like
+   a finding, that the same change fixes in files the PR already touches; a sibling past that cap
+   is filed as its own issue (SKILL.md, Triage), since one case a pass costs a round per case and
+   a fix reaching further grows the PR past its spec. The fixer replies on each fixed thread with
    the SHA and resolves it `ADDRESSED`. Resolve each deferred finding's thread yourself,
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
    `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
-   review every turn. A finding that doesn't make the PR wrong or unmergeable, a note on a
+   review every turn. Start it as soon as the fixer reports the pushed head, with the fix's gate
+   still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
+   needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
+   red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
    concern per PR). Every fix after a verdict needs a verdict on its head, because `land`
    (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
@@ -334,6 +342,7 @@ ended over 15 min ago. Only you know a report is in: an idle child still owing o
 finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
+A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline

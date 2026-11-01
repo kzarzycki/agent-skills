@@ -196,7 +196,7 @@ def dead_terminals(run):
         run.say(f'WARN terminals: {ptys} ptys of {limit}, another source is leaking them')
 
 
-def caches(run, commands):
+def caches(run, commands, asks):
     for name, args, timeout, busy in CACHES:
         if not shutil.which(args[0]):
             continue
@@ -221,7 +221,13 @@ def caches(run, commands):
         except subprocess.TimeoutExpired:
             run.say(f'skip {name}: still running after {timeout}s, in use')
             continue
-        if done.returncode:
+        if done.returncode and name == 'uv' and 'Permission denied' in done.stderr:  # a cache another account shares
+            where = (sh(['uv', 'cache', 'dir']) or '').strip() or 'the uv cache'
+            run.say(f'skip uv: {where} holds files another account owns: {done.stderr.strip()[-300:]}')
+            asks.append(f'uv cache {where}: another account owns part of it, so `uv cache prune` here stops at its files; '
+                        'either account prunes it once both share one group (`chgrp -R`, `chmod -R g+w`, setgid on its '
+                        'folders, umask 002 in both), or each account sets its own UV_CACHE_DIR')
+        elif done.returncode:
             run.failed = True
             run.say(f'FAIL {name}: exit {done.returncode}: {(done.stderr or done.stdout).strip()[-300:]}')
         else:
@@ -745,7 +751,7 @@ def main():
     # Caches last: a pnpm node_modules is an APFS clone of the store, so removing one frees its
     # blocks only once `pnpm store prune` drops the store's copy.
     if procs is not None:
-        caches(run, procs[1])
+        caches(run, procs[1], asks)
     try:  # simulator devices hold app data, so they are asked about, never deleted
         devices = json.loads(sh(['xcrun', 'simctl', 'list', 'devices', 'unavailable', '-j']) or '{}')
         if count := sum(map(len, devices.get('devices', {}).values())):
