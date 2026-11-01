@@ -3508,7 +3508,8 @@ def supervise_registry(
     """Run until stopped, checking each session ``registry`` lists as ``supervise`` does, re-read
     each poll. When ``script``, this file, is replaced on disk (``reloadable``: a skills sync
     installed a new one), it re-executes itself in place with the same arguments at the top of a
-    poll with nothing waiting to be posted, its state written first, so nobody restarts it. Every line goes to stdout with the local time and, with ``notify``, into that
+    poll with nothing waiting to be posted, its state written first, so nobody restarts it; while
+    something waits, it logs once that the restart waits and for what. Every line goes to stdout with the local time and, with ``notify``, into that
     session as ``Supervisor: <line>``. A line marked ``follow`` is a lead followed, not owed a
     report: ``follow`` says when it is news, and only ``archived`` drops its line. Lines wait in order until posted, and each poll posts them
     first, stopping at the first failure. A terminal event drops the session's line once its own
@@ -4106,7 +4107,18 @@ def supervise_registry(
 
     while True:
         flush()
-        if not outbox and not retry and reloadable(script, seen):
+        waits = [w for w, n in (("lines to post", outbox), ("events to settle", retry)) if n]
+        try:
+            changed = bool(waits) and script.stat().st_mtime_ns != seen["ran"]
+        except OSError:
+            changed = False
+        log(
+            "reload",
+            f"{script} changed; the restart waits for its {' and '.join(waits)}"
+            if changed
+            else None,
+        )
+        if not waits and reloadable(script, seen):
             try:
                 if console:
                     save()  # an unsaved state would be lost: keep running, try next poll
