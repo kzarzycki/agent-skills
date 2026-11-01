@@ -4580,21 +4580,36 @@ def timed(due_in: float, ago: float) -> tuple[str, Lead]:
     )
 
 
-def test_a_woken_lead_still_quiet_a_deadline_after_its_time_goes_to_the_chief_of_staff(
+def test_a_timed_wait_wakes_at_its_time_then_raises_one_deadline_twenty_minutes_after_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Its time comes before DEADLINE_SECONDS from its progress: the wake is due at the time."""
+    base = 1800000000.0  # a whole minute, so the named time is exact
+    clock = [base]
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    monkeypatch.setattr(omnigent_agent.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(omnigent_agent, "triage", lambda *args: ("none", "not asked"))
     registry = following(tmp_path)
-    offset = skewed(monkeypatch)
-    due, og = timed(-60.0, 3600)
-    at = {1: 1300.0, 2: 1400.0}
-    supervised(og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]),
-               notify="cos", console=True, fyi="post")  # fmt: skip
-    assert [p.split("\n")[0] for p in fyis(og)] == [
-        f"Supervisor: a t-a: no progress 60m (until {due})",
-        f"Supervisor: a t-a: no progress 82m after a wake (until {due})",
-    ]  # one wake, then one deadline, routed as today
-    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_WAKE.format(time=due)]
-    assert state_of(registry)["leads"]["a"]["nudges"] == 1
+    due, og = timed(60.0, 10)  # its time a minute ahead, its progress 10s old
+    moments = {1: 59.0, 2: 60.0, 3: 1259.0, 4: 1260.0, 5: 1400.0}
+    seen = []
+    log = registry.with_suffix(".events.jsonl")
+    deadlines = lambda: [
+        e["action"]
+        for e in (events_of(registry) if log.exists() else [])
+        if e["kind"] == "deadline"
+    ]
+
+    def later(poll: int) -> None:
+        seen.append(deadlines())
+        clock[0] = base + moments[poll]
+
+    supervised(og, registry, monkeypatch, 6, later, notify="cos", console=True)
+    seen.append(deadlines())
+    # polled at 0, 59, 60, 1259, 1260 and 1400s: nothing before its time, one wake at it, nothing
+    # more before DEADLINE_SECONDS after it, then one deadline for the chief of staff
+    assert seen == [[], [], ["wake"], ["wake"], ["wake", "act"], ["wake", "act"]]
+    assert len(sent := [t for s, t in og.inbox if s == "a"]) == 1 and due[11:16] in sent[0]
 
 
 def test_progress_after_a_timed_waits_time_raises_no_wake_and_counts_from_it(
