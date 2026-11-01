@@ -7102,7 +7102,7 @@ def test_a_failed_state_write_before_the_restart_keeps_the_old_process_until_one
 
 
 def test_the_supervisor_restarts_only_once_its_unposted_lines_are_posted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     script = tmp_path / "omnigent_agent.py"
     script.write_text("x = 1\n")
@@ -7122,6 +7122,61 @@ def test_the_supervisor_restarts_only_once_its_unposted_lines_are_posted(
     supervised(og, registry, monkeypatch, 10, bump, notify="cos", script=script)
     assert og.refuse == 0
     assert inbox_at_exec == [[("cos", f"Supervisor: a t-a: report written: {report}")]]
+    waits = f"{script} changed; the restart waits for its lines to post"
+    assert capsys.readouterr().err.count(waits) == 1  # once, while the posts were refused
+
+
+def test_a_restart_waiting_on_an_event_to_settle_says_so_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={aged(tmp_path / 'a.md', 10)}\n")
+    og = Fleet(a=[told("brief", 60)])
+    real_write, failing, execs = omnigent_agent.write_state, [4], []
+
+    def write_state(path: Path, state: dict) -> None:
+        if failing[0]:  # the report's event is not settled until the state is written
+            failing[0] -= 1
+            raise OSError("disk full")
+        real_write(path, state)
+
+    def execv(path: str, argv: list[str]) -> None:
+        execs.append(path)
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent, "write_state", write_state)
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(og, registry, monkeypatch, 10, bump, console=True, script=script)
+    assert execs == [sys.executable]
+    err = capsys.readouterr().err
+    assert err.count(f"{script} changed; the restart waits for its events to settle") == 1
+    assert "lines to post" not in err
+
+
+def test_a_restart_with_nothing_waiting_logs_no_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    script = tmp_path / "omnigent_agent.py"
+    script.write_text("x = 1\n")
+
+    def execv(path: str, argv: list[str]) -> None:
+        raise Stop
+
+    monkeypatch.setattr(omnigent_agent.os, "execv", execv)
+    bump = lambda poll: os.utime(script, ns=(10**18, 10**18)) if poll == 1 else None
+    supervised(
+        Lead(told("brief", 60)),
+        following(tmp_path),
+        monkeypatch,
+        5,
+        bump,
+        console=True,
+        script=script,
+    )
+    assert "the restart waits" not in capsys.readouterr().err
 
 
 def test_a_re_exec_drops_the_session_pairs_its_registry_already_holds(
