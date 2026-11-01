@@ -104,7 +104,9 @@ With ``--console``, the chief of staff's console, each poll it also writes ``<re
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
-20 minutes (a message to it other than its own counts, and none for a lead marked ``direct``,
+20 minutes (a message to it other than its own counts; a lead whose ``STILL WORKING`` names a
+time raises it once that time has passed, which the supervisor settles by waking the lead, and
+none for a lead marked ``direct``,
 which the owner drives in its own session: ``direct <session> [--off]`` sets the mark); and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
 ``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
@@ -275,6 +277,12 @@ LEAD_NUDGE = (
     "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
     " end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
     ' For example: "STILL WORKING: waiting on the verifier".'
+)
+# A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
+LEAD_WAKE = (
+    "Supervisor: the time your STILL WORKING named, {time}, has passed. Check what you wait on and"
+    " carry on, then end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or"
+    " PARKED."
 )
 LEAD_REVIVE = (
     "Supervisor: your session failed and was resumed. Carry on from your last step, and end your"
@@ -3309,14 +3317,16 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
-    ``revived`` once, ``offline`` (no live runner), and whether any standing ``decisions`` exist;
+    ``revived`` once, ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
+    progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
     ``owner`` and why, or ``unsure`` when it gave no answer (a failure, or no allowance left),
     and only picks the route, since its input holds a lead's own words. Only its ``act`` on a
     quiet end nudges; ``unsure`` acts.
 
-    Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``revive``, ``done``
+    Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
+    wait's time passed), ``revive``, ``done``
     (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
@@ -3346,6 +3356,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if wait != "unknown":
             if event.get("offline"):  # nothing wakes it: its wait can never end
                 return "rule", "revive", f"no live runner while it {waits(wait)}: revive it"
+            if event.get("due"):  # quiet since its time: nothing else wakes it then
+                return "rule", "wake", f"its time passed while it {waits(wait)}: wake it"
             return "rule", "act", f"no progress while it {waits(wait)}: inspect the wait"
         if event.get("nudged"):
             return "rule", "act", "no progress after its nudge"
@@ -3736,6 +3748,7 @@ def supervise_registry(
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
             "offline": not info.get("runner_online", True),
+            "due": eid.endswith(":due"),
         }
 
         def ask() -> tuple[str, str]:
@@ -3769,9 +3782,10 @@ def supervise_registry(
         head = f"{sid} {lead.get('title') or ''}".rstrip()
         if action == "absorb":
             state["leads"].pop(sid, None)
-        elif action == "nudge":
+        elif action in ("nudge", "wake"):  # one of either per progress chain
             lead.update(nudges=lead.get("nudges", 0) + 1, nudged_at=lead.get("progress_at"))
-            act_on(eid, [(sid, "nudge", LEAD_NUDGE)])
+            text = LEAD_WAKE.format(time=lead["wait"].removeprefix("until "))
+            act_on(eid, [(sid, action, LEAD_NUDGE if action == "nudge" else text)])
         elif action == "revive":
             if kind == "failed":  # its one revive after a failure; a lost runner is no failure
                 lead["revives"] = lead.get("revives", 0) + 1
@@ -4049,33 +4063,44 @@ def supervise_registry(
 
     def overdue(sid: str, lead: dict) -> None:
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
-        for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. Each is one
-        event per ``progress_at``, so new progress starts a new chain."""
+        for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
+        wait with no progress since its time raises one at its time, which wakes the lead, and
+        once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``,
+        so new progress starts a new chain."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
         if lead["wait"] == "parked":
             return  # it waits on capacity, also while its lost turn end reads running
+        due = None
         if lead["wait"].startswith("until "):
             due = datetime.fromisoformat(lead["wait"].removeprefix("until ")).timestamp()
-            if time.time() < due + DEADLINE_SECONDS:
+            if time.time() < due:
                 return  # a timed wait: nothing is due before its time
         if lead["state"] in ("blocked", "failed", "archived") or (
             lead["state"] == "idle" and lead["ending"]
         ):
             return  # its follower was told and it waits on them
-        if time.time() - lead["progress_at"] < DEADLINE_SECONDS:
+        if due is None and time.time() - lead["progress_at"] < DEADLINE_SECONDS:
             return
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
         quiet = time.time() - lead["progress_at"]
-        steps = [(DEADLINE_SECONDS, "")]
-        # one nudge per progress chain: the chain it was spent on is the one that waits longer
-        if lead["wait"] == "unknown" and lead.get("nudged_at") == lead["progress_at"]:
-            steps.append((DEADLINE_SECONDS + NUDGED_SECONDS, ":nudged"))
+        spent = lead.get("nudged_at") == lead["progress_at"]
+        if due is not None and lead["progress_at"] < due:
+            # quiet since its time: at once (the wake), then once woken DEADLINE_SECONDS after it
+            steps = [(0.0, ":due")] + [
+                (due - lead["progress_at"] + DEADLINE_SECONDS, ":nudged")
+            ] * spent
+        else:
+            steps = [(DEADLINE_SECONDS, "")]
+            # one nudge or wake per progress chain: the chain it was spent on waits longer
+            if (due is not None or lead["wait"] == "unknown") and spent:
+                steps.append((DEADLINE_SECONDS + NUDGED_SECONDS, ":nudged"))
         for after, nudged in steps:
             if quiet >= after:
                 head = f"{sid} {lead['title']}".rstrip()
-                why = f"no progress {quiet / 60:.0f}m{' after a nudge' * bool(nudged)}"
+                then = " after a wake" if due is not None else " after a nudge"
+                why = f"no progress {quiet / 60:.0f}m{then * (nudged == ':nudged')}"
                 line = f"{head}: {why} ({lead['wait']})\nlast message: {lead['last_line']}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 

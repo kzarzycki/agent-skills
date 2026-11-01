@@ -4524,9 +4524,9 @@ LIVE_TIMED = (
 )
 
 
-@pytest.mark.parametrize(("due_in", "deadline"), [(3600.0, False), (-1300.0, True)])
-def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, due_in: float, deadline: bool
+@pytest.mark.parametrize(("due_in", "woken"), [(3600.0, False), (-60.0, True), (-1300.0, True)])
+def test_a_timed_wait_wakes_the_lead_once_its_time_has_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, due_in: float, woken: bool
 ) -> None:
     assert omnigent_agent.wait_of(LIVE_TIMED) == "until 2026-10-21T23:17Z"
     # its named wait, not "lead" from "per lead event"
@@ -4567,8 +4567,61 @@ def test_a_timed_wait_holds_off_the_deadline_until_its_time_and_grace(
     og = Lead(told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", 3600))
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
     assert [p.split("\n")[0] for p in fyis(og)] == (
-        [f"Supervisor: a t-a: no progress 60m (until {due})"] if deadline else []
+        [f"Supervisor: a t-a: no progress 60m (until {due})"] if woken else []
     )
+    wake = omnigent_agent.LEAD_WAKE.format(time=due)
+    assert [t for s, t in og.inbox if s == "a"] == ([wake] if woken else [])
+
+
+def timed(due_in: float, ago: float) -> tuple[str, Lead]:
+    due = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(time.time() + due_in))
+    return due, Lead(
+        told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", ago)
+    )
+
+
+def test_a_woken_lead_still_quiet_a_deadline_after_its_time_goes_to_the_chief_of_staff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    due, og = timed(-60.0, 3600)
+    at = {1: 1300.0, 2: 1400.0}
+    supervised(og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, at[poll]),
+               notify="cos", console=True, fyi="post")  # fmt: skip
+    assert [p.split("\n")[0] for p in fyis(og)] == [
+        f"Supervisor: a t-a: no progress 60m (until {due})",
+        f"Supervisor: a t-a: no progress 82m after a wake (until {due})",
+    ]  # one wake, then one deadline, routed as today
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_WAKE.format(time=due)]
+    assert state_of(registry)["leads"]["a"]["nudges"] == 1
+
+
+def test_progress_after_a_timed_waits_time_raises_no_wake_and_counts_from_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    due, og = timed(-120.0, 10)  # it wrote after its time
+    supervised(og, registry, monkeypatch, 3, lambda poll: offset.__setitem__(0, 1000.0 + 100 * poll),
+               notify="cos", console=True, fyi="post")  # fmt: skip
+    lines = [p.split("\n")[0] for p in fyis(og)]
+    # nothing at 1100s, before DEADLINE_SECONDS from the progress; at 1200s the deadline, no wake
+    assert [p for p in lines if "no progress" in p] == [
+        f"Supervisor: a t-a: no progress 20m (until {due})"
+    ]
+    assert [t for s, t in og.inbox if s == "a"] == []
+
+
+def test_an_offline_lead_whose_time_passed_is_revived_not_woken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    due, og = timed(-60.0, 3600)
+    og.snap = {"runner_online": False}
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert og.retried == ["a"]
+    assert omnigent_agent.LEAD_WAKE.format(time=due) not in [t for s, t in og.inbox if s == "a"]
 
 
 def test_a_background_task_id_is_a_named_wait() -> None:
