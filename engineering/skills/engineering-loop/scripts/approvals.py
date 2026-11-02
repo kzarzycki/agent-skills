@@ -100,8 +100,8 @@ and a random value, so two lands in the same second never make the same commit a
 `refs/loop/landing` on `origin`, which refuses a second such push while the ref is there, as no fast-forward, so two
 hosts never land at once; a ref outside `refs/heads/` starts no workflow. The lock's commit date is its age. Held by
 another: exit 3, naming its age. One older than 2 hours is stale, left by a land that died: it is deleted and taken. The
-lock is released at the end whatever happened, but only while it is still ours, so a stale one broken and taken by
-another land stays theirs.
+lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128 plus the signal), but only while
+it is still ours, so a stale one broken and taken by another land stays theirs; SIGKILL leaves it to be broken as stale.
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
@@ -138,9 +138,9 @@ With loop.md's `machine_exit` (78, say), a gate run in steps 4 and 6 exiting wit
 tree's: it runs once more on the same tree, and a second such exit stops the run (exit 1), landing nothing, evicting
 nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
 Exit 0 when the named PR merged, or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
-eviction, a merge GitHub refused or a red base; 3 while it waits. `land --wait` runs it again every 30 seconds while it
-waits on the lock or on CI, printing each new state once, for up to 2 hours, then exits 3; a wait for the owner ends it
-at once, since only the owner clears it.
+eviction, a merge GitHub refused or a red base; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
+`land --wait` runs it again every 30 seconds while it waits on the lock or on CI, printing each new state once, for up
+to 2 hours, then exits 3; a wait for the owner ends it at once, since only the owner clears it.
 With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
 commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
 PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
@@ -445,6 +445,8 @@ ATTACHMENT = "https://github.com/user-attachments/"
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
 # ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
+# the signals that stop a land and release its lock (stopped)
+STOPS = (signal.SIGTERM, signal.SIGHUP)
 # the landing lock: a ref outside refs/heads/, so pushing it starts no workflow
 LOCK = "refs/loop/landing"
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
@@ -2969,48 +2971,70 @@ def landing(pr: int | None) -> tuple[int, bool]:
             "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
         ).strip()
     )
-    # a killed process group or a harness timeout (SIGTERM, SIGHUP) unwinds, so the finally below releases the lock;
-    # SIGKILL can't be caught, and leaves the lock to be broken as stale
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, lambda signum, _frame: sys.exit(128 + signum))
-    ours = locked(base)
-    if ours is None:
-        return WAITING, True
+    previous = {sig: signal.getsignal(sig) for sig in STOPS}
+    ours, taken = None, None  # taken stays None while the lock's push may have reached origin
     try:
+        for sig, handler in previous.items():
+            if handler is not signal.SIG_IGN:  # a land under nohup still outlives a hangup
+                signal.signal(sig, stopped)
+        ours = lock_commit(base)
+        taken = locked(ours)
+        if not taken:
+            return WAITING, True
         return batched(named, base, tracker, loop)
     finally:
-        # only while it is still ours: a lock broken as stale and taken by another land stays theirs
-        released = subprocess.run(
-            [
-                "git",
-                "push",
-                "-q",
-                "--no-verify",
-                f"--force-with-lease={LOCK}:{ours}",
-                "origin",
-                f":{LOCK}",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if released.returncode:
-            print(f"the landing lock {LOCK} was not released: {' '.join(released.stderr.split())}")
+        if ours and taken is not False:
+            # only while it is still ours: a lock broken as stale and taken by another land stays theirs
+            released = subprocess.run(
+                [
+                    "git",
+                    "push",
+                    "-q",
+                    "--no-verify",
+                    f"--force-with-lease={LOCK}:{ours}",
+                    "origin",
+                    f":{LOCK}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if released.returncode and taken:
+                print(
+                    f"the landing lock {LOCK} was not released: {' '.join(released.stderr.split())}"
+                )
+        for sig, handler in previous.items():
+            if handler is not None:  # None: a handler set outside Python, which can't be put back
+                signal.signal(sig, handler)
 
 
-def locked(base: str) -> str | None:
-    """Take the landing lock: push a parentless commit of the base's tree to LOCK, which origin refuses as no
-    fast-forward while another is there, so any host sees it. Its commit date is its age; one older than CEILING is
-    stale, deleted and taken. Our commit, or None after saying who holds it since when."""
+def stopped(signum: int, _frame: Any) -> None:
+    """A land stopped by SIGTERM or SIGHUP (a killed process group, a harness timeout) unwinds, so landing's finally
+    releases the lock. Further stops are ignored first: `uv run` forwards the same signal again, and a second exit
+    raised inside the release would kill its push and leave the lock. SIGKILL can't be caught, and leaves the lock to
+    be broken as stale."""
+    for sig in STOPS:
+        signal.signal(sig, signal.SIG_IGN)
+    sys.exit(128 + signum)
+
+
+def lock_commit(base: str) -> str:
+    """The landing lock's commit: parentless, the base's tree, with the pid and a random value, since two lands in the
+    same second, under one identity, would otherwise build one commit, and the second push of it would succeed as a
+    no-op."""
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-    # pid and a random value: two lands in the same second, under one identity, would otherwise build one commit,
-    # and the second push of it would succeed as a no-op
-    ours = git(
+    return git(
         "commit-tree",
         "-m",
         f"landing lock\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
         f"refs/remotes/origin/{base}^{{tree}}",
     ).strip()
+
+
+def locked(ours: str) -> bool:
+    """Take the landing lock: push `ours` (lock_commit) to LOCK, which origin refuses as no fast-forward while another
+    is there, so any host sees it. Its commit date is its age; one older than CEILING is stale, deleted and taken.
+    False after saying who holds it since when."""
     for _ in range(2):
         pushed = subprocess.run(
             ["git", "push", "-q", "--no-verify", "origin", f"{ours}:{LOCK}"],
@@ -3019,7 +3043,7 @@ def locked(base: str) -> str | None:
             check=False,
         )
         if not pushed.returncode:
-            return ours
+            return True
         held = git("ls-remote", "origin", LOCK).split()
         if not held:
             raise Refused(
@@ -3036,7 +3060,7 @@ def locked(base: str) -> str | None:
                 f"another land holds the landing lock {LOCK}, taken {age // 60} minutes ago"
                 f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
             )
-            return None
+            return False
         print(
             f"the landing lock {LOCK} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
         )
@@ -3056,7 +3080,7 @@ def locked(base: str) -> str | None:
     print(
         f"another land took the landing lock {LOCK} as this one broke it: land --wait waits for it"
     )
-    return None
+    return False
 
 
 def landable(

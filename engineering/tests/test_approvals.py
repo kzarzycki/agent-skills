@@ -3785,9 +3785,9 @@ def test_two_lands_in_the_same_second_cannot_both_take_the_lock(
     now = f"@{int(datetime.now(UTC).timestamp())} +0000"
     monkeypatch.setenv("GIT_COMMITTER_DATE", now)
     monkeypatch.setenv("GIT_AUTHOR_DATE", now)
-    first = approvals.locked("main")
-    assert first is not None
-    assert approvals.locked("main") is None
+    first, second = approvals.lock_commit("main"), approvals.lock_commit("main")
+    assert approvals.locked(first)
+    assert not approvals.locked(second)
     assert lands["lock"]() == first
 
 
@@ -3803,15 +3803,44 @@ def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plu
         os.kill(os.getpid(), sig)
 
     monkeypatch.setattr(approvals, "merges", stopped)
-    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
-    try:
-        with pytest.raises(SystemExit) as stop:
-            lands["land"]("7")
-    finally:
-        for s, handler in before.items():
-            signal.signal(s, handler)
+    before = {s: signal.getsignal(s) for s in approvals.STOPS}
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
     assert held[0], "the land held no lock when it was stopped"
     assert (stop.value.code, lands["lock"]()) == (128 + sig, "")
+    assert {s: signal.getsignal(s) for s in approvals.STOPS} == before, (
+        "the land left its handlers behind"
+    )
+
+
+@pytest.mark.parametrize("when", ["taking", "releasing"])
+def test_a_stop_while_the_lock_is_pushed_still_releases_it(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, when: str
+) -> None:
+    # taking: the stop arrives as the lock's push reaches origin, before locked() returns. releasing: a second stop
+    # arrives as the release is pushed, as `uv run` forwards the signal Python already got
+    lands["open"](7, {"7.txt": "7\n"})
+    run = subprocess.run
+
+    def pushing(args: Any, *rest: Any, **kw: Any) -> Any:
+        target = args[-1] if isinstance(args, list) and args[:2] == ["git", "push"] else ""
+        if when == "releasing" and target == f":{approvals.LOCK}":
+            os.kill(os.getpid(), signal.SIGTERM)
+        done = run(args, *rest, **kw)
+        if (
+            when == "taking"
+            and target.endswith(f":{approvals.LOCK}")
+            and not target.startswith(":")
+        ):
+            os.kill(os.getpid(), signal.SIGTERM)
+        return done
+
+    monkeypatch.setattr(approvals.subprocess, "run", pushing)
+    if when == "releasing":
+        monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert (stop.value.code, lands["lock"]()) == (143, "")
 
 
 def test_a_lock_another_land_took_meanwhile_stays_theirs(
