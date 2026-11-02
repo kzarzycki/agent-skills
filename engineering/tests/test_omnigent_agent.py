@@ -77,6 +77,7 @@ class FakeOmnigent:
             "gpt-6.1-terra",
         ]
         self.overrides: dict[str, str | None] = {}  # the model_override each session took
+        self.efforts: dict[str, str | None] = {}  # the reasoning_effort each session took
 
     def session_id(self, sid: str) -> str:  # the real lookup, over these sessions
         return REAL_SESSION_ID(self, sid)
@@ -120,6 +121,7 @@ class FakeOmnigent:
         permission_mode: str | None = None,
         host_id: str | None = None,
         role: str | None = None,
+        effort: str | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -134,6 +136,7 @@ class FakeOmnigent:
         )
         self.top_level.append(top_level)
         self.roles.append(role)
+        self.efforts[sid] = effort
         self.workspaces.append(workspace)
         self.hosts_of[sid] = host_id or self.host_id
         self.sessions[sid] = [{"type": "resource_event"}]
@@ -207,6 +210,7 @@ class FakeOmnigent:
         status = "running" if pending else self.final
         info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
         info["model_override"] = self.overrides.get(sid)
+        info["reasoning_effort"] = self.efforts.get(sid)
         if sid in self.roots:
             info["root_conversation_id"] = self.roots[sid]
         if sid in self.archived:
@@ -1360,6 +1364,37 @@ def test_create_sets_a_claude_session_s_permission_mode_from_the_flag_or_the_env
         )
 
 
+def test_create_asks_for_the_effort_given_and_the_brief_signs_with_the_one_taken(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        bodies.append(body or {})
+        agents = [{"name": n, "id": a} for a, n in omnigent_agent.AGENTS.items()]
+        return {
+            "/v1/agents": agents,
+            "/v1/agents?scope=user": [],
+            "/v1/projects": {"data": []},
+            "/v1/sessions": {"id": "s1"},
+        }[path]
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    og = omnigent_agent.Omnigent()
+    og.create("claude", "t")
+    assert "reasoning_effort" not in bodies[-1]  # the harness default
+    og.create("claude", "t", effort="max")
+    assert bodies[-1]["reasoning_effort"] == "max"
+    assert "--effort" not in bodies[-1].get("terminal_launch_args", [])  # Omnigent adds it
+    fake = FakeOmnigent()
+    omnigent_agent.start(fake, "claude", "t", "do X", tmp_path / "r.md", None, 0, effort="max")
+    assert fake.efforts == {"s0": "max"}
+    assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=cc/?/max\n")
+
+
 def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_names_beyond(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1949,7 +1984,7 @@ def test_retry_after_surviving_child_uses_a_new_title(tmp_path: Path) -> None:
     titles: list[str] = []
     create = og.create
     og.create = (
-        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None, role=None: (
+        lambda agent, title, model=None, top_level=False, workspace=None, permission_mode=None, host_id=None, role=None, effort=None: (
             titles.append(title) or create(agent, title)
         )
     )  # type: ignore[method-assign]
@@ -3333,7 +3368,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     og = FakeOmnigent(reply="done")
     og.listed = ["named", "flag"]
     create = og.create
-    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None: (
+    og.create = lambda a, t, m=None, top=False, w=None, p=None, h=None, r=None, e=None: (
         models.append(m),
         create(a, t, m),
     )[1]  # type: ignore[method-assign]

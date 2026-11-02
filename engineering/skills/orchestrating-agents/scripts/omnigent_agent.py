@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
@@ -808,6 +808,7 @@ class Omnigent:
         permission_mode: str | None = None,
         host_id: str | None = None,
         role: str | None = None,
+        effort: str | None = None,
     ) -> str:
         body: dict[str, object] = {
             "agent_id": self.agent_id(agent),
@@ -835,6 +836,10 @@ class Omnigent:
             agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
         ):
             body["model_override"] = model
+        # Omnigent passes it to a native CLI as ``--effort`` at launch and checks it against the
+        # harness's own levels, so an unknown one fails the create rather than running on a default.
+        if effort:
+            body["reasoning_effort"] = effort
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
         # starts its terminal (the session fails "Codex native bridge state is missing").
         mode = permission_mode or os.environ.get("OMNIGENT_PERMISSION_MODE")
@@ -1824,7 +1829,8 @@ def signature(harness: str, model: str | None, effort: str | None = None) -> str
     """``<harness>/<model>/<effort>``: ``cc``, ``codex`` or ``omp`` by harness, the model id without its vendor
     prefix and dotted (``claude-sonnet-5-5`` is ``sonnet-5.5``, ``gpt-6.1-terra`` is ``terra-6.1``), the effort
     (``medium`` is ``med``), and ``?`` for anything unknown. A session about to start knows only what it is
-    started with, and Omnigent takes no effort; ``running_signature`` reads the rest once it runs."""
+    started with, as the server recorded it (``model_override``, ``reasoning_effort``); ``running_signature`` reads
+    the rest once it runs."""
     name = next(
         (n for key, n in (("claude", "cc"), ("codex", "codex"), ("omp", "omp")) if key in harness),
         "?",
@@ -1905,6 +1911,7 @@ def start(
     workspace: str | None = None,
     permission_mode: str | None = None,
     host_id: str | None = None,
+    effort: str | None = None,
     subscribe: bool = True,
     subscriber: str = "",
     pr: int | None = None,
@@ -2020,7 +2027,15 @@ def start(
             try:
                 sid, error = (
                     og.create(
-                        agent, name, model, top_level, workspace, permission_mode, host_id, role
+                        agent,
+                        name,
+                        model,
+                        top_level,
+                        workspace,
+                        permission_mode,
+                        host_id,
+                        role,
+                        effort,
                     ),
                     None,
                 )
@@ -2044,11 +2059,12 @@ def start(
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
         try:
-            took = og.info(sid).get("model_override")
+            took = og.info(sid)
         except Fail as e:  # the session is there, so a brief signed "?" beats none
-            took = None
+            took = {}
             print(f"no model read back for {sid} ({e}): it signs ?", file=sys.stderr)
-        full = f"AGENT_SIGNATURE={signature(harness, took)}\n" + body
+        sig = signature(harness, took.get("model_override"), took.get("reasoning_effort"))
+        full = f"AGENT_SIGNATURE={sig}\n" + body
         text = message(full)
         if by_file:
             brief_file.parent.mkdir(parents=True, exist_ok=True)
@@ -4365,6 +4381,11 @@ def main(argv: list[str] | None = None) -> int:
             help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CODEX, else the harness default)",
         )
         p.add_argument(
+            "--effort",
+            help="reasoning effort, as the harness names its levels (claude: low, medium, high, xhigh, max);"
+            " default: the harness's own",
+        )
+        p.add_argument(
             "--permission-mode",
             help="a claude session's mode, as claude --permission-mode takes it (default: $OMNIGENT_PERMISSION_MODE,"
             " else the harness default); codex sessions take none",
@@ -4885,6 +4906,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.role,
                 args.confirm_seconds,
                 model=args.model,
+                effort=args.effort,
                 permission_mode=args.permission_mode,
                 top_level=args.top_level,
                 workspace=str(workspace),
