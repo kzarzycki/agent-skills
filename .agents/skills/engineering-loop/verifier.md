@@ -35,6 +35,10 @@ yourself, keeping standards and spec as separate axes.
   say how that input arises in use (`docs/agents/loop.md` § In use). Also report a spec or design
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
+- **Siblings.** Under a correctness finding, list the sibling inputs you can see: the other
+  cases the same code handles the same way (other states, callers, boundary values), each
+  marked failing with its evidence, fine, or not run. They belong to that finding, not to the
+  verdict's counts, so the fix can cover the class in one round instead of one case a pass.
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
 - **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
   has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
@@ -109,8 +113,8 @@ yourself, keeping standards and spec as separate axes.
   itself; it changes CI permissions, secrets, branch protection or the loop's own approval
   rules; or it changes what users see in a significant way the spec did not ask for, or
   asked for only vaguely, so the owner would be surprised. loop.md § Risk criteria, where it
-  has one, adds the project's own. Anything else is low. `verifier: true` in loop.md's
-  `risk` lets a low change merge without the owner, so judge it on the diff, not on
+  has one, adds the project's own. Anything else is low. `verifier: true` in the policy's
+  `risk` (docs/agents/gatekeeper.md) lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
 - **A full heavy slot.** A gate or mutation run that waits for the host's heavy slot is the
@@ -124,7 +128,7 @@ yourself, keeping standards and spec as separate axes.
   verdict without them would be repeated once the logs exist.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
   what it holds, and report it as not run with the exact owner action, since parking it is
-  the lead's.
+  the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 - **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
   (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain

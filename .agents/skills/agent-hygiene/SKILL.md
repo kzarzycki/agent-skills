@@ -31,13 +31,17 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
 ## What it clears
 
 - **Caches:** `uv cache prune`, `pnpm store prune`, `npm cache clean --force`,
-  `go clean -cache`, `pre-commit gc`, `brew cleanup --prune=all -s` (only in the account
-  that owns the Homebrew prefix), `docker builder prune -f --filter until=24h` (build cache
+  `go clean -cache`, `pre-commit gc`, `brew cleanup --prune=all -s` (only in an account
+  that can write both the prefix's `Cellar` and its `var/homebrew/locks`, since cleanup
+  takes a lock there), `docker builder prune -f --filter until=24h` (build cache
   no build used for a day; images, containers and volumes stay; skipped when no Docker
   daemon answers). A tool that isn't installed is skipped. A tool with a running process
   is skipped, and one still running after its timeout is stopped and logged as in use:
   `uv cache prune` waits for every other uv process, so a long `uv run` turns it into a
-  skip, never a wait.
+  skip, never a wait. A uv cache shared with another account, which owns part of it, stops
+  the prune at that account's files (`Permission denied`): the round doesn't fail on it, and
+  tells the chief of staff once, naming the cache folder and how to share or split it; it
+  changes no ownership or permissions itself.
 - **Worktrees** under `~/dev` whose branch has a merged PR on the GitHub origin (or,
   detached, whose HEAD is the head of a merged or closed PR), and the worktrees with no PR
   of their own inside one (a worker's or agent's), judged with that PR and removed first.

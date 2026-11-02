@@ -155,8 +155,11 @@ an earlier `DONE` or `PARKED` line: an ask after a `DONE` is the ending, since i
 Under `--console` the supervisor already did the routine part: it sends the stall nudge (once per
 progress chain) and the revive (once per lead) itself, as a `relay` whose text is `Supervisor:
 your turn ended with no ending and no named wait. Carry on to your next step, and end your turn
-with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED.` (`LEAD_NUDGE`). When a
-lead's history shows that line, the nudge is spent: you never send another, because a second one
+with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED.` (`LEAD_NUDGE`). For a
+timed wait (`until <UTC time>`) still quiet once its time has passed, it sends the wake instead,
+`Supervisor: the time your STILL WORKING named, <time>, has passed. …` (`LEAD_WAKE`), from the
+same budget, since nothing else wakes an idle lead at its time. When a lead's history shows
+either line, the nudge is spent: you never send another, because a second one
 would break the once-per-chain budget the supervisor keeps in `state.json` across restarts. A
 post that reaches you has already been through that, so the rows below that say "nudge" or
 "revive" apply only to a supervisor running without `--console`.
@@ -165,7 +168,7 @@ post that reaches you has already been through that, so the rows below that say 
 |---|---|
 | Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one, and was started without `start --after` (or under a supervisor without `--console`), a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it; a lead started with `--after` is told by the supervisor, and a second line of yours would wake it twice. Then archive the lead once its report says it cleaned up (`reap <session>` with the registry, which drops its line first, so the supervisor posts no `archived` for it). |
 | Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
-| Turn ended, `STILL WORKING`, with something pending | Send nothing, since the state file records what it waits on (Handover, Follow): its own worker, verifier or CI wakes it, another lead's merge reaches it through that lead's `DONE`, and a timed wait (`until <UTC time>`) raises no deadline before its time. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
+| Turn ended, `STILL WORKING`, with something pending | Send nothing, since the state file records what it waits on (Handover, Follow): its own worker, verifier or CI wakes it, another lead's merge reaches it through that lead's `DONE`, and a timed wait (`until <UTC time>`) raises no deadline before its time, then gets the supervisor's wake (`--console`, see above) or, without it, a `relay` from you once its time has passed. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
 | Turn ended, `PARKED` | Send nothing (the state file records it as parked, and its last message holds the next step): it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step (under `--console` the supervisor sent it: see above). A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Once they approve it (or decline it), run `python3 <script> approve <session>` (`--decline`), which answers each approval prompt pending; their word is the approval, never yours. |
