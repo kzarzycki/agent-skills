@@ -120,3 +120,12 @@ def test_a_cloud_agent_s_role_start_shares_a_used_workspace(tmp_path: Path) -> N
     lead_in(og, tmp_path)
     first = start(og, tmp_path, agent="claude-cloud", title="s750-cloud-a", report="a")
     assert start(og, tmp_path, agent="claude-cloud", title="s750-cloud-b", report="b") != first
+
+
+def test_a_session_that_names_no_workspace_holds_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)  # an empty path resolves to the current directory
+    og = FakeOmnigent()
+    lead_in(og, tmp_path, workspace="")
+    assert start(og, tmp_path) == "s0"
