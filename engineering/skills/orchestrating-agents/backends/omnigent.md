@@ -82,6 +82,12 @@ choice, set in the environment once. Omnigent applies it as the session's
 none: codex-native hands the flag to the `codex` CLI, whose terminal then never starts, so
 `start` refuses the flag for Codex and ignores the variable.
 
+**Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
+(Claude: `low` to `max`); without it the harness default runs. Omnigent records it as the session's
+`reasoning_effort` and passes it to a native CLI as `--effort` at launch, and the brief's
+`AGENT_SIGNATURE` names it. The server refuses a level the harness lacks, so the create fails rather than
+running on a default.
+
 **Lean children.** A Claude child started with `--role` naming `worker.md` or `verifier.md`
 gets only the built-in tools those roles call (`LEAN_TOOLS`: Bash, Read, Edit, Write, Agent,
 Skill, ToolSearch, WebFetch, WebSearch) and none of the user's or project's MCP servers
