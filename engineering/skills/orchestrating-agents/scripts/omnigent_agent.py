@@ -842,8 +842,9 @@ class Omnigent:
             agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
         ):
             body["model_override"] = model
-        # Omnigent passes it to a native CLI as ``--effort`` at launch and checks it against the
-        # harness's own levels, so an unknown one fails the create rather than running on a default.
+        # Omnigent turns it into each harness's own setting (``--effort`` for Claude Code, the pinned
+        # config for Codex), so nothing goes into the launch args. The create checks it against
+        # Omnigent's effort words; the harness's own levels are checked at launch.
         if effort:
             body["reasoning_effort"] = effort
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
@@ -1937,6 +1938,15 @@ def start(
         raise Fail(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
+        )
+    # The variable names only exist for the two aliases, like OMNIGENT_MODEL_<AGENT>.
+    effort = (
+        effort or (agent in AGENTS and os.environ.get(f"OMNIGENT_EFFORT_{agent.upper()}")) or None
+    )
+    if effort and agy:  # ponytail: antigravity is the one harness known to take no effort
+        raise Fail(
+            f"--effort: {agent} runs {AGY_HARNESS}, which takes no effort, so its signature would name"
+            " an effort it doesn't run"
         )
     variable = f"OMNIGENT_MODEL_{agent.upper()}"
     chosen = model or (agent in AGENTS and os.environ.get(variable)) or None
@@ -4432,8 +4442,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         p.add_argument(
             "--effort",
-            help="reasoning effort, as the harness names its levels (claude: low, medium, high, xhigh, max);"
-            " default: the harness's own",
+            help="reasoning effort, as the harness names its levels (claude: low, medium, high, xhigh, max)"
+            " (default: $OMNIGENT_EFFORT_<AGENT>, e.g. OMNIGENT_EFFORT_CODEX, else the harness default)",
         )
         p.add_argument(
             "--permission-mode",

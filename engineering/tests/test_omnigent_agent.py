@@ -1410,6 +1410,37 @@ def test_create_asks_for_the_effort_given_and_the_brief_signs_with_the_one_taken
     assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=cc/?/max\n")
 
 
+def test_start_takes_the_effort_from_omnigent_effort_agent_unless_one_is_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
+    monkeypatch.setenv("OMNIGENT_EFFORT_CODEX", "high")
+    fake = FakeOmnigent()
+    omnigent_agent.start(fake, "codex", "a", "do X", tmp_path / "a.md", None, 0)
+    omnigent_agent.start(fake, "codex", "b", "do X", tmp_path / "b.md", None, 0, effort="low")
+    monkeypatch.delenv("OMNIGENT_EFFORT_CODEX")
+    omnigent_agent.start(fake, "codex", "c", "do X", tmp_path / "c.md", None, 0)
+    assert list(fake.efforts.values()) == ["high", "low", None]
+    assert [(tmp_path / f"{n}.md.brief").read_text().split("\n")[0] for n in "abc"] == [
+        "AGENT_SIGNATURE=codex/?/high",
+        "AGENT_SIGNATURE=codex/?/low",
+        "AGENT_SIGNATURE=codex/?/?",
+    ]
+
+
+def test_start_refuses_an_effort_for_antigravity_and_ignores_the_variables(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OMNIGENT_EFFORT_CLAUDE", "max")
+    og = FakeOmnigent()
+    og.harnesses["agy"] = "antigravity-native"
+    with pytest.raises(omnigent_agent.Fail, match="takes no effort"):
+        omnigent_agent.start(og, "agy", "t", "x", tmp_path / "r.md", None, 0, effort="max")
+    assert og.efforts == {}
+    omnigent_agent.start(og, "agy", "t", "x", tmp_path / "r.md", None, 0)
+    assert list(og.efforts.values()) == [None]
+
+
 def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_names_beyond(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
