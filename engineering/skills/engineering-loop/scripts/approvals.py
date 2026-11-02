@@ -2984,7 +2984,8 @@ def landing(pr: int | None) -> tuple[int, bool]:
         return batched(named, base, tracker, loop)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
-        # release it would kill its push and leave the lock, and the push inherits the mask, so a group stop can't either
+        # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
+        # children (ssh, gh as the credential helper) unblock the signals, and a stop of the land's group would end them
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
         if ours and taken is not False:
             # only while it is still ours: a lock broken as stale and taken by another land stays theirs
@@ -3001,6 +3002,7 @@ def landing(pr: int | None) -> tuple[int, bool]:
                 capture_output=True,
                 text=True,
                 check=False,
+                start_new_session=True,
             )
             if released.returncode and taken:
                 print(

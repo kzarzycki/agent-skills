@@ -3858,6 +3858,51 @@ def test_a_stop_while_the_lock_is_pushed_still_releases_it(
     assert "was not released" not in capsys.readouterr().out
 
 
+def test_the_release_push_runs_outside_the_lands_process_group(
+    lands: dict[str, Any], tmp_path: Path
+) -> None:
+    # ssh and gh as the credential helper unblock SIGTERM and SIGHUP, so a group stop would end them mid-release
+    groups = tmp_path / "groups.log"
+    receive = tmp_path / "receive-pack"
+    receive.write_text(f'#!/bin/sh\nps -o pgid= -p $$ >> "{groups}"\nexec git-receive-pack "$@"\n')
+    receive.chmod(0o755)
+    git_in(lands["work"], "config", "remote.origin.receivepack", str(receive))
+    lands["open"](7, {"7.txt": "7\n"})
+    groups.unlink()
+    assert (lands["land"]("7")[0], lands["lock"]()) == (0, "")
+    pushes = [int(g) for g in groups.read_text().split()]
+    assert pushes[0] == os.getpgrp(), (
+        "the lock's take ran outside the land's group, so the test proves nothing"
+    )
+    assert pushes[-1] != os.getpgrp(), "the release push ran in the land's process group"
+
+
+@pytest.mark.usefixtures("stoppable")
+def test_a_second_stop_while_the_batch_worktree_is_removed_leaves_no_worktree(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # uv run forwards the first stop again while the unwinding removes the batch worktree; stopped() ignores it
+    lands["open"](7, {"7.txt": "7\n"})
+    removed: list[str] = []
+    run = subprocess.run
+
+    def removing(args: Any, *rest: Any, **kw: Any) -> Any:
+        if isinstance(args, list) and args[:3] == ["git", "worktree", "remove"]:
+            removed.append(args[-1])
+            os.kill(os.getpid(), signal.SIGTERM)
+        return run(args, *rest, **kw)
+
+    monkeypatch.setattr(approvals.subprocess, "run", removing)
+    monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert (stop.value.code, lands["lock"]()) == (143, "")
+    assert removed, "the land never removed its batch worktree"
+    assert not Path(removed[0]).exists(), (
+        f"the batch worktree {Path(removed[0]).name} was left behind"
+    )
+
+
 def test_a_land_that_inherits_sighup_ignored_outlives_a_hangup(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
