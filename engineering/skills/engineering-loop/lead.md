@@ -183,8 +183,8 @@ design, wireframes included for a UI, and delegate the rest.
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
      <pr> --head <sha> --by owner` naming the head you showed them, when they say it in your
-     session, or their own `approved:merge`; you
-     never give it. Into a feature branch, the delegated approver loop.md names may add it
+     session; you never give it, and `approved:merge` into the default branch is none. Into a
+     feature branch the label is a go too, and the delegated approver loop.md names may add it
      with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
    - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
