@@ -843,8 +843,8 @@ class Omnigent:
         ):
             body["model_override"] = model
         # Omnigent turns it into each harness's own setting (``--effort`` for Claude Code, the pinned
-        # config for Codex), so nothing goes into the launch args. The create checks it against
-        # Omnigent's effort words; the harness's own levels are checked at launch.
+        # config for Codex), so nothing goes into the launch args. The create refuses a word outside
+        # Omnigent's list, and nothing more: a harness drops a level it lacks, so ``start`` checks it.
         if effort:
             body["reasoning_effort"] = effort
         # Only claude-native applies it: codex-native passes it to the codex CLI, which then never
@@ -1749,6 +1749,16 @@ def taken(e: Fail) -> bool:
 
 
 CLOUD_HARNESS = "acp:claude-cloud"
+# ponytail: the harnesses known to apply an effort, by agent alias or harness, with the levels each
+# launches (None: every word Omnigent's create takes). Any other harness drops it, and so does Claude
+# Code a level outside its own. Upgrade: read Omnigent's effort capability once its API exposes it.
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORTS = {
+    "claude": CLAUDE_EFFORTS,
+    "claude-native": CLAUDE_EFFORTS,
+    "codex": None,
+    "codex-native": None,
+}
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 BYPASS = "bypassPermissions"
 SETTINGS = Path(".claude") / "settings.local.json"
@@ -1928,7 +1938,8 @@ def start(
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
     session on another host or in the cloud is not held back by this host's load."""
-    agy = agent not in AGENTS and og.harness(agent) == AGY_HARNESS
+    harness = agent if agent in AGENTS else og.harness(agent)
+    agy = harness == AGY_HARNESS
     if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
         raise Fail(
             f"--permission-mode is for claude sessions (and {BYPASS} for antigravity);"
@@ -1940,14 +1951,20 @@ def start(
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
     # The variable names only exist for the two aliases, like OMNIGENT_MODEL_<AGENT>.
-    effort = (
-        effort or (agent in AGENTS and os.environ.get(f"OMNIGENT_EFFORT_{agent.upper()}")) or None
-    )
-    if effort and agy:  # ponytail: antigravity is the one harness known to take no effort
-        raise Fail(
-            f"--effort: {agent} runs {AGY_HARNESS}, which takes no effort, so its signature would name"
-            " an effort it doesn't run"
-        )
+    variable = f"OMNIGENT_EFFORT_{agent.upper()}"
+    if picked := effort or (agent in AGENTS and os.environ.get(variable)) or None:
+        source = f"--effort {picked}" if effort else f"{variable}={picked}"
+        if harness not in EFFORTS:
+            raise Fail(
+                f"{source}: {agent} runs {harness}, which applies no effort,"
+                " so its signature would name an effort it doesn't run"
+            )
+        if picked not in (EFFORTS[harness] or (picked,)):
+            raise Fail(
+                f"{source}: {agent} runs only {', '.join(EFFORTS[harness] or ())} and drops any other"
+                " level, so its signature would name an effort it doesn't run"
+            )
+    effort = picked
     variable = f"OMNIGENT_MODEL_{agent.upper()}"
     chosen = model or (agent in AGENTS and os.environ.get(variable)) or None
     if chosen:
@@ -1968,7 +1985,6 @@ def start(
             listed = [chosen]
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
-    harness = agent if agent in AGENTS else og.harness(agent)
     # its load lands there, not here: on another host, or in a cloud VM bridged from this one
     elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
@@ -2088,7 +2104,7 @@ def start(
             took = og.info(sid)
         except Fail as e:  # the session is there, so a brief signed "?" beats none
             took = {}
-            print(f"no model read back for {sid} ({e}): it signs ?", file=sys.stderr)
+            print(f"no session record read back for {sid} ({e}): it signs ?", file=sys.stderr)
         sig = signature(harness, took.get("model_override"), took.get("reasoning_effort"))
         full = f"AGENT_SIGNATURE={sig}\n" + body
         text = message(full)

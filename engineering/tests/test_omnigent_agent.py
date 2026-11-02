@@ -1431,14 +1431,88 @@ def test_start_takes_the_effort_from_omnigent_effort_agent_unless_one_is_given(
 def test_start_refuses_an_effort_for_antigravity_and_ignores_the_variables(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("OMNIGENT_EFFORT_CLAUDE", "max")
+    monkeypatch.setenv("OMNIGENT_EFFORT_AGY", "max")  # no alias, so not a variable start reads
     og = FakeOmnigent()
     og.harnesses["agy"] = "antigravity-native"
-    with pytest.raises(omnigent_agent.Fail, match="takes no effort"):
+    with pytest.raises(omnigent_agent.Fail, match="applies no effort"):
         omnigent_agent.start(og, "agy", "t", "x", tmp_path / "r.md", None, 0, effort="max")
     assert og.efforts == {}
     omnigent_agent.start(og, "agy", "t", "x", tmp_path / "r.md", None, 0)
     assert list(og.efforts.values()) == [None]
+
+
+@pytest.mark.parametrize(
+    ("agent", "harness", "effort", "refused"),
+    [
+        ("cloud", "acp:claude-cloud", "max", "applies no effort"),  # its executor drops it
+        ("claude", "", "ultra", "runs only low, medium, high, xhigh, max"),  # its launch drops it
+        ("native", "claude-native", "none", "runs only low"),
+        ("claude", "", "max", None),
+        ("native", "claude-native", "low", None),
+        ("codex", "", "ultra", None),
+        ("gpt", "codex-native", "minimal", None),
+    ],
+)
+def test_start_refuses_an_effort_the_child_would_not_run(
+    tmp_path: Path, agent: str, harness: str, effort: str, refused: str | None
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses[agent] = harness
+    if refused:
+        with pytest.raises(omnigent_agent.Fail, match=refused):
+            omnigent_agent.start(og, agent, "t", "x", tmp_path / "r.md", None, 0, effort=effort)
+        assert og.efforts == {}
+    else:
+        omnigent_agent.start(og, agent, "t", "x", tmp_path / "r.md", None, 0, effort=effort)
+        assert og.efforts == {"s0": effort}
+
+
+def test_start_names_the_variable_whose_effort_it_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("OMNIGENT_EFFORT_CLAUDE", "ultra")  # a Codex level copied over
+    og = FakeOmnigent()
+    with pytest.raises(
+        omnigent_agent.Fail, match="^OMNIGENT_EFFORT_CLAUDE=ultra: claude runs only"
+    ):
+        omnigent_agent.start(og, "claude", "t", "x", tmp_path / "r.md", None, 0)
+    assert og.efforts == {}
+
+
+def test_the_brief_signs_with_the_effort_the_session_took_not_the_one_asked(tmp_path: Path) -> None:
+    class Seeding(FakeOmnigent):  # the server seeds a session sent no effort from its agent's spec
+        def create(self, agent: str, title: str, *rest: object) -> str:
+            sid = super().create(agent, title, *rest)
+            self.efforts[sid] = self.efforts[sid] or "high"
+            return sid
+
+    og = Seeding()
+    omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=cc/?/high\n")
+
+
+def test_the_cli_passes_effort_over_the_variable_and_refuses_one_with_no_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="done")
+    og.harnesses["agy"] = "antigravity-native"
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "brief.md").write_text("do X")
+
+    def start(agent: str, report: str, *flags: str) -> int:
+        return omnigent_agent.main(
+            ["start", agent, report, "brief.md", report, "--confirm-seconds", "0", *flags]
+        )
+
+    assert start("claude", "a.md", "--effort", "max") == 0
+    monkeypatch.setenv("OMNIGENT_EFFORT_CLAUDE", "low")
+    assert start("claude", "b.md", "--effort", "xhigh") == 0
+    assert list(og.efforts.values()) == ["max", "xhigh"]
+    assert (tmp_path / "a.md.brief").read_text().startswith("AGENT_SIGNATURE=cc/?/max\n")
+    sessions = dict(og.sessions)
+    assert start("agy", "c.md", "--effort", "max") != 0
+    assert og.sessions == sessions and "applies no effort" in capsys.readouterr().err
 
 
 def test_create_starts_a_claude_worker_or_verifier_lean_with_what_the_project_names_beyond(

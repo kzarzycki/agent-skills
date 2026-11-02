@@ -86,10 +86,10 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 (Claude: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
 (`OMNIGENT_EFFORT_CLAUDE`, `OMNIGENT_EFFORT_CODEX`), else the harness default runs. Omnigent records
 it as the session's `reasoning_effort` and turns it into the harness's own setting at launch, and the
-brief's `AGENT_SIGNATURE` names the level the server recorded. The create refuses a word outside
-Omnigent's effort list; a level the harness lacks fails at launch. `start` refuses `--effort` for an
-antigravity agent, whose harness takes no effort, so a signature never names an effort the child
-doesn't run.
+brief's `AGENT_SIGNATURE` names the level the server recorded. A harness drops an effort it can't
+apply, with no error, so `start` refuses one rather than sign an effort the child doesn't run: any
+effort for a harness other than claude-native and codex-native (antigravity, claude-cloud), and a
+Claude level outside `low` to `max`. Codex takes every word Omnigent's create takes.
 
 **Lean children.** A Claude child started with `--role` naming `worker.md` or `verifier.md`
 gets only the built-in tools those roles call (`LEAN_TOOLS`: Bash, Read, Edit, Write, Agent,
