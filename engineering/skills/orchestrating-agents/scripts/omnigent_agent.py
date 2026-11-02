@@ -1027,6 +1027,32 @@ class Omnigent:
             if named.fullmatch(str(c.get("title") or "")) and not c.get("archived")
         ]
 
+    def users(self, workspace: str, host_id: str) -> list[dict]:
+        """The live sessions (not archived, not failed) on host ``host_id`` whose workspace is
+        ``workspace``, sub-agents included; on this host both paths are compared resolved."""
+        here = host_id == self.host_id
+
+        def same(path: object) -> bool:
+            if not path:
+                return False
+            norm = os.path.realpath if here else os.path.normpath
+            return norm(str(path)) == norm(workspace)
+
+        path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
+        while True:
+            page = self.call("GET", path + (f"&after={after}" if after else ""))
+            found += [
+                s
+                for s in page.get("data", [])
+                if str(s.get("host_id") or "") == host_id
+                and not s.get("archived")
+                and s.get("status") != "failed"
+                and same(s.get("workspace"))
+            ]
+            if not (page.get("has_more") and page.get("last_id")):
+                return found
+            after = str(page["last_id"])
+
     def children(self, sid: str) -> list[str]:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
         return [str(c["id"]) for c in page.get("data", [])]
@@ -1955,6 +1981,18 @@ def start(
     digest = hashlib.sha256(message(body).encode() + b"\0" + body.encode()).hexdigest()
     if not top_level and (held := holder(og, title, digest, report)):
         return held, []
+    # A role child changes the tree it runs in, so two on one host and workspace move it under
+    # each other (#750); a cloud session's workspace only seeds its own clone in a VM, and a start
+    # without a role (a lead) coordinates from a shared checkout.
+    if role and harness != CLOUD_HARNESS:
+        place, on = workspace or os.getcwd(), host_id or og.host_id
+        if users := og.users(place, on):
+            named = ", ".join(f"{s.get('id')} {s.get('title') or ''}".rstrip() for s in users)
+            raise Fail(
+                f"workspace {place} is in use on host {on} by live session {named}: give each"
+                " child its own worktree, the project's layout (under the engineering loop,"
+                " loop.md § Worktree)"
+            )
     reasons: list[str] = []
     survivors: list[str] = []
 
