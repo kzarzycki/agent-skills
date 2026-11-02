@@ -9,7 +9,9 @@ python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> 
 
 Run it from the worktree the child works in, because the script makes its current
 directory the session's workspace; `--workspace <dir>` names another, such as the parent of
-several repos for a lead whose change spans them. The report path goes in a gitignored directory of that
+several repos for a lead whose change spans them. Give each child its own: a `--role` start on a
+host harness is refused, naming the session, when a live session on that host (its parent
+included) already uses that workspace, since two children there move the tree under each other. The report path goes in a gitignored directory of that
 workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,

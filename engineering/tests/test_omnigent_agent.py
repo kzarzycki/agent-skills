@@ -37,7 +37,9 @@ spec.loader.exec_module(omnigent_agent)
 
 # tests replace the class; a script without the lookup passes every id through
 REAL_SESSION_ID = getattr(omnigent_agent.Omnigent, "session_id", lambda _, sid: sid)
+REAL_USERS = getattr(omnigent_agent.Omnigent, "users", lambda *_: [])
 SESSIONS_EVERY = "/v1/sessions?kind=any&include_archived=true&include_side_chats=true&limit=1000"
+SESSIONS_LIVE = "/v1/sessions?kind=any&limit=1000"
 
 
 class FakeOmnigent:
@@ -59,6 +61,8 @@ class FakeOmnigent:
         self.top_level: list[bool] = []  # per create, and per lookup after a failed one
         self.roles: list[str | None] = []  # per create
         self.workspaces: list[str | None] = []
+        self.hosts_of: dict[str, str] = {}  # each created session's host
+        self.others: list[dict] = []  # sessions this script did not create, as the list shows them
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
         self.roots: dict[str, str] = {}  # a session's root_conversation_id, when not its own
@@ -77,7 +81,24 @@ class FakeOmnigent:
     def session_id(self, sid: str) -> str:  # the real lookup, over these sessions
         return REAL_SESSION_ID(self, sid)
 
+    def users(self, workspace: str, host_id: str) -> list[dict]:  # the real filter, over these
+        return REAL_USERS(self, workspace, host_id)
+
     def call(self, method: str, path: str, body: object = None) -> dict:
+        if (method, path) == ("GET", SESSIONS_LIVE):
+            made = [
+                {
+                    "id": s,
+                    "title": self.titles.get(s),
+                    "host_id": self.hosts_of.get(s, self.host_id),
+                    "workspace": self.workspaces[int(s[1:])],
+                    "status": self.final,
+                    "archived": s in self.archived,
+                }
+                for s in self.sessions
+                if s[1:].isdigit() and int(s[1:]) < len(self.workspaces)
+            ]
+            return {"data": made + self.others}
         assert (method, path.split("&after=")[0]) == ("GET", SESSIONS_EVERY), path
         return {"data": [{"id": s, "title": self.titles.get(s)} for s in self.sessions]}
 
@@ -114,6 +135,7 @@ class FakeOmnigent:
         self.top_level.append(top_level)
         self.roles.append(role)
         self.workspaces.append(workspace)
+        self.hosts_of[sid] = host_id or self.host_id
         self.sessions[sid] = [{"type": "resource_event"}]
         self.titles[sid] = title
         self.created[sid] = time.time()
@@ -5146,9 +5168,11 @@ def test_start_and_run_arm_the_registry_with_their_brief_file_and_run_disarms_it
     )
     s1 = f"s1={tmp_path / 's.md'}\t{tmp_path / 's.md.brief'}\n"
     assert (tmp_path / "registry").read_text() == s1
-    verifier = ["start", "codex", "v", "b.md", "v.md", "--confirm-seconds", "0"]
+    (tmp_path / "vw").mkdir()  # a role child's own worktree: s0 and s1 use this one (#750)
+    verifier = ["start", "codex", "v", "b.md", "vw/v.md", "--confirm-seconds", "0"]
+    verifier += ["--workspace", "vw"]
     assert omnigent_agent.main([*verifier, "--role", "verifier.md", "--author", "claude"]) == 0
-    v = f"s2={tmp_path / 'v.md'}\t{tmp_path / 'v.md.brief'}\tverdict\n"
+    v = f"s2={tmp_path / 'vw/v.md'}\t{tmp_path / 'vw/v.md.brief'}\tverdict\n"
     assert (tmp_path / "registry").read_text() == s1 + v
     s1 += v
     seen: list[str] = []
