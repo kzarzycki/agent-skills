@@ -321,6 +321,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -2968,6 +2969,10 @@ def landing(pr: int | None) -> tuple[int, bool]:
             "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
         ).strip()
     )
+    # a killed process group or a harness timeout (SIGTERM, SIGHUP) unwinds, so the finally below releases the lock;
+    # SIGKILL can't be caught, and leaves the lock to be broken as stale
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda signum, _frame: sys.exit(128 + signum))
     ours = locked(base)
     if ours is None:
         return WAITING, True

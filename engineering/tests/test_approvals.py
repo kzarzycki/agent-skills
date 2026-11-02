@@ -3791,6 +3791,29 @@ def test_two_lands_in_the_same_second_cannot_both_take_the_lock(
     assert lands["lock"]() == first
 
 
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
+def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plus_the_signal(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, sig: signal.Signals
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    held: list[str] = []
+
+    def stopped(*_args: Any) -> None:
+        held.append(lands["lock"]())
+        os.kill(os.getpid(), sig)
+
+    monkeypatch.setattr(approvals, "merges", stopped)
+    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        with pytest.raises(SystemExit) as stop:
+            lands["land"]("7")
+    finally:
+        for s, handler in before.items():
+            signal.signal(s, handler)
+    assert held[0], "the land held no lock when it was stopped"
+    assert (stop.value.code, lands["lock"]()) == (128 + sig, "")
+
+
 def test_a_lock_another_land_took_meanwhile_stays_theirs(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
