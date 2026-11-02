@@ -7577,3 +7577,11 @@ def test_delegate_is_a_choice_of_all_or_feature() -> None:
     assert approvals.delegation(BARE) == "feature"
     with pytest.raises(approvals.Refused, match=r"`loop.delegate` must be one of all, feature"):
         approvals.settings(add(BARE, "loop", "delegate: everything\n"))
+
+
+def test_a_spec_or_plan_is_never_the_delegates_to_approve(
+    github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
+    assert "approve spec is the owner's" in capsys.readouterr().out
+    assert github == []
