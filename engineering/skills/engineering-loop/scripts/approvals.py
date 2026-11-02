@@ -2972,17 +2972,20 @@ def landing(pr: int | None) -> tuple[int, bool]:
         ).strip()
     )
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
+    stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
     ours, taken = None, None  # taken stays None while the lock's push may have reached origin
     try:
-        for sig, handler in previous.items():
-            if handler is not signal.SIG_IGN:  # a land under nohup still outlives a hangup
-                signal.signal(sig, stopped)
+        for sig in stoppable:  # a land under nohup still outlives a hangup
+            signal.signal(sig, stopped)
         ours = lock_commit(base)
         taken = locked(ours)
         if not taken:
             return WAITING, True
         return batched(named, base, tracker, loop)
     finally:
+        # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
+        # release it would kill its push and leave the lock, and the push inherits the mask, so a group stop can't either
+        mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
         if ours and taken is not False:
             # only while it is still ours: a lock broken as stale and taken by another land stays theirs
             released = subprocess.run(
@@ -3006,12 +3009,19 @@ def landing(pr: int | None) -> tuple[int, bool]:
         for sig, handler in previous.items():
             if handler is not None:  # None: a handler set outside Python, which can't be put back
                 signal.signal(sig, handler)
+        waiting = signal.sigpending() & stoppable
+        # taken here, so a stop that waited ends the land as one caught earlier would, not by the default handler
+        for sig in waiting:
+            signal.sigwait({sig})
+        signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+        if waiting:
+            sys.exit(128 + min(waiting))
 
 
 def stopped(signum: int, _frame: Any) -> None:
     """A land stopped by SIGTERM or SIGHUP (a killed process group, a harness timeout) unwinds, so landing's finally
     releases the lock. Further stops are ignored first: `uv run` forwards the same signal again, and a second exit
-    raised inside the release would kill its push and leave the lock. SIGKILL can't be caught, and leaves the lock to
+    raised on the way to the release would cut landing's cleanup short. SIGKILL can't be caught, and leaves the lock to
     be broken as stale."""
     for sig in STOPS:
         signal.signal(sig, signal.SIG_IGN)

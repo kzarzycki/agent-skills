@@ -15,7 +15,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -3791,6 +3791,16 @@ def test_two_lands_in_the_same_second_cannot_both_take_the_lock(
     assert lands["lock"]() == first
 
 
+@pytest.fixture
+def stoppable() -> Iterator[None]:
+    """SIGTERM and SIGHUP at their defaults for the test, since a runner started under nohup passes SIGHUP ignored."""
+    before = {sig: signal.signal(sig, signal.SIG_DFL) for sig in approvals.STOPS}
+    yield
+    for sig, handler in before.items():
+        signal.signal(sig, handler)
+
+
+@pytest.mark.usefixtures("stoppable")
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
 def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plus_the_signal(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, sig: signal.Signals
@@ -3813,25 +3823,29 @@ def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plu
     )
 
 
-@pytest.mark.parametrize("when", ["taking", "releasing"])
+@pytest.mark.usefixtures("stoppable")
+@pytest.mark.parametrize("when", ["before taking", "taking", "releasing", "releasing first"])
 def test_a_stop_while_the_lock_is_pushed_still_releases_it(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, when: str
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    when: str,
 ) -> None:
-    # taking: the stop arrives as the lock's push reaches origin, before locked() returns. releasing: a second stop
-    # arrives as the release is pushed, as `uv run` forwards the signal Python already got
+    # before taking: the stop arrives before the lock's push runs, so origin has no lock to release. taking: as the
+    # push reaches origin, before locked() returns. releasing: a second stop arrives as the release is pushed, as
+    # `uv run` forwards the signal Python already got. releasing first: the land's only stop arrives there
     lands["open"](7, {"7.txt": "7\n"})
     run = subprocess.run
 
     def pushing(args: Any, *rest: Any, **kw: Any) -> Any:
         target = args[-1] if isinstance(args, list) and args[:2] == ["git", "push"] else ""
-        if when == "releasing" and target == f":{approvals.LOCK}":
+        taking = target.endswith(f":{approvals.LOCK}") and not target.startswith(":")
+        if (when == "before taking" and taking) or (
+            when.startswith("releasing") and target == f":{approvals.LOCK}"
+        ):
             os.kill(os.getpid(), signal.SIGTERM)
         done = run(args, *rest, **kw)
-        if (
-            when == "taking"
-            and target.endswith(f":{approvals.LOCK}")
-            and not target.startswith(":")
-        ):
+        if when == "taking" and taking:
             os.kill(os.getpid(), signal.SIGTERM)
         return done
 
@@ -3841,6 +3855,27 @@ def test_a_stop_while_the_lock_is_pushed_still_releases_it(
     with pytest.raises(SystemExit) as stop:
         lands["land"]("7")
     assert (stop.value.code, lands["lock"]()) == (143, "")
+    assert "was not released" not in capsys.readouterr().out
+
+
+def test_a_land_that_inherits_sighup_ignored_outlives_a_hangup(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    merges = approvals.merges
+
+    def hangup(*args: Any) -> Any:
+        os.kill(os.getpid(), signal.SIGHUP)
+        return merges(*args)
+
+    monkeypatch.setattr(approvals, "merges", hangup)
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        assert (lands["land"]("7")[0], lands["lock"]()) == (0, "")
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert lands["merged"]() == ["7"]
 
 
 def test_a_lock_another_land_took_meanwhile_stays_theirs(
