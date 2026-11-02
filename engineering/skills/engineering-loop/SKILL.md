@@ -90,6 +90,7 @@ loop:
   owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
   machine_exit: 78   # the gate's exit for "this machine isn't ready": land runs it again, then stops
   pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
+  delegate: all   # the delegated approver's go on a head covers a PR into the default branch too; default feature
   head_proof:      # the status land requires on each head, and the names its recording takes from the caller
     status: gate-ui
     env:
@@ -357,10 +358,16 @@ approve merge <pr> --head <sha> --by owner`, naming the head you showed them and
 the session where the owner said it, posts a commit status `owner` on that one commit and a
 record naming it, and refuses a head that moved since; the script writes every word, so
 nobody's paraphrase of the change travels with it. `--withdraw` takes the go back, removing
-the `approved:merge` label too. A go relayed from another session is none: ask the owner to
-say it where the landing runs. A status covers one commit, so it never covers code the owner
-did not see. Into the default branch this is the only go: anyone with triage rights can add
-a label, so `approved:merge` there is no go. On a change that is not high risk
+the `approved:merge` label too. The owner's go relayed from another session is none: ask the
+owner to say it where the landing runs, or record it as the delegate's. The delegated
+approver's go may be relayed to the session where landing runs: `approve merge <pr> --head
+<sha> --by delegate` records it, pinned to that head the same way, with a status and a record
+that name it the delegate's, so the PR shows whose go landed it, and `check merge` and `land`
+print whose go they used. Into the default branch it is refused unless the policy sets
+`delegate: all` under `loop`, and there a delegate's go counts only while it does; without the
+key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
+it never covers code the approver did not see. Into the default branch these are the only go:
+anyone with triage rights can add a label, so `approved:merge` there is no go. On a change that is not high risk
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated
 approver's, where loop.md names one: once the gate is green and a satisfied verdict from the
