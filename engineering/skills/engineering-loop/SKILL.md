@@ -375,7 +375,7 @@ verifier's top model covers the head, it runs `approvals.py delegate <pr>`, whic
 label and a record naming it the delegate's. So dependent work can go on landing behind a
 high-risk change. `delegate` refuses a PR into the default branch, and the branch's own
 merge to the default branch is high risk while any PR merged into the branch carries
-`risk:high`: the owner approves the stream once, as a whole. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
+`risk:high`: the stream gets one go, as a whole, the owner's or, with `loop.delegate: all`, the delegate's. When the gate infers high risk, it adds `risk:high` to the PR. Otherwise
 the merge approval is the gates themselves: every verifier review on the newest pass's
 commit satisfied with no blocker or major open, that commit covering the head that lands,
 every review thread resolved, no review requesting changes, and the base's required checks

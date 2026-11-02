@@ -350,14 +350,16 @@ TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md"
 # the gatekeeper's policy, under `## Policy`; loop.md's `## Settings` block is read without it, deprecated
 POLICY = Path("docs/agents/gatekeeper.md")
 POINTS = ("spec", "plan")
-# the `By:` of the delegated approver's merge record (delegate), which owner_waits refuses on the default branch
+# the `By:` of the delegated approver's merge record (delegate); on the default branch it counts only with
+# `loop.delegate: all` (owned)
 DELEGATE = "delegate"
 # the plain line atop the merge records `approve merge` writes, by `--by`, so a person reads off the PR whose go it is
 VOICED = {"owner": "Approved by the owner.", DELEGATE: "Approved under the owner's delegation."}
 # the description of the delegate's OWNER_GO status, after `The delegate's go on <sha>`
 DELEGATED = ", under the owner's delegation"
 MERGE_LABEL = "approved:merge"
-# the owner's go on a high-risk head, a commit status on that one commit (approve merge), so no push carries it over
+# the go on a high-risk head, the owner's or the delegate's, a commit status on that one commit (approve merge), so no
+# push carries it over
 OWNER_GO = "owner"
 # how an OWNER_GO status the gate once turned from the `approved:merge` label ends: no go, since the label can be a
 # delegate's
@@ -2029,9 +2031,9 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while the change is high risk (risk) and the owner's go is not on the head (owned). Into the default
-    branch only that go counts, since a delegate acting through the owner's account adds a label no differently from
-    the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
+    """A line while the change is high risk (risk) and no go is on the head (owned): the owner's, or with
+    `loop.delegate: all` the delegate's. Into the default branch only such a head-pinned go counts, since a delegate
+    acting through the owner's account adds a label no differently from the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
     owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
     activity)."""
     where, found = f"PR #{pull['number']}", []
@@ -3488,12 +3490,14 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
 
 def delegate(number: int) -> int:
     """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
-    label, then the record that names it the delegate's. Into the default branch, whose merge only the owner approves
-    and where a label is no go, it is refused."""
+    label, then the record that names it the delegate's. Into the default branch, where a label is no go, it is
+    refused: there the go is pinned to a head (go)."""
     pull = pull_request(number)
     if default(pull):
         raise Refused(
-            f"PR #{number} targets {pull['baseRefName']}, the default branch: only the owner approves its merge"
+            f"PR #{number} targets {pull['baseRefName']}, the default branch, where a label is no go: the head-pinned"
+            f" `approve merge {number} --head <sha> --by delegate` gives the delegate's go there with `loop.delegate:"
+            " all`, and the owner's go always covers it"
         )
     # the label first, so the record is never older than the label it names
     label(number, MERGE_LABEL, add=True)
@@ -4301,7 +4305,7 @@ def main(argv: list[str]) -> int:
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest; a
     # merge's go may be the delegated approver's, under the owner's delegation
     approving.add_argument("--by", choices=("owner", DELEGATE), required=True)
-    # merge only: the head the owner was shown, and their go taken back
+    # merge only: the head the approver was shown, and their go taken back
     approving.add_argument("--head")
     approving.add_argument("--withdraw", action="store_true")
     delegating = commands.add_parser("delegate")
