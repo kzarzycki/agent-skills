@@ -86,7 +86,7 @@ The user invokes with a map (URL or number) and optionally a ticket. Resolve at 
 
 1. Load the map body, not every ticket.
 2. Take the named ticket, else the first ticket the frontier query returns, and claim it before any work.
-3. Resolve it as the type its `wayfinder:<type>` label names; read the label, since the body never states the type. Open related or closed tickets as needed and using the skills the Notes name; with no guidance, `grilling` and `domain-modeling`.
+3. Resolve it as the type its `wayfinder:<type>` label names; read the label, since the body never states the type. Open related or closed tickets as needed and use the skills the Notes name; with no guidance, `grilling` and `domain-modeling`.
 4. Post the answer as a resolution comment, close the ticket, and append its line to Decisions so far.
 5. Create the tickets the answer surfaced (create, then wire). Graduate fog it made specifiable, removing it from Not yet specified. Rule out of scope any ticket it showed to be past the destination. Update or close tickets it invalidated; never delete one, the trail is the record.
 

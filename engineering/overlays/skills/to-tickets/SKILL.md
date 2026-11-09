@@ -57,7 +57,7 @@ The end-to-end behaviour this ticket makes work, from the user's perspective, no
 
 ## Blocked by
 
-- A reference to each blocking ticket, or "None (can start immediately)". Omit this section when the blockers were set as native edges.
+- A reference to each blocking ticket, or "None (can start immediately)". Omit this section when the blockers will be set as native edges (the tracker has a native blocking relationship).
 
 </issue-template>
 

@@ -85,7 +85,7 @@ owned_overlays:
   sha256: 94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9
   mode: '100644'
 - path: overlays/skills/grilling/SKILL.md
-  sha256: 553d417e94e1a52e802cb6bfa85362314bd7c3ce34a868d70a9efdd042afb80b
+  sha256: 8d3bce0cf9eb146c7355d982273aeba79e51f362b5be5124f452af19d03d67cb
   mode: '100644'
 - path: overlays/skills/grilling/agents/openai.yaml
   sha256: 1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b
@@ -109,7 +109,7 @@ owned_overlays:
   sha256: 8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc
   mode: '100644'
 - path: overlays/skills/improve-codebase-architecture/SKILL.md
-  sha256: c32201d135489c0272c141681a2c9a9afa80f2212c091d57d03ee429493764f3
+  sha256: d5ea838df5a9f1b9534f90044480d03e10e8f56a77e6bb8d79d69c2107306bf0
   mode: '100644'
 - path: overlays/skills/improve-codebase-architecture/agents/openai.yaml
   sha256: c8cb20f68ebf0edb4e497bc11ae5fcaa196004e661cd189015b04f4109ced7f1
@@ -142,7 +142,7 @@ owned_overlays:
   sha256: 5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc
   mode: '100644'
 - path: overlays/skills/research/SKILL.md
-  sha256: e072062fc72341af96272392f411117b8f6e71b96b50eed374c7f4156fdbd6bd
+  sha256: 59fccc2f9c8547c2eed14d1492098090c54e6479c118a6e4443842550dab1081
   mode: '100644'
 - path: overlays/skills/research/agents/openai.yaml
   sha256: 9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d
@@ -184,7 +184,7 @@ owned_overlays:
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
   mode: '100644'
 - path: overlays/skills/to-tickets/SKILL.md
-  sha256: 8d08683c42cc44dac233a9b01564240083fb0743d902d547bff5930decd1b11b
+  sha256: aedc05a8f37fc9bdcdbd374b7b4528c00f8d55c9027bf81b05b7b17451c9fe71
   mode: '100644'
 - path: overlays/skills/to-tickets/agents/openai.yaml
   sha256: 21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090
@@ -208,7 +208,7 @@ owned_overlays:
   sha256: b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999
   mode: '100644'
 - path: overlays/skills/wayfinder/SKILL.md
-  sha256: 6211e233769cb52cfea2d47bc13a471a5e77bc4b7a11f924c6aed6c52f4ed82b
+  sha256: 4fa81c910323ac8be5d89e1f1175765679a61d3417302b6e93baa15f1c4ac4ff
   mode: '100644'
 - path: overlays/skills/wayfinder/agents/openai.yaml
   sha256: 88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073
@@ -592,7 +592,7 @@ output_files:
   sha256: 94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9
   mode: '100644'
 - path: skills/grilling/SKILL.md
-  sha256: 553d417e94e1a52e802cb6bfa85362314bd7c3ce34a868d70a9efdd042afb80b
+  sha256: 8d3bce0cf9eb146c7355d982273aeba79e51f362b5be5124f452af19d03d67cb
   mode: '100644'
 - path: skills/grilling/agents/openai.yaml
   sha256: 1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b
@@ -616,7 +616,7 @@ output_files:
   sha256: 8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc
   mode: '100644'
 - path: skills/improve-codebase-architecture/SKILL.md
-  sha256: c32201d135489c0272c141681a2c9a9afa80f2212c091d57d03ee429493764f3
+  sha256: d5ea838df5a9f1b9534f90044480d03e10e8f56a77e6bb8d79d69c2107306bf0
   mode: '100644'
 - path: skills/improve-codebase-architecture/agents/openai.yaml
   sha256: c8cb20f68ebf0edb4e497bc11ae5fcaa196004e661cd189015b04f4109ced7f1
@@ -649,7 +649,7 @@ output_files:
   sha256: 5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc
   mode: '100644'
 - path: skills/research/SKILL.md
-  sha256: e072062fc72341af96272392f411117b8f6e71b96b50eed374c7f4156fdbd6bd
+  sha256: 59fccc2f9c8547c2eed14d1492098090c54e6479c118a6e4443842550dab1081
   mode: '100644'
 - path: skills/research/agents/openai.yaml
   sha256: 9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d
@@ -691,7 +691,7 @@ output_files:
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
   mode: '100644'
 - path: skills/to-tickets/SKILL.md
-  sha256: 8d08683c42cc44dac233a9b01564240083fb0743d902d547bff5930decd1b11b
+  sha256: aedc05a8f37fc9bdcdbd374b7b4528c00f8d55c9027bf81b05b7b17451c9fe71
   mode: '100644'
 - path: skills/to-tickets/agents/openai.yaml
   sha256: 21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090
@@ -715,7 +715,7 @@ output_files:
   sha256: b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999
   mode: '100644'
 - path: skills/wayfinder/SKILL.md
-  sha256: 6211e233769cb52cfea2d47bc13a471a5e77bc4b7a11f924c6aed6c52f4ed82b
+  sha256: 4fa81c910323ac8be5d89e1f1175765679a61d3417302b6e93baa15f1c4ac4ff
   mode: '100644'
 - path: skills/wayfinder/agents/openai.yaml
   sha256: 88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073

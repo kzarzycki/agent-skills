@@ -74,7 +74,7 @@
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: grilling
   decision: ported
-  note: "Word each question so yes accepts the recommendation; the fresh-context lookup agent is declined, since handing a lookup off is the model's judgment here"
+  note: "Word each question so yes accepts the recommendation; a delegated lookup agent starts with a fresh context window rather than a fork"
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: handoff
   decision: ported
@@ -89,12 +89,12 @@
   note: "A fresh implementer per ticket, started with a fresh context window, and a fresh one for the code-review fixes"
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: improve-codebase-architecture
-  decision: declined
-  note: "Fresh context for the codebase walk: the tuned skill makes handing off the walk the model's judgment, and a fresh agent is the default way to keep it out of context"
+  decision: ported
+  note: "A delegated codebase walk starts with a fresh context window rather than a fork; whether to delegate stays the model's judgment"
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: research
-  decision: declined
-  note: "Fresh context for the background agent: the tuned skill makes the background agent optional, so how to start it is the model's judgment"
+  decision: ported
+  note: "A delegated research agent starts with a fresh context window rather than a fork; whether to delegate stays the model's judgment"
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: tdd
   decision: ported
@@ -106,7 +106,7 @@
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: to-tickets
   decision: ported
-  note: "Native blocking edges, each ticket a sub-issue of the source issue when there was one, and Blocked by omitted when blockers were set natively"
+  note: "Native blocking edges, each ticket a sub-issue of the source issue when there was one, and Blocked by omitted when blockers will be set natively"
 - upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   skill: wayfinder
   decision: ported
