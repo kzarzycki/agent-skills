@@ -54,7 +54,7 @@ A ticket is a child issue of the map, sized to one agent session (about 100K tok
 <the decision or investigation this ticket resolves>
 ```
 
-The answer goes in the resolution, not the body; link assets created while resolving instead of pasting them. Label each ticket `wayfinder:<type>`:
+The answer goes in the resolution, not the body; link assets created while resolving instead of pasting them. Label each ticket `wayfinder:<type>`. These are the only labels a map and its tickets carry, never a triage label such as `ready-for-agent`, since they hold decisions, not implementation work:
 
 - **research** (AFK): a fact a decision waits on that lives outside the working directory: documentation, third-party APIs, knowledge bases. Resolved with the `research` skill.
 - **prototype** (HITL): a cheap, rough artifact to react to (an outline, a stub, UI or logic code) when how something should look or behave is the question. Use the `prototype` skill and link the result.
@@ -76,8 +76,8 @@ The user invokes with a loose idea.
 1. Settle the destination with the `grilling` and `domain-modeling` skills; it fixes the scope.
 2. Grill again, breadth-first across the whole space, for the open decisions and the first steps takeable now. If there is no fog and the whole journey fits one session, no map is needed: stop and ask the user how to proceed.
 3. Render the map and every ticket specifiable now as one ordered batch with complete titles, bodies, labels, blockers and order. Follow the realization file for approval, deterministic markers, creation, interruption-safe resume and confirmed URL recording.
-4. Create the approved batch: the map, then its tickets in the reviewed order. Add child and blocking relationships in a second pass, once every issue exists.
-5. Start each new research ticket in its own background agent with the `research` skill, so they resolve in parallel after charting ends; findings go on a throwaway `research/<name>` branch linked from the ticket.
+4. Create the approved batch: the map, then its tickets in the reviewed order. Add child and blocking relationships in a second pass, once every issue exists, and write cross-references in that pass with real ids, since a placeholder `#<n>` auto-links to an unrelated issue.
+5. Start each new research ticket in its own background agent, started with a fresh context window rather than a fork of the charting session, with the `research` skill, so they resolve in parallel after charting ends; findings go on a throwaway `research/<name>` branch linked from the ticket. Push the branch but open no PR, since it is never merged.
 6. Stop. Charting resolves nothing by hand.
 
 ## Working a map
@@ -86,7 +86,7 @@ The user invokes with a map (URL or number) and optionally a ticket. Resolve at 
 
 1. Load the map body, not every ticket.
 2. Take the named ticket, else the first ticket the frontier query returns, and claim it before any work.
-3. Resolve it, opening related or closed tickets as needed and using the skills the Notes name; with no guidance, `grilling` and `domain-modeling`.
+3. Resolve it as the type its `wayfinder:<type>` label names; read the label, since the body never states the type. Open related or closed tickets as needed and using the skills the Notes name; with no guidance, `grilling` and `domain-modeling`.
 4. Post the answer as a resolution comment, close the ticket, and append its line to Decisions so far.
 5. Create the tickets the answer surfaced (create, then wire). Graduate fog it made specifiable, removing it from Not yet specified. Rule out of scope any ticket it showed to be past the destination. Update or close tickets it invalidated; never delete one, the trail is the record.
 

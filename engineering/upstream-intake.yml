@@ -51,3 +51,67 @@
   skill: ask-matt
   decision: ported
   note: After diagnosing-bugs fixes a bug, run retro in the same session to ask what would have prevented it; the no-seam finding still goes to improve-codebase-architecture
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: ask-matt
+  decision: ported
+  note: "Read a skill's SKILL.md before stating what it does or recommending a step be skipped; the summaries are for orientation"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: claude-handoff
+  decision: ported
+  note: "Save the summary to a file in the OS temp directory and launch with -- \"$(cat <file>)\" so the shell runs no backticks and expands no $ in it"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: code-review
+  decision: ported
+  note: "Search the repo for every standards file, with CODING_STANDARDS.md and CONTRIBUTING.md always listed when present; fresh-context reviewers were already tuned in, the foreground wording is implied by the report step, and the looser tracker pointer is declined for the tuned realization-file pointer"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: codebase-design
+  decision: ported
+  note: "Design-it-twice sub-agents start with a fresh context window rather than a fork, so no design anchors on the parent's framing"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: diagnosing-bugs
+  decision: ported
+  note: "When the red was forced by mutating code or a fixture, diff against a pristine copy to prove the mutation landed before trusting it"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: grilling
+  decision: ported
+  note: "Word each question so yes accepts the recommendation; the fresh-context lookup agent is declined, since handing a lookup off is the model's judgment here"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: handoff
+  decision: ported
+  note: "The temp directory resolves as $TMPDIR, else /tmp, %TEMP% on Windows"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: implement
+  decision: ported
+  note: "Given a ticket reference, fetch it, state its title and ask if ambiguous; the Skill-tool wording is declined, the tuned text already names the tdd and code-review skills harness-neutrally"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: implement-spec
+  decision: ported
+  note: "A fresh implementer per ticket, started with a fresh context window, and a fresh one for the code-review fixes"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: improve-codebase-architecture
+  decision: declined
+  note: "Fresh context for the codebase walk: the tuned skill makes handing off the walk the model's judgment, and a fresh agent is the default way to keep it out of context"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: research
+  decision: declined
+  note: "Fresh context for the background agent: the tuned skill makes the background agent optional, so how to start it is the model's judgment"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: tdd
+  decision: ported
+  note: "Each proposed seam gets a one-line note on what it catches and what it misses"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: teach
+  decision: ported
+  note: "Workspace paths resolve from the directory the skill ran in, only *-FORMAT.md links from the skill folder; vary the correct quiz answer's position"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: to-tickets
+  decision: ported
+  note: "Native blocking edges, each ticket a sub-issue of the source issue when there was one, and Blocked by omitted when blockers were set natively"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: wayfinder
+  decision: ported
+  note: "wayfinder: labels only, never a triage label; cross-references written with real ids in the wiring pass; research agents start fresh and push their branch with no PR; a ticket is resolved as the type its label names"
+- upstream: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+  skill: wizard
+  decision: ported
+  note: "template.sh fixes taken whole (readline ask, EOF failure, single-quoted .env values written through symlinks at 0600, tput clear fallback, opener warning, run_wizard wrapper); SKILL.md says to keep stages inside run_wizard and the last line as is"

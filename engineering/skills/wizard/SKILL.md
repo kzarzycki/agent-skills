@@ -23,7 +23,7 @@ Write the exact path a human follows, such as "Dashboard → Developers → API 
 
 ## 3. Author
 
-Copy `template.sh` to the target path, replace the example stage with one `stage` per step in dependency order, and set `TOTAL_STAGES` and the `banner` title to match. Build stages from the library helpers: `stage`, `say`, `step`, `note`, `warn`, `open_url`, `ask`, `ask_secret`, `write_env`, `set_secret`, `set_var`, `pause`, `confirm`.
+Copy `template.sh` to the target path, replace the example stage with one `stage` per step in dependency order, and set `TOTAL_STAGES` and the `banner` title to match. Keep every stage inside `run_wizard` and leave the file's last line as is: bash then parses the whole script before the first prompt, so an edit made while it runs cannot break it. Build stages from the library helpers: `stage`, `say`, `step`, `note`, `warn`, `open_url`, `ask`, `ask_secret`, `write_env`, `set_secret`, `set_var`, `pause`, `confirm`.
 
 Open the URL before asking for its value, use `ask_secret` for anything secret, `write_env` every persisted value, `set_secret` only the values CI needs, and `confirm` before any irreversible action. Each `stage` clears the screen, so keep a stage to one task the human can finish without scrolling back.
 

@@ -1,4 +1,4 @@
-source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
 source_tag: null
 stable_baseline_tag: v1.2.3
 included_skills:
@@ -31,25 +31,25 @@ excluded_skills:
 - setup-matt-pocock-skills
 owned_overlays:
 - path: overlays/skills/ask-matt/SKILL.md
-  sha256: 493e2a1f944bece7b2cf7e7263310b5ae9070e182c970e4a91c66dbbe513627e
+  sha256: ead392fce0ff0427c9b635becd76b2e64d71acc71c742e29a62f0c89ae4dc90f
   mode: '100644'
 - path: overlays/skills/ask-matt/agents/openai.yaml
   sha256: bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c
   mode: '100644'
 - path: overlays/skills/claude-handoff/SKILL.md
-  sha256: 463b028e1e3c61b516d61773f00c6b7f32369b68740f8bbc4181e42e0e12d350
+  sha256: ec9f129237c870b31c2dd8a992925cd57defab6c1201808b99063f3667e63ea4
   mode: '100644'
 - path: overlays/skills/claude-handoff/agents/openai.yaml
   sha256: 2308a672978864633286fb9f0792b08657e501426b3f7883fc418d5d2eac5eb0
   mode: '100644'
 - path: overlays/skills/code-review/SKILL.md
-  sha256: 1872cd3f722cbb6aaedb61ff4edee24c0a7776f9ae78f5209dad157702c885a9
+  sha256: b3eb77c855c7a28a087ffde14b769125b450f882d879b5b5b8c33c96a22b4cc0
   mode: '100644'
 - path: overlays/skills/code-review/agents/openai.yaml
   sha256: 8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352
   mode: '100644'
 - path: overlays/skills/codebase-design/DESIGN-IT-TWICE.md
-  sha256: ef995c6737669efb7047218e1341475d426b8cdbfa5039944f935f75628ba7ec
+  sha256: 72ec579e616c5d564321f446ada271a56d6acb0e084351520c81be4a08dba317
   mode: '100644'
 - path: overlays/skills/codebase-design/SKILL.md
   sha256: 8a06080df412d4576f57d35f606d67fd3d82340d086e6a29d475ab45d8624e66
@@ -58,7 +58,7 @@ owned_overlays:
   sha256: edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f
   mode: '100644'
 - path: overlays/skills/diagnosing-bugs/SKILL.md
-  sha256: 3f9caafa88aca0f47d1f46062f6610b8bae602672a1146f1d4b772f5a732ac4f
+  sha256: 997751df4f369908aa3f6ca2752731b96784cef5b8c58b8b2e209299bd8a4358
   mode: '100644'
 - path: overlays/skills/diagnosing-bugs/agents/openai.yaml
   sha256: 3e430dbe4334a87597488c060cb3dc3786bb00c9182877d6f5ec41f62490e90b
@@ -85,25 +85,25 @@ owned_overlays:
   sha256: 94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9
   mode: '100644'
 - path: overlays/skills/grilling/SKILL.md
-  sha256: 1e5279c64d49b9ba0f2a632bc8b4ca1a622aac87401f8a225347643e180feb2d
+  sha256: 553d417e94e1a52e802cb6bfa85362314bd7c3ce34a868d70a9efdd042afb80b
   mode: '100644'
 - path: overlays/skills/grilling/agents/openai.yaml
   sha256: 1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b
   mode: '100644'
 - path: overlays/skills/handoff/SKILL.md
-  sha256: effba1161f93cbff1bdd70e89716328f04133e087db1c3e8db20ce657f50a4f2
+  sha256: c4f72a2434997d7806e0dc04fdc760c8ef485cfdbd2f382396d6dcce41097139
   mode: '100644'
 - path: overlays/skills/handoff/agents/openai.yaml
   sha256: 5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28
   mode: '100644'
 - path: overlays/skills/implement-spec/SKILL.md
-  sha256: cc964394763d20063dabf7019e5bcab9cb5aa23e792caa5eb4e0080d5989b7b5
+  sha256: 7ac3b03c0f1371b0f1a1088da978fdd469b563daca868a4f35f34e1af185e2c0
   mode: '100644'
 - path: overlays/skills/implement-spec/agents/openai.yaml
   sha256: a7b810e94b9d3cb5108a01fc72b2f663efb52de04d57bf694a4d4edebd2b1b6d
   mode: '100644'
 - path: overlays/skills/implement/SKILL.md
-  sha256: ea203eaf1b4f926a393cf96526e220c93fdce67cb8f21041f61543e93ac0d599
+  sha256: 67f221f1a2c229676bc9cb379e76c17f8d17c93cdf9372fcbae549e475bf00d6
   mode: '100644'
 - path: overlays/skills/implement/agents/openai.yaml
   sha256: 8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc
@@ -154,7 +154,7 @@ owned_overlays:
   sha256: cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c
   mode: '100644'
 - path: overlays/skills/tdd/SKILL.md
-  sha256: 60632a44c30bb1ad88f6a0181edf1f56c484523919d6d342f031cc044fdbcd64
+  sha256: a2851a3f8bebbdd251ecb414386f9525f23730bceec98eb16063a7aae4d2ad87
   mode: '100644'
 - path: overlays/skills/tdd/agents/openai.yaml
   sha256: ea6f01cf1b8c06a4b0f5b649d74b1b8ce8685e72af1b38d70d877693e092af0b
@@ -172,7 +172,7 @@ owned_overlays:
   sha256: 2d98f5e126f80a8f383375f7153db64b2a26724d81c1ec907403f21afcb977a4
   mode: '100644'
 - path: overlays/skills/teach/SKILL.md
-  sha256: 80d6c410dacd034f53ee72026094f81d1d22984b93b0b854846cfaedfedf5f6c
+  sha256: b9ec98f91415acb355a0ae1971b95a03959bc10f5f42585cf1956aa665b49b34
   mode: '100644'
 - path: overlays/skills/teach/agents/openai.yaml
   sha256: 5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f
@@ -184,7 +184,7 @@ owned_overlays:
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
   mode: '100644'
 - path: overlays/skills/to-tickets/SKILL.md
-  sha256: 09ec84b4b1461e294c44492ada0ef0bb32b2bef1a0feec67d389bc3e9a434eb1
+  sha256: 8d08683c42cc44dac233a9b01564240083fb0743d902d547bff5930decd1b11b
   mode: '100644'
 - path: overlays/skills/to-tickets/agents/openai.yaml
   sha256: 21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090
@@ -208,119 +208,119 @@ owned_overlays:
   sha256: b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999
   mode: '100644'
 - path: overlays/skills/wayfinder/SKILL.md
-  sha256: f01c20baa225518a6e22d5c8327a8e008edd1aa6b16acafc444e448717e7be8d
+  sha256: 6211e233769cb52cfea2d47bc13a471a5e77bc4b7a11f924c6aed6c52f4ed82b
   mode: '100644'
 - path: overlays/skills/wayfinder/agents/openai.yaml
   sha256: 88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073
   mode: '100644'
 - path: overlays/skills/wizard/SKILL.md
-  sha256: c5ca7bf563b13697800b84b205d1ff14c4da6c3f8ea51d4cdc5e22b3cded0383
+  sha256: 2fb85928b7ab44f20348553392b68142e1da0022142772473e2daed45789b65e
   mode: '100644'
 - path: overlays/skills/wizard/agents/openai.yaml
   sha256: 98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
   mode: '100644'
 - path: overlays/skills/wizard/template.sh
-  sha256: 33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153
+  sha256: 6566f147299bc6f1d941e64591ed04385416d543e11f96f564c7228f5018d0ed
   mode: '100644'
 source_mappings:
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/ask-matt
   destination_path: skills/ask-matt
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/in-progress/claude-handoff
   destination_path: skills/claude-handoff
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/code-review
   destination_path: skills/code-review
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/codebase-design
   destination_path: skills/codebase-design
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/diagnosing-bugs
   destination_path: skills/diagnosing-bugs
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/domain-modeling
   destination_path: skills/domain-modeling
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/grill-with-docs
   destination_path: skills/grill-with-docs
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/productivity/grilling
   destination_path: skills/grilling
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/productivity/handoff
   destination_path: skills/handoff
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/implement
   destination_path: skills/implement
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/implement-spec
   destination_path: skills/implement-spec
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/improve-codebase-architecture
   destination_path: skills/improve-codebase-architecture
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/in-progress/loop-me
   destination_path: skills/loop-me
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/pr
   destination_path: skills/pr
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/prototype
   destination_path: skills/prototype
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/research
   destination_path: skills/research
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/retro
   destination_path: skills/retro
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/tdd
   destination_path: skills/tdd
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/productivity/teach
   destination_path: skills/teach
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/to-spec
   destination_path: skills/to-spec
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/to-tickets
   destination_path: skills/to-tickets
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/triage
   destination_path: skills/triage
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/productivity/wait-what
   destination_path: skills/wait-what
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/wayfinder
   destination_path: skills/wayfinder
 - source_repository: https://github.com/mattpocock/skills.git
-  source_commit: 24fe0ef7737efae15c87225755e9f6f5965e4888
+  source_commit: 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
   source_path: skills/engineering/wizard
   destination_path: skills/wizard
 source_files:
@@ -328,19 +328,19 @@ source_files:
   sha256: a8aa20158609ef39e2b308b6ba0660c91066838d07a867202e63a7744a88a3ed
   mode: '100644'
 - path: skills/ask-matt/SKILL.md
-  sha256: 32b3c71d6dbb5a7c15147e8a503a9df28e9a567f45eba6a6bb42aa903225c6ff
+  sha256: 1371f5ce005de0992a44b137748bfb960a56948aa9871b405fe9d90b24332e3c
   mode: '100644'
 - path: skills/ask-matt/agents/openai.yaml
   sha256: bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c
   mode: '100644'
 - path: skills/claude-handoff/SKILL.md
-  sha256: 6738e8b7c7899ea0038fb7a5c859ca1b90c7b1eb40123dcdbe94c51b5b119f12
+  sha256: 79357a18425d66d4c24048bedf83dceb79d3bba356f38014950f764a7fab4026
   mode: '100644'
 - path: skills/claude-handoff/agents/openai.yaml
   sha256: 2308a672978864633286fb9f0792b08657e501426b3f7883fc418d5d2eac5eb0
   mode: '100644'
 - path: skills/code-review/SKILL.md
-  sha256: 47f4e52c21694def9c7c11cbfbf891ca35eac7a93e395797515be3c8a409ae50
+  sha256: 9c921a8d88138a41401d8897ca1bb852088ab1b7b605cdd04edc13e3e8aab6dd
   mode: '100644'
 - path: skills/code-review/agents/openai.yaml
   sha256: 8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352
@@ -349,7 +349,7 @@ source_files:
   sha256: f3dd099ce99289bd213914d8ee3e2429b78309c3957ca4583f7659551b1d53c1
   mode: '100644'
 - path: skills/codebase-design/DESIGN-IT-TWICE.md
-  sha256: 52b52e75655a27aea59c6966b410bac82448968ad46ef1ebb9f07c274e3ae010
+  sha256: c222ab5a82e0405672eb9062d62496139a08828e45d07fc5f18e4952c10fac1a
   mode: '100644'
 - path: skills/codebase-design/SKILL.md
   sha256: 2c20617f87ec8af6a434859f381b2f061a69b530444e74eb39e78bb016a6d1e2
@@ -358,7 +358,7 @@ source_files:
   sha256: edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f
   mode: '100644'
 - path: skills/diagnosing-bugs/SKILL.md
-  sha256: 9168404abda0967a5d32977e3498cd95fda6807018852f3de736a78357c82b40
+  sha256: 849198df88cdb65fd0d97236604c1fca7ff2f22d2f705f9724a800d0266b118d
   mode: '100644'
 - path: skills/diagnosing-bugs/agents/openai.yaml
   sha256: 3e430dbe4334a87597488c060cb3dc3786bb00c9182877d6f5ec41f62490e90b
@@ -385,25 +385,25 @@ source_files:
   sha256: 94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9
   mode: '100644'
 - path: skills/grilling/SKILL.md
-  sha256: 10ff989e7498b23b5acb49d5048f11dcd906757d2f79c5cdf8a00001381296f2
+  sha256: a146842ed93ca43d833550fa9adf02e58cb63c83fea9d4b4522995b82242d4e2
   mode: '100644'
 - path: skills/grilling/agents/openai.yaml
   sha256: 1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b
   mode: '100644'
 - path: skills/handoff/SKILL.md
-  sha256: 7c62de979fdc7ac32fb5ddb2146156c917f80ee070d30fadc9d40343c4b6ed25
+  sha256: 4cbb043950dad2ffd3662ff1a5a0b51ae676004b5cae10e3787e8ee7a4ee69d3
   mode: '100644'
 - path: skills/handoff/agents/openai.yaml
   sha256: 5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28
   mode: '100644'
 - path: skills/implement-spec/SKILL.md
-  sha256: 7a22dd2e60b8fcece478ced9d2533582adf3520d695acd3ab715341535c9e56d
+  sha256: 1993a473cec40ac85d081c112cdffdc63ec3267c2e412055ad09e013a2f623d1
   mode: '100644'
 - path: skills/implement-spec/agents/openai.yaml
   sha256: fd41efb42c60c96320d6531be7e4bf15cbf5518cd652d57dff27ccffa46988e9
   mode: '100644'
 - path: skills/implement/SKILL.md
-  sha256: 6d3fd9e83b8f36e5213854779db49b256a457a7ebb4a503e53fa7dcff696adc3
+  sha256: 483bdc4ccf4ac31d86ac7beeaa0d0db80313e71e120bb8c59b3196ae5decd53d
   mode: '100644'
 - path: skills/implement/agents/openai.yaml
   sha256: 8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc
@@ -412,7 +412,7 @@ source_files:
   sha256: 581e8bb5a521e46bbda8ca7e19b15948bed882187108092ebb90c62513b77528
   mode: '100644'
 - path: skills/improve-codebase-architecture/SKILL.md
-  sha256: 552240a5ab5cec6b67c15dd1ad6e9f6962b1bca6ce870059a8c2713760c20392
+  sha256: 35b03a3db61e0f5aa333ea59b54963e45a3d2ace6649b2ef4f9576603e2582a6
   mode: '100644'
 - path: skills/improve-codebase-architecture/agents/openai.yaml
   sha256: c8cb20f68ebf0edb4e497bc11ae5fcaa196004e661cd189015b04f4109ced7f1
@@ -445,7 +445,7 @@ source_files:
   sha256: 5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc
   mode: '100644'
 - path: skills/research/SKILL.md
-  sha256: 985569f15739c713d6784887c3d186d4ef9ac85bec5ad9c068d25bf0739928e4
+  sha256: 1f629e18ab899412683bc6a1c4efb4339999e27c2fdac328f26ee10a8c031d33
   mode: '100644'
 - path: skills/research/agents/openai.yaml
   sha256: 9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d
@@ -457,7 +457,7 @@ source_files:
   sha256: cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c
   mode: '100644'
 - path: skills/tdd/SKILL.md
-  sha256: 93ea419b76e9caaf26153b828e984f7c3fb136f4caa67b14af95f32ea965a1cc
+  sha256: 5505d25bbaa8fc14a79e4d20163936958992a2995b7f1dd1d6197edc9ed722e0
   mode: '100644'
 - path: skills/tdd/agents/openai.yaml
   sha256: ea6f01cf1b8c06a4b0f5b649d74b1b8ce8685e72af1b38d70d877693e092af0b
@@ -481,7 +481,7 @@ source_files:
   sha256: e9cacf34026e11a8d1c8f9de88abe5bcbf654f4ebdb25cae8c0de0d5f48f44ec
   mode: '100644'
 - path: skills/teach/SKILL.md
-  sha256: a32df9dcdfc0c4fdc1c98e1ed3940c5f56b84c1aa90ff60346f32b8b53915b43
+  sha256: 550482c2d674b085c9043b87bfdc14a8f2ec453c736119e7fcbb1e9332bffeba
   mode: '100644'
 - path: skills/teach/agents/openai.yaml
   sha256: 5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f
@@ -493,7 +493,7 @@ source_files:
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
   mode: '100644'
 - path: skills/to-tickets/SKILL.md
-  sha256: 5c9fba69845c2519b9b35b9af42ae5142c21f8ca15ac2123dc2722002c8058ae
+  sha256: 56ec23c5b2782785d4e65bff9e315b6d3aeb4ef977c174a219e99489fada1995
   mode: '100644'
 - path: skills/to-tickets/agents/openai.yaml
   sha256: 21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090
@@ -517,7 +517,7 @@ source_files:
   sha256: b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999
   mode: '100644'
 - path: skills/wayfinder/SKILL.md
-  sha256: fee6e1d0c50f0e736b4ef8a599060c959afae904c9a97d82c97f049fcc3aa0f1
+  sha256: 0c9fa96791aebf3b7d654cf35c6aadde97d81f57c17b07d13b27c14d9c46561f
   mode: '100644'
 - path: skills/wayfinder/agents/openai.yaml
   sha256: 88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073
@@ -529,7 +529,7 @@ source_files:
   sha256: 98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
   mode: '100644'
 - path: skills/wizard/template.sh
-  sha256: 33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153
+  sha256: 6566f147299bc6f1d941e64591ed04385416d543e11f96f564c7228f5018d0ed
   mode: '100644'
 patch_files: []
 license_files:
@@ -538,25 +538,25 @@ license_files:
   mode: '100644'
 output_files:
 - path: skills/ask-matt/SKILL.md
-  sha256: 493e2a1f944bece7b2cf7e7263310b5ae9070e182c970e4a91c66dbbe513627e
+  sha256: ead392fce0ff0427c9b635becd76b2e64d71acc71c742e29a62f0c89ae4dc90f
   mode: '100644'
 - path: skills/ask-matt/agents/openai.yaml
   sha256: bdffbc5a0a99ed1b6ef3253d251d755fd18162b9845972e380007f844b09b05c
   mode: '100644'
 - path: skills/claude-handoff/SKILL.md
-  sha256: 463b028e1e3c61b516d61773f00c6b7f32369b68740f8bbc4181e42e0e12d350
+  sha256: ec9f129237c870b31c2dd8a992925cd57defab6c1201808b99063f3667e63ea4
   mode: '100644'
 - path: skills/claude-handoff/agents/openai.yaml
   sha256: 2308a672978864633286fb9f0792b08657e501426b3f7883fc418d5d2eac5eb0
   mode: '100644'
 - path: skills/code-review/SKILL.md
-  sha256: 1872cd3f722cbb6aaedb61ff4edee24c0a7776f9ae78f5209dad157702c885a9
+  sha256: b3eb77c855c7a28a087ffde14b769125b450f882d879b5b5b8c33c96a22b4cc0
   mode: '100644'
 - path: skills/code-review/agents/openai.yaml
   sha256: 8229ca854e11dc8e6aef2131ee03f31fb1561cf905fab9ccc325180cf3331352
   mode: '100644'
 - path: skills/codebase-design/DESIGN-IT-TWICE.md
-  sha256: ef995c6737669efb7047218e1341475d426b8cdbfa5039944f935f75628ba7ec
+  sha256: 72ec579e616c5d564321f446ada271a56d6acb0e084351520c81be4a08dba317
   mode: '100644'
 - path: skills/codebase-design/SKILL.md
   sha256: 8a06080df412d4576f57d35f606d67fd3d82340d086e6a29d475ab45d8624e66
@@ -565,7 +565,7 @@ output_files:
   sha256: edebc9e4fcfe102114012575eaa9600b9b5fd08c311664f389c36e7bc717740f
   mode: '100644'
 - path: skills/diagnosing-bugs/SKILL.md
-  sha256: 3f9caafa88aca0f47d1f46062f6610b8bae602672a1146f1d4b772f5a732ac4f
+  sha256: 997751df4f369908aa3f6ca2752731b96784cef5b8c58b8b2e209299bd8a4358
   mode: '100644'
 - path: skills/diagnosing-bugs/agents/openai.yaml
   sha256: 3e430dbe4334a87597488c060cb3dc3786bb00c9182877d6f5ec41f62490e90b
@@ -592,25 +592,25 @@ output_files:
   sha256: 94cd0ab161fb468a836349f5ed482ba58ce8e709a05c57ce533d739dbd35cca9
   mode: '100644'
 - path: skills/grilling/SKILL.md
-  sha256: 1e5279c64d49b9ba0f2a632bc8b4ca1a622aac87401f8a225347643e180feb2d
+  sha256: 553d417e94e1a52e802cb6bfa85362314bd7c3ce34a868d70a9efdd042afb80b
   mode: '100644'
 - path: skills/grilling/agents/openai.yaml
   sha256: 1411d7df7d99b7e621a1ff8283c8133cc2464be63d064e52d8ce169c6800ee9b
   mode: '100644'
 - path: skills/handoff/SKILL.md
-  sha256: effba1161f93cbff1bdd70e89716328f04133e087db1c3e8db20ce657f50a4f2
+  sha256: c4f72a2434997d7806e0dc04fdc760c8ef485cfdbd2f382396d6dcce41097139
   mode: '100644'
 - path: skills/handoff/agents/openai.yaml
   sha256: 5c479fd562c691851690e8b18c8501045bef0943c10743d636b2fae26add1d28
   mode: '100644'
 - path: skills/implement-spec/SKILL.md
-  sha256: cc964394763d20063dabf7019e5bcab9cb5aa23e792caa5eb4e0080d5989b7b5
+  sha256: 7ac3b03c0f1371b0f1a1088da978fdd469b563daca868a4f35f34e1af185e2c0
   mode: '100644'
 - path: skills/implement-spec/agents/openai.yaml
   sha256: a7b810e94b9d3cb5108a01fc72b2f663efb52de04d57bf694a4d4edebd2b1b6d
   mode: '100644'
 - path: skills/implement/SKILL.md
-  sha256: ea203eaf1b4f926a393cf96526e220c93fdce67cb8f21041f61543e93ac0d599
+  sha256: 67f221f1a2c229676bc9cb379e76c17f8d17c93cdf9372fcbae549e475bf00d6
   mode: '100644'
 - path: skills/implement/agents/openai.yaml
   sha256: 8970a8596ade0c28ab427f41a4ea242d6bdf6186c59ebf55e1238dbecaab79dc
@@ -661,7 +661,7 @@ output_files:
   sha256: cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c
   mode: '100644'
 - path: skills/tdd/SKILL.md
-  sha256: 60632a44c30bb1ad88f6a0181edf1f56c484523919d6d342f031cc044fdbcd64
+  sha256: a2851a3f8bebbdd251ecb414386f9525f23730bceec98eb16063a7aae4d2ad87
   mode: '100644'
 - path: skills/tdd/agents/openai.yaml
   sha256: ea6f01cf1b8c06a4b0f5b649d74b1b8ce8685e72af1b38d70d877693e092af0b
@@ -679,7 +679,7 @@ output_files:
   sha256: 2d98f5e126f80a8f383375f7153db64b2a26724d81c1ec907403f21afcb977a4
   mode: '100644'
 - path: skills/teach/SKILL.md
-  sha256: 80d6c410dacd034f53ee72026094f81d1d22984b93b0b854846cfaedfedf5f6c
+  sha256: b9ec98f91415acb355a0ae1971b95a03959bc10f5f42585cf1956aa665b49b34
   mode: '100644'
 - path: skills/teach/agents/openai.yaml
   sha256: 5856f3ae8aec742f1499c640aecdd5f1d6af5fa210a7c6ec794de8263a6f733f
@@ -691,7 +691,7 @@ output_files:
   sha256: 1c5b4d1e3d8e52287ef19cc2742fdbbfae1914ac75d33af3e4c8174f08cc55bb
   mode: '100644'
 - path: skills/to-tickets/SKILL.md
-  sha256: 09ec84b4b1461e294c44492ada0ef0bb32b2bef1a0feec67d389bc3e9a434eb1
+  sha256: 8d08683c42cc44dac233a9b01564240083fb0743d902d547bff5930decd1b11b
   mode: '100644'
 - path: skills/to-tickets/agents/openai.yaml
   sha256: 21bc6215fffcd7614e9f772bb1760e87cc5fc7dcc707e7d282bc9414267a6090
@@ -715,17 +715,17 @@ output_files:
   sha256: b41faadf741d51e4ea184148b2d1854d93f947aaf754c7844f70a00f04194999
   mode: '100644'
 - path: skills/wayfinder/SKILL.md
-  sha256: f01c20baa225518a6e22d5c8327a8e008edd1aa6b16acafc444e448717e7be8d
+  sha256: 6211e233769cb52cfea2d47bc13a471a5e77bc4b7a11f924c6aed6c52f4ed82b
   mode: '100644'
 - path: skills/wayfinder/agents/openai.yaml
   sha256: 88bc81a11a6d52ac67aeaa76b8b619e387020d47c5133a4dd4927fd15c4ad073
   mode: '100644'
 - path: skills/wizard/SKILL.md
-  sha256: c5ca7bf563b13697800b84b205d1ff14c4da6c3f8ea51d4cdc5e22b3cded0383
+  sha256: 2fb85928b7ab44f20348553392b68142e1da0022142772473e2daed45789b65e
   mode: '100644'
 - path: skills/wizard/agents/openai.yaml
   sha256: 98f44d682d58e262f160dc59a8befc365e0aa65820dd0261864af26aa8e59d83
   mode: '100644'
 - path: skills/wizard/template.sh
-  sha256: 33cbe9dfb1d0e9185b60248a52aabed14bc64785a00cac695e302e739dd6c153
+  sha256: 6566f147299bc6f1d941e64591ed04385416d543e11f96f564c7228f5018d0ed
   mode: '100644'
