@@ -959,7 +959,7 @@ def test_a_merge_waits_for_check_and_the_owners_go_and_fails_a_missing_proof(
     )
     labelled = pull(reviews=(VERDICT,), labels=OWNED, files=("billing/a.py",))
     assert gated(labelled) == (approvals.WAITING, [BILLING])  # into main the label is no go
-    assert gated(given_go(labelled, hub)) == (0, [])
+    assert gated(given_go(labelled, hub)) == (0, [f"PR #7: the go on {HEAD} is the owner's"])
     assert gated(pull(labels=OWNED, checks=(("check", "IN_PROGRESS"),))) == (
         1,
         [
@@ -1458,7 +1458,10 @@ def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
 ) -> None:
     done = given_go(revert_pr(), hub)
     assert gated(monkeypatch, capsys, "build", done) == (0, [])
-    assert gated(monkeypatch, capsys, "merge", done) == (0, [])
+    assert gated(monkeypatch, capsys, "merge", done) == (
+        0,
+        [f"PR #2: the go on {REVERT_HEAD} is the owner's"],
+    )
     # the inverse comes from GitHub's own diff of #1, not from anything approvals.py writes
     assert "repos/{owner}/{repo}/pulls/1/files?per_page=100" in recorded
     # the modes come from the trees of #1's base and merge commit and of the revert's merge base and head
@@ -1574,7 +1577,10 @@ def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_go(
         [held + "it matches a risk rule (label `area:web`)"],
     )
     # the owner's go clears each, and a revert of a low-risk PR lands without it
-    assert held_revert(monkeypatch, capsys, given_go(revert_pr(), hub), high) == (0, [])
+    assert held_revert(monkeypatch, capsys, given_go(revert_pr(), hub), high) == (
+        0,
+        [f"PR #2: the go on {REVERT_HEAD} is the owner's"],
+    )
     assert held_revert(monkeypatch, capsys, revert_pr(), low) == (0, [])
 
 
@@ -2005,7 +2011,8 @@ def test_delegate_labels_then_records_a_feature_branch_pr_and_refuses_the_defaul
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
     assert approvals.main(["delegate", "7"]) == 1
     assert capsys.readouterr().out == (
-        "PR #7 targets main, the default branch: only the owner approves its merge\n"
+        "PR #7 targets main, the default branch, where a label is no go: the head-pinned `approve merge 7 --head <sha>"
+        " --by delegate` gives the delegate's go there with `loop.delegate: all`, and the owner's go always covers it\n"
     )
     assert github == []
     pr["baseRefName"] = "stream"
@@ -2086,7 +2093,9 @@ def test_approve_merge_posts_the_owners_go_on_the_head_and_a_record_it_writes_wh
     assert [(s["context"], s["description"]) for s in hub[HEAD]] == [
         ("owner", f"The owner's go on {HEAD[:12]}")
     ]
-    assert github == [("comment", 7, f"Approved: merge\nBy: owner\nHead: {HEAD}\n")]
+    assert github == [
+        ("comment", 7, f"Approved by the owner.\nApproved: merge\nBy: owner\nHead: {HEAD}\n")
+    ]
 
 
 def test_approve_merge_refuses_a_closed_pr(
@@ -7419,3 +7428,202 @@ def test_a_pr_commit_between_two_clean_merges_carries_nothing(
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {case['merge']} carries nothing from {first['head']}: {rewritten['merge']} is no merge of two parents"
     ]
+
+
+# --- the delegated approver's go on a head (#748) ---
+
+DELEGATE_ALL = add(GITHUB_RULE, "loop", "delegate: all\n")
+DELEGATE_GO = f"The delegate's go on {HEAD[:12]}, under the owner's delegation"
+DELEGATE_RECORD = (
+    f"Approved under the owner's delegation.\nApproved: merge\nBy: delegate\nHead: {HEAD}\n"
+)
+LABELLED_HIGH = HELD + "`risk:high` is on PR #7"
+OWNER_RECORD = f"Approved by the owner.\nApproved: merge\nBy: owner\nHead: {HEAD}\n"
+
+
+@pytest.fixture
+def delegating(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str]]:
+    """The landing checkout with `loop.delegate: all` and a high-risk PR into main; each comment posted lands on the
+    PR, as GitHub reads it back."""
+    Path("docs/agents/loop.md").write_text(DELEGATE_ALL)
+    landing["pull"]["files"]["nodes"] = [{"path": ".github/ci.yml"}]
+    landing["pull"]["labels"]["nodes"] = [{"name": "risk:high"}]
+    posted: list[tuple[int, str]] = []
+
+    def comment(number: int, body: str) -> None:
+        posted.append((number, body))
+        landing["pull"]["comments"]["nodes"].append(note(body))
+
+    monkeypatch.setattr(approvals, "comment", comment)
+    return posted
+
+
+def test_with_delegate_all_the_delegates_go_into_main_posts_its_status_and_record_and_clears_check_merge(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, lines = gate(capsys, "check", "merge", "7")
+    assert (code, lines[0]) == (approvals.WAITING, LABELLED_HIGH)
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate") == (
+        0,
+        [f"PR #7: the delegate's go is on {HEAD}, under the owner's delegation"],
+    )
+    assert [(s["context"], s["description"]) for s in hub[HEAD]] == [("owner", DELEGATE_GO)]
+    assert delegating == [(7, DELEGATE_RECORD)]
+    assert gate(capsys, "check", "merge", "7") == (
+        0,
+        [f"PR #7: the go on {HEAD} is the delegate's, under the owner's delegation"],
+    )
+
+
+def test_without_the_setting_the_delegates_go_into_main_is_refused_naming_it(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    code, lines = gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")
+    assert code == 1 and "`loop.delegate: all`" in lines[0] and "main" in lines[0]
+    assert (delegating, hub) == ([], {})
+    Path("docs/agents/loop.md").write_text(add(GITHUB_RULE, "loop", "delegate: feature\n"))
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 1
+    assert (delegating, hub) == ([], {})
+
+
+def test_into_a_feature_branch_the_delegates_go_needs_no_setting(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    into_feature(landing["pull"])
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    assert approvals.owner_waits(landing["pull"], [], GITHUB_RULE) == []
+
+
+def test_a_head_that_moved_is_refused_for_the_delegate_as_for_the_owner(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for by in ("owner", "delegate"):
+        code, lines = gate(capsys, "approve", "merge", "7", "--head", "c" * 40, "--by", by)
+        assert (code, lines) == (
+            1,
+            [f"PR #7's head is {HEAD}, not {'c' * 40}: ask about the head it has now"],
+        )
+    assert (delegating, hub) == ([], {})
+
+
+def test_a_delegates_status_no_longer_counts_once_the_setting_is_removed(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == []
+    assert approvals.owner_waits(landing["pull"], [], GITHUB_RULE) == [LABELLED_HIGH]
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    code, lines = gate(capsys, "check", "merge", "7")
+    assert (code, lines) == (approvals.WAITING, [LABELLED_HIGH])
+    # nor is the delegate's record read as the owner's, or the owner's status with the delegate's record
+    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [LABELLED_HIGH]
+
+
+def test_the_owners_and_the_delegates_records_open_with_their_own_plain_line(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "owner") == (
+        0,
+        [f"PR #7: the owner's go is on {HEAD}"],
+    )
+    assert gate(capsys, "check", "merge", "7") == (0, [f"PR #7: the go on {HEAD} is the owner's"])
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    assert delegating == [(7, OWNER_RECORD), (7, DELEGATE_RECORD)]
+    assert [approvals.parsed(body, "merge")["by"] for _, body in delegating] == [
+        "owner",
+        "delegate",
+    ]
+    assert (
+        gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate", "--withdraw")[0]
+        == 0
+    )
+    assert delegating[-1] == (7, f"Withdrawn: merge\nBy: delegate\nHead: {HEAD}\n")
+    assert hub[HEAD][0]["state"] == "failure"
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [LABELLED_HIGH]
+
+
+def test_land_says_whose_go_it_landed_on(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(DELEGATE_ALL)
+    head = lands["open"](1, {".github/ci.yml": "on: push\n"}, labels=("risk:high",))
+    pr = lands["pulls"][1]
+    pr["comments"]["nodes"].append(note(DELEGATE_RECORD.replace(HEAD, head)))
+    hub[head] = [status("owner", f"The delegate's go on {head[:12]}, under the owner's delegation")]
+    code, lines = lands["land"]("1")
+    assert code == 0, lines
+    assert f"PR #1: the go on {head} is the delegate's, under the owner's delegation" in lines
+
+
+def test_check_merge_names_no_go_on_a_low_risk_head_that_carries_one(
+    delegating: list[tuple[int, str]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # a later pass that says `Risk: low` takes `risk:high` off a head that already carries a go
+    landing["pull"]["files"]["nodes"] = [{"path": "app.py"}]
+    landing["pull"]["labels"]["nodes"] = []
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "owner")[0] == 0
+    assert gate(capsys, "check", "merge", "7") == (0, [])
+
+
+def test_land_names_no_go_on_a_low_risk_head_that_carries_one(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    head = lands["open"](1, {"1.txt": "1\n"})
+    lands["pulls"][1]["comments"]["nodes"].append(note(OWNER_RECORD.replace(HEAD, head)))
+    hub[head] = [status("owner", f"The owner's go on {head[:12]}")]
+    code, lines = lands["land"]("1")
+    assert code == 0, lines
+    assert not [line for line in lines if "the go on" in line], lines
+
+
+def test_without_the_setting_the_delegate_still_withdraws_their_go_into_main_naming_themself(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    assert gate(
+        capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate", "--withdraw"
+    ) == (0, [f"PR #7: the delegate's go on {HEAD} is withdrawn"])
+    assert (hub[HEAD][0]["state"], hub[HEAD][0]["description"]) == (
+        "failure",
+        f"The delegate withdrew their go on {HEAD[:12]}",
+    )
+    assert delegating[-1] == (7, f"Withdrawn: merge\nBy: delegate\nHead: {HEAD}\n")
+
+
+def test_delegate_is_a_choice_of_all_or_feature() -> None:
+    assert approvals.settings(add(BARE, "loop", "delegate: all\n"))["delegate"] == "all"
+    assert approvals.delegation(BARE) == "feature"
+    with pytest.raises(approvals.Refused, match=r"`loop.delegate` must be one of all, feature"):
+        approvals.settings(add(BARE, "loop", "delegate: everything\n"))
+
+
+def test_a_spec_or_plan_is_never_the_delegates_to_approve(
+    github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
+    assert "approve spec is the owner's" in capsys.readouterr().out
+    assert github == []
