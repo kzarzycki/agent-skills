@@ -9,7 +9,9 @@ python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> 
 
 Run it from the worktree the child works in, because the script makes its current
 directory the session's workspace; `--workspace <dir>` names another, such as the parent of
-several repos for a lead whose change spans them. The report path goes in a gitignored directory of that
+several repos for a lead whose change spans them. Give each child its own: a `--role` start on a
+host harness is refused, naming the session, when a live session on that host (its parent
+included) already uses that workspace, since two children there move the tree under each other. The report path goes in a gitignored directory of that
 workspace (under the engineering loop, `tmp/loop/`): outside its workspace a Codex child's sandbox refuses the write and a Claude Code
 child is prompted for a read (denied in auto mode), which nobody answers, so the script refuses
 such a path. Titles look like `s120-parser-worker`,
@@ -128,11 +130,16 @@ session, so the launcher passes none. An unknown name fails before a session is 
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
 on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
 GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
-and end its turn with only the comment's URL. A cloud session (harness `acp:claude-cloud`)
+and end its turn with only the comment's URL. They refuse `--pr` to an agent whose harness isn't
+`acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
+would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
 `remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` copy a
 worktree's missing pin from its main checkout (keeping the file's other settings) and refuse
-when neither has one. `wait` (and so `run`) with `--pr <n>` fetches
+when neither has one. They refuse a local agent in a main checkout whose own file names the pin, naming
+`claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
+and a local agent working there switches its branch under every later start. A worktree's copied
+pin is its own, so a local agent there is accepted. `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
@@ -318,8 +325,8 @@ archive it with `reap <session>`.
 It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a host other
 than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
 in the first message, because its file would be on this host, so a Claude lead may read it as
-pasted text and ask for a go-ahead; and the report is written there, so follow the lead with
-`watch`, never `wait`. With `--pr <n>` (a cloud worker) the report is instead the path here
+pasted text and ask for a go-ahead; and the report is written there, so `wait` takes its path
+as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the report is instead the path here
 that `wait --pr <n>` writes the PR comment to.
 
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
@@ -557,7 +564,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | `PARKED`, a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
-| `deadline` | rule | a named wait: act; unknown: the nudge, then act at the deadline after it; parked: none |
+| `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
 | failed | rule | the first time a revive, after it act |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |

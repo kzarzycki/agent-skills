@@ -22,7 +22,10 @@
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
-Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
+Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
+`## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
+policy in each is refused, naming both, since two sources of the bar would drift. "loop.md's" setting below means the
+policy's, in whichever file holds it. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
 those tasks.
 
@@ -39,7 +42,7 @@ PR, an issue another open PR closes too (a closing keyword, or `Implements` unde
 and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. `release` removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
-A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
+A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
 each issue, where loop.md has a `signoff` rule (below); the verifier's PR
@@ -57,22 +60,23 @@ of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
 it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
 go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
-green. `approve merge <pr> --head <sha> --by owner` posts it on the owner's word with a record (`Approved: merge`,
-`By: owner`, `Head: <sha>`) whose every word the script writes, refusing a head other than the one named, which is
-the one the owner was shown; `--withdraw` posts a newer failing one and a `Withdrawn: merge` record and removes their label, which given again
-is their go again. A status belongs
-to one commit, so no push carries the go to a head the owner didn't see. The owner's own `approved:merge` label on a
-PR into the default branch, added after the head was pushed, is their go too: `check merge`, `check queue` and `land`
-post it as that status, marked as from the label, which then holds only while the label is on, so removing it
-withdraws the go. On a change that is not high risk the label means nothing. High risk is `risk:high` on the
+green, and the PR holds the owner's record (`Approved: merge`, `By: owner`, `Head: <sha>`) naming that head.
+`approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the record's every word the script
+writes, refusing a head other than the one named, which is the one the owner was shown; `--withdraw` posts a newer
+failing status and a `Withdrawn: merge` record and removes the `approved:merge` label. A status belongs to one
+commit, so no push carries the go to a head the owner didn't see. Into the default branch that is the only go: a
+label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
+an `owner` status an older gate wrote from the label (marked as from it). On a change that is not high risk the
+label means nothing. High risk is `risk:high` on the
 PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
-failure to add it and carrying on. A label added before the head's push is no go, the push time being GitHub's
-repository activity for the head branch, and the approvals workflow removes it on `synchronize`. On a PR into a feature branch (any base but the repository's
-default branch) the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
-`By: delegate`), and refuses a PR into the default branch. There a label no newer than such a record is no approval,
-since only the owner approves a merge to the default branch; and a PR from a branch into the default branch is high
-risk while any PR merged into that branch carries `risk:high`, so a feature branch's merge waits for the owner.
+failure to add it and carrying on. On a PR into a feature branch (any base but the repository's default branch)
+`approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
+the head branch; a label added before the push is no go, and the approvals workflow removes it on `synchronize`. There
+the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
+`By: delegate`), and refuses a PR into the default branch, whose merge only the owner approves. A PR from a branch
+into the default branch is high risk while any PR merged into that branch carries `risk:high`, so a feature
+branch's merge waits for the owner.
 Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
 the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
@@ -192,14 +196,17 @@ full gate once on the result, push the batch) instead of one `land` per PR, opti
 loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
 no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
 when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
-gate on the batch replaces, the head has its own `local-ci --record` pass under the current env (which `batch` needs) and,
+gate on the batch replaces, the head has its own `local-ci --record` pass under the current env, or loop.md's
+`head_proof` status green for its tree, such as a light gate's pass (either is what `batch` needs) and,
 with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's go on that head
 (owner_waits, as `check merge` and `land` read it), which the queue checks again before it merges it. After its gate the queue posts `batch` on
 each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
-exit, the env and time of the head's own `local-ci --record` pass, and the log and its last lines; `batch` refuses a
-head with no such pass under the current env. `check merge` takes that comment in place of the CI wait (either kind)
-once it holds: the exit is 0, the head has its own green `local-ci --record` pass under the current env and the env
-the comment names, since a batch gate never stands in for the head's, the merge commit's second parent is the head
+exit, the env and time of the head's own `local-ci --record` pass, or for a head with none an `Admitted:` line naming
+the head proof status and tree it entered on, and the log and its last lines; `batch` refuses a head with neither.
+`check merge` takes that comment in place of the CI wait (either kind) once it holds: the exit is 0, the head has its
+own green `local-ci --record` pass under the current env and the env the comment names, or the head proof status
+green for its tree that the `Admitted:` line names, since a batch gate never stands in for a head's own pass or its
+head proof, the merge commit's second parent is the head
 (the head landed unchanged), its tree is what
 `git merge-tree` makes of its parents (the queue resolved no conflict and added nothing), and the batch commit
 contains it; a commit the checkout lacks is fetched from `origin` first. Only a comment by the account running this
@@ -253,8 +260,8 @@ loop.md's `loop`, `check build`, `check merge` and `land` record an `approved:sp
 login added after the spec's (plan's) last edit as `approve --by owner` would, removing `needs-owner`, and say so: the
 label is the owner's word. One they added before the last edit is named and changes nothing, nor does anyone else's.
 
-loop.md's settings block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
-section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a loop.md without
+The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
+section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
 `pre_land` and `head_proof`; `spec` holds `auto`.
 `spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
@@ -298,6 +305,7 @@ import argparse
 import contextlib
 import fcntl
 import fnmatch
+import functools
 import hashlib
 import io
 import itertools
@@ -332,13 +340,16 @@ PREFIXES = {"component": "area:", "category": "kind:"}
 SIZE_ORDER = ["size:XS", "size:S", "size:M", "size:L", "size:XL"]
 SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
+# the gatekeeper's policy, under `## Policy`; loop.md's `## Settings` block is read without it, deprecated
+POLICY = Path("docs/agents/gatekeeper.md")
 POINTS = ("spec", "plan")
 # the `By:` of the delegated approver's merge record (delegate), which owner_waits refuses on the default branch
 DELEGATE = "delegate"
 MERGE_LABEL = "approved:merge"
 # the owner's go on a high-risk head, a commit status on that one commit (approve merge), so no push carries it over
 OWNER_GO = "owner"
-# how an OWNER_GO status turned from the owner's `approved:merge` label ends, which then holds only while the label is on
+# how an OWNER_GO status the gate once turned from the `approved:merge` label ends: no go, since the label can be a
+# delegate's
 LABELLED = f"from their `{MERGE_LABEL}` label"
 # a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
@@ -505,20 +516,31 @@ SCHEMA: dict[str, dict[str, Any]] = {
 TRACKED: dict[str, Any] = dict.fromkeys(
     ("components", "categories", "labels", "renames", "board"), str
 )
-# the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` heading
+# the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` (gatekeeper.md: `## Policy`)
+# heading
 SETTINGS = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
 KINDS = {bool: "true or false", int: "a whole number", list: "a list of strings", str: "a string"}
 
 
-def block(text: str, file: str) -> dict[str, Any]:
-    """The file's settings block, parsed as YAML; refused without one under `## Settings`, since a file still on the
+class Policy(str):
+    """docs/agents/gatekeeper.md's text, whose block settings() reads under `## Policy`; a plain str is loop.md's,
+    read under `## Settings`."""
+
+
+def source(policy: str | None) -> str:
+    """The file the policy was read from, as its messages name it."""
+    return "gatekeeper.md" if isinstance(policy, Policy) else "loop.md"
+
+
+def block(text: str, file: str, heading: str = "Settings") -> dict[str, Any]:
+    """The file's settings block, parsed as YAML; refused without one under `## <heading>`, since a file still on the
     line form would otherwise lose its settings unnoticed, or when it is no YAML mapping. Only that section is
     searched, so a YAML example elsewhere in the prose is never read as the settings. A key set twice is refused,
     since YAML would keep the last one silently."""
-    found = SETTINGS.search(section(text, "Settings"))
+    found = SETTINGS.search(section(text, heading))
     if found is None:
         raise Refused(
-            f"{file} has no ```yaml settings block under ## Settings: SKILL.md § Settings has its keys"
+            f"{file} has no ```yaml settings block under ## {heading}: SKILL.md § Settings has its keys"
         )
     try:
         once(yaml.compose(found[1], Loader=yaml.SafeLoader), file)
@@ -596,39 +618,41 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
 
 
 def settings(loop: str | None) -> dict[str, Any]:
-    """loop.md's settings block, checked against SCHEMA: `loop`'s keys at the top level, every other section under
-    its name and `bot` a list of `{login, paths}`; {} without loop.md, which has no rules. A loop.md without the block
-    is refused rather than read as one without rules, since a project still on the line form would otherwise lose its
-    risk rules unnoticed."""
+    """The policy's block (gatekeeper.md's `## Policy`, a Policy, else loop.md's `## Settings`), checked against
+    SCHEMA: `loop`'s keys at the top level, every other section under its name and `bot` a list of `{login, paths}`;
+    {} without either file, which has no rules. A file without the block is refused rather than read as one without
+    rules, since a project still on the line form would otherwise lose its risk rules unnoticed."""
     if loop is None:
         return {}
+    file = source(loop)
     data: dict[str, Any] = {}
-    for name, section in sections(block(loop, "loop.md"), "loop.md").items():
+    parsed = block(loop, file, "Policy" if isinstance(loop, Policy) else "Settings")
+    for name, section in sections(parsed, file).items():
         if name == "bot":
             for login, bot in section.items():
                 where = f"bot.{login}"
                 if not isinstance(login, str):
-                    raise Refused(f"loop.md's `{where}` is no name: quote it")
+                    raise Refused(f"{file}'s `{where}` is no name: quote it")
                 if bot is None:  # a login with nothing under it
                     bot = {}
                 if not isinstance(bot, dict):
-                    raise Refused(f"loop.md's `{where}` must be a section holding `paths`")
+                    raise Refused(f"{file}'s `{where}` must be a section holding `paths`")
                 if "paths" not in bot:
-                    raise Refused(f"loop.md's `{where}` lacks `paths`")
+                    raise Refused(f"{file}'s `{where}` lacks `paths`")
                 data.setdefault("bot", []).append(
-                    {"login": login, **typed(bot, SCHEMA["bot"], where)}
+                    {"login": login, **typed(bot, SCHEMA["bot"], where, file)}
                 )
         elif name == "loop":
-            data.update(typed(section, SCHEMA["loop"], name))
+            data.update(typed(section, SCHEMA["loop"], name, file))
             for key in ("batch_queue", "ci"):
                 if key in section:
                     deprecated(key)
         elif name in SCHEMA:
-            data[name] = typed(section, SCHEMA[name], name)
+            data[name] = typed(section, SCHEMA[name], name, file)
             if name == "carry_over_main":
                 deprecated(name)
         else:
-            raise Refused(f"loop.md has an unknown settings section `{name}`")
+            raise Refused(f"{file} has an unknown settings section `{name}`")
     return data
 
 
@@ -1551,7 +1575,7 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     if pull["isCrossRepository"]:
         return f"{where} comes from another repository: its branch isn't ours to push, push it to {pull['baseRepository']['nameWithOwner']} first"
     if pull["baseRefName"] != branch:
-        return f"{where} targets {pull['baseRefName']}, but loop.md lands signed squashes only to {branch}"
+        return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
     # the URL as configured, before any `insteadOf` rewrite
@@ -1661,7 +1685,7 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
         if READY in names(issue) or records(issue, "spec"):
             return None
     return (
-        f"PR #{pull['number']} is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
+        f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
         " revert or bot exemption): its author merges it"
     )
 
@@ -1671,7 +1695,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
     tree under today's gate command (reusable)."""
     where = f"PR #{pull['number']}"
-    if batch_queue(loop) and queued(pull) is None:
+    if batch_queue(loop) and queued(pull, loop) is None:
         return []
     if no_ci(loop):
         # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
@@ -1681,7 +1705,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
             if reusable(pull["headRefOid"])
             else [
                 (
-                    f"{where}: the project has no CI (loop.md `ci: false`), and no local check passed on the head"
+                    f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head"
                     f" (approvals.py local-ci){elsewhere(pull['headRefOid'])}"
                 )
             ]
@@ -1694,7 +1718,7 @@ def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None
     return found
 
 
-def queued(pull: dict[str, Any]) -> list[str] | None:
+def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
     """None when a merge queue's batch proof (batch) on the head, by the account running this or a writer, holds
     (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
     ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
@@ -1711,7 +1735,7 @@ def queued(pull: dict[str, Any]) -> list[str] | None:
         }
         if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
             continue
-        if (why := unproven(head, fields)) is None:
+        if (why := unproven(head, fields, loop)) is None:
             return None
         found.append(f"{where}: {why}")
     return found
@@ -1728,21 +1752,31 @@ def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> 
     return login == viewer() or writer(login)
 
 
-def unproven(head: str, fields: dict[str, str]) -> str | None:
+def unproven(head: str, fields: dict[str, str], loop: str | None = None) -> str | None:
     """Why a batch proof's fields prove nothing about `head`, or None: its gate exited 0, the head has its own green
-    local-ci pass under the gate command, the env the proof names, since a batch gate never stands in for the head's,
-    its merge commit's second parent is the head, so the head landed unchanged, its tree is the clean merge of its
-    parents, so the queue resolved no conflict and added nothing, and the batch commit contains it."""
+    local-ci pass under the gate command, the env the proof names, or entered the queue on its head proof (admitted),
+    the stand-in the proof names, since a batch gate never stands in for the head's own pass, its merge commit's second
+    parent is the head, so the head landed unchanged, its tree is the clean merge of its parents, so the queue resolved
+    no conflict and added nothing, and the batch commit contains it."""
     merge, batch, code = (fields.get(key, "").lower() for key in ("Merge", "Batch", "Exit"))
     if code != "0":
         return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
-    if (record := reusable(head)) is None:
+    # the proof's own line says which it entered on, so a record made later doesn't void an `Admitted:` proof
+    if "Admitted" in fields:
+        if (entry := admitted(head, loop)) is None:
+            return (
+                f"batch {batch} names the stand-in `{fields['Admitted']}`, but the head {head} has no green loop.md"
+                f" `head_proof` status for its tree"
+            )
+        if fields["Admitted"] != entry:
+            return f"batch {batch} names the head's stand-in `{fields['Admitted']}`, its head proof `{entry}`"
+    elif (record := reusable(head)) is None:
         return (
             f"the head {head} has no green `local-ci --record` pass of its own under the gate command, which a batch"
             f" never stands in for{elsewhere(head)}"
         )
     # the comment names the env as posted, its home written `~` (public)
-    if (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
+    elif (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
         return (
             f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
         )
@@ -1893,7 +1927,7 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
     where, found = f"PR #{pull['number']}", []
     if not batch_queue(loop):
         print(
-            f"{where}: loop.md doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+            f"{where}: {source(loop)} doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
             " through `land`"
         )
         return 1
@@ -1909,10 +1943,11 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
     found += missing
     if not no_ci(loop):
         found += ran(pull, loop)
-    if reusable(head) is None:  # with CI too: batch refuses a head without one, so it may not enter
+    # with CI too: batch refuses a head with neither, so it may not enter
+    if reusable(head) is None and admitted(head, loop) is None:
         found.append(
             f"{where}: no `local-ci --record` pass on {head} under the gate command (approvals.py local-ci --record)"
-            f"{elsewhere(head)}"
+            f"{nor_head_proof(loop)}{elsewhere(head)}"
         )
     # the queue re-runs this before it merges the head, and check merge reads the owner's go on the landed head again
     found += owner_waits(pull, issues, loop)
@@ -1927,22 +1962,29 @@ def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | 
 def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
     """Post a merge queue's batch proof on PR `pr`, which queued() reads: the head (the merge's second parent), the
     merge, the batch, the gate's exit, the head's own local-ci pass and its env, the log, and the log's last LOG_TAIL
-    lines. Refused for a head with no green pass of its own under the gate command."""
+    lines. A head with no such pass that entered the queue on its head proof (admitted) gets an `Admitted:` line naming
+    that status and its tree in place of the env and time. Refused for a head with neither."""
     if not fetched(merge.lower()):
         raise Refused(f"merge {merge} is not a commit here or on origin")
     head = git("rev-parse", f"{merge}^2").strip()
-    if (record := reusable(head)) is None:
+    record, entry, loop = reusable(head), None, project()[1]
+    if record is None and (entry := admitted(head, loop)) is None:
         raise Refused(
-            f"the head {head} has no green `local-ci --record` pass of its own under the gate command: no batch proof"
-            f" without it{elsewhere(head)}"
+            f"the head {head} has no green `local-ci --record` pass of its own under the gate command"
+            f"{nor_head_proof(loop)}: no batch proof without it{elsewhere(head)}"
         )
     try:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
     body = (
-        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n{env_line(record['env'])}"
-        f"Gated: {record['time']}\nLog: {log}\n"
+        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
+        + (
+            f"{env_line(record['env'])}Gated: {record['time']}\n"
+            if record
+            else f"Admitted: {entry}\n"
+        )
+        + f"Log: {log}\n"
     )
     if tail:
         body += (
@@ -1960,22 +2002,28 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while the change is high risk (risk) and the owner's go is not on the head (owned) nor their
-    `approved:merge` label on the PR, added after the head's push; on a PR into the default branch, a label no newer
-    than a delegated record (delegate) is the delegate's, not the owner's, and the owner's label is posted as their go
-    on the head, which holds while the label is on. `pushed(pull)` is when the head was pushed (default: GitHub's
-    repository activity)."""
+    """A line while the change is high risk (risk) and the owner's go is not on the head (owned). Into the default
+    branch only that go counts, since a delegate acting through the owner's account adds a label no differently from
+    the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
+    owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
+    activity)."""
     where, found = f"PR #{pull['number']}", []
     why = risk(pull, issues, loop)
-    if why is None:
+    if why is None or owned(pull):
         return found
-    if owned(pull):
-        return found
+    command = f"`approve merge {pull['number']} --head {pull['headRefOid']} --by owner`"
+    if default(pull):
+        return [
+            (
+                f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
+                f" is no go), since it is high risk: {why}"
+            )
+        ]
     if MERGE_LABEL not in names(pull):
         return [
             (
-                f"{where} waits for the owner's go on its head (`approve merge {pull['number']} --head"
-                f" {pull['headRefOid']} --by owner`, or their `{MERGE_LABEL}` label), since it is high risk: {why}"
+                f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is high"
+                f" risk: {why}"
             )
         ]
     added = max(
@@ -1995,30 +2043,14 @@ def owner_waits(
         found.append(
             f"{where}: `{MERGE_LABEL}` was added before the head was pushed: the owner adds it again"
         )
-    elif default(pull) and any(
-        (parsed(note["body"], "merge") or {}).get("by") == DELEGATE and note["createdAt"] >= added
-        for note in notes(pull)
-    ):
-        found.append(
-            f"{where}: `{MERGE_LABEL}` is the delegated approval, which covers a PR into a feature branch, not into"
-            f" {pull['baseRefName']}: the owner removes it and adds it again"
-        )
-    if not found and default(pull):
-        # the owner's label on this head becomes their go on it, which no later push carries over; a delegate's label
-        # covers a feature branch only, so it stays a label
-        with contextlib.suppress(subprocess.CalledProcessError, OSError):
-            post_status(
-                pull["headRefOid"],
-                OWNER_GO,
-                f"The owner's go on {pull['headRefOid'][:12]}, {LABELLED}",
-            )
     return found
 
 
 def owned(pull: dict[str, Any]) -> bool:
-    """Whether the owner's go (OWNER_GO) is on the PR's head: the newest `owner` status there by the account running
-    this or a writer (a status is the repo's to write) is green, so a later one the owner withdrew it with (go) wins,
-    and one turned from their label (LABELLED) holds only while the label is on. GitHub unreachable: no go."""
+    """Whether the owner's go (go) is on the PR's head: the newest `owner` status there by the account running this
+    or a writer (a status is the repo's to write) is green, so a later one the owner withdrew it with wins, and the
+    PR holds the `Approved: merge` record by the owner naming that head. A status once turned from the label
+    (LABELLED) is no go. GitHub unreachable: no go."""
     try:
         found = statuses(pull["headRefOid"])
     except (subprocess.CalledProcessError, OSError, ValueError):
@@ -2031,10 +2063,10 @@ def owned(pull: dict[str, Any]) -> bool:
             or not (login == viewer() or writer(login))
         ):
             continue
-        if status.get("state") != "success":
-            return False
-        return not (status.get("description") or "").endswith(LABELLED) or MERGE_LABEL in names(
-            pull
+        return (
+            status.get("state") == "success"
+            and not (status.get("description") or "").endswith(LABELLED)
+            and current(pull, "merge", "head", pull["headRefOid"], "owner")
         )
     return False
 
@@ -2053,7 +2085,7 @@ def go(number: int, head: str, withdraw: bool = False) -> int:
         )
     head = pull["headRefOid"]
     if withdraw:
-        # the label off too, or the next check would turn it into the go again
+        # the label off too, since into a feature branch it is a go of its own
         label(number, MERGE_LABEL, add=False)
         post_status(head, OWNER_GO, f"The owner withdrew their go on {head[:12]}", state="failure")
         comment(number, f"Withdrawn: merge\nBy: owner\nHead: {head}\n")
@@ -2527,10 +2559,21 @@ def assign(number: int, login: str, add: bool) -> None:
 
 
 def public(text: str) -> str:
-    """`text` as posted: the home directory written `~`, since a path under it (a log's, a cache's) names the person
-    whose machine posted it, and GitHub's edit history keeps a comment's first text for good."""
-    home = str(Path.home()).rstrip("/")
-    return re.sub(re.escape(home) + r"(?![\w.-])", "~", text) if home else text
+    """`text` as posted: the home directory written `~` and the temp dir `<tmp>`, pytest's `pytest-of-<user>/pytest-<n>`
+    under it included, since a path under either (a log's, a cache's, a failing test's) names the person whose machine
+    posted it, and GitHub's edit history keeps a comment's first text for good."""
+    # the longest temp dir first and home last, since a temp dir can sit under /tmp or under home
+    # ponytail: this process's temp dir and /tmp; another TMPDIR's paths stay, with only the account name masked
+    tmps = {tempfile.gettempdir(), os.path.realpath(tempfile.gettempdir()), "/tmp"}
+    for tmp in sorted(filter(None, (t.rstrip("/") for t in tmps)), key=len, reverse=True):
+        text = re.sub(
+            r"(?<![\w.~-])" + re.escape(tmp) + r"(?:/pytest-of-[^/\s]+(?:/pytest-\w+)?)?(?![\w.-])",
+            "<tmp>",
+            text,
+        )
+    if home := str(Path.home()).rstrip("/"):
+        text = re.sub(re.escape(home) + r"(?![\w.-])", "~", text)
+    return re.sub(r"pytest-of-[^/\s]+", "pytest-of-<user>", text)
 
 
 def comment(number: int, body: str) -> None:
@@ -2653,17 +2696,35 @@ def one_repo() -> None:
 
 
 def project() -> tuple[str | None, str | None]:
-    """The checkout's docs/agents/issue-tracker.md and loop.md, None for one it lacks: a repo without the loop's
-    files has no rules, and its issues no label shape. Settings off their schema are refused here, before any proof
-    is printed or any PR touched."""
+    """The checkout's docs/agents/issue-tracker.md and its policy, None for one it lacks: a repo without the files has
+    no rules, and its issues no label shape. The policy is gatekeeper.md's (a Policy), else loop.md's `## Settings`
+    block, read with a deprecation line; a project with both is refused, since two sources of the bar would drift.
+    Settings off their schema are refused here, before any proof is printed or any PR touched."""
     root = toplevel()
-    tracker, loop = (
-        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP)
+    tracker, loop, policy = (
+        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP, POLICY)
     )
+    if policy is not None:
+        if loop is not None and SETTINGS.search(section(loop, "Settings")):
+            raise Refused(
+                f"both {POLICY} and {LOOP}'s ## Settings hold a policy: keep it in {POLICY} alone"
+            )
+        loop = Policy(policy)
+    elif loop is not None:
+        moved()
     settings(loop)
     if tracker is not None:
         tracker_settings(tracker)
     return tracker, loop
+
+
+@functools.cache
+def moved() -> None:
+    """One line per run, however often the policy is read."""
+    print(
+        f"{LOOP}'s ## Settings is deprecated: move the block to {POLICY} under ## Policy (SKILL.md § Settings)",
+        file=sys.stderr,
+    )
 
 
 def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, Any]]:
@@ -2850,7 +2911,15 @@ def landing(pr: int | None) -> tuple[int, bool]:
     finally:
         # only while it is still ours: a lock broken as stale and taken by another land stays theirs
         released = subprocess.run(
-            ["git", "push", "-q", f"--force-with-lease={LOCK}:{ours}", "origin", f":{LOCK}"],
+            [
+                "git",
+                "push",
+                "-q",
+                "--no-verify",
+                f"--force-with-lease={LOCK}:{ours}",
+                "origin",
+                f":{LOCK}",
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -2874,7 +2943,7 @@ def locked(base: str) -> str | None:
     ).strip()
     for _ in range(2):
         pushed = subprocess.run(
-            ["git", "push", "-q", "origin", f"{ours}:{LOCK}"],
+            ["git", "push", "-q", "--no-verify", "origin", f"{ours}:{LOCK}"],
             capture_output=True,
             text=True,
             check=False,
@@ -2902,7 +2971,15 @@ def locked(base: str) -> str | None:
             f"the landing lock {LOCK} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
         )
         subprocess.run(
-            ["git", "push", "-q", f"--force-with-lease={LOCK}:{held[0]}", "origin", f":{LOCK}"],
+            [
+                "git",
+                "push",
+                "-q",
+                "--no-verify",
+                f"--force-with-lease={LOCK}:{held[0]}",
+                "origin",
+                f":{LOCK}",
+            ],
             capture_output=True,
             check=False,
         )
@@ -3345,8 +3422,8 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
 
 def delegate(number: int) -> int:
     """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
-    label, then the record that names it the delegate's, so owner_waits refuses it once the PR targets the default
-    branch, whose merge only the owner approves. Into the default branch it is refused."""
+    label, then the record that names it the delegate's. Into the default branch, whose merge only the owner approves
+    and where a label is no go, it is refused."""
     pull = pull_request(number)
     if default(pull):
         raise Refused(
@@ -3357,7 +3434,7 @@ def delegate(number: int) -> int:
     try:
         comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
     except subprocess.CalledProcessError:
-        # a label with no record reads as the owner's once the PR targets the default branch: take it off again
+        # a label with no record names no one: take it off again
         label(number, MERGE_LABEL, add=False)
         raise
     return 0
@@ -3826,11 +3903,12 @@ def local_ci_status(head: str) -> int:
 
 
 def local_ci_env() -> dict[str, str | None]:
-    """The value of each variable loop.md's `local_ci_env` names, None for one unset; {} without the setting."""
-    names = settings(project()[1]).get("local_ci_env", [])
+    """The value of each variable the policy's `local_ci_env` names, None for one unset; {} without the setting."""
+    policy = project()[1]
+    names = settings(policy).get("local_ci_env", [])
     if bad := [name for name in names if not re.fullmatch(r"[A-Za-z_]\w*", name)]:
         raise Refused(
-            f"loop.md's setting `local_ci_env` names {bad[0]!r}, which is no variable name"
+            f"{source(policy)}'s setting `local_ci_env` names {bad[0]!r}, which is no variable name"
         )
     return {name: os.environ.get(name) for name in sorted(names)}
 
@@ -3942,6 +4020,21 @@ def proved(head: str, status: str) -> bool:
         held is not None
         and stated(head, status, lambda _status, named: named[1] == held) is not None
     )
+
+
+def admitted(head: str, loop: str | None) -> str | None:
+    """The stand-in for `head`'s own local-ci pass that let it into a merge queue, `<status> status on tree <tree>`, or
+    None: loop.md's head proof (head_proof), such as a light gate's pass, green on the head for its own tree (proved).
+    It is the only stand-in, so no queue entry records one: the status on the head says it."""
+    proof = head_proof(loop)
+    if proof is None or not proved(head, proof["status"]):
+        return None
+    return f"{proof['status']} status on tree {tree_of(head)}"
+
+
+def nor_head_proof(loop: str | None) -> str:
+    """A refusal's mention of the head proof that would also have let the head in, when loop.md sets one."""
+    return ", nor its loop.md `head_proof` status" if head_proof(loop) else ""
 
 
 def elsewhere(head: str) -> str:
@@ -4071,9 +4164,11 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
-    file as is and loop.md's `## Verifier brief`. A proof log whose first line isn't the head is refused, since the
+    file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. A proof log whose first line isn't the head is refused, since the
     verifier counts a stale proof as missing and spends the pass on it."""
     _, loop = project()
+    if isinstance(loop, Policy):
+        loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
     pull = pull_request(pr)
     head = pull["headRefOid"]
     if missing := [str(log) for log in proofs if not log.is_file()]:

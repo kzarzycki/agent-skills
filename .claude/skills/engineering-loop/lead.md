@@ -23,7 +23,7 @@ design, wireframes included for a UI, and delegate the rest.
    included, until the owner replies; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
    answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
    `--by owner` records their word and removes the label. You never approve anything
-   yourself: an approval is a person's word or the owner's policy in loop.md. An issue
+   yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
    assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
    you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/approvals.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
@@ -34,10 +34,10 @@ design, wireframes included for a UI, and delegate the rest.
    cannot invoke it, and its template keeps every section, one line each for a small
    change. Choose the test seams yourself and state them, with the acceptance examples for
    step 9 and the reference each one checks against, in the order of loop.md § Acceptance
-   references. Where loop.md has a `signoff` rule, end the spec with a line `Sign-off:
+   references. Where gatekeeper.md has a `signoff` rule, end the spec with a line `Sign-off:
    owner` or `Sign-off: none`: `owner` where a rule matches or the change needs a person to
    try it in use. Add the size label, then check who approves it (SKILL.md, Approvals and
-   proof). A spec loop.md's `spec.auto` list covers (`bug`, a `Found while #n`
+   proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
    `follow-up`, a `sub-issue` of an approved epic opened by a writer), or `auto: true` covers
    (any spec a writer opened that the risk rule doesn't match, SKILL.md, Approvals and proof, judged on the issue's labels
    and the paths the spec says it changes), is approved by that policy: it gets no label
@@ -48,8 +48,8 @@ design, wireframes included for a UI, and delegate the rest.
    the ready state (board: `Ready`). An epic's stories are filed as its sub-issues, each
    with its spec, before you ask for the epic's approval, and the request lists them: under
    the policy the owner's approval of the epic covers the stories filed by a writer, and
-   without it each story needs its own. When loop.md's `practice` names a `plan` skill, write
-   the plan with it next, as a `## Plan` comment on the issue; where loop.md's `plan` rule
+   without it each story needs its own. When gatekeeper.md's `practice` names a `plan` skill, write
+   the plan with it next, as a `## Plan` comment on the issue; where gatekeeper.md's `plan` rule
    matches, it waits for the owner the same way. At triage, add `risk:high` to an issue
    whose consequences call for the owner's eye at merge (a risk, not urgency: urgency is
    the tracker's priority, issues.md, Risk). The verifier judges risk on every pass (verifier.md, its `Risk:` line):
@@ -102,7 +102,7 @@ design, wireframes included for a UI, and delegate the rest.
    loop.md § Proof on a branch says, runs the spec's acceptance examples there as far as a worktree can, and
    reports; you read the report. Each proof log names the commit it ran on (worker.md,
    Report), so the verifier can tie it to the head it reviews. Green gates are necessary, not sufficient.
-7. **Verify** (board: `Verify`). A worker report naming a test that passed only on its
+7. **Verify** (board: `Verify`). A worker report or fix-round gate log naming a test that passed only on its
    retry is yours to record on its `Flaky:` issue, and at the third occurrence to start
    the skip PR from main (SKILL.md, Flaky tests). Commit and push. Before a verifier starts,
    each deviation on the worker report's `Spec deviations:` line is fixed, or taken to the
@@ -146,12 +146,20 @@ design, wireframes included for a UI, and delegate the rest.
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
    verifier, running at the same time, gets its own detached worktree the same way. Triage every finding (SKILL.md) and hand the fixes to a worker,
-   or make them yourself (`worker.md`, Trail): the fixer replies on each fixed thread with
+   or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
+   gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
+   covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like
+   a finding, that the same change fixes in files the PR already touches; a sibling past that cap
+   is filed as its own issue (SKILL.md, Triage), since one case a pass costs a round per case and
+   a fix reaching further grows the PR past its spec. The fixer replies on each fixed thread with
    the SHA and resolves it `ADDRESSED`. Resolve each deferred finding's thread yourself,
    `WONT_FIX`, replying with its triage and the issue it waits in, and each rejected one
    `INVALID`, with the one-line why; then push. Each later pass gets a fresh verifier, started the same way in a
    worktree at the new head, plus the previous report's copy and head; reviving the old one re-reads its whole earlier
-   review every turn. A finding that doesn't make the PR wrong or unmergeable, a note on a
+   review every turn. Start it as soon as the fixer reports the pushed head, with the fix's gate
+   still running, and wait on that gate yourself (`wait-for --log <log> --pid <pid>`): `land`
+   needs a satisfied verdict and a green gate on the same head, so neither check weakens, and a
+   red gate's failure joins that verdict's findings in the next fix round. A finding that doesn't make the PR wrong or unmergeable, a note on a
    satisfied verdict included, waits for the merge and starts from main (SKILL.md, One
    concern per PR). Every fix after a verdict needs a verdict on its head, because `land`
    (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
@@ -175,8 +183,8 @@ design, wireframes included for a UI, and delegate the rest.
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
      <pr> --head <sha> --by owner` naming the head you showed them, when they say it in your
-     session, or their own `approved:merge`; you
-     never give it. Into a feature branch, the delegated approver loop.md names may add it
+     session; you never give it, and `approved:merge` into the default branch is none. Into a
+     feature branch the label is a go too, and the delegated approver loop.md names may add it
      with `approvals.py delegate <pr>`. `land` adds `risk:high` to the PR when it infers the risk, and a failure
      to add it is reported, not fatal.
    - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
@@ -203,7 +211,7 @@ design, wireframes included for a UI, and delegate the rest.
        (Rules for every role, Revert first);
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
-     or of pending required checks. With loop.md's `land` section it squashes, signs and pushes
+     or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
@@ -244,7 +252,7 @@ design, wireframes included for a UI, and delegate the rest.
      way names with `Closes` (never `Part of` or `Implements`) that is still open
      (`gh issue close <n> --comment "Landed in #<pr> (<merge sha>)."`) and move it to `Done`.
      When that was an epic's last open sub-issue, close and move the epic the same way. Where
-     loop.md has a `signoff` section, each issue it names with `Implements` stays open for the
+     gatekeeper.md has a `signoff` section, each issue it names with `Implements` stays open for the
      owner's sign-off: move it to
      `Sign-off` and comment `Landed in #<pr> (<merge sha>); waits for your sign-off in use:`
      followed by the spec's acceptance examples to try ([issues.md](issues.md), Sign-off).
@@ -334,6 +342,7 @@ ended over 15 min ago. Only you know a report is in: an idle child still owing o
 finished to the backend.
 A step only the owner can unblock is parked (SKILL.md, Owner steps park): a reported child's
 process still hung on one is yours to stop and release, since its owner has ended its turn.
+A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 A wait on a background task of your own may name its id, `STILL WORKING bz3jp5aod`, which a
 supervisor reads as a named wait. A wait of your own that ends at a known time (a timer, a scheduled job) names it in UTC in your
 `STILL WORKING` line, `until 2026-10-21T23:17Z`, so a supervisor raises no progress deadline
