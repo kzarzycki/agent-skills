@@ -5,6 +5,29 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.26.6 - 2026-11-09
+
+Upstream intake, mattpocock/skills `24fe0ef..4ae2317`: a delegated agent starts with a fresh context window rather than a fork, the handoffs pass their summary safely and name the temp directory, and the wizard template's prompts, `.env` quoting and mid-run edits are fixed. Also: the delegated approver can give a head-pinned go (#748).
+
+- Upstream intake, mattpocock/skills `24fe0ef..4ae2317`.
+- `ask-matt` (ported): read a skill's `SKILL.md` before stating what it does or recommending that a step be skipped.
+- `claude-handoff` (ported): the summary goes to a file in the OS temp directory and launches with `-- "$(cat <file>)"`, so the shell runs no backticks and expands no `$` in it.
+- `code-review` (ported): search the repo for every standards file, `CODING_STANDARDS.md` and `CONTRIBUTING.md` always among them when present; the foreground and tracker-pointer wording are declined, already covered by the tuned text.
+- `codebase-design` (ported): design-it-twice sub-agents start with a fresh context window, so no design anchors on the parent's framing.
+- `diagnosing-bugs` (ported): a red forced by mutating code or a fixture is proved with a `diff` against a pristine copy before it is trusted.
+- `grilling` (ported): word each question so "yes" accepts the recommendation; a delegated lookup starts with a fresh context window.
+- `handoff` (ported): the temp directory is `$TMPDIR`, else `/tmp`, `%TEMP%` on Windows.
+- `implement` (ported): a passed ticket reference is fetched and its title stated before starting, asking if it is ambiguous; the Skill-tool wording is declined for the harness-neutral skill names.
+- `implement-spec` (ported): a fresh implementer, with a fresh context window, per ticket and for the review fixes.
+- `improve-codebase-architecture` (ported): a delegated codebase walk starts with a fresh context window.
+- `research` (ported): a delegated research agent starts with a fresh context window.
+- `tdd` (ported): each proposed seam gets a one-line note on what it catches and what it misses.
+- `teach` (ported): workspace paths resolve from where the skill ran, only the `*-FORMAT.md` links from its folder; the correct quiz answer's position varies.
+- `to-tickets` (ported): native blocking edges, each ticket a sub-issue of its source issue, and no "Blocked by" section when the blockers will be set natively.
+- `wayfinder` (ported): `wayfinder:` labels only, never a triage label; cross-references written with real ids; research branches pushed with no PR; a ticket resolved as the type its label names.
+- `wizard` (ported): `template.sh` takes upstream's fixes (Readline prompts, failure at EOF, single-quoted `.env` values written through symlinks at 0600, the `tput clear` fallback, the opener warning, the `run_wizard` wrapper); SKILL.md keeps stages inside `run_wizard`.
+- engineering-loop: `approvals.py approve merge <pr> --head <sha> --by delegate` gives the delegated approver's go on one head, as `--by owner` gives the owner's: an `owner` status described as the delegate's and a record (`Approved under the owner's delegation.`, then `Approved: merge`, `By: delegate`, `Head: <sha>`); the owner's record now opens with `Approved by the owner.`. Into the default branch it is refused, naming the setting, unless the policy sets `delegate: all` under `loop` (default `feature`), and a delegate's status there counts only while the setting is `all`. `check merge` and `land` print whose go, the owner's or the delegate's, a high-risk head carries. `delegate <pr>`'s refusal on a PR into the default branch names that head-pinned go. SKILL.md: the delegate's go may be relayed to the session where landing runs (#748).
+
 ## 0.26.5 - 2026-11-02
 
 The gatekeeper's policy gets its own file, `docs/agents/gatekeeper.md`, so a team taking only the gatekeeper writes no loop file (#613). Into the default branch, only the owner's head-pinned `approve merge` is the go on a high-risk head, since anyone with triage rights can add a label (#738). Also: `wait`, `check` and `send` read a remote session's report and question on its host (#728, #735), the supervisor wakes a lead whose named wait has passed (#744), and `land` takes its lock without the project's pre-push hooks (#721).
