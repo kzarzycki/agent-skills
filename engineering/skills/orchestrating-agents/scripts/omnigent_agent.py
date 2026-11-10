@@ -3545,7 +3545,7 @@ def standing(path: Path | None) -> str:
         text = ""
     m = re.search(r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     own = (m.group(1) if m else text).strip()
-    node = path.resolve().parent if path else None
+    node = path.resolve().parent if path and path.name == "board.md" else None
     if node and node.parent.name == "projects" and (node.parent.parent / "board.md").is_file():
         return "\n\n".join(x for x in (standing(node.parent.parent / "board.md"), own) if x)
     return own

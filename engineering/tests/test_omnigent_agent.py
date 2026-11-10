@@ -8123,3 +8123,5 @@ def test_a_project_managers_board_adds_the_root_boards_standing_decisions(tmp_pa
     assert omnigent_agent.standing(tmp_path / "board.md") == "- merge on green"  # the root alone
     (node / "board.md").unlink()  # its own unread: the root's still apply
     assert omnigent_agent.standing(node / "board.md") == "- merge on green"
+    (node / "notes.md").write_text("- local\n")  # another file there is not a manager's board
+    assert omnigent_agent.standing(node / "notes.md") == "- local"
