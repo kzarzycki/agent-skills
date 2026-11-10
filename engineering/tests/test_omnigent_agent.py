@@ -7805,6 +7805,9 @@ def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> No
     line = "DONE: merged #5. Report: r.md"
     assert omnigent_agent.ending_of(line) == "DONE"
     assert omnigent_agent.REPORT_PATH.fullmatch(line) is None  # not the bare-path fallback
+    event = {"kind": "ended", "last": line, "direct": True, "decisions": True}
+    routed = omnigent_agent.route(event, lambda: pytest.fail("no small model for it"))
+    assert routed[1] == "done"  # no nudge, no model call
     wait = "STILL WORKING: waiting on verifier. Report: r.md"
     assert omnigent_agent.wait_of(wait) == "verifier"
 
