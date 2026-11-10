@@ -15,7 +15,7 @@ import subprocess
 import sys
 import textwrap
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -3785,10 +3785,142 @@ def test_two_lands_in_the_same_second_cannot_both_take_the_lock(
     now = f"@{int(datetime.now(UTC).timestamp())} +0000"
     monkeypatch.setenv("GIT_COMMITTER_DATE", now)
     monkeypatch.setenv("GIT_AUTHOR_DATE", now)
-    first = approvals.locked("main")
-    assert first is not None
-    assert approvals.locked("main") is None
+    first, second = approvals.lock_commit("main"), approvals.lock_commit("main")
+    assert approvals.locked(first)
+    assert not approvals.locked(second)
     assert lands["lock"]() == first
+
+
+@pytest.fixture
+def stoppable() -> Iterator[None]:
+    """SIGTERM and SIGHUP at their defaults for the test, since a runner started under nohup passes SIGHUP ignored."""
+    before = {sig: signal.signal(sig, signal.SIG_DFL) for sig in approvals.STOPS}
+    yield
+    for sig, handler in before.items():
+        signal.signal(sig, handler)
+
+
+@pytest.mark.usefixtures("stoppable")
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
+def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plus_the_signal(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, sig: signal.Signals
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    held: list[str] = []
+
+    def stopped(*_args: Any) -> None:
+        held.append(lands["lock"]())
+        os.kill(os.getpid(), sig)
+
+    monkeypatch.setattr(approvals, "merges", stopped)
+    before = {s: signal.getsignal(s) for s in approvals.STOPS}
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert held[0], "the land held no lock when it was stopped"
+    assert (stop.value.code, lands["lock"]()) == (128 + sig, "")
+    assert {s: signal.getsignal(s) for s in approvals.STOPS} == before, (
+        "the land left its handlers behind"
+    )
+
+
+@pytest.mark.usefixtures("stoppable")
+@pytest.mark.parametrize("when", ["before taking", "taking", "releasing", "releasing first"])
+def test_a_stop_while_the_lock_is_pushed_still_releases_it(
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    when: str,
+) -> None:
+    # before taking: the stop arrives before the lock's push runs, so origin has no lock to release. taking: as the
+    # push reaches origin, before locked() returns. releasing: a second stop arrives as the release is pushed, as
+    # `uv run` forwards the signal Python already got. releasing first: the land's only stop arrives there
+    lands["open"](7, {"7.txt": "7\n"})
+    run = subprocess.run
+
+    def pushing(args: Any, *rest: Any, **kw: Any) -> Any:
+        target = args[-1] if isinstance(args, list) and args[:2] == ["git", "push"] else ""
+        taking = target.endswith(f":{approvals.LOCK}") and not target.startswith(":")
+        if (when == "before taking" and taking) or (
+            when.startswith("releasing") and target == f":{approvals.LOCK}"
+        ):
+            os.kill(os.getpid(), signal.SIGTERM)
+        done = run(args, *rest, **kw)
+        if when == "taking" and taking:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return done
+
+    monkeypatch.setattr(approvals.subprocess, "run", pushing)
+    if when == "releasing":
+        monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert (stop.value.code, lands["lock"]()) == (143, "")
+    assert "was not released" not in capsys.readouterr().out
+
+
+def test_the_release_push_runs_outside_the_lands_process_group(
+    lands: dict[str, Any], tmp_path: Path
+) -> None:
+    # ssh and gh as the credential helper unblock SIGTERM and SIGHUP, so a group stop would end them mid-release
+    groups = tmp_path / "groups.log"
+    receive = tmp_path / "receive-pack"
+    receive.write_text(f'#!/bin/sh\nps -o pgid= -p $$ >> "{groups}"\nexec git-receive-pack "$@"\n')
+    receive.chmod(0o755)
+    git_in(lands["work"], "config", "remote.origin.receivepack", str(receive))
+    lands["open"](7, {"7.txt": "7\n"})
+    groups.unlink()
+    assert (lands["land"]("7")[0], lands["lock"]()) == (0, "")
+    pushes = [int(g) for g in groups.read_text().split()]
+    assert pushes[0] == os.getpgrp(), (
+        "the lock's take ran outside the land's group, so the test proves nothing"
+    )
+    assert pushes[-1] != os.getpgrp(), "the release push ran in the land's process group"
+
+
+@pytest.mark.usefixtures("stoppable")
+def test_a_second_stop_while_the_batch_worktree_is_removed_leaves_no_worktree(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # uv run forwards the first stop again while the unwinding removes the batch worktree; stopped() ignores it
+    lands["open"](7, {"7.txt": "7\n"})
+    removed: list[str] = []
+    run = subprocess.run
+
+    def removing(args: Any, *rest: Any, **kw: Any) -> Any:
+        if isinstance(args, list) and args[:3] == ["git", "worktree", "remove"]:
+            removed.append(args[-1])
+            os.kill(os.getpid(), signal.SIGTERM)
+        return run(args, *rest, **kw)
+
+    monkeypatch.setattr(approvals.subprocess, "run", removing)
+    monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert (stop.value.code, lands["lock"]()) == (143, "")
+    assert removed, "the land never removed its batch worktree"
+    assert not Path(removed[0]).exists(), (
+        f"the batch worktree {Path(removed[0]).name} was left behind"
+    )
+
+
+def test_a_land_that_inherits_sighup_ignored_outlives_a_hangup(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    merges = approvals.merges
+
+    def hangup(*args: Any) -> Any:
+        os.kill(os.getpid(), signal.SIGHUP)
+        return merges(*args)
+
+    monkeypatch.setattr(approvals, "merges", hangup)
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        assert (lands["land"]("7")[0], lands["lock"]()) == (0, "")
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert lands["merged"]() == ["7"]
 
 
 def test_a_lock_another_land_took_meanwhile_stays_theirs(
