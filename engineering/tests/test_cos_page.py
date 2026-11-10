@@ -373,3 +373,32 @@ def test_a_board_bullet_joins_its_sessions_project_else_the_area_it_names(tmp_pa
     assert f"/c/{C}" in group("Voice note") and "follow-ups" in group("Voice note")  # its session's
     assert "fix the transcript" in group("Voice note") and "Pick a name" in group("Other")
     assert "🟡 2 later" in group("Disk space")
+
+
+def test_the_page_reads_every_node_of_a_chief_of_staff_tree(tmp_path: Path) -> None:
+    (tmp_path / "board.md").write_text("## Needs the owner\n- 🔴 **app:** root ask\n")
+    reports, node = tmp_path / "reports", tmp_path / "projects" / "app"
+    reports.mkdir()
+    node.mkdir(parents=True)
+    (node / "board.md").write_text(
+        "## Needs the owner\n- 🔴 **Android:** manager ask\n- 🔴 **App:** own area\n"
+    )
+    (reports / "app-leads.registry").write_text("")
+    (reports / "app-leads.state.json").write_text(
+        json.dumps({"leads": {SID: {"title": "App lead", "state": "blocked"}}})
+    )
+    (reports / "app-leads.events.jsonl").write_text(
+        json.dumps({"at": 5, "session": SID, "kind": "quiet"})
+    )
+    snap = {"rows": [], "at": 0, "projects": ["app"]}
+    page = cos_page.render(reports / "leads.registry", tmp_path / "board.md", URL, snap, now=10)
+    now = page.split("Needs you now")[1].split("By project")[0]
+    app = now.split("<h3>app</h3>")[1]
+    assert app.index("root ask") < app.index("Android: manager ask")  # the root's first, area kept
+    assert "<b>own area</b>" in app  # its own name as the area adds nothing
+    assert "App lead" in now and "quiet" in page  # the manager's supervisor state and events
+    assert "app-leads" not in page  # read, so no warning
+    (reports / "app-leads.registry").unlink()  # a manager with no supervisor yet warns of nothing
+    assert "app-leads" not in cos_page.render(
+        reports / "leads.registry", tmp_path / "board.md", URL, snap
+    )
