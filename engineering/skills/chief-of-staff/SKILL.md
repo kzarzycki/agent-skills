@@ -277,8 +277,10 @@ another, never a fork of yours, since every turn of a fork re-reads the whole tr
 it copied. Your successor knows only what your handover file says, so that file is the
 whole of your state. Its path is the project's instructions' (a board in a home of your own),
 else `tmp/loop/chief-of-staff.md` in the checkout you run in. A board in a git repo with a
-remote is committed and pushed after every rewrite, and pulled before a takeover reads it, so
-a successor on any host reads the current one:
+remote is pulled before a takeover reads it, and committed and pushed once, at the end of a turn
+that changed it (several edits, one commit), and right away when a lead starts or finishes. A
+successor reads it only between turns, so a sync per edit costs a full-context tool call and
+buys nothing, but a lead missing from the board is one a successor never finds:
 
 - **Shape.** One page (about 4 KB), overwritten in place, with these sections:
   - Owner contact: your Omnigent session id (the one `start` subscribes as, `own_id` in the
