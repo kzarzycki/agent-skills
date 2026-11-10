@@ -3535,14 +3535,20 @@ def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[st
 
 def standing(path: Path | None) -> str:
     """The standing decisions in ``path``: the section under a ``## Standing decisions`` heading,
-    else the whole file; none without a file, or when it can't be read."""
+    else the whole file; none without a file, or when it can't be read. A project manager's board,
+    ``<root>/projects/<repo>/board.md``, adds the root ``board.md``'s first, since the chief of
+    staff's decisions pass down to its managers."""
     try:
         text = path.read_text() if path else ""
     except OSError as e:
         print(f"{path}: {reason(e)}; no standing decisions", file=sys.stderr)
-        return ""
+        text = ""
     m = re.search(r"^## Standing decisions\b.*?\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
-    return (m.group(1) if m else text).strip()
+    own = (m.group(1) if m else text).strip()
+    node = path.resolve().parent if path and path.name == "board.md" else None
+    if node and node.parent.name == "projects" and (node.parent.parent / "board.md").is_file():
+        return "\n\n".join(x for x in (standing(node.parent.parent / "board.md"), own) if x)
+    return own
 
 
 def status_line(lead: dict) -> str:
@@ -4504,7 +4510,8 @@ def main(argv: list[str] | None = None) -> int:
         "--decisions",
         type=Path,
         help="with --console, the file holding the owner's standing decisions for the small model"
-        " (its '## Standing decisions' section, else the whole file)",
+        " (its '## Standing decisions' section, else the whole file; a project manager's"
+        " <root>/projects/<repo>/board.md adds the root board.md's first)",
     )
     p.add_argument(
         "--silent-seconds",

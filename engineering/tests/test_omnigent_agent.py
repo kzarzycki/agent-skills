@@ -8112,3 +8112,16 @@ def test_a_revived_remote_session_is_named_only_the_files_on_its_host(
     registry.write_text(f"a={report}\n")
     omnigent_agent.arm(registry, "a", report, then=Path("tmp/loop/r.md.followup"), far=True)
     assert registry.read_text() == f"a={report}\ttmp/loop/r.md.followup\n"
+
+
+def test_a_project_managers_board_adds_the_root_boards_standing_decisions(tmp_path: Path) -> None:
+    (tmp_path / "board.md").write_text("## Standing decisions\n- merge on green\n## Next\nx\n")
+    node = tmp_path / "projects" / "app"
+    node.mkdir(parents=True)
+    (node / "board.md").write_text("## Standing decisions (app only)\n- ship nightly\n")
+    assert omnigent_agent.standing(node / "board.md") == "- merge on green\n\n- ship nightly"
+    assert omnigent_agent.standing(tmp_path / "board.md") == "- merge on green"  # the root alone
+    (node / "board.md").unlink()  # its own unread: the root's still apply
+    assert omnigent_agent.standing(node / "board.md") == "- merge on green"
+    (node / "notes.md").write_text("- local\n")  # another file there is not a manager's board
+    assert omnigent_agent.standing(node / "notes.md") == "- local"

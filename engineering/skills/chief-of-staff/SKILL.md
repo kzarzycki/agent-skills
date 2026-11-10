@@ -120,6 +120,10 @@ its landing order.
   its area, matched to an Omnigent project name ignoring case and punctuation, or a unique
   prefix of one (`voice` for `Voice note`), else a group of its own; with neither it goes under
   "Other". Only 🔴 and 🟡 bullets show, and the red list is grouped the same way.
+  With project managers (a `projects/<repo>/board.md` beside the board, its leads in
+  `<repo>-leads.registry` beside the registry), the page reads every node: a manager's bullets
+  join its project after the root's, and its supervisor's leads and events show too. A manager's
+  supervisor, run with `--decisions` its own board, also reads the root board's standing decisions.
   The supervisor's recent events sit folded at the bottom. Run it as a systemd user unit beside
   the supervisor, with the same `PATH` (it runs `claude` for the small model), tailnet-only:
   `--host` the machine's tailnet address (`tailscale ip -4`), or, where your user is the
