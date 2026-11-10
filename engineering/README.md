@@ -68,7 +68,7 @@ Without one, every session you start is a lead, as before.
   in the directory its project's instructions name, by default the project's
   main checkout. Its state is the handover file and the memory bank those
   instructions name: by default `tmp/loop/chief-of-staff.md` in the directory it
-  runs in and the bank `coding-agent-<repo>`. A handover file in a repo with a remote is pushed, so a
+  runs in and the bank `coding-agent-<repo>`. A handover file in a repo with a remote is pushed once at the end of a turn that changed it, and when a lead starts or finishes, so a
   successor on another host pulls it.
 - Switch it at any time, to either harness: the handover file is one page the
   chief rewrites whenever its state changes, and a successor takes over by
