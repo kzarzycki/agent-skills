@@ -2365,7 +2365,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
         + "do X"
     )
     assert "owner's own words" in text and "ask them here" in text
-    assert "USER NEEDED" not in text and "needs-owner" not in text
+    assert "needs-owner" not in text
     assert "setsid; exec @ARGV" in text and f"final report to {tmp_path / 'r.md'}" in text
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
@@ -7794,6 +7794,19 @@ def test_a_cloud_worker_s_delivered_brief_freezes_its_branch_after_hand_off(
         brief = omnigent_agent.text_of(og.sessions[sid][1])
         assert "your branch is frozen" in brief and "read-only, so push nothing" in brief
         assert "a follow-up goes in a new PR" in brief
+
+
+def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> None:
+    """One ending contract: the ending word and the report path on one line, which routes as is."""
+    text = omnigent_agent.LEAD_PREAMBLE.format(report="r.md", role="")
+    assert "only its path" not in text
+    for word in ("DONE", "STILL WORKING", "USER NEEDED", "PARKED"):
+        assert f"`{word}: " in text and ". Report: r.md`" in text
+    line = "DONE: merged #5. Report: r.md"
+    assert omnigent_agent.ending_of(line) == "DONE"
+    assert omnigent_agent.REPORT_PATH.fullmatch(line) is None  # not the bare-path fallback
+    wait = "STILL WORKING: waiting on verifier. Report: r.md"
+    assert omnigent_agent.wait_of(wait) == "verifier"
 
 
 def test_the_preambles_detach_runs_here_and_records_its_exit_code(tmp_path: Path) -> None:

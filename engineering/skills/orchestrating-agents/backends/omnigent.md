@@ -17,7 +17,7 @@ child is prompted for a read (denied in auto mode), which nobody answers, so the
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
 every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
-role file, long runs started detached and polled, write the report to the path, reply with only
+role file, long runs started detached and polled, write the report to the path; a lead replies with its ending line carrying the path, any other child with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
 that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc

@@ -445,7 +445,7 @@ LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is waited on up to a total budget you state, in as few calls as you can, each blocking close to the tool's limit (the longest yield the harness allows on a running command, or a sleep loop that checks the log for its exit line), never short polls, since each call re-reads the whole context: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
-Write your final report to {report}, then reply with only its path.
+Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}` or `PARKED: <why>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
 
 """
 
