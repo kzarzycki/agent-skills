@@ -2797,6 +2797,26 @@ def told_park(item: dict) -> bool:
     return from_user(item) and bool(PARK_TOLD.match(text_of(item).lstrip()))
 
 
+def parked_before(og: Omnigent, sid: str, items: list[dict], ending: dict | None) -> bool:
+    """Whether a park message came before ``ending`` in ``sid``'s history: in the newest page
+    ``items``, else on the pages behind it, which are all older than the ending. A full page
+    means older items exist. A park still queued in ``pending_inputs`` came after it."""
+    if ending is None:
+        return False
+    if any(told_park(i) for i in items[: items.index(ending)]):
+        return True
+    after = str(items[0].get("id")) if len(items) >= 100 else None
+    # ponytail: one extra page read per event of a lead with 100+ items, never cached;
+    # upgrade: keep the answer in the lead's state once found.
+    while after:
+        page = og.older(sid, after)
+        data = page.get("data") or []
+        if any(told_park(i) for i in data):
+            return True
+        after = str(page.get("last_id") or "") if data and page.get("has_more") else None
+    return False
+
+
 def in_history(og: Omnigent, sid: str, found: Callable[[dict], bool], since: float) -> bool:
     """Whether an item of ``sid``'s history no older than ``since`` (epoch seconds) is ``found``,
     read back a page at a time from the newest until a page reaches older items or the history
@@ -3862,12 +3882,7 @@ def supervise_registry(
             "revived": bool(lead.get("revives")),
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
-            "parked": bool(said)
-            and ending_of(last) == "PARKED"
-            and (
-                any(told_park(i) for i in items[: items.index(said[-1])])
-                or in_history(og, sid, told_park, 0.0)  # behind the newest page
-            ),
+            "parked": parked_before(og, sid, items, said[-1] if said else None),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
         }

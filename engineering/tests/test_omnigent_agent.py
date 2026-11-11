@@ -4791,11 +4791,11 @@ def test_a_lead_that_parked_itself_is_seen_once(
             lambda: [told("[relayed by m]\n" + omnigent_agent.PARK + "the host is full", 30)],
             "record",
         ),
-        # the park line behind 99 later messages is out of the newest page of 100 items
+        # the park line behind 100 later messages is out of the newest page of 100 items
         (
             lambda: (
                 [told(omnigent_agent.PARK + "full", 900)]
-                + [ending(f"STILL WORKING: step {n}", 800 - n) for n in range(98)]
+                + [ending(f"STILL WORKING: step {n}", 800 - n) for n in range(100)]
             ),
             "record",
         ),
@@ -4825,6 +4825,19 @@ def test_only_the_managers_park_message_makes_a_parked_ending_routine(
         og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
     )
     assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == [action]
+
+
+def test_a_park_still_queued_does_not_excuse_an_earlier_self_park(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("PARKED: waiting for the owner's pick", 5))
+    og.snap = {"pending_inputs": [{"content": [{"type": "x", "text": omnigent_agent.PARK + "x"}]}]}
+    supervised(
+        og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
+    )
+    assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == ["act"]
 
 
 @pytest.mark.parametrize("task", ["monitor", "shell"])
