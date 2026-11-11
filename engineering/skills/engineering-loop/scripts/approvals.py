@@ -3671,6 +3671,14 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
+    # a run not made can't back a satisfied verdict: that ends in a question for the lead's proof run
+    if satisfied[-1].lower().split()[1:2] == ["yes"] and any(
+        re.match(r"Not run:", line) for line in lines
+    ):
+        raise Refused(
+            f"{report}: `{satisfied[-1]}` lists a `Not run:` line, so a run it relies on was never made: "
+            "end the turn in `<report>.question` (verifier.md, A run the sandbox refuses)"
+        )
     # an unsatisfied pass with nothing found spends a pass on a run the verifier couldn't make: that ends in a question
     if (
         not any(tally)
