@@ -275,20 +275,22 @@ REVIVED = "Your session was restarted and may have lost its context."
 # supervisor knows them as its own by the "Supervisor: " prefix (OWN_LINES), not their text.
 LEAD_NUDGE = (
     "Supervisor: your turn ended with no ending and no named wait. Carry on to your next step, and"
-    " end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    " end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A timed wait's time passed with no progress since: nothing else wakes an idle lead at its time.
 LEAD_WAKE = (
     "Supervisor: the time your STILL WORKING named, {time}, has passed. Check what you wait on and"
-    " carry on, then end your turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or"
-    " PARKED."
+    " carry on, then end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
 )
 LEAD_REVIVE = (
     "Supervisor: your session failed and was resumed. Carry on from your last step, and end your"
-    " turn with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED."
+    " turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
+# The manager's message that parks a lead starts with this, so ``route`` finds it; a lead ends
+# PARKED only after one, and a PARKED without one is routed to the manager.
+PARK = "Park: "
 LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
 # ``relay --from``'s first line: a notice from a task or an agent, which a reader must not take for
 # the owner's words, and which never answers an open question.
@@ -445,7 +447,8 @@ LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}A long run starts detached (in its own session, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' <cmd>`, since macOS has no `setsid`; log, pid and exit code in files; a gate your role file says to run bare is the exception, since an allow rule matches only a plain command) and is waited on up to a total budget you state, in as few calls as you can, each blocking close to the tool's limit (the longest yield the harness allows on a running command, or a sleep loop that checks the log for its exit line), never short polls, since each call re-reads the whole context: a held lock can outlast a foreground call, and a low-memory reaper stops in-session background shells. Never end a turn saying you wait, since a background command's completion never wakes you.
 The owner reads this session: ask them here when you need a decision, as your role says, never in a question file.
-Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}` or `PARKED: <why>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
+Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
+A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
 
 """
 
@@ -3412,7 +3415,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
-    ``revived`` once, ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
+    ``revived`` once, ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
@@ -3478,6 +3481,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if event.get("repeat"):
         return "rule", "record", "an exact repeat of its last event"
     if ending == "PARKED":
+        if not event.get("parked"):
+            return "rule", "act", "ended PARKED with no park message before it"
         return "rule", "record", "parked: waits on host capacity"
     if ending == "DONE":
         return "rule", "done", "done: its result, and the leads waiting on it"
@@ -3849,6 +3854,12 @@ def supervise_registry(
             "revived": bool(lead.get("revives")),
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
+            "parked": any(
+                from_user(i) and re.search(rf"^{PARK}", text_of(i), re.MULTILINE)
+                for i in items[: items.index(said[-1])]
+            )
+            if said
+            else False,
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
         }
