@@ -117,9 +117,11 @@ yourself, keeping standards and spec as separate axes.
   `risk` (docs/agents/gatekeeper.md) lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
-- **A full heavy slot.** A gate or mutation run that waits for the host's heavy slot is the
-  one pending run that ends in a question, not a report: wait for it in the foreground as
-  above, with a 30-minute limit. Past it, stop the run (so its mutation can't apply after
+- **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
+  make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
+  at once, not a report: a report with no finding but `SATISFIED: no` spends a pass, can reach
+  the cap and makes the gate add `risk:high`. So does a gate or mutation run that waits for
+  the host's heavy slot past a 30-minute limit, waited on in the foreground as above. Stop the run (so its mutation can't apply after
   you), redo any patch you undid so the tree is as you found it, and write
   `<report>.question` asking the lead for a proof run with the brief in
   [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
@@ -127,7 +129,7 @@ yourself, keeping standards and spec as separate axes.
   alone. The lead has the runs made off this host and answers with the head-stamped logs; a
   verdict without them would be repeated once the logs exist.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
-  what it holds, and report it as not run with the exact owner action, since parking it is
+  what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
   the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 - **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
   (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with

@@ -2654,6 +2654,26 @@ def test_a_verdict_line_without_all_three_counts_posts_nothing(
     assert [call for call in reviewing if call[0] == "review"] == []
 
 
+@pytest.mark.parametrize(
+    ("extra", "refused"), [("", True), ("Not run: gate, owner action: free the slot\n", False)]
+)
+def test_an_unsatisfied_report_with_no_finding_is_refused_unless_it_names_what_was_not_run(
+    reviewing: list[tuple[Any, ...]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: str,
+    refused: bool,
+) -> None:
+    report = tmp_path / "report.md"
+    empty = (
+        REPORT.split("### C1")[0] + f"{extra}\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+    )
+    report.write_text(empty + "SATISFIED: no\nRisk: low — a test fixture\n")
+    assert approvals.main(["verdict", "7", str(report)]) == int(refused)
+    assert ("<report>.question" in capsys.readouterr().out) == refused
+    assert bool([call for call in reviewing if call[0] == "review"]) != refused
+
+
 def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

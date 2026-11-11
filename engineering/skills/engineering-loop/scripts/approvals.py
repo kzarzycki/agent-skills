@@ -3671,6 +3671,17 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
+    # an unsatisfied pass with nothing found spends a pass on a run the verifier couldn't make: that ends in a question
+    if (
+        not any(tally)
+        and satisfied[-1].lower().split()[1:2] != ["yes"]
+        and not any(line.startswith("Not run:") for line in lines)
+    ):
+        raise Refused(
+            f"{report}: `{satisfied[-1]}` with no finding spends a pass on a run the sandbox refused: "
+            "end the turn in `<report>.question` (verifier.md, A run the sandbox refuses), or name what "
+            "was not run on a `Not run: <step>, owner action: <what>` line"
+        )
     family, number, qualifier = passes[-1].groups()
     closing = [verdicts[-1], satisfied[-1], judgments[-1]]
     heading = f"Verifier ({family}), pass {number}"
