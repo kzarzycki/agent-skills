@@ -291,6 +291,9 @@ LEAD_REVIVE = (
 # The manager's message that parks a lead starts with this, so ``route`` finds it; a lead ends
 # PARKED only after one, and a PARKED without one is routed to the manager.
 PARK = "Park: "
+# ponytail: the manager's relay header, then PARK at the start of the text; a worker notice opens
+# with its own header and a quoted line is not at the start, so neither parks a lead.
+PARK_TOLD = re.compile(rf"(\[relayed by [^\]\n]*\]\n)?{re.escape(PARK)}")
 LEAD_TOLD = "Supervisor: {lead}, the lead you wait on, ended: {line}"
 # ``relay --from``'s first line: a notice from a task or an agent, which a reader must not take for
 # the owner's words, and which never answers an open question.
@@ -2789,6 +2792,11 @@ def from_user(item: dict) -> bool:
     return item.get("type") == "message" and item.get("role") == "user"
 
 
+def told_park(item: dict) -> bool:
+    """A user message that parks the lead: ``PARK`` opens it, after the manager's relay line."""
+    return from_user(item) and bool(PARK_TOLD.match(text_of(item).lstrip()))
+
+
 def in_history(og: Omnigent, sid: str, found: Callable[[dict], bool], since: float) -> bool:
     """Whether an item of ``sid``'s history no older than ``since`` (epoch seconds) is ``found``,
     read back a page at a time from the newest until a page reaches older items or the history
@@ -3854,12 +3862,12 @@ def supervise_registry(
             "revived": bool(lead.get("revives")),
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
-            "parked": any(
-                from_user(i) and re.search(rf"^{PARK}", text_of(i), re.MULTILINE)
-                for i in items[: items.index(said[-1])]
-            )
-            if said
-            else False,
+            "parked": bool(said)
+            and ending_of(last) == "PARKED"
+            and (
+                any(told_park(i) for i in items[: items.index(said[-1])])
+                or in_history(og, sid, told_park, 0.0)  # behind the newest page
+            ),
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
         }

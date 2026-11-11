@@ -4783,6 +4783,50 @@ def test_a_lead_that_parked_itself_is_seen_once(
     ]
 
 
+@pytest.mark.parametrize(
+    ("early", "action"),
+    [
+        (lambda: [told(omnigent_agent.PARK + "the host is full", 30)], "record"),
+        (
+            lambda: [told("[relayed by m]\n" + omnigent_agent.PARK + "the host is full", 30)],
+            "record",
+        ),
+        # the park line behind 99 later messages is out of the newest page of 100 items
+        (
+            lambda: (
+                [told(omnigent_agent.PARK + "full", 900)]
+                + [ending(f"STILL WORKING: step {n}", 800 - n) for n in range(98)]
+            ),
+            "record",
+        ),
+        # a worker's notice, or a line quoted inside a message, is not the manager's park
+        (
+            lambda: [
+                told("[relay from w: not the owner's words]\n" + omnigent_agent.PARK + "x", 30)
+            ],
+            "act",
+        ),
+        (lambda: [told("fyi the manager wrote:\n" + omnigent_agent.PARK + "x", 30)], "act"),
+        (list, "act"),
+    ],
+)
+def test_only_the_managers_park_message_makes_a_parked_ending_routine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, early: Callable[[], list[dict]], action: str
+) -> None:
+    registry = following(tmp_path)
+    skewed(monkeypatch)
+
+    class Paged(Lead):  # the server's newest page holds 100 items
+        def items(self, sid: str) -> list[dict]:
+            return self.histories[sid][-100:]
+
+    og = Paged(told("brief", 1000), *early(), ending("PARKED: the host is full", 5))
+    supervised(
+        og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
+    )
+    assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == [action]
+
+
 @pytest.mark.parametrize("task", ["monitor", "shell"])
 def test_a_lead_that_ended_with_only_a_monitor_live_has_no_deadline_and_a_shell_keeps_one(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: str
