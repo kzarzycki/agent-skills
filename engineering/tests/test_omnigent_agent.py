@@ -4799,6 +4799,13 @@ def test_a_lead_that_parked_itself_is_seen_once(
             ),
             "record",
         ),
+        (
+            lambda: (
+                [told(omnigent_agent.PARK + "full", 900)]
+                + [ending(f"STILL WORKING: step {n}", 800 - n) for n in range(250)]
+            ),
+            "record",
+        ),
         # a worker's notice, or a line quoted inside a message, is not the manager's park
         (
             lambda: [
@@ -4838,6 +4845,29 @@ def test_a_park_still_queued_does_not_excuse_an_earlier_self_park(
         og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
     )
     assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == ["act"]
+
+
+@pytest.mark.parametrize(("parked", "action"), [(True, "record"), (False, "act")])
+def test_a_report_path_lead_is_parked_by_the_report_and_the_park_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parked: bool, action: str
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    path = str(tmp_path / "a.md")
+    early = [told(omnigent_agent.PARK + "the host is full", 30)] if parked else []
+    og = Lead(told("brief", 60), *early, ending(path, 5))
+    og.files[path] = "PARKED: the host is full"
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, 2000.0 * poll),
+        notify="cos",
+        console=True,
+        fyi="post",
+    )
+    assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == [action]
 
 
 @pytest.mark.parametrize("task", ["monitor", "shell"])
