@@ -2655,7 +2655,12 @@ def test_a_verdict_line_without_all_three_counts_posts_nothing(
 
 
 @pytest.mark.parametrize(
-    ("extra", "refused"), [("", True), ("Not run: gate, owner action: free the slot\n", False)]
+    ("extra", "refused"),
+    [
+        ("", True),
+        ("Not run: gate\n", True),
+        ("Not run: login, owner action: sign in to the app\n", False),
+    ],
 )
 def test_an_unsatisfied_report_with_no_finding_is_refused_unless_it_names_what_was_not_run(
     reviewing: list[tuple[Any, ...]],

@@ -3675,7 +3675,7 @@ def parse_report(
     if (
         not any(tally)
         and satisfied[-1].lower().split()[1:2] != ["yes"]
-        and not any(line.startswith("Not run:") for line in lines)
+        and not any(re.match(r"Not run:.*\bowner action:\s*\S", line) for line in lines)
     ):
         raise Refused(
             f"{report}: `{satisfied[-1]}` with no finding spends a pass on a run the sandbox refused: "
