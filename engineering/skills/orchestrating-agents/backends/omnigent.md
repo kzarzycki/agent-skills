@@ -561,7 +561,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 | Event | Settled by | What happens |
 |---|---|---|
 | `archived` | rule | its line and state entry dropped; no post |
-| `PARKED`, a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
+| `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
@@ -586,7 +586,7 @@ no model, a quiet end too.
 
 The supervisor's own actions, the nudge (`Supervisor: your turn ended with no ending and no named
 wait. Carry on to your next step, and end your turn with DONE, STILL WORKING naming what you wait
-on, USER NEEDED or PARKED.`), the revive and telling a waiting lead, go through `relay`, which
+on, or USER NEEDED.`), the revive and telling a waiting lead, go through `relay`, which
 revives a reaped runner and sends no second copy. Each is an intent in the state, written with its
 budget counted (`nudges` and `nudged_at`, one nudge per progress chain; `revives`, one per lead)
 before the first send (every waiting lead's tell at once) and marked done after each; one to a lead waiting on a prompt is not sent, since

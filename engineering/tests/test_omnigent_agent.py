@@ -4747,7 +4747,11 @@ def test_a_parked_lead_has_no_deadline(
 ) -> None:
     registry = following(tmp_path)
     offset = skewed(monkeypatch)
-    og = Lead(told("brief", 60), ending("PARKED: the host is full", 5))
+    og = Lead(
+        told("brief", 60),
+        told(omnigent_agent.PARK + "the host is full", 30),
+        ending("PARKED: the host is full", 5),
+    )
     og.snap = {"status": status}
     at = {1: 1300.0, 2: 5000.0}
     supervised(
@@ -4763,6 +4767,107 @@ def test_a_parked_lead_has_no_deadline(
     ends = ["Supervisor: a t-a: turn ended"] if status == "idle" else []
     assert [p.split("\n")[0] for p in fyis(og)] == ends
     assert state_of(registry)["leads"]["a"]["wait"] == "parked"
+
+
+def test_a_lead_that_parked_itself_is_seen_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("PARKED: waiting for the owner's pick", 5))
+    supervised(
+        og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
+    )
+    assert [(e["action"], e["why"]) for e in events_of(registry) if e["kind"] == "ended"] == [
+        ("act", "ended PARKED with no park message before it")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("early", "action"),
+    [
+        (lambda: [told(omnigent_agent.PARK + "the host is full", 30)], "record"),
+        (
+            lambda: [told("[relayed by m]\n" + omnigent_agent.PARK + "the host is full", 30)],
+            "record",
+        ),
+        # the park line behind 100 later messages is out of the newest page of 100 items
+        (
+            lambda: (
+                [told(omnigent_agent.PARK + "full", 900)]
+                + [ending(f"STILL WORKING: step {n}", 800 - n) for n in range(100)]
+            ),
+            "record",
+        ),
+        (
+            lambda: (
+                [told(omnigent_agent.PARK + "full", 900)]
+                + [ending(f"STILL WORKING: step {n}", 800 - n) for n in range(250)]
+            ),
+            "record",
+        ),
+        # a worker's notice, or a line quoted inside a message, is not the manager's park
+        (
+            lambda: [
+                told("[relay from w: not the owner's words]\n" + omnigent_agent.PARK + "x", 30)
+            ],
+            "act",
+        ),
+        (lambda: [told("fyi the manager wrote:\n" + omnigent_agent.PARK + "x", 30)], "act"),
+        (list, "act"),
+    ],
+)
+def test_only_the_managers_park_message_makes_a_parked_ending_routine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, early: Callable[[], list[dict]], action: str
+) -> None:
+    registry = following(tmp_path)
+    skewed(monkeypatch)
+
+    class Paged(Lead):  # the server's newest page holds 100 items
+        def items(self, sid: str) -> list[dict]:
+            return self.histories[sid][-100:]
+
+    og = Paged(told("brief", 1000), *early(), ending("PARKED: the host is full", 5))
+    supervised(
+        og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
+    )
+    assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == [action]
+
+
+def test_a_park_still_queued_does_not_excuse_an_earlier_self_park(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    skewed(monkeypatch)
+    og = Lead(told("brief", 60), ending("PARKED: waiting for the owner's pick", 5))
+    og.snap = {"pending_inputs": [{"content": [{"type": "x", "text": omnigent_agent.PARK + "x"}]}]}
+    supervised(
+        og, registry, monkeypatch, 1, lambda poll: None, notify="cos", console=True, fyi="post"
+    )
+    assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == ["act"]
+
+
+@pytest.mark.parametrize(("parked", "action"), [(True, "record"), (False, "act")])
+def test_a_report_path_lead_is_parked_by_the_report_and_the_park_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parked: bool, action: str
+) -> None:
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    path = str(tmp_path / "a.md")
+    early = [told(omnigent_agent.PARK + "the host is full", 30)] if parked else []
+    og = Lead(told("brief", 60), *early, ending(path, 5))
+    og.files[path] = "PARKED: the host is full"
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, 2000.0 * poll),
+        notify="cos",
+        console=True,
+        fyi="post",
+    )
+    assert [e["action"] for e in events_of(registry) if e["kind"] == "ended"] == [action]
 
 
 @pytest.mark.parametrize("task", ["monitor", "shell"])
@@ -5977,7 +6082,18 @@ def test_report_without_a_path_reads_the_registry_line_else_exits_2(
 # would answer if asked, and the expected (settled by, action). None: the model is never asked.
 ROUTES = [
     ("archived", {"kind": "archived"}, None, ("rule", "absorb")),
-    ("parked", {"kind": "ended", "last": "PARKED: the host is full"}, None, ("rule", "record")),
+    (
+        "parked after a park message",
+        {"kind": "ended", "last": "PARKED: the host is full", "parked": True},
+        None,
+        ("rule", "record"),
+    ),
+    (
+        "parked with no park message",
+        {"kind": "ended", "last": "PARKED: waiting for the owner's pick"},
+        None,
+        ("rule", "act"),
+    ),
     (
         "still working, named wait",
         {"kind": "ended", "last": "STILL WORKING: waiting on the verifier"},
@@ -6008,7 +6124,12 @@ ROUTES = [
         None,
         ("rule", "act"),
     ),
-    ("deadline, parked", {"kind": "deadline", "last": "PARKED: full"}, None, ("rule", "record")),
+    (
+        "deadline, parked",
+        {"kind": "deadline", "last": "PARKED: full", "parked": True},
+        None,
+        ("rule", "record"),
+    ),
     # the two ordinary-word waits leads wrote, pinned so a change to WAIT or NAMED can't bring back
     # the repeat nudges (#508); a bare STILL WORKING names none and gets its one nudge
     (
@@ -7802,6 +7923,9 @@ def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> No
     assert "only its path" not in text
     for word in ("DONE", "STILL WORKING", "USER NEEDED", "PARKED"):
         assert f"`{word}: " in text and ". Report: r.md`" in text
+    assert "ends `USER NEEDED`" in text and f"starts with `{omnigent_agent.PARK}`" in text
+    for line in (omnigent_agent.LEAD_NUDGE, omnigent_agent.LEAD_WAKE, omnigent_agent.LEAD_REVIVE):
+        assert "PARKED" not in line
     line = "DONE: merged #5. Report: r.md"
     assert omnigent_agent.ending_of(line) == "DONE"
     assert omnigent_agent.REPORT_PATH.fullmatch(line) is None  # not the bare-path fallback

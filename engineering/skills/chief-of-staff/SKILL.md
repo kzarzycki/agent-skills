@@ -141,7 +141,7 @@ its landing order.
   average per core and available memory, in one call on that host with `python3 <script> capacity`
   (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,
   start nothing there: tell each lead on it to finish its current step, land a PR that is
-  one landing away, write its state and end its turn `PARKED` with the next step. It then
+  one landing away, write its state and end its turn `PARKED` with the next step. Send that as one `relay` whose text starts `Park: `, since the supervisor takes a `PARKED` ending as parked only after such a message. It then
   runs at most one child and only focused tests. Resume the leads one at a time once
   the host has room again, because sessions on an overloaded host time out and fail and lose
   their work.
@@ -153,13 +153,13 @@ its landing order.
 ## What a lead's turn ending means
 
 A lead ends every turn the owner reads with `DONE`, `STILL WORKING` or `USER NEEDED`, and
-with `PARKED` when you told it to park (Starting a lead, Host load). A `USER NEEDED` line wins over
+with `PARKED` only after your `Park: ` message (Host load); a `PARKED` with none before it is a lead that parked itself, usually on a wait for the owner, and the supervisor posts it to you as an `act` event to read, not as parked. Every lead's brief carries this contract. A `USER NEEDED` line wins over
 an earlier `DONE` or `PARKED` line: an ask after a `DONE` is the ending, since it still needs its answer.
 
 Under `--console` the supervisor already did the routine part: it sends the stall nudge (once per
 progress chain) and the revive (once per lead) itself, as a `relay` whose text is `Supervisor:
 your turn ended with no ending and no named wait. Carry on to your next step, and end your turn
-with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED.` (`LEAD_NUDGE`). For a
+with DONE, STILL WORKING naming what you wait on, or USER NEEDED.` (`LEAD_NUDGE`). For a
 timed wait (`until <UTC time>`) still quiet once its time has passed, it sends the wake instead,
 `Supervisor: the time your STILL WORKING named, <time>, has passed. …` (`LEAD_WAKE`), from the
 same budget, since nothing else wakes an idle lead at its time. When a lead's history shows
@@ -173,7 +173,7 @@ post that reaches you has already been through that, so the rows below that say 
 | Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one, and was started without `start --after` (or under a supervisor without `--console`), a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it; a lead started with `--after` is told by the supervisor, and a second line of yours would wake it twice. Then archive the lead once its report says it cleaned up (`reap <session>` with the registry, which drops its line first, so the supervisor posts no `archived` for it). |
 | Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
 | Turn ended, `STILL WORKING`, with something pending | Send nothing, since the state file records what it waits on (Handover, Follow): its own worker, verifier or CI wakes it, another lead's merge reaches it through that lead's `DONE`, and a timed wait (`until <UTC time>`) raises no deadline before its time, then gets the supervisor's wake (`--console`, see above) or, without it, a `relay` from you once its time has passed. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
-| Turn ended, `PARKED` | Send nothing (the state file records it as parked, and its last message holds the next step): it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
+| Turn ended, `PARKED` after your `Park: ` message | Send nothing (the state file records it as parked, and its last message holds the next step): it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step (under `--console` the supervisor sent it: see above). A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Once they approve it (or decline it), run `python3 <script> approve <session>` (`--decline`), which answers each approval prompt pending; their word is the approval, never yours. |
 | Failed, or gave up | Revive it in place (`relay` a nudge, which revives a reaped runner) once; under `--console` the supervisor did, so a post for a failure is the second one. If it fails again, give the owner the error line. |
