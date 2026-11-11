@@ -318,6 +318,21 @@ def test_start_refuses_a_model_the_harness_does_not_list(
     assert not og.sessions
 
 
+def test_start_passes_a_model_the_host_has_no_list_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An ACP harness has no host catalog (its agent lists models at session/new): start goes on."""
+    og = FakeOmnigent()
+
+    def unsupported(*args: object, **kwargs: object) -> list[str]:
+        raise omnigent_agent.Fail("HTTP 502: model options are unsupported for harness 'acp'")
+
+    monkeypatch.setattr(og, "models", unsupported)
+    omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model="sonnet")
+    assert og.sessions
+    assert "passing it unchecked" in capsys.readouterr().err
+
+
 def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_path: Path) -> None:
     class Dropping(FakeOmnigent):  # the server kept no override: the harness default runs
         def create(self, agent: str, title: str, model: str | None = None, *rest: object) -> str:

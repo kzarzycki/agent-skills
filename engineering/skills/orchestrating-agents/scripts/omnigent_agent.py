@@ -1938,7 +1938,17 @@ def start(
         try:
             listed = og.models(agent, host_id)
         except Fail as e:
-            raise Fail(f"{source}: can't read {agent}'s model list ({e}), so can't check it") from e
+            if "unsupported for harness" not in str(e):
+                raise Fail(
+                    f"{source}: can't read {agent}'s model list ({e}), so can't check it"
+                ) from e
+            # An ACP agent's catalog comes from its own session/new, which the host can't ask
+            # before a session exists; the agent refuses or ignores an id it doesn't take.
+            print(
+                f"{source}: the host has no model list for {agent}; passing it unchecked",
+                file=sys.stderr,
+            )
+            listed = [chosen]
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
     harness = agent if agent in AGENTS else og.harness(agent)
