@@ -706,13 +706,36 @@ class Omnigent:
         row's ``id`` and the ``model`` it names (Claude's ``sonnet`` is ``claude-sonnet-5-5``), and
         every id the harness's endpoint routes. A launch with any other id runs on the harness
         default with no error, so ``start`` refuses one."""
+        found = self.model_options(name, host_id)
+        ids = [str(i) for r in found["models"] for i in (r.get("id"), r.get("model")) if i]
+        return list(dict.fromkeys(ids + [str(i) for i in found.get("routable_models") or []]))
+
+    def model_options(self, name: str, host_id: str | None = None) -> dict:
+        """The model picker of agent ``name``'s harness on the host it would run on, its ``models``
+        narrowed to the rows that are records."""
         harness = quote(self.harness(name), safe="")
         found = self.call(
             "GET", f"/v1/hosts/{host_id or self.host_id}/harnesses/{harness}/model-options"
         )
-        rows = [r for r in found.get("models") or [] if isinstance(r, dict)]
-        ids = [str(i) for r in rows for i in (r.get("id"), r.get("model")) if i]
-        return list(dict.fromkeys(ids + [str(i) for i in found.get("routable_models") or []]))
+        return {**found, "models": [r for r in found.get("models") or [] if isinstance(r, dict)]}
+
+    def effort_levels(
+        self, name: str, model: str | None = None, host_id: str | None = None
+    ) -> list[str]:
+        """The reasoning levels the harness lists for ``model``, or for its default model when none
+        is named; empty when the list names none (Claude's rows don't). Codex launches a level its
+        model doesn't list as another one, with no error, so ``start`` refuses one."""
+        rows = self.model_options(name, host_id)["models"]
+        row = next(
+            (
+                r
+                for r in rows
+                if (model in (r.get("id"), r.get("model")) if model else r.get("isDefault"))
+            ),
+            {},
+        )
+        levels = row.get("supportedReasoningEfforts") or []
+        return [str(e["reasoningEffort"]) for e in levels if isinstance(e, dict)]
 
     def agent(self, name: str) -> dict:
         """The record of the registered agent whose id is ``name``, else the one called ``name``
@@ -1750,8 +1773,9 @@ def taken(e: Fail) -> bool:
 
 CLOUD_HARNESS = "acp:claude-cloud"
 # ponytail: the harnesses known to apply an effort, by agent alias or harness, with the levels each
-# launches (None: every word Omnigent's create takes). Any other harness drops it, and so does Claude
-# Code a level outside its own. Upgrade: read Omnigent's effort capability once its API exposes it.
+# launches (None: the ones its model list gives for the model, see ``effort_levels``). Any other
+# harness drops it, and so does Claude Code a level outside its own. Upgrade: read Omnigent's effort
+# capability once its API exposes it.
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EFFORTS = {
     "claude": CLAUDE_EFFORTS,
@@ -1950,21 +1974,6 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
-    # The variable names only exist for the two aliases, like OMNIGENT_MODEL_<AGENT>.
-    variable = f"OMNIGENT_EFFORT_{agent.upper()}"
-    if picked := effort or (agent in AGENTS and os.environ.get(variable)) or None:
-        source = f"--effort {picked}" if effort else f"{variable}={picked}"
-        if harness not in EFFORTS:
-            raise Fail(
-                f"{source}: {agent} runs {harness}, which applies no effort,"
-                " so its signature would name an effort it doesn't run"
-            )
-        if picked not in (EFFORTS[harness] or (picked,)):
-            raise Fail(
-                f"{source}: {agent} runs only {', '.join(EFFORTS[harness] or ())} and drops any other"
-                " level, so its signature would name an effort it doesn't run"
-            )
-    effort = picked
     variable = f"OMNIGENT_MODEL_{agent.upper()}"
     chosen = model or (agent in AGENTS and os.environ.get(variable)) or None
     if chosen:
@@ -1985,6 +1994,36 @@ def start(
             listed = [chosen]
         if chosen not in listed:
             raise Fail(f"{source}: {agent} lists no such model; it lists {', '.join(listed)}")
+    # The variable names only exist for the two aliases, like OMNIGENT_MODEL_<AGENT>.
+    variable = f"OMNIGENT_EFFORT_{agent.upper()}"
+    if picked := effort or (agent in AGENTS and os.environ.get(variable)) or None:
+        source = f"--effort {picked}" if effort else f"{variable}={picked}"
+        if harness not in EFFORTS:
+            raise Fail(
+                f"{source}: {agent} runs {harness}, which applies no effort,"
+                " so its signature would name an effort it doesn't run"
+            )
+        if fixed := EFFORTS[harness]:
+            if picked not in fixed:
+                raise Fail(
+                    f"{source}: {agent} runs only {', '.join(fixed)} and drops any other"
+                    " level, so its signature would name an effort it doesn't run"
+                )
+        else:
+            try:
+                levels = og.effort_levels(agent, chosen, host_id)
+            except Fail as e:
+                raise Fail(
+                    f"{source}: can't read {agent}'s model list ({e}), so can't check it"
+                ) from e
+            # a model whose row names no levels leaves nothing to check against
+            if levels and picked not in levels:
+                raise Fail(
+                    f"{source}: {chosen or 'the default model'} on {agent} runs only"
+                    f" {', '.join(levels)} and launches any other level as one of those,"
+                    " so its signature would name an effort it doesn't run"
+                )
+    effort = picked
     # its load lands there, not here: on another host, or in a cloud VM bridged from this one
     elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
     deadline = time.monotonic() + CAPACITY_WAIT_SECONDS

@@ -89,7 +89,9 @@ it as the session's `reasoning_effort` and turns it into the harness's own setti
 brief's `AGENT_SIGNATURE` names the level the server recorded. A harness drops an effort it can't
 apply, with no error, so `start` refuses one rather than sign an effort the child doesn't run: any
 effort for a harness other than claude-native and codex-native (antigravity, claude-cloud), and a
-Claude level outside `low` to `max`. Codex takes every word Omnigent's create takes.
+Claude level outside `low` to `max`, and a Codex level the chosen model's row in the host's model
+list doesn't name (Codex launches that one as another level). A Codex model whose row names no
+levels passes unchecked.
 
 **Lean children.** A Claude child started with `--role` naming `worker.md` or `verifier.md`
 gets only the built-in tools those roles call (`LEAN_TOOLS`: Bash, Read, Edit, Write, Agent,

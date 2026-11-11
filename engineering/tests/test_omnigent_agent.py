@@ -78,6 +78,8 @@ class FakeOmnigent:
         ]
         self.overrides: dict[str, str | None] = {}  # the model_override each session took
         self.efforts: dict[str, str | None] = {}  # the reasoning_effort each session took
+        # the levels a Codex model lists, by model (None: the default one); unlisted: none named
+        self.levels: dict[str | None, list[str]] = {}
 
     def session_id(self, sid: str) -> str:  # the real lookup, over these sessions
         return REAL_SESSION_ID(self, sid)
@@ -110,6 +112,13 @@ class FakeOmnigent:
         if "models" in self.fail:
             raise omnigent_agent.Fail("GET model-options: HTTP 502 Bad Gateway")
         return self.listed
+
+    def effort_levels(
+        self, agent: str, model: str | None = None, host_id: str | None = None
+    ) -> list[str]:
+        if "models" in self.fail:
+            raise omnigent_agent.Fail("GET model-options: HTTP 502 Bad Gateway")
+        return self.levels.get(model, [])
 
     def create(
         self,
@@ -1465,6 +1474,55 @@ def test_start_refuses_an_effort_the_child_would_not_run(
     else:
         omnigent_agent.start(og, agent, "t", "x", tmp_path / "r.md", None, 0, effort=effort)
         assert og.efforts == {"s0": effort}
+
+
+def test_start_refuses_a_codex_effort_the_chosen_model_does_not_list(tmp_path: Path) -> None:
+    og = FakeOmnigent()  # Codex launches such a level as another one, with no error
+    og.levels = {None: ["low", "medium", "high"], "gpt-6.1-sol": ["low", "high", "xhigh"]}
+    start = omnigent_agent.start
+    with pytest.raises(omnigent_agent.Fail, match="the default model on codex runs only low, med"):
+        start(og, "codex", "t", "x", tmp_path / "r.md", None, 0, effort="xhigh")
+    with pytest.raises(
+        omnigent_agent.Fail, match="gpt-6.1-sol on codex runs only low, high, xhigh"
+    ):
+        start(
+            og, "codex", "t", "x", tmp_path / "r.md", None, 0, model="gpt-6.1-sol", effort="minimal"
+        )
+    assert og.efforts == {}
+    start(og, "codex", "t", "x", tmp_path / "r.md", None, 0, model="gpt-6.1-sol", effort="xhigh")
+    start(og, "codex", "t", "x", tmp_path / "r.md", None, 0, model="gpt-6.1-terra", effort="ultra")
+    assert list(og.efforts.values()) == ["xhigh", "ultra"]  # terra's row names no levels
+    og.fail.add("models")
+    with pytest.raises(omnigent_agent.Fail, match="can't read codex's model list"):
+        start(og, "codex", "t", "x", tmp_path / "r.md", None, 0, effort="high")
+    start(og, "claude", "t", "x", tmp_path / "r.md", None, 0, effort="high")  # its levels are fixed
+
+
+def test_effort_levels_reads_the_named_models_row_or_the_default_one() -> None:
+    class Listing(FakeOmnigent):
+        model_options = omnigent_agent.Omnigent.model_options
+        effort_levels = omnigent_agent.Omnigent.effort_levels
+        models = omnigent_agent.Omnigent.models
+
+        def call(self, method: str, path: str, body: object = None) -> dict:
+            assert (method, path) == ("GET", "/v1/hosts/h/harnesses/codex-native/model-options")
+            levels = [{"reasoningEffort": "low"}, {"reasoningEffort": "high"}]
+            return {
+                "models": [
+                    {"id": "sol", "model": "gpt-6.1-sol", "supportedReasoningEfforts": levels},
+                    {"id": "terra", "isDefault": True, "supportedReasoningEfforts": levels[:1]},
+                    {"id": "luna"},
+                    "stray",
+                ],
+                "routable_models": ["routed"],
+            }
+
+    og = Listing()
+    og.harnesses["codex"] = "codex-native"
+    assert og.effort_levels("codex", "gpt-6.1-sol") == ["low", "high"]
+    assert og.effort_levels("codex") == ["low"]
+    assert og.effort_levels("codex", "luna") == og.effort_levels("codex", "routed") == []
+    assert og.models("codex") == ["sol", "gpt-6.1-sol", "terra", "luna", "routed"]
 
 
 def test_start_names_the_variable_whose_effort_it_refuses(
