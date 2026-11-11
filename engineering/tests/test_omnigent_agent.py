@@ -1510,7 +1510,12 @@ def test_effort_levels_reads_the_named_models_row_or_the_default_one() -> None:
             return {
                 "models": [
                     {"id": "sol", "model": "gpt-6.1-sol", "supportedReasoningEfforts": levels},
-                    {"id": "terra", "isDefault": True, "supportedReasoningEfforts": levels[:1]},
+                    {
+                        "id": "terra",
+                        "model": "gpt-6.1-terra",
+                        "isDefault": True,
+                        "supportedReasoningEfforts": levels[:1],
+                    },
                     {"id": "luna"},
                     "stray",
                 ],
@@ -1522,7 +1527,7 @@ def test_effort_levels_reads_the_named_models_row_or_the_default_one() -> None:
     assert og.effort_levels("codex", "gpt-6.1-sol") == ["low", "high"]
     assert og.effort_levels("codex") == ["low"]
     assert og.effort_levels("codex", "luna") == og.effort_levels("codex", "routed") == []
-    assert og.models("codex") == ["sol", "gpt-6.1-sol", "terra", "luna", "routed"]
+    assert og.models("codex") == ["sol", "gpt-6.1-sol", "terra", "gpt-6.1-terra", "luna", "routed"]
 
 
 def test_start_names_the_variable_whose_effort_it_refuses(
