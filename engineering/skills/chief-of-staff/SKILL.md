@@ -55,7 +55,10 @@ its landing order.
   spends your context on work the lead repeats, delays the lead, and anchors it on your
   guess. Add to the issue only a cheap fact the owner left out (a link, an id, which repo or
   host, the one log line they pointed at), never a diagnosis. When the intent itself is
-  unclear, ask the owner in one line instead of finding out yourself.
+  unclear, ask the owner in one line instead of finding out yourself. A case a manager or lead
+  relays is different: before it is filed or built, check its root cause (what went wrong first,
+  and what led to it), since the reporter's proposed fix is a hypothesis, and a fix built on a wrong
+  cause leaves the next failure open.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
   and the time), then only what a lead could not find itself: a project fact or a
   standing decision the owner gave you, and the default you chose where the ask forks. No
@@ -65,7 +68,10 @@ its landing order.
   is only told about, and stops to ask the owner. A pack script the brief names is the copy
   installed in the lead's repo (`.claude/skills/…` or `.agents/skills/…`), else your own
   installed copy, never a developer checkout of the pack: one can sit on any branch, and a
-  stale `approvals.py` there fails every land.
+  stale `approvals.py` there fails every land. State the outcome, scope, limits and the evidence
+  of done, and leave the method to the lead: a command is a starting hint, the lead works through
+  ordinary obstacles itself and comes back only for a decision, a permission or a limit it would
+  have to cross, and you course-correct from your wider context, not by dictating steps.
 - **Start.** `python3 <script> start --top-level <claude|codex> <title> <brief-file>
   <report> --role <role-file>`, with the report under your `tmp/loop/` and the
   role the ask needs (an engineering ask: engineering-loop's `lead.md`, by absolute path),

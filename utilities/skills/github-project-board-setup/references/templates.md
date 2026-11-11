@@ -43,6 +43,9 @@ Title field: Exx-yy · <imperative summary>   ← not repeated in the body
 ## Problem
 Where and when, then what goes wrong. For a bug: what happened, what was expected, how to reproduce.
 
+## Root cause
+Bug only, required. What went wrong first and what led to it, with evidence: for an agent, what it had read; for code, the first wrong state. The implementer and the verifier read it, so the fix targets the cause that would produce the next failure too. A guess is an open question with what would settle it.
+
 ## Change
 What becomes true after the change. Not how.
 
