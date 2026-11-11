@@ -56,7 +56,7 @@ move_on_board "$N" "$FIRST_COLUMN"   # the loop's first stage
 
 Sub-issue linking takes the **REST numeric id** with `-F`, not the issue number with `-f`. `gh issue create` prints the new URL on stdout and errors on stderr. Without the `[ -n "$N" ]` gate a failed create leaves `$N` empty and the next steps run against nothing. Before retrying, check whether the issue exists — `gh issue list --search` lags a few seconds behind creation, so use `gh issue list --limit 5` and read the titles.
 
-Body follows the **Story** template in `references/templates.md` (Problem / Change / Acceptance / Proof / For the implementer). No acceptance list you can write → the story isn't ready; say so rather than filing a vague one.
+Body follows the **Story** template in `references/templates.md` (Problem / Root cause for a bug / Change / Acceptance / Proof / For the implementer). No acceptance list you can write → the story isn't ready; say so rather than filing a vague one.
 
 ## Add an epic
 
