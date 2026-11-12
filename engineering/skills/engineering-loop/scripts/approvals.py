@@ -4546,7 +4546,9 @@ def run_local_ci(
 
 
 DETACHED = "APPROVALS_LOCAL_CI_HEAD"
-RAN: dict[str, str] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
+RAN: dict[
+    str, str
+] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
 
 
 def leads_its_session() -> bool:
@@ -4673,7 +4675,9 @@ def local_ci_status(head: str) -> int:
         code = None
     plain = gate()[0]
     try:
-        command = ran_command_file(head).read_text().strip() or plain  # what the run ran, else the plain gate
+        command = (
+            ran_command_file(head).read_text().strip() or plain
+        )  # what the run ran, else the plain gate
     except OSError:
         command = plain
     if code == 0 and not recorded(str(tree_of(head)), command).exists():

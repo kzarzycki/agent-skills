@@ -4932,7 +4932,9 @@ def test_status_of_a_detached_head_proof_run_reads_the_command_it_ran(
     capsys.readouterr()
     assert approvals.main(["local-ci", "--status", HEAD]) == 0
     assert capsys.readouterr().out.startswith(f"passed on {HEAD}: log")
-    approvals.ran_command_file(HEAD).unlink()  # a run with no command file reads under the plain gate
+    approvals.ran_command_file(
+        HEAD
+    ).unlink()  # a run with no command file reads under the plain gate
     assert approvals.main(["local-ci", "--status", HEAD]) == 0
 
 
