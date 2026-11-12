@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
@@ -150,7 +150,14 @@ starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1
 child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
-writes here. A session on another host waits on no capacity here. ``AGENT`` is a registered
+writes here. A verifier (a ``--role`` whose file is ``verifier.md``) takes ``--pr`` as the PR it
+reviews, not a report channel, starts on another host's clone however many sessions hold it (it
+works in a worktree of its own), and runs on another host only when the project's loop.md has no
+``Verifier hosts: <name>, <name>`` line or that line lists the host; ``--file`` writes a local
+file (a proof log, the previous report) beside its report there before its brief, and
+``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
+saying it left the far worktree's tracked changes unchecked, since the file API runs no git.
+A session on another host waits on no capacity here. ``AGENT`` is a registered
 agent's name or id; a name several agents hold starts the newest when their records and configs match
 apart from identity and bookkeeping (copies of one spec), else fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
@@ -1999,12 +2006,15 @@ def start(
     subscribe: bool = True,
     subscriber: str = "",
     pr: int | None = None,
+    files: list[Path] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
-    session on another host or in the cloud is not held back by this host's load."""
+    session on another host or in the cloud is not held back by this host's load. ``files`` (local
+    paths, for a session on another host) are written beside ``report`` on that host through the
+    session's file API before its brief is sent, so it finds them when it starts."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
     if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
@@ -2117,7 +2127,14 @@ def start(
     # without a role (a lead) coordinates from a shared checkout.
     if role and harness != CLOUD_HARNESS:
         place, on = workspace or os.getcwd(), host_id or og.host_id
-        if users := og.users(place, on):
+        if reviews(role) and on != og.host_id:
+            # it fetches and works in a detached worktree of its own under the clone, never
+            # switching the clone's branch, so the leads that hold the clone keep it
+            print(
+                f"workspace {place} on host {on} may be in use: the verifier works in its own worktree",
+                file=sys.stderr,
+            )
+        elif users := og.users(place, on):
             named = ", ".join(f"{s.get('id')} {s.get('title') or ''}".rstrip() for s in users)
             raise Fail(
                 f"workspace {place} is in use on host {on} by live session {named}: give each"
@@ -2193,6 +2210,12 @@ def start(
         if by_file:
             brief_file.parent.mkdir(parents=True, exist_ok=True)
             brief_file.write_text(full)
+        try:
+            for local in files or []:  # before the brief, which names them
+                file_write(og, sid, report.parent / local.name, local.read_text(), True)
+        except Fail as e:
+            abandon(sid)
+            raise failed(f"start failed: {sid}: a --file did not reach its host: {e}") from e
         if top_level and subscribe:
             # A top-level lead has no parent to tell: the root of the starter's session tree hears
             # its turn ends and prompts instead, revived if its runner was reaped. Not the starter:
@@ -2436,6 +2459,12 @@ def wait(
             )
         time.sleep(POLL_SECONDS)
     workspace = info.get("workspace")
+    if verdict and elsewhere(og, info) and not pr:
+        # the file API reads and writes files, it runs no git: its own worktree is the verifier's
+        print(
+            f"session {sid} runs on another host: its worktree's tracked changes are not checked here",
+            file=sys.stderr,
+        )
     if workspace and not elsewhere(og, info) and not pr:
         before = set(baseline or [])
         if left := [line for line in tracked_changes(Path(workspace)) if line not in before]:
@@ -3115,6 +3144,22 @@ def file_write(og: Omnigent, sid: str, path: Path, text: str, far: bool) -> None
         og.filesystem(sid, str(path), "PUT", {"content": text})
     else:
         path.write_text(text)
+
+
+def bring_home(og: Omnigent, sid: str, report: Path) -> Path:
+    """Copy a verifier's report on another host (``report``, a path there) to ``tmp/loop/`` here,
+    under its own name, and return the copy: ``approvals.py verdict`` and the next pass's previous
+    report read a local file."""
+    home = Path("tmp/loop") / report.name
+    home.parent.mkdir(parents=True, exist_ok=True)
+    home.write_text(og.read_file(sid, str(report)))
+    return home.resolve()
+
+
+def reviews(role: str | None) -> bool:
+    """Whether ``role`` is the verifier's role file (``verifier.md``): only that one reviews a PR,
+    so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
+    return bool(role) and Path(str(role)).name == "verifier.md"
 
 
 def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
@@ -4684,8 +4729,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         p.add_argument(
             "--host",
-            help="with --top-level, the Omnigent host (name or id) to start the lead, or the --pr"
-            " cloud worker, on",
+            help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
+            " cloud worker, or a verifier (one loop.md's Verifier hosts: line lists) on",
+        )
+        p.add_argument(
+            "--file",
+            type=Path,
+            action="append",
+            default=[],
+            help="with --host on another host, a local file (a proof log, the previous report)"
+            " written beside the report there before the brief",
         )
         p.add_argument(
             "--after",
@@ -5024,12 +5077,25 @@ def main(argv: list[str] | None = None) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
-            print(wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr))
+            got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
+            print(bring_home(og, args.session, report) if far and args.verdict else got)
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             if not args.keep:
                 archive_delivered(og, args.session)
             return 0
+        # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
+        # writes its report file as any child does (on another host, there, read back by wait).
+        verifier = args.cmd in ("run", "start") and reviews(args.role)
+        if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
+            args.pr = None
+        if verifier and args.host:
+            allowed = [h.strip() for h in project_line(os.getcwd(), "Verifier hosts").split(",")]
+            allowed = [h for h in allowed if h]
+            if allowed and not {args.host, og.hosts().get(og.host(args.host), "")} & set(allowed):
+                raise Fail(
+                    f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
+                )
         # a follow-up's paths are its session's host's, wherever that runs
         session = og.info(args.session) if args.cmd == "send" else {}
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
@@ -5124,7 +5190,10 @@ def main(argv: list[str] | None = None) -> int:
                 " worker, or drop --pr for one on this host"
             )
         brief = text_or_file(args.brief)[0]
-        verifier = bool(args.role and "verifier" in args.role)
+        if args.file and not remote:
+            raise Fail("--file is for a session on another host: one here reads its own worktree")
+        if missing := [str(f) for f in args.file if not f.is_file()]:
+            raise Fail(f"--file: no file at {', '.join(missing)}")
         if args.author == args.agent and verifier and not args.same_family:
             raise Fail(
                 f"{args.agent} would verify {args.author}-written code; pass --same-family to allow it"
@@ -5188,6 +5257,7 @@ def main(argv: list[str] | None = None) -> int:
                 subscribe=not (registry and args.top_level and not args.pr),
                 subscriber=lead,
                 pr=args.pr,
+                files=args.file,
             )
             survivors.extend(abandoned)
             # a supervisor reads the report file, which for --pr only wait writes: it would revive
