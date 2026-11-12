@@ -930,7 +930,10 @@ def test_a_demo_linked_instead_of_embedded_fails_check_merge_naming_demo_sh(
     assert merge(pull(comments=(shot,), **done), issues) == []
     failed = merge(pull(comments=(embedded, linked), **done), issues)
     assert len(failed) == 1 and asset in failed[0] and "`scripts/demo.sh`" in failed[0]
-    assert "embeds no video or screenshot" in merge(pull(comments=("## Demo\n\nsee the PR",), **done), issues)[0]
+    assert (
+        "embeds no video or screenshot"
+        in merge(pull(comments=("## Demo\n\nsee the PR",), **done), issues)[0]
+    )
     # at build too, once a demo is posted; a stranger's demo comment holds nothing
     assert approvals.proofs("build", pull(comments=(linked,)), issues, LOOP) == failed
     stranger = note(linked, author={"login": "drive-by"})

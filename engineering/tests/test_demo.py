@@ -172,7 +172,14 @@ def test_untracked_files_are_read_whatever_show_untracked_files_says(tmp_path: P
 
 @pytest.mark.parametrize(
     "args",
-    [(), ("missing.mp4",), ("--pr", "feat/x", "a.mp4"), ("--caption",), ("notes.txt",), ("card.gif",)],
+    [
+        (),
+        ("missing.mp4",),
+        ("--pr", "feat/x", "a.mp4"),
+        ("--caption",),
+        ("notes.txt",),
+        ("card.gif",),
+    ],
 )
 def test_refuses_bad_arguments_before_any_call(tmp_path: Path, args: tuple[str, ...]) -> None:
     recording(tmp_path, "a.mp4")
