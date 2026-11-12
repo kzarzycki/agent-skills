@@ -414,8 +414,10 @@ is missing. An agent merges only with `uv run <this skill's folder>/scripts/appr
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
-- It takes a lock any host sees, the ref `refs/loop/landing` on `origin`, so two lands never
-  run at once; a lock older than 2 hours was left by a land that died and is broken.
+- It takes a lock any host sees, the branch `loop-landing/<base>` on `origin`, so two lands never
+  run at once; it only moves forward, so a host that may only create and fast-forward branches
+  (a cloud session) takes and releases it too. A lock older than 2 hours was left by a land
+  that died and is broken.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.

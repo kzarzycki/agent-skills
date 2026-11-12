@@ -95,13 +95,19 @@ prints the same line and exits 1, so the loop never merges it. Risk rules and `r
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
 repository's default branch, as one batch:
-1. It takes the landing lock: it pushes a commit with no parent (the base's tree, titled `landing lock`, with its pid
-and a random value, so two lands in the same second never make the same commit and both push it) to
-`refs/loop/landing` on `origin`, which refuses a second such push while the ref is there, as no fast-forward, so two
-hosts never land at once; a ref outside `refs/heads/` starts no workflow. The lock's commit date is its age. Held by
-another: exit 3, naming its age. One older than 2 hours is stale, left by a land that died: it is deleted and taken. The
-lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128 plus the signal), but only while
-it is still ours, so a stale one broken and taken by another land stays theirs; SIGKILL leaves it to be broken as stale.
+1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
+pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
+tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
+with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid, host and a
+random value (so two lands in the same second never make the same commit), and its commit date is its age. A land
+pushes a `held` child of a `free` tip (or the first lock commit, with no parent, where the branch is missing), leased on
+that tip with `--force-with-lease`, so of two lands from one tip one wins. A `held` tip is another land's: exit 3,
+naming its holder and age. One older than 2 hours is stale, left by a land that died: it is broken and taken in the same
+push, a `held` child of it. The lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128
+plus the signal), by pushing a `free` child of ours leased on it, so a stale one broken and taken by another land stays
+theirs; SIGKILL leaves it to be broken as stale. No push deletes a ref or rewrites one, so the branch's history only
+grows. While the previous version's lock `refs/loop/landing` is on `origin` (read, never written), `land` waits on it
+(exit 3), so a host still on that version and this one never land at once.
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
@@ -458,8 +464,14 @@ ATTACHMENT = "https://github.com/user-attachments/"
 POLL, CEILING = 30, 2 * 60 * 60
 # the signals that stop a land and release its lock (stopped)
 STOPS = (signal.SIGTERM, signal.SIGHUP)
-# the landing lock: a ref outside refs/heads/, so pushing it starts no workflow
-LOCK = "refs/loop/landing"
+# the landing lock of a base: a branch that only moves forward, since a host may be allowed only to create and
+# fast-forward a branch (a cloud session's proxy refuses a push outside refs/heads/ and every delete); its tip's title
+# says whether it is held, and [skip ci] in it starts no workflow
+LOCK = "refs/heads/loop-landing/{}"
+HELD, FREE = "landing lock: held", "landing lock: free"
+# the lock before #814, a ref outside refs/heads/: a land waits while it is on origin, never writing it, so a host still
+# on that version and this one never land at once
+LEGACY = "refs/loop/landing"
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
 PAGED = "CI checks: the gate reads one page"
 
@@ -3084,12 +3096,14 @@ def landing(pr: int | None) -> tuple[int, bool]:
     )
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
-    ours, taken = None, None  # taken stays None while the lock's push may have reached origin
+    # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
+    held: list[str] = []
+    taken = None
     try:
         for sig in stoppable:  # a land under nohup still outlives a hangup
             signal.signal(sig, stopped)
-        ours = lock_commit(base)
-        taken = locked(ours)
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        taken = locked(base, held)
         if not taken:
             return WAITING, True
         return batched(named, base, tracker, loop)
@@ -3098,26 +3112,11 @@ def landing(pr: int | None) -> tuple[int, bool]:
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
         # children (ssh, gh as the credential helper) unblock the signals, and a stop of the land's group would end them
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
-        if ours and taken is not False:
-            # only while it is still ours: a lock broken as stale and taken by another land stays theirs
-            released = subprocess.run(
-                [
-                    "git",
-                    "push",
-                    "-q",
-                    "--no-verify",
-                    f"--force-with-lease={LOCK}:{ours}",
-                    "origin",
-                    f":{LOCK}",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                start_new_session=True,
-            )
+        if held and taken is not False:
+            released = unlock(base, held[-1])
             if released.returncode and taken:
                 print(
-                    f"the landing lock {LOCK} was not released: {' '.join(released.stderr.split())}"
+                    f"the landing lock {lock_name(base)} was not released: {' '.join(released.stderr.split())}"
                 )
         for sig, handler in previous.items():
             if handler is not None:  # None: a handler set outside Python, which can't be put back
@@ -3141,67 +3140,101 @@ def stopped(signum: int, _frame: Any) -> None:
     sys.exit(128 + signum)
 
 
-def lock_commit(base: str) -> str:
-    """The landing lock's commit: parentless, the base's tree, with the pid and a random value, since two lands in the
-    same second, under one identity, would otherwise build one commit, and the second push of it would succeed as a
-    no-op."""
-    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+def lock_name(base: str) -> str:
+    """The landing lock's branch for `base`, as messages name it."""
+    return LOCK.format(base).removeprefix("refs/heads/")
+
+
+def lock_commit(title: str, parent: str | None) -> str:
+    """A landing lock commit: the empty tree, `title` (HELD or FREE) with [skip ci], `parent` the tip it moves on from,
+    and the pid, host and a random value in its body, since two lands in the same second, under one identity, would
+    otherwise build one commit, and the second push of it would succeed as a no-op. Its commit date is its age."""
+    empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
     return git(
         "commit-tree",
+        *(["-p", parent] if parent else []),
         "-m",
-        f"landing lock\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
-        f"refs/remotes/origin/{base}^{{tree}}",
+        f"{title} [skip ci]\n\npid {os.getpid()}, host {socket.gethostname()}, nonce {os.urandom(8).hex()}",
+        empty,
     ).strip()
 
 
-def locked(ours: str) -> bool:
-    """Take the landing lock: push `ours` (lock_commit) to LOCK, which origin refuses as no fast-forward while another
-    is there, so any host sees it. Its commit date is its age; one older than CEILING is stale, deleted and taken.
-    False after saying who holds it since when."""
-    for _ in range(2):
-        pushed = subprocess.run(
-            ["git", "push", "-q", "--no-verify", "origin", f"{ours}:{LOCK}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if not pushed.returncode:
-            return True
-        held = git("ls-remote", "origin", LOCK).split()
-        if not held:
-            raise Refused(
-                f"origin refused the landing lock {LOCK}: {' '.join(pushed.stderr.split())}"
-            )
-        try:
-            git("fetch", "-q", "origin", LOCK)
-            taken = int(git("log", "-1", "--format=%ct", held[0]).strip())
-        except subprocess.CalledProcessError:  # released meanwhile: push again
-            continue
-        age = int(time.time()) - taken
-        if age <= CEILING:
+def leased(base: str, ours: str, tip: str | None, **kw: Any) -> subprocess.CompletedProcess[str]:
+    """Push `ours`, a child of `tip` (None: the branch is missing), to the base's lock branch, leased on `tip`, so of
+    two lands pushing from one tip one wins and nothing is ever rewritten. --no-verify, since a lock commit holds the
+    empty tree and a project's pre-push checks have nothing of it to check."""
+    ref = LOCK.format(base)
+    return subprocess.run(
+        [
+            "git",
+            "push",
+            "-q",
+            "--no-verify",
+            f"--force-with-lease={ref}:{tip or ''}",
+            "origin",
+            f"{ours}:{ref}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        **kw,
+    )
+
+
+def unlock(base: str, ours: str) -> subprocess.CompletedProcess[str]:
+    """Release the landing lock: push a FREE child of `ours`, leased on it, so a lock broken as stale and taken by
+    another land meanwhile stays theirs. In a session of its own (landing says why)."""
+    return leased(base, lock_commit(FREE, ours), ours, start_new_session=True)
+
+
+def locked(base: str, held: list[str]) -> bool:
+    """Take the base's landing lock: push a HELD child of its FREE tip (the first lock commit, with no parent, where the
+    branch is missing), leased on that tip. A HELD tip is another land's; one older than CEILING by its commit date is
+    stale, broken and taken by the same push of a HELD child. Each commit is put in `held` before its push, so a stop
+    as it reaches origin still releases it. False, after saying who holds it since when, while another land holds it
+    or LEGACY, the previous version's lock, is on origin."""
+    ref, name = LOCK.format(base), lock_name(base)
+    tip, refused = (
+        "",
+        "",
+    )  # "": not read yet; a refusal of a push from the tip read again is origin's, not a race's
+    for _ in range(3):
+        listed = {
+            line.split("\t")[1] for line in git("ls-remote", "origin", LEGACY, ref).splitlines()
+        }
+        if LEGACY in listed:
             print(
-                f"another land holds the landing lock {LOCK}, taken {age // 60} minutes ago"
-                f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
+                f"a land of the previous version holds the landing lock {LEGACY}: land --wait waits for it"
             )
             return False
-        print(
-            f"the landing lock {LOCK} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
-        )
-        subprocess.run(
-            [
-                "git",
-                "push",
-                "-q",
-                "--no-verify",
-                f"--force-with-lease={LOCK}:{held[0]}",
-                "origin",
-                f":{LOCK}",
-            ],
-            capture_output=True,
-            check=False,
-        )
+        before, tip = tip, None
+        if ref in listed:
+            git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+            tip = git("rev-parse", f"refs/remotes/origin/{name}").strip()
+        if refused and tip == before:
+            raise Refused(f"origin refused the landing lock {name}: {refused}")
+        if tip:
+            stamp, title, holder = git("log", "-1", "--format=%ct%x00%s%x00%b", tip).split("\0")
+            if title.startswith(HELD):
+                taken = int(stamp)
+                age = int(time.time()) - taken
+                holder = holder.strip().split(", nonce ")[0]
+                if age <= CEILING:
+                    print(
+                        f"another land holds the landing lock {name} ({holder}), taken {age // 60} minutes ago"
+                        f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
+                    )
+                    return False
+                print(
+                    f"the landing lock {name} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
+                )
+        held.append(lock_commit(HELD, tip))
+        pushed = leased(base, held[-1], tip)
+        if not pushed.returncode:
+            return True
+        refused = " ".join(pushed.stderr.split())
     print(
-        f"another land took the landing lock {LOCK} as this one broke it: land --wait waits for it"
+        f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
     return False
 
