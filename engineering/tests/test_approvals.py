@@ -5017,17 +5017,26 @@ def test_a_cloud_land_reads_the_default_branch_over_rest(
     assert named == ["main"]
 
 
-def test_a_cloud_land_takes_a_pr_rest_cannot_say_is_queued(
+def test_a_cloud_land_takes_a_pr_rest_cannot_say_is_queued_only_on_the_projects_word(
     cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """REST can't say whether a PR is in a merge queue; in a cloud session required_checks() has refused a base whose
-    rules need one, so the PR is taken there. A host still refuses it, as before."""
+    """REST says neither whether a PR is in a merge queue nor whether classic branch protection requires one: a cloud
+    session refuses such a PR unless loop.md's `land` section says `merge_queue: false`. A host still refuses it."""
     pull = cloud_land["pulls"][7] | {"isInMergeQueue": None}
+    with approvals.placed(approvals.project()[1]):
+        assert "`merge_queue: false`" in approvals.unsignable(pull, "main", Path("signers"))
+    cloud_land["loop"].write_text(
+        cloud_land["loop"]
+        .read_text()
+        .replace(
+            "  signing_key_env: LAND_KEY\n", "  signing_key_env: LAND_KEY\n  merge_queue: false\n"
+        )
+    )
     with approvals.placed(approvals.project()[1]):
         assert approvals.unsignable(pull, "main", Path("signers")) is None
     monkeypatch.delenv(approvals.CLOUD)
     git_in(cloud_land["work"], "config", "gpg.ssh.program", "ssh-keygen")
-    assert approvals.unsignable(pull, "main", Path("signers")) == (
+    assert approvals.unsignable(pull, "main", Path("signers")).startswith(
         "PR #7: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
         " signature: land it where GraphQL answers"
     )

@@ -169,8 +169,9 @@ refusal naming which and never the key. Else it writes the key to a mode-0600 fi
 removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
 user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key and signing program), so each squash is
 signed and verified with it. The batch's pass is published as below: GitHub refusing the status
-there, it goes to origin as a ref. There REST alone answers, so a PR it can't say is in a merge queue is still a
-candidate, since `required_checks` refuses a base whose rules require one; a draft is refused, and an evicted PR stays
+there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
+whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
+section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
@@ -613,7 +614,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         allowed_signers=str,
         where=Choice(PLACES),
         signing_key_env=str,
-        optional=("where", "signing_key_env"),
+        merge_queue=bool,
+        optional=("where", "signing_key_env", "merge_queue"),
     ),
     "carry_over_main": Table({"except": list}),
 }
@@ -1976,10 +1978,16 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
         return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
-    # in a cloud session only REST answers: there required_checks() has already refused a base whose rules require a
-    # merge queue, the only base a PR can be queued on
-    if pull["isInMergeQueue"] is None and not in_cloud():
-        return f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's signature: land it where GraphQL answers"
+    # REST can't say whether a PR is queued, nor whether classic branch protection requires a queue (required_checks()
+    # refuses only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
+    if pull["isInMergeQueue"] is None and not (
+        in_cloud() and settings(project()[1]).get("land", {}).get("merge_queue") is False
+    ):
+        return (
+            f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
+            " signature: land it where GraphQL answers, or, where the base requires no merge queue, say so with"
+            " `merge_queue: false` in loop.md's `land` section"
+        )
     # the URL as configured, before any `insteadOf` rewrite
     origin = subprocess.run(
         ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
@@ -3073,8 +3081,8 @@ def rest_threads(number: int) -> dict[str, Any]:
 def rest_pull(pr: int) -> dict[str, Any]:
     """PR #pr as PULL reads it, from REST, call by call. `closingIssuesReferences` is empty, since REST has no such
     link: the PR's issues are its body's `Closes`, `Part of` and `Implements` lines (closing_issues). Whether it is in
-    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses on a host (in a cloud session
-    required_checks() has refused a base whose rules require a queue)."""
+    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses unless a cloud session's loop.md
+    says `merge_queue: false`."""
     found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
     base, head = found["base"], found["head"]
     reviews = [
