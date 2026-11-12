@@ -5248,39 +5248,6 @@ def test_record_head_proof_runs_the_gate_with_the_callers_tier_over_the_gate_lin
     assert github == []
 
 
-def test_status_of_a_detached_head_proof_run_reads_the_command_it_ran(
-    checkout: dict[str, Any],
-    hub: dict[str, list[dict[str, Any]]],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """The run records its command beside its exit code: a head proof's, under the caller's tier, is found by
-    --status, and a plain --record run still reads under the plain gate."""
-    gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
-    checkout["loop"] = add(gated, "loop", HEAD_PROOF)
-    monkeypatch.setenv("GATE_UI_TESTS", "smoke")
-    monkeypatch.setattr(approvals, "RAN", {})
-    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
-    approvals.finished(HEAD, 0, approvals.RAN.get("command"))
-    capsys.readouterr()
-    assert approvals.main(["local-ci", "--status", HEAD]) == 0
-    assert capsys.readouterr().out.startswith(
-        f"passed on {HEAD} under `GATE_UI_TESTS=smoke mise run check:all`: log"
-    )
-    # a plain run, as before: the plain gate's command and record
-    monkeypatch.delenv("GATE_UI_TESTS")
-    monkeypatch.setattr(approvals, "RAN", {})
-    assert approvals.main(["local-ci", "--record"]) == 0
-    approvals.finished(HEAD, 0, approvals.RAN.get("command"))
-    capsys.readouterr()
-    assert approvals.main(["local-ci", "--status", HEAD]) == 0
-    assert capsys.readouterr().out.startswith(f"passed on {HEAD}: log")
-    approvals.ran_command_file(
-        HEAD
-    ).unlink()  # a run with no command file reads under the plain gate
-    assert approvals.main(["local-ci", "--status", HEAD]) == 0
-
-
 def test_record_head_proof_on_a_checkout_with_changes_runs_the_callers_tier_and_publishes_nothing(
     checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5973,6 +5940,48 @@ def test_a_killed_caller_leaves_the_detached_check_to_finish_and_record(tmp_path
         check=False,
     )
     assert (status.returncode, status.stdout.split(":")[0]) == (0, f"passed on {head}")
+
+
+def test_status_of_a_detached_head_proof_run_reads_the_command_it_ran(tmp_path: Path) -> None:
+    """Through the real detached entry point: the run records its command beside its exit code, so --status finds a
+    head proof under the caller's tier, and a plain --record run still reads under the plain gate."""
+    repo, head, env = gate_faked(tmp_path)
+    loop = add(
+        add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n"), "loop", HEAD_PROOF
+    )
+    (repo / "docs" / "agents").mkdir(parents=True)
+    (repo / "docs" / "agents" / "loop.md").write_text(loop)
+    git_in(repo, "add", "-A")
+    git_in(repo, "commit", "-qm", "loop")
+    head = git_in(repo, "rev-parse", "HEAD").strip()
+    common = repo / ".git" / "approvals" / "local-ci"
+
+    def status() -> str:
+        run = subprocess.run(
+            [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+        return run.stdout
+
+    proof = {**env, "GATE_UI_TESTS": "smoke"}
+    first = caller(repo, proof, "--record", "--head-proof")
+    out, err = first.communicate(timeout=60)
+    assert first.returncode == 0, out + err
+    polled(lambda: (common / f"{head}.exit").exists())
+    assert status().startswith(
+        f"passed on {head} under `GATE_UI_TESTS=smoke mise run check:all`: log"
+    )
+    # a plain run, as before: the plain gate's command and record
+    plain = {k: v for k, v in env.items() if k != "GATE_UI_TESTS"}
+    assert caller(repo, plain, "--record").wait(timeout=60) == 0
+    runs = tmp_path / "runs"
+    polled(lambda: runs.read_text().count("run") == 2 and (common / f"{head}.exit").exists())
+    assert status().startswith(f"passed on {head}: log")
 
 
 def test_status_never_says_passed_for_a_run_that_recorded_nothing(tmp_path: Path) -> None:
