@@ -706,7 +706,7 @@ or the owner's private network.
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
-  family's current lineup (the backend's Model section) names the harness's alias for the tier. A launch that fails on
+  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork
