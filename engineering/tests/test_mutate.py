@@ -3,6 +3,7 @@ after every run, a killed one included."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -54,6 +55,14 @@ def patch(repo: Path, name: str, old: str, new: str) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def own_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test runs with a gate slot of its own: a run that took the host's would wait on a gate running above this
+    suite, or, started under a held slot, on its parent for good (#818)."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+
+
 def mutate(
     repo: Path,
     *patches: Path,
@@ -61,8 +70,11 @@ def mutate(
     cwd: Path | None = None,
     to: Path | None = None,
     env: dict[str, str] | None = None,
+    timeout: float = 60,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    """Run mutate.py in its own session; past `timeout` its whole process group is stopped, so a hung run leaves
+    nothing behind, and subprocess.TimeoutExpired is raised."""
+    run = subprocess.Popen(
         [
             sys.executable,
             str(MUTATE),
@@ -75,12 +87,25 @@ def mutate(
         cwd=cwd or repo,
         # a mutate.py run over these tests passes its switch down, which would hide this one lacking it
         env={k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"} | (env or {}),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
-        # a run that waits on a slot it already holds would otherwise hang the suite
-        timeout=60,
+        start_new_session=True,
     )
+    try:
+        out, err = run.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # TERM first: mutate.py stops its test command's own group and restores the tree on it
+        os.killpg(run.pid, signal.SIGTERM)
+        try:
+            run.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(run.pid, signal.SIGKILL)
+        run.communicate()
+        raise
+    return subprocess.CompletedProcess(run.args, run.returncode, out, err)
 
 
 def stopped(repo: Path, tmp_path: Path, *signals: signal.Signals, first: str = "") -> int:
@@ -524,3 +549,46 @@ def test_the_slot_is_released_after_each_patch_so_the_next_does_not_wait(
     finally:
         run.kill()
     assert not any("waiting" in line for line in log(repo))
+
+
+def test_a_run_that_hangs_is_stopped_with_everything_it_started(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    pidfile = tmp_path / "sleeper.pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        mutate(repo, killed, test=f"echo $$ > {pidfile} && exec sleep 300", timeout=3)
+    pid = int(pidfile.read_text())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("the test command of a timed-out run is still running")
+    assert clean(repo)
+
+
+def test_the_hosts_slot_held_by_another_process_is_not_waited_on(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a fake host: its cache is where a run without the fixture's XDG_CACHE_HOME would look for the slot
+    host = tmp_path / "host"
+    host_slot = host / ".cache" / "engineering-loop" / "gate.1.lock"
+    monkeypatch.setenv("HOME", str(host))
+    assert os.environ["XDG_CACHE_HOME"] == str(tmp_path / "cache")
+    assert "LOOP_GATE_SLOT_HELD" not in os.environ
+    holder = hold(host_slot)
+    try:
+        killed = patch(repo, "add.patch", "a + b", "a - b")
+        # a run that waited on the host's slot would hit the timeout
+        result = mutate(repo, killed, timeout=20)
+        assert result.returncode == 0, result.stderr
+        assert not any("waiting" in line for line in log(repo))
+        # the helper's other runs, here a bare Popen, see the same slot
+        assert stopped(repo, tmp_path, signal.SIGTERM) != 0
+    finally:
+        holder.kill()
+        holder.wait()
+    assert clean(repo)
