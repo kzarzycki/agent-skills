@@ -75,11 +75,20 @@ A small Linux VM, or a container on any always-on box, runs an Omnigent host wit
 
 Anthropic's self-hosted environments (public beta on Team and Enterprise) are a variant of this: `claude self-hosted-runner` on our machine takes cloud sessions, with our image, our network and our GitHub credentials. The session is still Claude, so for a Codex verifier it only adds a carrier on top of a machine that can run Codex directly. It may matter for other rows of #809, since such a session is not behind Anthropic's GitHub proxy. [self-hosted environments](https://code.claude.com/docs/en/self-hosted-environments)
 
+- **The image is ours to build.** Anthropic publishes no runner image; the docs give a minimal Dockerfile around the `claude` binary. [deploy](https://code.claude.com/docs/en/self-hosted-environments-deploy#build-the-runner-image)
+- **Every member of the organisation can dispatch to it.** "Treat every runner host as reachable for code execution by everyone who can dispatch to it", so a ChatGPT login stored on that host is readable by all of them. [deploy](https://code.claude.com/docs/en/self-hosted-environments-deploy#harden-your-deployment)
+- **Dispatch is scriptable.** `claude -p "<prompt>" --environment <id> --output-format json` creates the session and prints its id. [testing](https://code.claude.com/docs/en/self-hosted-environments-testing#run-the-test-loop)
+
 ## Not a route: `@codex review`
 
 - A PR comment `@codex review` starts a cloud review on the subscription and posts a GitHub review. It follows `## Code Review Rules` in `AGENTS.md`. [GitHub integration](https://developers.openai.com/codex/integrations/github.md)
 - It flags only P0/P1 issues and needs no environment, so it reads the diff. No doc says it runs tests.
 - It can't write the loop's report or run a mutation, so it can't replace the verifier. It could be a cheap second opinion on low-risk PRs.
+
+## Not a route: `claude ultrareview`
+
+- It is a cloud review by a fleet of Claude agents, so it is the author's family for a Claude-written PR.
+- It bills usage credits, not the plan: "typically $5 to $25" per review after three free runs. It takes no brief. [ultrareview](https://code.claude.com/docs/en/ultrareview)
 
 ## Comparison
 
