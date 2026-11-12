@@ -1,3 +1,4 @@
+import os
 import sys
 
 # The engineering loop's script tests load modules from a shipped skill folder;
@@ -15,6 +16,9 @@ def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
         "OMNIGENT_SESSION_ID",
         "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
         "LOOP_HEAVY_LOCK",
+        "OMNIGENT_PERMISSION_MODE",
+        # the host's defaults for a child's model and effort
+        *(v for v in os.environ if v.startswith(("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_"))),
     ):
         monkeypatch.delenv(var, raising=False)
 
