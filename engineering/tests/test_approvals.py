@@ -3411,9 +3411,10 @@ def test_a_commit_author_other_than_the_prs_is_a_co_author_of_the_squash(
     listed = [commit("app[bot]", "App", "Bump\n\nWhy.\nClaude-Session: x")]
     assert approvals.squash_body(7, "app") == "Why."
     assert approvals.squash_body(7, "owner") == "Why.\n\nCo-authored-by: App <app[bot]@example.com>"
-    listed.append(commit("owner", "Owner", "Fix"))
+    listed += [commit("owner", "Owner", "Fix"), commit("app[bot]", "App", "Again")]
+    # a co-author is named once, however many commits they authored
     assert approvals.squash_body(7, "owner") == (
-        "* Bump\n\nWhy.\n\n* Fix\n\n---------\n\nCo-authored-by: App <app[bot]@example.com>"
+        "* Bump\n\nWhy.\n\n* Fix\n\n* Again\n\n---------\n\nCo-authored-by: App <app[bot]@example.com>"
     )
 
 
