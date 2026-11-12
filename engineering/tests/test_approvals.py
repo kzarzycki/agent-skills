@@ -8738,7 +8738,8 @@ def test_land_deletes_the_record_branches_of_the_prs_it_merged(
         approvals, "drop_records", lambda heads, command: dropped.append((heads, command))
     )
     monkeypatch.setattr(approvals, "gh", lambda *_a, **_k: "")
-    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)  # the squash body is tested on its own
+    # the squash body is tested on its own
+    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "git", lambda *args: TREE if args[0] == "rev-parse" else "")
     monkeypatch.setattr(approvals, "publish", lambda *_a, **_k: None)
