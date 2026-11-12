@@ -159,7 +159,8 @@ def checkout(tmp_path, monkeypatch):
             (work / "a.txt").write_text(seen["half"])
             return subprocess.CompletedProcess(cmd, 1, "", "error: external filter failed")
         if cmd[:2] == ("gh", "api"):
-            posted.append(next(a for a in cmd if a.startswith("body="))[5:])
+            assert "body=@-" in cmd  # the body goes in through stdin
+            posted.append(kw["input"])
             return subprocess.CompletedProcess(cmd, 0, "https://example.com/comment/1\n", "")
         return real_run(*cmd, check=check, **kw)
 
@@ -279,7 +280,7 @@ def test_a_tree_the_verifier_changed_is_reported_and_nothing_in_it_is_deleted(
     seen.update(report="# Report\nSATISFIED: no\n", do=lambda: LEFTOVERS[leftover](work))
     assert cv.verify(7, brief, None, None) == 4
     assert posted == [seen["report"]]  # the report still counts
-    assert "stays detached" in capsys.readouterr().err
+    assert "stays as it is" in capsys.readouterr().err
     assert {name: (work / name).read_text() for name in older} == older
     assert git(work, "rev-parse", "HEAD") == head  # where the verifier left it, for someone to look
     assert git(work, "rev-parse", "claude/worker") != head
@@ -416,3 +417,19 @@ def test_a_report_at_the_top_of_the_checkout_exempts_only_itself(checkout) -> No
         (work / name).write_text("x\n")
     assert cv.changes(Path("pr7.md")) == [("??", "other.md")]
     assert cv.changes(None) == [("??", "other.md"), ("??", "pr7.md"), ("??", "pr7.md.question")]
+
+
+def test_a_change_still_showing_after_the_return_is_reported(checkout, capsys, monkeypatch) -> None:
+    """A change the status at the head can't tell from the checkout's own, as inside a submodule the PR moved."""
+    _, _, brief, posted, _ = checkout
+    real, calls = cv.uncommitted, []
+
+    def uncommitted(report):
+        calls.append(
+            real(report)
+        )  # 1 the clean check, 2 the baseline, 3 after Codex, 4 back on the branch
+        return calls[-1] if len(calls) < 4 else " M sub"
+
+    monkeypatch.setattr(cv, "uncommitted", uncommitted)
+    assert cv.verify(7, brief, None, None) == 4
+    assert posted == ["final\nSATISFIED: yes\n"] and " M sub" in capsys.readouterr().err

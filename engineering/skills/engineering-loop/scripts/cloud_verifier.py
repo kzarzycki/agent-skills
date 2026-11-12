@@ -35,7 +35,7 @@ not posted, and a report or question file counts only when this pass wrote it, s
 posted again and none is deleted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
 instead, headed `## Verifier question`. It returns the checkout to where it was. When the verifier left
 a change outside that folder, the script deletes and restores nothing, since git can't say which leftover hides an
-older file: the checkout stays detached at the PR's head, the changes are named on stderr, and the exit is 4.
+older file: the checkout stays as it is, the changes are named on stderr, and the exit is 4.
 Neither checkout replaces an ignored file: where one is in the way, the first is refused (exit 2) and the second
 leaves the checkout as it is (exit 4).
 What the checkout of the PR's head itself shows as changed, such as a submodule the PR moved, is not counted.
@@ -381,12 +381,18 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             )
             if not stuck:
                 back = run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
-                stuck = back.returncode and (back.stderr.strip() or f"git checkout {was} failed")
+                # back where the tree was clean before the pass: a change still showing is the verifier's, such
+                # as an edit inside a submodule the PR moved, which the status at the head can't tell apart
+                stuck = (
+                    (back.stderr.strip() or f"git checkout {was} failed")
+                    if back.returncode
+                    else uncommitted(report)
+                )
         except Refused as e:
             stuck = str(e)
         if stuck:
             needs_a_look(
-                "the verifier left the checkout changed, so it stays detached at the PR's head",
+                "the pass left the checkout changed, so it stays as it is",
                 stuck,
             )
     ask, body = (
@@ -404,7 +410,11 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             )
             return 4 if stuck else 1
         print(post(pr, body))
-    except Refused as e:  # the comment was not posted: a failed pass, not a missing precondition
+    except (
+        Refused,
+        OSError,
+        ValueError,
+    ) as e:  # not posted: a failed pass, not a missing precondition
         print(f"cloud_verifier: {e}", file=sys.stderr)
         return 4 if stuck else 1
     return 4 if stuck else 0
@@ -416,10 +426,11 @@ def post(pr: int, body: str) -> str:
         "gh",
         "api",
         f"repos/{{owner}}/{{repo}}/issues/{pr}/comments",
-        "-f",
-        f"body={body}",
+        "-F",
+        "body=@-",  # from stdin: a long report does not fit an argument
         "--jq",
         ".html_url",
+        input=body,
     )
     return posted.stdout.strip()
 
