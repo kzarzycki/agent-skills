@@ -163,6 +163,7 @@ def checkout(tmp_path, monkeypatch):
                 (work / "tmp/loop" / name).write_text(seen[key])
         if "edit" in seen:
             (work / "a.txt").write_text(seen["edit"])
+            (work / "stray.txt").write_text("untracked\n")
         return seen.get("exit", 0)
 
     real_run = cv.run
@@ -237,8 +238,24 @@ def test_a_question_is_posted_instead_of_a_report_and_an_earlier_pass_is_not_reu
     assert posted == ["## Verifier question\n\nPlease run the gate at this head.\n"]
 
 
-def test_tracked_edits_the_verifier_left_are_reported_not_hidden(checkout, capsys) -> None:
-    _, head, brief, _, seen = checkout
-    seen["edit"] = "the verifier's leftover\n"
-    assert cv.verify(7, brief, None, None) == 0  # the report still counts
-    assert f"the checkout stays at {head}, not claude/worker" in capsys.readouterr().err
+def test_what_the_verifier_left_in_the_tree_is_dropped_and_the_checkout_returns(
+    checkout, capsys
+) -> None:
+    work, _, brief, posted, seen = checkout
+    seen.update(edit="the verifier's leftover\n", report="# Report\nSATISFIED: no\n")
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == [seen["report"]]  # the report's folder is kept, so the report still counts
+    err = capsys.readouterr().err
+    assert "a.txt" in err and "stray.txt" in err
+    assert not (work / "stray.txt").exists()
+    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
+    assert git(work, "status", "--porcelain", "--untracked-files=no") == ""
+    assert (work / "a.txt").read_text() == "one\n"
+
+
+def test_an_untracked_file_outside_the_report_folder_is_refused(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    (work / "conftest.py").write_text("# never pushed\n")
+    with pytest.raises(cv.Refused, match="conftest.py"):
+        cv.verify(7, brief, None, None)
+    assert "cmd" not in seen and posted == []

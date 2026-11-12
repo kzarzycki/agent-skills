@@ -24,16 +24,16 @@ in a worktree. A variable is set when a session starts, so seed before starting 
 has to run `login` again (no seed login, or its refresh token was refused).
 
 `verify` installs the Codex CLI when the VM lacks it, writes the seeded login to `~/.codex/auth.json` when Codex is
-not logged in, and refuses a tree whose tracked files have uncommitted changes, since a verifier reviews a pushed head only
-(untracked files pass: a fresh clone ignores `tmp/loop/` only where the project's own .gitignore does). It checks
+not logged in, and refuses a tree with uncommitted changes, since a verifier reviews a pushed head only (files in the
+report's own folder pass: a fresh clone ignores `tmp/loop/` only where the project's own .gitignore does). It checks
 out the PR's head (detached) when the checkout is elsewhere, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
 the PR through REST, byte for byte, printing the comment's URL as its last line. The report is the file the brief's
 `- Report: <path>` line names (approvals.py brief), else Codex's final message; one without a `SATISFIED:` line is
 not posted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
-instead, headed `## Verifier question`. It returns the checkout to where it was, and says so on stderr when the
-verifier's leftover edits stop that. Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a
+instead, headed `## Verifier question`. It returns the checkout to where it was, first dropping any change the verifier
+left outside that folder, named on stderr. Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a
 question posted.
 The carrier session runs it detached and polls, since a foreground command in the VM stops at 10 minutes.
 
@@ -264,6 +264,16 @@ def signature(model: str | None, effort: str | None) -> str:
     return f"codex/{short or '?'}/{ {'medium': 'med'}.get(effort or '', effort) or '?' }"
 
 
+def uncommitted(report: Path | None) -> str:
+    """`git status --porcelain` without the files in the report's own folder: the pass's reports and proof logs
+    live there, and a fresh clone ignores that folder only where the project's .gitignore does."""
+    keep = f"{report.parent}/" if report and not report.is_absolute() else None
+    lines = run("git", "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
+    return "\n".join(
+        l for l in lines if not (keep and l.startswith("?? ") and l[3:].startswith(keep))
+    )
+
+
 def codex_exec(cmd: list[str], brief: str) -> int:
     return subprocess.run(cmd, input=brief, text=True, check=False).returncode
 
@@ -273,9 +283,11 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
     if not brief.startswith("AGENT_SIGNATURE="):
         brief = f"AGENT_SIGNATURE={signature(model, effort)}\n{brief}"
     ensure_codex()
-    if dirty := run("git", "status", "--porcelain", "--untracked-files=no").stdout.strip():
+    report, final = report_path(brief), Path(f"/tmp/cloud-verifier-pr{pr}.md")
+    question = report.with_name(report.name + ".question") if report else None
+    if dirty := uncommitted(report):
         raise Refused(
-            f"tracked files have uncommitted changes, and a verifier reviews a pushed head only:\n{dirty[:600]}"
+            f"the tree has uncommitted changes, and a verifier reviews a pushed head only:\n{dirty[:600]}"
         )
     pull = json.loads(run("gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}").stdout)
     head, ref = pull["head"]["sha"], pull["head"]["ref"]
@@ -287,8 +299,6 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
     if moved:
         run("git", "fetch", "-q", "origin", ref)
         run("git", "checkout", "-q", "--detach", head)
-    report, final = report_path(brief), Path(f"/tmp/cloud-verifier-pr{pr}.md")
-    question = report.with_name(report.name + ".question") if report else None
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
     cmd += ["-m", model] if model else []
     cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
@@ -299,12 +309,20 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         code = codex_exec([*cmd, "-"], brief)
         print(f"codex exited {code} after {time.time() - started:.0f} s", flush=True)
     finally:
-        if moved and (back := run("git", "checkout", "-q", was, check=False)).returncode:
-            # the verifier left tracked edits: say so, since the next step in this checkout would build on them
+        if left := uncommitted(report):
+            # the tree was clean before the pass, so these are the verifier's own leftovers: drop them, so the
+            # worker's next step doesn't build on them, and say which
             print(
-                f"cloud_verifier: the checkout stays at {head}, not {was}: {back.stderr.strip()}",
+                f"cloud_verifier: dropping what the verifier left in the tree:\n{left}",
                 file=sys.stderr,
             )
+            run("git", "reset", "-q", "--hard")
+            if new := [line[3:] for line in left.splitlines() if line.startswith("?? ")]:
+                run(
+                    "git", "clean", "-fdq", "--", *new
+                )  # named paths only: a bare clean takes the reports too
+        if moved:
+            run("git", "checkout", "-q", was)
     if not code and question and question.exists() and question.read_text().strip():
         # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
         print(post(pr, f"## Verifier question\n\n{question.read_text()}"))
