@@ -4905,6 +4905,37 @@ def test_record_head_proof_runs_the_gate_with_the_callers_tier_over_the_gate_lin
     assert github == []
 
 
+def test_status_of_a_detached_head_proof_run_reads_the_command_it_ran(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The run records its command beside its exit code: a head proof's, under the caller's tier, is found by
+    --status, and a plain --record run still reads under the plain gate."""
+    gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    checkout["loop"] = add(gated, "loop", HEAD_PROOF)
+    monkeypatch.setenv("GATE_UI_TESTS", "smoke")
+    monkeypatch.setattr(approvals, "RAN", {})
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
+    approvals.finished(HEAD, 0, approvals.RAN.get("command"))
+    capsys.readouterr()
+    assert approvals.main(["local-ci", "--status", HEAD]) == 0
+    assert capsys.readouterr().out.startswith(
+        f"passed on {HEAD} under `GATE_UI_TESTS=smoke mise run check:all`: log"
+    )
+    # a plain run, as before: the plain gate's command and record
+    monkeypatch.delenv("GATE_UI_TESTS")
+    monkeypatch.setattr(approvals, "RAN", {})
+    assert approvals.main(["local-ci", "--record"]) == 0
+    approvals.finished(HEAD, 0, approvals.RAN.get("command"))
+    capsys.readouterr()
+    assert approvals.main(["local-ci", "--status", HEAD]) == 0
+    assert capsys.readouterr().out.startswith(f"passed on {HEAD}: log")
+    approvals.ran_command_file(HEAD).unlink()  # a run with no command file reads under the plain gate
+    assert approvals.main(["local-ci", "--status", HEAD]) == 0
+
+
 def test_record_head_proof_on_a_checkout_with_changes_runs_the_callers_tier_and_publishes_nothing(
     checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
