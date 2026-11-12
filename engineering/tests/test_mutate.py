@@ -491,10 +491,25 @@ def test_a_test_command_that_takes_the_slot_by_the_reentry_rule_does_not_deadloc
 def test_a_run_under_a_holder_of_the_slot_takes_no_lock(repo: Path, tmp_path: Path) -> None:
     killed = patch(repo, "add.patch", "a + b", "a - b")
     holder = hold(slot(tmp_path))
+    run = subprocess.Popen(
+        [sys.executable, str(MUTATE), "--test", TESTS, "--log", str(log_path(repo)), str(killed)],
+        cwd=repo,
+        env={**os.environ, **slot_env(tmp_path), "LOOP_GATE_SLOT_HELD": str(slot(tmp_path))},
+    )
     try:
-        env = slot_env(tmp_path) | {"LOOP_GATE_SLOT_HELD": str(slot(tmp_path))}
-        result = mutate(repo, killed, env=env)
+        # a run that took the lock anyway would wait on the holder for good
+        assert run.wait(timeout=20) == 0
     finally:
         holder.kill()
+        run.kill()
+    assert not any("waiting" in line for line in log(repo))
+
+
+def test_the_slot_is_released_after_each_patch_so_the_next_does_not_wait(
+    repo: Path, tmp_path: Path
+) -> None:
+    first = patch(repo, "add.patch", "a + b", "a - b")
+    second = patch(repo, "add2.patch", "a + b", "a * b")
+    result = mutate(repo, first, second, env=slot_env(tmp_path))
     assert result.returncode == 0, result.stderr
     assert not any("waiting" in line for line in log(repo))
