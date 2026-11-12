@@ -362,12 +362,15 @@ def test_a_comment_that_can_not_be_posted_is_a_failed_pass_not_a_missing_precond
     assert git(work, "rev-parse", "HEAD") == head
 
 
-def test_what_the_checkout_of_the_head_itself_shows_is_not_the_verifiers_doing(checkout) -> None:
-    work, head, brief, posted, seen = checkout
+def test_a_checkout_that_shows_changes_of_its_own_at_the_head_is_returned_and_refused(
+    checkout,
+) -> None:
+    """A file only the worker's branch ignores is untracked at the head, where an edit to it could not be seen."""
+    work, _, brief, posted, seen = checkout
     (work / "local.txt").write_text("ignored on the worker's branch only\n")
-    assert cv.verify(7, brief, None, None) == 0
-    assert seen["head"] == head
-    assert posted == ["final\nSATISFIED: yes\n"]
+    with pytest.raises(cv.Refused, match=r"local\.txt"):
+        cv.verify(7, brief, None, None)
+    assert "cmd" not in seen and posted == []
     assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
     assert (work / "local.txt").read_text() == "ignored on the worker's branch only\n"
 

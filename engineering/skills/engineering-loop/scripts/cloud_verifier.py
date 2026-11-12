@@ -38,7 +38,9 @@ a change outside that folder, the script deletes and restores nothing, since git
 older file: the checkout stays as it is, the changes are named on stderr, and the exit is 4.
 Neither checkout replaces an ignored file: where one is in the way, the first is refused (exit 2) and the second
 leaves the checkout as it is (exit 4).
-What the checkout of the PR's head itself shows as changed, such as a submodule the PR moved, is not counted.
+Where the checkout of the PR's head itself shows changes (a submodule the PR moved, a file only the worker's branch
+ignores), the pass is refused and the checkout returned (exit 2), since an edit to one of those could not be told
+apart. A change is what `git status` shows: an edit to a file git ignores can't be seen and is not reported.
 Exit 0 report posted, 1 the pass failed (Codex failed, wrote no report, or the comment could not be posted), 2 a
 precondition is missing and nothing was touched, 3 a question posted, 4 the checkout needs a look, whatever else the
 pass did (a posted comment's URL is still printed).
@@ -353,9 +355,18 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             )
             return 4
         raise Refused(f"`git checkout {head}` was refused: {went.stderr.strip()[-600:]}")
-    # what the checkout itself shows as changed (a submodule the PR moved, a file only the worker's branch ignores)
-    # is not the verifier's doing
-    baseline = uncommitted(report)
+    # The tree must be clean at the head too, so that any change after the pass is the verifier's. Comparing with
+    # what the checkout itself shows (a submodule the PR moved, a file only the worker's branch ignores) would
+    # miss an edit to one of those, so such a checkout is returned and refused instead.
+    if shown := uncommitted(report):
+        back = run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
+        if back.returncode or (still := uncommitted(report)):
+            needs_a_look("the checkout could not be returned", back.stderr.strip() or still)
+            return 4
+        raise Refused(
+            "at the PR's head this checkout shows changes of its own, and a verifier reviews the pushed head only; "
+            f"put them right (update a submodule, move a file aside) and run the pass again:\n{shown[:600]}"
+        )
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
     cmd += ["-m", model] if model else []
     cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
@@ -376,13 +387,10 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         # ignored file, a folder with its own repository), so a tree the verifier changed stays as it is,
         # detached at the PR's head, for someone to look at.
         try:
-            stuck = (
-                "" if (left := uncommitted(report)) == baseline else left or "(a change was undone)"
-            )
+            stuck = uncommitted(report)
             if not stuck:
                 back = run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
-                # back where the tree was clean before the pass: a change still showing is the verifier's, such
-                # as an edit inside a submodule the PR moved, which the status at the head can't tell apart
+                # back where the tree was clean before the pass: a change still showing is the verifier's
                 stuck = (
                     (back.stderr.strip() or f"git checkout {was} failed")
                     if back.returncode
