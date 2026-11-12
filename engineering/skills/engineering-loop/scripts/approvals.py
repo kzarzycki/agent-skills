@@ -4459,7 +4459,8 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None
             " and rerun its repros"
         )
     lines += [
-        f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)" for log in proofs
+        f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
+        for log in proofs
     ]
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]

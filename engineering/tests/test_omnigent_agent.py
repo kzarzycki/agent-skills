@@ -8688,7 +8688,9 @@ def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) ->
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "docs" / "agents").mkdir(parents=True)
     (tmp_path / "docs/agents/loop.md").write_text(f"# Loop\n\n{hosts}")
-    (tmp_path / "b.md").write_text("Review PR #7 as the verifier; first `git worktree add --detach`")
+    (tmp_path / "b.md").write_text(
+        "Review PR #7 as the verifier; first `git worktree add --detach`"
+    )
     (tmp_path / "gate.log").write_text("abc\nok\n")
     return og
 
@@ -8706,7 +8708,9 @@ def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_repo
     report through the file API and writes it to tmp/loop/ here, the only file made here."""
     og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, mac\n")
     assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 0
-    assert og.top_level == [True] and og.workspaces == ["/there/repo"] and og.hosts_of["s0"] == "mac"
+    assert (
+        og.top_level == [True] and og.workspaces == ["/there/repo"] and og.hosts_of["s0"] == "mac"
+    )
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert brief.startswith("Work on v. Your brief:") and "git worktree add --detach" in brief
     assert "issues/7/comments" not in brief  # no PR preamble: its report is a file there

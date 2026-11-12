@@ -2404,7 +2404,9 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
     worktree line, the role in that worktree, and the report, previous report and proof logs in its clone's tmp/loop/,
     where start --file writes them. A relative --far is no path there."""
     earlier = "c" * 40
-    pr = pull(body="Closes #12.\n", reviews=(verdict_on(earlier, heading="Verifier (codex), pass 1"),))
+    pr = pull(
+        body="Closes #12.\n", reviews=(verdict_on(earlier, heading="Verifier (codex), pass 1"),)
+    )
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
     monkeypatch.setattr(approvals, "merge_base", lambda base, head: BASE)
     monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
@@ -2419,11 +2421,15 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         f"- Base: {BASE}",
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
-        f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
-        f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}",
+        (
+            f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
+            f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
+        ),
         "- Report: /there/repo/tmp/loop/pr7-v2.md",
-        f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and rerun"
-        " its repros",
+        (
+            f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and"
+            " rerun its repros"
+        ),
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
     ]
     assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
