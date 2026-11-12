@@ -510,6 +510,15 @@ def test_the_slot_is_released_after_each_patch_so_the_next_does_not_wait(
 ) -> None:
     first = patch(repo, "add.patch", "a + b", "a - b")
     second = patch(repo, "add2.patch", "a + b", "a * b")
-    result = mutate(repo, first, second, env=slot_env(tmp_path))
-    assert result.returncode == 0, result.stderr
+    run = subprocess.Popen(
+        [sys.executable, str(MUTATE), "--test", TESTS, "--log", str(log_path(repo))]
+        + [str(first), str(second)],
+        cwd=repo,
+        env={**os.environ, **slot_env(tmp_path)},
+    )
+    try:
+        # a slot kept after the first patch would block the second for good
+        assert run.wait(timeout=20) == 0
+    finally:
+        run.kill()
     assert not any("waiting" in line for line in log(repo))
