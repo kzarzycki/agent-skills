@@ -47,7 +47,12 @@ def head():
     return sh("git rev-parse HEAD")[1]
 
 
-REFUSED = ("403", "not permitted through this proxy", "not available from claude code")
+REFUSED = (
+    "not permitted through this proxy",
+    "not available from claude code",
+    "returned error: 403",  # git push through the proxy
+    "must authenticate via a github app",
+)
 
 
 def classify(rc, out, ok=True):
@@ -191,7 +196,11 @@ def main():
     print(json.dumps({"results": res, "changed": changed, "inconclusive": inconclusive}, indent=2))
     if a.update_baseline:
         # an inconclusive answer keeps the last known one
-        new = {k: v["answer"] for k, v in res.items() if v["answer"] != "inconclusive"}
+        new = {
+            k: v["answer"]
+            for k, v in res.items()
+            if v["answer"] != "inconclusive" and not v["answer"].startswith("allowed-")
+        }
         BASELINE.write_text(json.dumps({**base, **new}, indent=2) + "\n")
     if changed and a.comment:
         lines = [
