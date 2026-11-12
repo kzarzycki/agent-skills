@@ -367,3 +367,134 @@ def test_a_run_nested_under_another_uv_run_sees_the_callers_environment_depth(
     """uv counts each nested run in UV_RUN_RECURSION_DEPTH; the test command gets the count minus this script's."""
     seen = seen_env(repo, tmp_path, VIRTUAL_ENV=sys.prefix, UV_RUN_RECURSION_DEPTH="2")
     assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
+
+
+# the host gate slot (#818)
+TAKE_SLOT = """
+import fcntl, os, sys, time
+path = sys.argv[1]
+if os.environ.get("LOOP_GATE_SLOT_HELD") != path:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT)
+    end = time.monotonic() + 5
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() > end:
+                sys.exit(3)
+            time.sleep(0.05)
+sys.exit(0)
+"""
+
+
+def slot(tmp_path: Path) -> Path:
+    return tmp_path / "cache" / "engineering-loop" / "gate.1.lock"
+
+
+def slot_env(tmp_path: Path) -> dict[str, str]:
+    return {"XDG_CACHE_HOME": str(tmp_path / "cache")}
+
+
+def hold(path: Path) -> subprocess.Popen[str]:
+    """A process holding the slot until its stdin closes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    code = (
+        "import fcntl, os, sys\n"
+        f"fd = os.open({str(path)!r}, os.O_WRONLY | os.O_CREAT)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "print('held', flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
+    return proc
+
+
+def test_the_test_command_waits_while_another_process_holds_the_slot(
+    repo: Path, tmp_path: Path
+) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    started = tmp_path / "started"
+    holder = hold(slot(tmp_path))
+    command = [sys.executable, str(MUTATE), "--test", f"touch {started} && exit 1"]
+    run = subprocess.Popen(
+        [*command, "--log", str(log_path(repo)), str(killed)],
+        cwd=repo,
+        env={**os.environ, **slot_env(tmp_path)},
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (
+            log_path(repo).exists() and "waiting for the host" in log_path(repo).read_text()
+        ):
+            assert time.monotonic() < deadline and run.poll() is None
+            time.sleep(0.05)
+        time.sleep(0.5)
+        assert not started.exists()
+        released = time.time()
+        assert holder.stdin is not None
+        holder.stdin.close()
+        assert run.wait(timeout=30) == 0
+    finally:
+        holder.kill()
+        run.kill()
+    assert started.stat().st_mtime >= released - 0.05
+    assert f"{killed}: waiting for the host gate slot" in log(repo)
+    assert clean(repo)
+
+
+def test_a_free_slot_is_taken_without_a_wait_line(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    assert mutate(repo, killed, env=slot_env(tmp_path)).returncode == 0
+    assert not any("waiting" in line for line in log(repo))
+
+
+def test_the_slot_is_held_around_each_patchs_test_run_only(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    # the test command fails when it can't take the slot itself while its parent holds it (no re-entry variable)
+    probe = (
+        f'{sys.executable} -c "import fcntl,os,sys; fd=os.open({str(slot(tmp_path))!r}, os.O_WRONLY);'
+        ' fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)" && exit 0 || exit 1'
+    )
+    mutate(repo, killed, test=probe, env=slot_env(tmp_path))
+    assert log(repo)[2] == f"{killed}: exit 1 killed"
+    # between runs it is free
+    free = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                f"import fcntl,os; fd=os.open({str(slot(tmp_path))!r}, os.O_WRONLY);"
+                "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)"
+            ),
+        ],
+        check=False,
+    )
+    assert free.returncode == 0
+
+
+def test_a_test_command_that_takes_the_slot_by_the_reentry_rule_does_not_deadlock(
+    repo: Path, tmp_path: Path
+) -> None:
+    (repo / "tmp" / "take_slot.py").write_text(TAKE_SLOT)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    test = f"{sys.executable} {repo / 'tmp' / 'take_slot.py'} {slot(tmp_path)} && {TESTS}"
+    result = mutate(repo, killed, test=test, env=slot_env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    # exit 1 from the tests, not 3 from a wrapper that waited on its parent
+    assert log(repo)[2] == f"{killed}: exit 1 killed"
+
+
+def test_a_run_under_a_holder_of_the_slot_takes_no_lock(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    holder = hold(slot(tmp_path))
+    try:
+        env = slot_env(tmp_path) | {"LOOP_GATE_SLOT_HELD": str(slot(tmp_path))}
+        result = mutate(repo, killed, env=env)
+    finally:
+        holder.kill()
+    assert result.returncode == 0, result.stderr
+    assert not any("waiting" in line for line in log(repo))
