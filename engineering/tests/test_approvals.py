@@ -2397,6 +2397,39 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     assert capsys.readouterr().out.splitlines()[-1] == "- Read the loop file's brief."
 
 
+def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A verifier on another host makes its own detached worktree at the head there: the brief gives the fetch and the
+    worktree line, the role in that worktree, and the report, previous report and proof logs in its clone's tmp/loop/,
+    where start --file writes them. A relative --far is no path there."""
+    earlier = "c" * 40
+    pr = pull(body="Closes #12.\n", reviews=(verdict_on(earlier, heading="Verifier (codex), pass 1"),))
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(approvals, "merge_base", lambda base, head: BASE)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    root = Path(approvals.__file__).resolve().parents[4]
+    monkeypatch.setattr(approvals, "toplevel", lambda: root)
+    proof = tmp_path / "gate.log"
+    proof.write_text(f"{HEAD}\nok\n")
+    assert approvals.main(["brief", "7", "--far", "/there/repo", "--proof", str(proof)]) == 0
+    tree = "/there/repo/tmp/loop/pr7-v2-tree"
+    assert capsys.readouterr().out.splitlines() == [
+        f"Review PR #7 as the verifier, pass 2, following {tree}/engineering/skills/engineering-loop/verifier.md.",
+        f"- Base: {BASE}",
+        f"- Reviewed head: {HEAD}",
+        "- Spec: #12",
+        f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
+        f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}",
+        "- Report: /there/repo/tmp/loop/pr7-v2.md",
+        f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and rerun"
+        " its repros",
+        "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
+    ]
+    assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
+    assert capsys.readouterr().out == "--far there/repo: an absolute path on the verifier's host\n"
+
+
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
     reviewing: list[tuple[Any, ...]], tmp_path: Path
 ) -> None:

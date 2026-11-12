@@ -147,7 +147,14 @@ design, wireframes included for a UI, and delegate the rest.
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
-   verifier, running at the same time, gets its own detached worktree the same way. Triage every finding (SKILL.md) and hand the fixes to a worker,
+   verifier, running at the same time, gets its own detached worktree the same way. A verifier
+   may instead run on another host loop.md's `Verifier hosts:` line lists, so its tests and
+   mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
+   backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
+   `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
+   worktree; the proof logs and the previous report go there with `start --file`, you make no
+   worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
+   host can't run comes back as a proof-run question as above. Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
    covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like

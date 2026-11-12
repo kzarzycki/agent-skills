@@ -8660,3 +8660,127 @@ def test_a_worktree_s_repo_is_read_from_its_common_dir_on_any_host() -> None:
         assert omnigent_agent.origin_repo(f'[remote "origin"]\n\turl = {url}\n') == "o/r"
     upstream_only = '[remote "upstream"]\n\turl = https://github.com/x/y\n'
     assert omnigent_agent.origin_repo(upstream_only) == ""
+
+
+class FarVerifierHost(FarFiles, FakeOmnigent):
+    """Hosts ``here`` (this one, ``h``) and ``mac``, where every session runs; each brief that lands
+    records which files were already there."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.there_at_brief: list[list[str]] = []
+
+    def host(self, name: str) -> str:
+        return {"here": "h", "h": "h", "mac": "mac"}[name]
+
+    def hosts(self) -> dict[str, str]:
+        return {"h": "here", "mac": "mac"}
+
+    def land(self, sid: str, text: str) -> None:
+        self.there_at_brief.append(sorted(self.files))
+        super().land(sid, text)
+
+
+def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) -> FarVerifierHost:
+    og = FarVerifierHost()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs/agents/loop.md").write_text(f"# Loop\n\n{hosts}")
+    (tmp_path / "b.md").write_text("Review PR #7 as the verifier; first `git worktree add --detach`")
+    (tmp_path / "gate.log").write_text("abc\nok\n")
+    return og
+
+
+VERIFY_FAR = ["start", "claude", "v", "b.md", "/there/repo/tmp/loop/pr7-v1.md", "--top-level"]
+VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", "roles/verifier.md"]
+VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
+
+
+def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_reports_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Its --pr names the PR it reviews, not a cloud report channel: the brief goes inline to a
+    top-level session on that host, the proof log is there before the brief, and wait reads its
+    report through the file API and writes it to tmp/loop/ here, the only file made here."""
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, mac\n")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 0
+    assert og.top_level == [True] and og.workspaces == ["/there/repo"] and og.hosts_of["s0"] == "mac"
+    brief = omnigent_agent.text_of(og.sessions["s0"][1])
+    assert brief.startswith("Work on v. Your brief:") and "git worktree add --detach" in brief
+    assert "issues/7/comments" not in brief  # no PR preamble: its report is a file there
+    assert og.there_at_brief == [["/there/repo/tmp/loop/gate.log"]]
+    assert og.files["/there/repo/tmp/loop/gate.log"] == "abc\nok\n"
+    report = "VERDICT: 0 blocker\nSATISFIED: yes\n"
+    og.files["/there/repo/tmp/loop/pr7-v1.md"] = report
+    capsys.readouterr()
+    argv = ["wait", "s0", "/there/repo/tmp/loop/pr7-v1.md", "--verdict", "--timeout", "5"]
+    assert omnigent_agent.main(argv) == 0
+    out, err = capsys.readouterr()
+    home = tmp_path / "tmp" / "loop" / "pr7-v1.md"
+    assert out.strip() == str(home) and home.read_text() == report
+    assert "tracked changes are not checked here" in err
+    made = {p for p in tmp_path.rglob("*") if ".git" not in p.parts}
+    assert made - {tmp_path / p for p in ("docs", "docs/agents", "docs/agents/loop.md")} == {
+        tmp_path / "b.md",
+        tmp_path / "gate.log",
+        tmp_path / "tmp",
+        tmp_path / "tmp/loop",
+        home,
+    }
+
+
+@pytest.mark.parametrize("host", ["mac", "h"])
+def test_a_verifier_on_a_host_loop_md_does_not_list_is_refused_with_the_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], host: str
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, other\n")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = host
+    assert omnigent_agent.main(argv) == 1
+    assert f"--host {host} is no verifier host loop.md lists: box, other" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_without_a_verifier_hosts_line_a_verifier_starts_on_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Owner: someone\n")
+    assert omnigent_agent.main(VERIFY_FAR) == 0
+    assert og.hosts_of["s0"] == "mac"
+
+
+def test_a_lead_names_a_host_by_its_id_and_a_file_needs_another_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The line lists names; a host given by its id is checked by its name. --file is refused for
+    a session here, which reads its own worktree."""
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: here\n")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = "h"
+    argv[argv.index("/there/repo")] = str(tmp_path)
+    argv[4] = str(tmp_path / "tmp/loop/pr7-v1.md")
+    assert omnigent_agent.main([*argv, "--file", "gate.log"]) == 1
+    assert "--file is for a session on another host" in capsys.readouterr().err
+    assert omnigent_agent.main(argv) == 0
+    assert og.hosts_of["s0"] == "h"
+
+
+def test_a_far_file_that_is_missing_here_or_fails_there_starts_no_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing file is refused before any session; a write the far host refuses abandons the
+    session it made, before its brief names a file that is not there."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "absent.log"]) == 1
+    assert "--file: no file at absent.log" in capsys.readouterr().err
+    assert og.sessions == {}
+
+    def refuse(sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+        raise omnigent_agent.Fail("PUT: HTTP 403")
+
+    og.filesystem = refuse  # type: ignore[method-assign]
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 1
+    assert "a --file did not reach its host: PUT: HTTP 403" in capsys.readouterr().err
+    assert og.archived == ["s0"] and og.there_at_brief == []
