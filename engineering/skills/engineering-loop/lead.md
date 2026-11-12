@@ -218,7 +218,8 @@ design, wireframes included for a UI, and delegate the rest.
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
      refuses a PR whose proof is missing. A push after it needs `gh pr ready --undo` first; the
-     owner's go stays on the old head, and after the verdict on the new head `land` runs again.
+     owner's go carries over only merges of the base whose verdict says `Logic change: none`
+     (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
      never after another PR's merge. Whichever runs first takes the lock and lands every
      landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)
