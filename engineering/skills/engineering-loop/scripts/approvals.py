@@ -179,10 +179,18 @@ Every pass this clone holds, run or reused, is published as a commit status on t
 success, context `gate`, description `Tree <tree> on <commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when
 it doesn't fit GitHub's 140 characters), since `gh`'s token can write a status where a check run needs a GitHub App.
 GitHub refusing it (a commit not pushed yet) or unreachable is said and changes nothing else: the record stays local,
-and a later `local-ci` publishes it. A pass is reusable for a commit when this clone's record for its tree holds exit
+and a later `local-ci` publishes it. Where GitHub refuses the status but origin takes a push, as a cloud session's
+proxy does, the pass is pushed to origin as a ref instead, `refs/loop/gate/<tree>-<command's key>` or, where origin
+refuses a ref outside branches, the branch `loop-gate/<tree>-<key>`, which `land` deletes once the PR lands; its commit
+holds the tree, the commit the pass ran on as its parent, and the status's description and `Env:` line as its message,
+and `local-ci` says which ref. A pass is reusable for a commit when this clone's record for its tree holds exit
 0 under today's command, or when a `gate` status on that commit itself names its tree and today's command, posted by
-the account running this or a writer, since anyone who can only open a PR must never publish a pass; so any host
-reuses it, and adding a name to `local_ci_env` keeps every pass. `local-ci <pr>`, `local-ci --record`, `land`, `check
+the account running this or a writer, since anyone who can only open a PR must never publish a pass, or else when
+origin holds that tree's ref under today's command whose commit says that tree, command and env: a ref in the base repo
+is its write access, as a status's writer is, so a ref on a PR's fork never counts, and it counts at every risk. A host
+that reuses a ref writes the `gate` status it holds on the head, so the PR shows the pass. So any host
+reuses it, and adding a name to `local_ci_env` keeps every pass. `local-ci <pr>` reads the PR's head through REST
+where GraphQL answers 403, so it runs in a cloud session too. `local-ci <pr>`, `local-ci --record`, `land`, `check
 queue`, `batch` and `check merge` read it the same way; the posted comment then says it was reused by tree from the
 pass recorded on that commit, and when, instead of running the check again. A refusal for a missing pass names each
 other command the tree passed under, from this clone's records and the head's statuses, and today's. The host stays
@@ -426,6 +434,14 @@ REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTI
 CHECKED = "Local check passed"
 # a gate pass published as a commit status: its context, and its description (described): tree, commit, command
 PUBLISHED = "gate"
+# where publish() pushes a pass as a ref in origin when GitHub refuses the status, each tried in turn: a session whose
+# proxy refuses a ref outside refs/heads/ may still push a branch, which land deletes once the PR lands (drop_records)
+RECORD_REFS = ("refs/loop/gate/{}", "refs/heads/loop-gate/{}")
+# a pushed record's author and committer: no person's name or address reaches the repo through it
+RECORDER = {"GIT_AUTHOR_NAME": "loop", "GIT_AUTHOR_EMAIL": "loop@invalid"} | {
+    "GIT_COMMITTER_NAME": "loop",
+    "GIT_COMMITTER_EMAIL": "loop@invalid",
+}
 PASSED = re.compile(r"Tree ([0-9a-f]{40,64}) on ([0-9a-f]{7,64}): (.+)")
 # the first line of a merge queue's batch proof (batch), which queued() reads, and how much of the gate's log it shows
 BATCHED = "Merge queue batch"
@@ -2478,6 +2494,17 @@ def pull_request(pr: int) -> dict[str, Any]:
     return pull
 
 
+def pr_head(pr: int) -> str:
+    """PR `pr`'s head commit, read through GraphQL (pull_request) or, where GraphQL answers 403 as a cloud session's
+    GitHub proxy does, through REST, so `local-ci <pr>` runs there too."""
+    try:
+        return str(pull_request(pr)["headRefOid"])
+    except subprocess.CalledProcessError as exc:
+        if "HTTP 403" not in (exc.stderr or ""):
+            raise
+    return gh("api", f"repos/{{owner}}/{{repo}}/pulls/{pr}", "--jq", ".head.sha").strip()
+
+
 def pr_changes(number: int) -> list[dict[str, Any]]:
     """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
     out = gh(
@@ -3373,10 +3400,17 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
     there and its pass is recorded by tree. Its log stays beside the worktree."""
     commit, tree = run_in(work, "rev-parse", "HEAD"), run_in(work, "rev-parse", "HEAD^{tree}")
     command = gate()[0]
-    if reusable(commit) or any(
-        tree_of(pull["headRefOid"]) == tree and reusable(pull["headRefOid"]) for pull in pulls
-    ):
-        print(f"Tree {tree}: `{command}` passed on it before, reused")
+    found = reusable(commit) or next(
+        (
+            record
+            for pull in pulls
+            if tree_of(pull["headRefOid"]) == tree and (record := reusable(pull["headRefOid"]))
+        ),
+        None,
+    )
+    if found:
+        pushed = f" from {found['ref']}" if found.get("ref") else ""
+        print(f"Tree {tree}: `{command}` passed on it before, reused{pushed}")
         return tree, "reused"
     log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
     for again in (False, True):
@@ -3474,6 +3508,7 @@ def merges(
         done.append((pull, tree, gated, how))
     if not done:
         return
+    drop_records([pull["headRefOid"] for pull, *_ in done], command)
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
     actual, (_, tree, gated, _) = git("rev-parse", f"{tip}^{{tree}}").strip(), done[-1]
@@ -4077,23 +4112,143 @@ def published(
 ) -> dict[str, Any] | None:
     """A pass of `command` (setting `env`, default the gate's) on `head` another clone published (publish), as a
     record, or None: a `gate` status (stated) for `head`'s own tree `held` and that command (described)."""
+    env = gate()[2] if env is None else env
     found = stated(
         head,
         PUBLISHED,
         lambda status, named: status["description"] == described(held, named[2], command),
     )
     if found is None:
-        return None
+        record = record_ref(held, command, env)
+        if record is not None:
+            # a host shows the pass on the PR as it does its own; where the status is refused, the ref still stands
+            with contextlib.suppress(subprocess.CalledProcessError, OSError):
+                post_status(head, PUBLISHED, described(held, record["head"], command))
+        return record
     status, named = found
     return {
         "head": named[2],
         "tree": held,
         "command": command,
         "exit": 0,
-        "env": gate()[2] if env is None else env,
+        "env": env,
         "time": status["created_at"],
         "published": True,
     }
+
+
+def record_name(tree: str, command: str) -> str:
+    """A pushed record's name: the tree it passed on and the gate command's digest (gate_key)."""
+    return f"{tree}-{gate_key(command)}"
+
+
+def record_message(record: dict[str, Any]) -> str:
+    """A pushed record's commit message: the status description (described), then the env the gate ran under."""
+    env = record.get("env", gate()[2])
+    return (
+        f"{described(record['tree'], record['head'], record['command'])}\n\n"
+        f"Env: {json.dumps(env, sort_keys=True)}\n"
+    )
+
+
+def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] | None:
+    """A pass of `command` under `env` on tree `held` pushed to origin as a ref (push_record), as a record, or None.
+    Only origin is read, the repo `land` pushes its lock to, so a ref on a PR's fork never counts: a ref there is the
+    base repo's write access, as a status's writer is. The ref's commit must hold `held` as its tree, its parent the
+    commit its description names, and the env line `env`, so a ref whose content is not what its name says counts for
+    nothing. origin unreachable: None, so the check runs."""
+    name = record_name(held, command)
+    wanted = [ref.format(name) for ref in RECORD_REFS]
+    try:
+        listed = git("ls-remote", "origin", *wanted)
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    pushed = {
+        fields[1]: fields[0] for line in listed.splitlines() if len(fields := line.split()) == 2
+    }
+    for ref in (ref for ref in wanted if ref in pushed):
+        try:
+            git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
+            body = git("cat-file", "commit", pushed[ref])
+        except (subprocess.CalledProcessError, OSError):
+            continue
+        header, _, message = body.partition("\n\n")
+        fields = [line.split(" ", 1) for line in header.splitlines()]
+        trees = [value for key, value in fields if key == "tree"]
+        parents = [value for key, value in fields if key == "parent"]
+        committed = [value for key, value in fields if key == "committer"]
+        lines = message.splitlines()
+        named = PASSED.fullmatch(lines[0]) if lines else None
+        if (
+            trees != [held]
+            or len(parents) != 1
+            or not named
+            or lines[0] != described(held, parents[0], command)
+            or f"Env: {json.dumps(env, sort_keys=True)}" not in lines[1:]
+            or not committed
+        ):
+            continue
+        when = int(committed[0].rsplit(" ", 2)[1])
+        return {
+            "head": parents[0],
+            "tree": held,
+            "command": command,
+            "exit": 0,
+            "env": env,
+            "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(when)),
+            "published": True,
+            "ref": ref,
+        }
+    return None
+
+
+def push_record(record: dict[str, Any]) -> str:
+    """Push a pass to origin as a ref (RECORD_REFS, the first origin takes) on a commit holding its tree, its parent
+    the commit it ran on, its message the status description and env (record_message), and return the ref; refused
+    everywhere: CalledProcessError naming each refusal."""
+    when = {"GIT_COMMITTER_DATE": record["time"], "GIT_AUTHOR_DATE": record["time"]}
+    commit = subprocess.run(
+        ["git", "commit-tree", record["tree"], "-p", record["head"], "-m", record_message(record)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=os.environ | RECORDER | (when if record.get("time") else {}),
+    ).stdout.strip()
+    refusals = []
+    for ref in (ref.format(record_name(record["tree"], record["command"])) for ref in RECORD_REFS):
+        try:
+            git("push", "-q", "--no-verify", "origin", f"{commit}:{ref}")
+        except subprocess.CalledProcessError as exc:
+            refusals.append(f"{ref}: {' '.join((exc.stderr or str(exc)).split())}")
+            continue
+        return ref
+    raise subprocess.CalledProcessError(1, "git push", stderr="; ".join(refusals))
+
+
+def drop_records(heads: list[str], command: str) -> None:
+    """Delete from origin the record branches (RECORD_REFS under refs/heads/) for the trees of `heads`, landed now, so
+    no branch a pass was pushed as outlives its PR; a ref outside refs/heads/ stays, since no branch list shows it.
+    A refusal is said, and the branch stays for a person to delete."""
+    branches = [
+        ref.format(record_name(held, command))
+        for head in heads
+        if (held := tree_of(head))
+        for ref in RECORD_REFS
+        if ref.startswith("refs/heads/")
+    ]
+    if not branches:
+        return
+    try:
+        listed = git("ls-remote", "origin", *branches)
+    except (subprocess.CalledProcessError, OSError):
+        return
+    for ref in (line.split()[1] for line in listed.splitlines() if len(line.split()) == 2):
+        try:
+            git("push", "-q", "--no-verify", "origin", f":{ref}")
+        except subprocess.CalledProcessError as exc:
+            print(
+                f"the record branch {ref} was not deleted: {' '.join((exc.stderr or '').split())}"
+            )
 
 
 def stated(
@@ -4227,9 +4382,25 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
         post_status(head, context, line)
     except (subprocess.CalledProcessError, OSError) as exc:
         why = (getattr(exc, "stderr", None) or str(exc)).strip()
+        if proof is None:
+            try:
+                ref = push_record(record | {"time": record.get("time") or now()})
+            except (subprocess.CalledProcessError, OSError) as refused:
+                why += (
+                    f"; nor as a ref: {(getattr(refused, 'stderr', None) or str(refused)).strip()}"
+                )
+            else:
+                print(
+                    f"published in origin as the ref {ref}, since GitHub refused the status: {why}"
+                )
+                return
         print(f"not published on GitHub, so only this clone reuses it: {why}")
         return
     print(f"published on {head} as the commit status `{context}`")
+
+
+def now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def post_status(head: str, context: str, description: str, state: str = "success") -> None:
@@ -4247,7 +4418,8 @@ def post_status(head: str, context: str, description: str, state: str = "success
 
 
 def reused(record: dict[str, Any]) -> str:
-    return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}, not run again."
+    pushed = f" and pushed as {record['ref']}" if record.get("ref") else ""
+    return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}{pushed}, not run again."
 
 
 def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
@@ -4275,7 +4447,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
         elif not record.get("published"):
             publish(head, record)
         return 0
-    head = pull_request(pr)["headRefOid"]
+    head = pr_head(pr)
     if record := reusable(head):
         source = f"{reused(record)}\n"
     else:

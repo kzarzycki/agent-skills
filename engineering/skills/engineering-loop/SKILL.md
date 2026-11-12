@@ -240,7 +240,10 @@ instead, and is the gate while iterating too: it runs the merge check, gatekeepe
 commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing posts
 that pass rather than running the check again: on this host for any commit with the same
 tree and gate command (a rebase or reworded commit keeps its tree), on another for the
-commit whose `gate` status names them. `gate` is one command with no shell operator, so a
+commit whose `gate` status names them. A gate may run in a cloud session: where GitHub
+refuses it the status, `local-ci --record` pushes the pass to the base repo as a ref named by
+its tree and command and says which, and another host's `local-ci <pr>`, `check merge` and
+`land` reuse it at every risk, writing the `gate` status on the head as they do. `gate` is one command with no shell operator, so a
 chain of checks is one task. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
