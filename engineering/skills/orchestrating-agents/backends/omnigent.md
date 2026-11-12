@@ -347,7 +347,7 @@ Exit 0: the message is in the lead's history, or a copy it has not replied to al
 rerun sends no second one. Exit 5: queued, held until the lead's current step ends (a long
 foreground command) or until a person answers the approval prompt it prints; it lands then
 with no further call. Exit 4: not deliverable, and why (archived, a revive that failed, or
-neither pending nor in the history within `--confirm-seconds`, default 60). A reaped runner is
+neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
 revived in place first, as `send` does. A lead blocked only on questions (Claude's
 AskUserQuestion, Codex's requestUserInput, both marked `ask_user_question` in its pending
 prompts) holds every message until the question is answered, so a plain `relay` waits behind
