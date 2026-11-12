@@ -14,7 +14,7 @@
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
-    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]
+    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force]
     python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
@@ -131,7 +131,10 @@ finishing it, so the supervisor posts no ``archived`` for a finish its notified 
 question, nor one given ``--keep``, which a fix round then reaches with ``send``; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
-session.
+session. A session running with no new history item for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
+command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
+``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
+leave its patch applied); a running session with recent activity stays kept.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -423,6 +426,9 @@ MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)  # 
 MIN_AVAILABLE_MB = float(os.environ.get("OMNIGENT_MIN_AVAILABLE_MB") or 1536)
 # start waits this long for room, then fails; a queue runner sets it longer
 CAPACITY_WAIT_SECONDS = float(os.environ.get("OMNIGENT_CAPACITY_WAIT_SECONDS") or 600)
+# A running session whose newest history item is older than this is stuck. A long foreground
+# command writes no item, so the default outlasts the 10-minute tool limit and the heavy-slot wait.
+STUCK_SECONDS = float(os.environ.get("OMNIGENT_STUCK_SECONDS") or 1800)
 MEMINFO = Path("/proc/meminfo")
 PROC_STAT = Path("/proc/stat")
 
@@ -1046,6 +1052,10 @@ class Omnigent:
                 raise Gone(f"{path}: not found") from e
             raise
         return out
+
+    def interrupt(self, sid: str) -> None:
+        """Stop ``sid``'s running turn, as the owner's stop does."""
+        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
 
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
@@ -2882,7 +2892,11 @@ def merged_since(repo: str, old: str, new: str) -> str:
 
 
 def reap(
-    og: Omnigent, sessions: list[str], parent: str | None = None, registry: Path | None = None
+    og: Omnigent,
+    sessions: list[str],
+    parent: str | None = None,
+    registry: Path | None = None,
+    force: bool = False,
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
@@ -2891,13 +2905,31 @@ def reap(
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
-    reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it."""
+    reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it.
+
+    ``force`` also finishes a stuck session (``stuck_minutes``): it stops the turn first, then
+    archives it, and names the session's workspace, since a dead run can leave a patch applied
+    there. A running session that is not stuck stays kept, and the line says so."""
     lines, failed = [], False
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
             lines.append(f"{sid} {info.get('title') or ''}: already archived")
+            continue
+        if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
+            arm_quietly(registry, sid)
+            try:
+                og.interrupt(sid)
+                og.archive(sid)
+            except Fail as e:
+                lines.append(f"{sid} {info.get('title') or ''}: finish failed: {e}")
+                failed = True
+                continue
+            lines.append(
+                f"{sid} {info.get('title') or ''}: archived (stuck); check git status in"
+                f" {info.get('workspace') or '(workspace unknown)'}"
+            )
             continue
         if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
             busy = (
@@ -2907,7 +2939,8 @@ def reap(
                 if status in RUNNING
                 else "input pending"
             )
-            lines.append(f"{sid} {info.get('title') or ''}: kept ({busy})")
+            note = " (running with recent activity, not stuck)" if force and busy == status else ""
+            lines.append(f"{sid} {info.get('title') or ''}: kept ({busy}){note}")
             continue
         # ponytail: a supervisor that read the registry just before this drop can still post
         # `archived` once, and a finish that then fails leaves the session unfollowed; reap again.
@@ -2920,6 +2953,16 @@ def reap(
             continue
         lines.append(f"{sid} {info.get('title') or ''}: archived ({status})")
     return lines, failed
+
+
+def stuck_minutes(info: dict, items: list[dict]) -> int | None:
+    """Whole minutes a running session has written no history item, once that passes
+    ``STUCK_SECONDS``, else None. A history with no dated item says nothing, so it is not stuck."""
+    if str(info.get("status")) not in RUNNING:
+        return None
+    dated = [float(i["created_at"]) for i in items if i.get("created_at")]
+    quiet = time.time() - max(dated, default=time.time())
+    return int(quiet // 60) if quiet > STUCK_SECONDS else None
 
 
 def observe(
@@ -2960,6 +3003,9 @@ def observe(
         or time.monotonic() - idle_since[sid][1] >= IDLE_GRACE_SECONDS
     ):
         return ("ended", str(last.get("id")) if last else ""), f"{head}: turn ended{tail}"
+    if (quiet := stuck_minutes(info, items)) is not None:
+        # keyed by the newest item, so one stuck stretch is news once and a new item ends it
+        return ("stuck", str(lid)), f"{head}: stuck (no activity for {quiet} min){tail}"
     return ("running",), f"{head}: {status}{tail}"
 
 
@@ -3202,7 +3248,8 @@ def check(
     once when an input already waits undelivered (a resume line would queue behind it). Each of
     those is told to ``say`` at once. ``resumed`` holds when this process sent each resume line,
     since one held in ``pending_inputs`` is not in the history yet; ``unsent`` the revived sessions
-    whose revive line did not go out, sent again at their next look; ``ended`` when each session
+    whose revive line did not go out, sent again at their next look; a stuck session (``stuck_minutes``)
+    is told to ``say`` once, naming ``reap --force``, and its mark in ``resumed`` ends with its stretch; ``ended`` when each session
     was first seen out of its turn (``settled``), across looks.
     """
     # ponytail: compares the server's item clock with local time and file times, as send does; a
@@ -3251,6 +3298,13 @@ def check(
         og.send(sid, revive_line(report, briefs_for(report, briefs or [], far)))
         unsent.discard(sid)
         return "", since
+    stuck = f"stuck:{sid}"  # told once per stuck stretch; a new history item ends it
+    if (minutes := stuck_minutes(info, items)) is None:
+        resumed.pop(stuck, None)
+    elif stuck not in resumed and time.time() - og.active(sid) > STUCK_SECONDS:
+        # a session waiting on its own worker writes nothing meanwhile, so its subtree counts too
+        say(f"{head}: stuck (no activity for {minutes} min); `reap --force {sid}` closes it")
+        resumed[stuck] = time.time()
     resent = max(resent, resumed.get(sid, 0.0))
     last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
     quiet = time.time() - max(last, resent)
@@ -3315,6 +3369,8 @@ def follow(
     ``holding`` the end not yet held; all are the caller's across looks.
     """
     key, line = observe(og, sid, idle_since)
+    if key[0] == "stuck":  # a followed lead has its progress deadline, which says this already
+        key = ("running",)
     if key[0] == "archived":
         return line, key
     if key[0] != "ended":
@@ -4822,6 +4878,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("reap")
     p.add_argument("sessions", nargs="*")
     p.add_argument("--children", metavar="PARENT", help="also reap this session's sub-agents")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS)",
+    )
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -5050,7 +5111,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "reap":
             if not args.sessions and not args.children:
                 raise Fail("reap needs a session or --children <parent>")
-            lines, failed = reap(og, args.sessions, args.children, args.registry)
+            lines, failed = reap(og, args.sessions, args.children, args.registry, args.force)
             print("\n".join(lines))
             return 1 if failed else 0
         if args.cmd == "supervise":
