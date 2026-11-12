@@ -8295,6 +8295,23 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     assert "co-author line only, with no session link, since the commit reaches a" in preamble
 
 
+def test_the_cloud_preamble_asks_for_a_demo_line_and_the_gate_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A visible change reports its demo, and an unpushed gate pass ends the report with its record."""
+    demo = "Demo: for a user-visible change, state in the report the command you ran and its output"
+    record = "end the report with the `local-ci --record` JSON (head, tree, exit, command, env) as its last lines"
+    for held in (False, True):
+        if held:
+            monkeypatch.setenv("LOOP_DENY_LIST", str(tmp_path / "deny.txt"))
+        else:
+            monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+        brief = omnigent_agent.pr_preamble()
+        assert demo in brief and "`Demo: none`" in brief
+        assert record in brief and "`loop-gate/` ref" in brief
+        assert ("which you don't post" in brief) is held
+
+
 def test_a_cloud_worker_s_delivered_brief_freezes_its_branch_after_hand_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
