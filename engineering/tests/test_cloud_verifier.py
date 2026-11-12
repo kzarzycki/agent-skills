@@ -161,9 +161,6 @@ def checkout(tmp_path, monkeypatch):
         for key, name in (("report", "pr7-v1.md"), ("question", "pr7-v1.md.question")):
             if key in seen:
                 (work / "tmp/loop" / name).write_text(seen[key])
-        if "edit" in seen:
-            (work / "a.txt").write_text(seen["edit"])
-            (work / "stray.txt").write_text("untracked\n")
         if "do" in seen:
             seen["do"]()
         return seen.get("exit", 0)
@@ -240,19 +237,45 @@ def test_a_question_is_posted_instead_of_a_report_and_an_earlier_pass_is_not_reu
     assert posted == ["## Verifier question\n\nPlease run the gate at this head.\n"]
 
 
-def test_what_the_verifier_left_in_the_tree_is_dropped_and_the_checkout_returns(
-    checkout, capsys
+def edit_gitignore(work: Path) -> None:
+    (work / ".git/info/exclude").write_text("")  # what hid private.txt is gone
+
+
+LEFTOVERS = {
+    "a tracked edit and a new file": lambda work: (
+        (work / "a.txt").write_text("the verifier's\n"),
+        (work / "stray.txt").write_text("new\n"),
+    ),
+    "a file named like a git pattern": lambda work: (work / ":(glob)**").write_text("new\n"),
+    "an ignored file, staged": lambda work: git(work, "add", "-f", "private.txt"),
+    "an ignore rule removed": edit_gitignore,
+    "a repository inside the checkout": lambda work: git(work, "init", "-q", "scratch"),
+}
+
+
+@pytest.mark.parametrize("leftover", LEFTOVERS)
+def test_a_tree_the_verifier_changed_is_reported_and_nothing_in_it_is_deleted(
+    checkout, capsys, leftover
 ) -> None:
-    work, _, brief, posted, seen = checkout
-    seen.update(edit="the verifier's leftover\n", report="# Report\nSATISFIED: no\n")
-    assert cv.verify(7, brief, None, None) == 0
-    assert posted == [seen["report"]]  # the report's folder is kept, so the report still counts
-    err = capsys.readouterr().err
-    assert "a.txt" in err and "stray.txt" in err
-    assert not (work / "stray.txt").exists()
-    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
-    assert git(work, "status", "--porcelain", "--untracked-files=no") == ""
-    assert (work / "a.txt").read_text() == "one\n"
+    work, head, brief, posted, seen = checkout
+    older = {
+        "private.txt": "ignored, the worker's own\n",
+        "scratch/keep.txt": "ignored, in a folder\n",
+        "tmp/loop/proof.log": "from before the pass\n",
+    }
+    (work / ".git/info/exclude").write_text("private.txt\nscratch/keep.txt\n")
+    for name, text in older.items():
+        (work / name).parent.mkdir(parents=True, exist_ok=True)
+        (work / name).write_text(text)
+    seen.update(report="# Report\nSATISFIED: no\n", do=lambda: LEFTOVERS[leftover](work))
+    assert cv.verify(7, brief, None, None) == 4
+    assert posted == [seen["report"]]  # the report still counts
+    assert "stays detached" in capsys.readouterr().err
+    assert {name: (work / name).read_text() for name in older} == older
+    assert git(work, "rev-parse", "HEAD") == head  # where the verifier left it, for someone to look
+    assert git(work, "rev-parse", "claude/worker") != head
+    with pytest.raises(cv.Refused, match="uncommitted"):  # and the next pass says so
+        cv.verify(7, brief, None, None)
 
 
 def test_an_untracked_file_outside_the_report_folder_is_refused(checkout) -> None:
@@ -261,48 +284,6 @@ def test_an_untracked_file_outside_the_report_folder_is_refused(checkout) -> Non
     with pytest.raises(cv.Refused, match="conftest.py"):
         cv.verify(7, brief, None, None)
     assert "cmd" not in seen and posted == []
-
-
-def test_a_leftover_named_like_a_git_pattern_takes_nothing_else_with_it(checkout) -> None:
-    work, _, brief, posted, seen = checkout
-    (work / "tmp/loop").mkdir(parents=True)
-    (work / "tmp/loop/proof.log").write_text("from before the pass\n")
-    seen.update(report="# Report\nSATISFIED: yes\n")
-    seen["do"] = lambda: (work / ":(glob)**").write_text("a valid file name\n")
-    assert cv.verify(7, brief, None, None) == 0
-    assert posted == [seen["report"]]
-    assert (work / "tmp/loop/proof.log").exists() and not (work / ":(glob)**").exists()
-    assert (work / "a.txt").read_text() == "one\n"
-
-
-def test_an_ignored_file_the_verifier_staged_is_unstaged_not_deleted(checkout) -> None:
-    work, _, brief, posted, seen = checkout
-    (work / ".git/info/exclude").write_text("private.txt\n")
-    (work / "private.txt").write_text("the worker's own\n")
-    seen["do"] = lambda: git(work, "add", "-f", "private.txt")
-    assert cv.verify(7, brief, None, None) == 0
-    assert posted == ["final\nSATISFIED: yes\n"]
-    assert (work / "private.txt").read_text() == "the worker's own\n"
-    assert git(work, "status", "--porcelain") == ""
-    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
-
-
-def test_a_repository_the_verifier_made_inside_the_checkout_is_left_and_named(
-    checkout, capsys
-) -> None:
-    work, _, brief, posted, seen = checkout
-    (work / ".git/info/exclude").write_text("scratch/keep.txt\n")
-    (work / "scratch").mkdir()
-    (work / "scratch/keep.txt").write_text("from before the pass\n")
-    seen["do"] = lambda: git(work, "init", "-q", "scratch")
-    assert cv.verify(7, brief, None, None) == 0
-    assert posted == ["final\nSATISFIED: yes\n"]
-    assert (work / "scratch/keep.txt").read_text() == "from before the pass\n"
-    assert "scratch/" in capsys.readouterr().err
-    with pytest.raises(
-        cv.Refused, match="scratch/"
-    ):  # the next pass says so instead of reviewing over it
-        cv.verify(7, brief, None, None)
 
 
 def test_a_commit_by_the_verifier_never_moves_the_workers_branch(checkout) -> None:

@@ -32,10 +32,11 @@ naming the model and effort it was given, and posts the report as one comment on
 the PR through REST, byte for byte, printing the comment's URL as its last line. The report is the file the brief's
 `- Report: <path>` line names (approvals.py brief), else Codex's final message; one without a `SATISFIED:` line is
 not posted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
-instead, headed `## Verifier question`. It returns the checkout to where it was, first dropping what the verifier
-left outside that folder, named on stderr: staged changes are unstaged, tracked files restored and new files removed,
-while ignored files and a repository made inside the checkout stay, since those may hold files from before the pass. Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a
-question posted.
+instead, headed `## Verifier question`. It returns the checkout to where it was. When the verifier left
+a change outside that folder, the script deletes and restores nothing, since git can't say which leftover hides an
+older file: the checkout stays detached at the PR's head, the changes are named on stderr, and the exit is 4.
+Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a question posted, 4 a report or question
+posted and the checkout needs a look.
 The carrier session runs it detached and polls, since a foreground command in the VM stops at 10 minutes.
 
 Standard library only, plus `gh`, `git` and `npm` in the VM and `codex` and the Claude Code login on the host.
@@ -288,36 +289,6 @@ def uncommitted(report: Path | None) -> str:
     return "\n".join(f"{status} {path}" for status, path in changes(report))
 
 
-def drop_leftovers(report: Path | None) -> None:
-    """Put the tree back as it was before the pass, when it was clean: whatever is there now is the verifier's.
-    Unstage rather than reset hard, since a hard reset deletes an ignored file the verifier staged; restore the
-    tracked files; and remove each new file by its own name, since `git clean` reads a name such as `:(glob)**`
-    as a pattern and takes the reports with it."""
-    if not changes(report):
-        return
-    run("git", "reset", "-q")
-    left = changes(report)
-    print(
-        "cloud_verifier: dropping what the verifier left in the tree:\n"
-        + "\n".join(f"{status} {path}" for status, path in left),
-        file=sys.stderr,
-    )
-    run("git", "checkout", "-q", "--", ":/")
-    for status, path in left:
-        target = Path(path)
-        if status != "??":
-            continue
-        if target.is_dir() and not target.is_symlink():
-            # git names a nested repository as one folder and can't say which of its files were there before the
-            # pass, so it stays; the next pass refuses the tree until someone has looked
-            print(
-                f"cloud_verifier: left in place, a repository inside the checkout: {path}",
-                file=sys.stderr,
-            )
-        else:
-            target.unlink(missing_ok=True)
-
-
 def codex_exec(cmd: list[str], brief: str) -> int:
     return subprocess.run(cmd, input=brief, text=True, check=False).returncode
 
@@ -353,12 +324,22 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         code = codex_exec([*cmd, "-"], brief)
         print(f"codex exited {code} after {time.time() - started:.0f} s", flush=True)
     finally:
-        drop_leftovers(report)
-        run("git", "checkout", "-q", was)
+        # The script never deletes or restores a file: the tree was clean before the pass, but git can't say
+        # which leftover hides something older (an ignored file, a folder with its own repository), so a tree the
+        # verifier changed stays as it is, detached at the PR's head, for someone to look at.
+        left = uncommitted(report)
+        back = None if left else run("git", "checkout", "-q", was, check=False)
+        stuck = left or (back.returncode and (back.stderr.strip() or f"git checkout {was} failed"))
+        if stuck:
+            print(
+                "cloud_verifier: the verifier left the checkout changed, so it stays detached at the PR's head; "
+                f"look, put it back and check out {was} before the next pass:\n{stuck}",
+                file=sys.stderr,
+            )
     if not code and question and question.exists() and question.read_text().strip():
         # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
         print(post(pr, f"## Verifier question\n\n{question.read_text()}"))
-        return 3
+        return 4 if stuck else 3
     body = next(
         (p.read_text() for p in (report, final) if p and p.exists() and p.read_text().strip()), ""
     )
@@ -368,7 +349,7 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         )
         return 1
     print(post(pr, body))
-    return 0
+    return 4 if stuck else 0
 
 
 def post(pr: int, body: str) -> str:
