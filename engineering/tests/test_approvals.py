@@ -3476,6 +3476,9 @@ def test_squash_body_names_each_co_author_once_by_email_the_first_seen_keeping_i
         "* Three\n\nCo-authored-by: Pat <pat@example.com>\n\n---------\n\n"
         f"Co-authored-by: {OPUS[16:]}\nCo-authored-by: Pat <pat@example.com>"
     )
+    # with no co-author, no separator either, as this repo's ae30f7e shows
+    alone = [rest_commit(each, "owner", "Owner", "o@x") for each in ("One", "Two")]
+    assert approvals.squash_body(alone, "owner") == "* One\n\n* Two"
     bump = rest_commit(
         "chore: adopt v1", "actions[bot]", "actions[bot]", "1+actions[bot]@example.com"
     )
