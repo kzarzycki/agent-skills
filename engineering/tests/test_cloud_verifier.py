@@ -134,12 +134,15 @@ def checkout(tmp_path, monkeypatch):
     for key, value in (("user.email", "t@example.com"), ("user.name", "t")):
         git(origin, "config", key, value)
     (origin / "a.txt").write_text("one\n")
+    (origin / "old.txt").write_text("only on the worker's branch\n")
     git(origin, "add", "."), git(origin, "commit", "-qm", "one")
     git(tmp_path, "clone", "-q", str(origin), str(work))
     git(work, "checkout", "-qb", "claude/worker")
     git(origin, "checkout", "-qb", "feat/pr")
     (origin / "a.txt").write_text("two\n")
-    git(origin, "commit", "-qam", "two")
+    (origin / "new.txt").write_text("only on the PR's head\n")
+    git(origin, "rm", "-q", "old.txt"), git(origin, "add", ".")
+    git(origin, "commit", "-qm", "two")
     head = git(origin, "rev-parse", "HEAD")
     posted: list[str] = []
     seen: dict = {}
@@ -306,3 +309,32 @@ def test_a_commit_by_the_verifier_never_moves_the_workers_branch(checkout) -> No
     assert posted == ["final\nSATISFIED: yes\n"]
     assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
     assert git(work, "rev-parse", "claude/worker") == head
+
+
+def test_an_ignored_file_where_the_pr_head_has_one_stops_the_pass_and_stays(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    (work / ".git/info/exclude").write_text("new.txt\n")
+    (work / "new.txt").write_text("the worker's own\n")
+    with pytest.raises(cv.Refused, match=r"new\.txt"):
+        cv.verify(7, brief, None, None)
+    assert (work / "new.txt").read_text() == "the worker's own\n"
+    assert "cmd" not in seen and posted == []
+    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
+
+
+def test_an_ignored_file_in_the_way_of_the_return_stays_and_is_reported(checkout, capsys) -> None:
+    work, head, brief, posted, seen = checkout
+    (work / ".git/info/exclude").write_text("old.txt\n")
+    seen["do"] = lambda: (work / "old.txt").write_text("the verifier's notes\n")
+    assert cv.verify(7, brief, None, None) == 4
+    assert posted == ["final\nSATISFIED: yes\n"]
+    assert (work / "old.txt").read_text() == "the verifier's notes\n"
+    assert "old.txt" in capsys.readouterr().err
+    assert git(work, "rev-parse", "HEAD") == head
+
+
+def test_a_failed_pass_that_left_changes_also_says_the_checkout_needs_a_look(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    seen.update(exit=1, do=lambda: (work / "a.txt").write_text("the verifier's\n"))
+    assert cv.verify(7, brief, None, None) == 4
+    assert posted == [] and (work / "a.txt").read_text() == "the verifier's\n"
