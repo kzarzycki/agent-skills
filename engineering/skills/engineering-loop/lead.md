@@ -40,7 +40,9 @@ design, wireframes included for a UI, and delegate the rest.
    proof). A spec gatekeeper.md's `spec.auto` list covers (`bug`, a `Found while #n`
    `follow-up`, a `sub-issue` of an approved epic opened by a writer), or `auto: true` covers
    (any spec a writer opened that the risk rule doesn't match, SKILL.md, Approvals and proof, judged on the issue's labels
-   and the paths the spec says it changes), is approved by that policy: it gets no label
+   and the paths the spec says it changes), or its `paths` term covers (a writer's spec whose change stays inside its
+   globs and that the risk rule doesn't match: add `spec:paths`, the claim the gate checks on every file the PR
+   touches), is approved by that policy: it gets no `approved:spec`
    and no record, since the gate reads the policy and an `approved:spec` an agent added
    would read as the owner's; move it to `Ready` on the board and carry on; the owner
    reads it when they like. Any other spec waits for the owner: add `needs-owner`, comment what to approve
