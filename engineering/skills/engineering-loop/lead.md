@@ -91,9 +91,7 @@ design, wireframes included for a UI, and delegate the rest.
    with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
-   both are yours (worker.md, Gates and push). Its model is the default, or, where the
-   issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
-   names (SKILL.md, Models).
+   both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
    With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
@@ -131,9 +129,7 @@ design, wireframes included for a UI, and delegate the rest.
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
    appended; it refuses a proof log whose first line isn't the head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
-   prompted for a read (denied in auto mode), which nobody answers. Its model is the default, or, where the PR matches loop.md's
-   `Verifier model:` line, the newest-generation model of that tier in the verifier's family
-   (SKILL.md, Models), and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
+   prompted for a read (denied in auto mode), which nobody answers. Its model: SKILL.md, Models, in the verifier's family, and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
    verdict that says `Risk: high`, even a satisfied one, calls for a default-tier pass on the head before landing,
    and `check merge` refuses the change until one is posted. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the

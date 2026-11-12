@@ -66,8 +66,7 @@ time to compare.
 verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
 (`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
 `claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
-Omnigent launches an unlisted id on the harness default with no error. Pass `--model` only when the owner asked for that model or the project's instructions
-name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
+Omnigent launches an unlisted id on the harness default with no error. Pass `--model` on every start: the owner's model, the project's, else one fit for the job (engineering-loop SKILL.md, Models). A
 tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
 its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
 lead's own instructions name its family's newest models, and `sys_list_models` lists none for Claude. A
