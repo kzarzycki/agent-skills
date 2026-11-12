@@ -4835,8 +4835,7 @@ def test_a_cloud_land_signs_the_squash_with_the_environments_key_not_the_vms(
     )
     assert verified.returncode == 0, verified.stderr
     assert 'Good "git" signature for loop@example.com with ED25519 key' in verified.stderr
-    # the landing lock's commits are signed with the landing key too, never through the VM's program
-    assert cloud_land["tips"]() and cloud_land["lock"]() == ""
+    assert cloud_land["tips"]() and cloud_land["lock"]() == ""  # the lock was taken and released
     ref = approvals.RECORD_REFS[0].format(
         approvals.record_name(cloud_land["main"]("^{tree}"), approvals.gate()[0])
     )
@@ -5032,6 +5031,32 @@ def test_a_cloud_land_takes_a_pr_rest_cannot_say_is_queued(
         "PR #7: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
         " signature: land it where GraphQL answers"
     )
+
+
+def test_a_key_is_listed_only_as_its_type_and_body_together_on_a_live_line(tmp_path: Path) -> None:
+    signers = tmp_path / "signers"
+    signers.write_text(
+        "# a@example.com ssh-ed25519 BODY\nb@example.com ssh-rsa BODY\nc@example.com ssh-ed25519 OTHER\n"
+    )
+    assert not approvals.listed("ssh-ed25519 BODY landing", signers)
+    signers.write_text(signers.read_text() + 'd@example.com namespaces="git" ssh-ed25519 BODY d\n')
+    assert approvals.listed("ssh-ed25519 BODY landing", signers)
+
+
+def test_a_cloud_eviction_leaves_the_pr_ready_and_says_so(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub turns a PR back to draft only over GraphQL: a cloud session says it stays ready; a host makes it one."""
+    pull = cloud_land["pulls"][7]
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert (
+        "PR #7 stays ready, since a cloud session can't make it a draft: make it one on GitHub"
+        in (capsys.readouterr().out.splitlines())
+    )
+    assert cloud_land["calls"] == []
+    monkeypatch.delenv(approvals.CLOUD)
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert cloud_land["calls"] == [("pr", "ready", "--undo", "7")]
 
 
 def test_required_checks_never_stand_in_for_the_gate(

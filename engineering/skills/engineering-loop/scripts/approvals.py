@@ -166,9 +166,9 @@ key, shared across that service's users, so there `land` refuses without the sec
 the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
 is unset, empty, no unencrypted SSH private key, or a key whose public half is no line of the allowed signers file, each
 refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
-removed however the land ends, and every git command of the land signs with it (`-c gpg.format=ssh -c
-user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key and signing program): the squashes, the
-landing lock's commits and a pushed gate record. The batch's pass is published as below: GitHub refusing the status
+removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
+user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key and signing program), so each squash is
+signed and verified with it. The batch's pass is published as below: GitHub refusing the status
 there, it goes to origin as a ref. There REST alone answers, so a PR it can't say is in a merge queue is still a
 candidate, since `required_checks` refuses a base whose rules require one; a draft is refused, and an evicted PR stays
 ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
@@ -1868,8 +1868,8 @@ def opted_out(loop: str | None) -> bool:
 
 # the variable Claude Code sets to `true` in a cloud session's VM, where the checkout's signing key is the session's own
 CLOUD = "CLAUDE_CODE_REMOTE"
-# the config every git command takes during a cloud land (placed): sign with the landing key, through ssh-keygen itself
-# rather than the VM's signing program, which signs with the session's key
+# the config every git command takes during a cloud land (placed): sign and verify a squash with the landing key, through
+# ssh-keygen itself rather than the VM's signing program, which signs with the session's key
 SIGNING: list[str] = []
 
 
@@ -1896,7 +1896,7 @@ def placed(loop: str | None) -> Any:
     In a cloud session (CLOUD) also refuse one without the `land` section, since GitHub's own merge is GraphQL there
     and signs with GitHub's key, and one whose `signing_key_env` variable is unset, empty or holds a key the allowed
     signers lack; else hold that key in a mode-0600 file in a fresh temporary directory, removed whatever happens, and
-    sign every commit the land makes with it (SIGNING). The key and the variable's value are never printed."""
+    sign each squash with it (SIGNING). The key and the variable's value are never printed."""
     global SIGNING
     land, cloud = settings(loop).get("land"), in_cloud()
     place = "a cloud session" if cloud else "a host"
@@ -4938,7 +4938,6 @@ def push_record(record: dict[str, Any]) -> str:
     commit = subprocess.run(
         [
             "git",
-            *SIGNING,
             "commit-tree",
             record["tree"],
             "-p",
