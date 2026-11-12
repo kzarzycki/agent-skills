@@ -8190,6 +8190,8 @@ def test_an_approval_of_the_spec_text_holds_until_the_text_changes(
     assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == [
         "#1 has no `Approved: spec` record by the owner for its current spec: the owner approves it again"
     ]
+    spec["body"] = "the spec"  # exactly the approved text again: the approval holds again
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == []
     spec["body"] = "the spec\r\n"  # line ends as a browser may send them: the text is the same
     spec["comments"]["nodes"][0]["body"] = record(
         "spec", "owner", spec=approvals.texted({"body": "the spec\n"})

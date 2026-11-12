@@ -261,7 +261,8 @@ is no approval:
     Spec: sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08      (plan: Plan:)
 
 A spec or plan is named by its text, the sha256 of the issue's or comment's body as GitHub stores it (line ends read
-as `\n`), so any change to the text voids the approval, read through GraphQL or REST alike. A record written before
+as `\n`), so any change to the text voids the approval, read through GraphQL or REST alike, and restoring
+exactly the approved text restores it, since the text is then the one approved. A record written before
 texts were named carries the last edit as GitHub's edit history shows it (`as edited <time>`, `as written <time>`
 before any): GraphQL still dates it, so it holds on a host until the next edit; REST has no edit time, so there it is
 refused with the command that renews it. Every approval is a new comment: a re-approval says the spec or plan
