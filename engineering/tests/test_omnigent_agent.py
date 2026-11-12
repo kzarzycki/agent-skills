@@ -6737,6 +6737,15 @@ def test_a_quiet_waiter_on_a_session_not_moving_or_outside_its_follow_set_raises
     assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({why})"]
 
 
+def test_a_quiet_waiter_on_its_leads_with_one_lead_unread_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: waiting on my leads. Report: m.md")
+    og.broken["x"] = omnigent_agent.Gone("GET /v1/sessions/x: HTTP 404")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (lead)"]
+
+
 def test_a_waiter_on_its_leads_without_a_leads_registry_or_with_one_unread_raises_its_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
