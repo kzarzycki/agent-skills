@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -294,3 +295,53 @@ def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_test_command(
     path = os.pathsep.join([str(Path(sys.prefix) / "bin"), "/usr/bin", "/bin"])
     seen = seen_env(repo, tmp_path, VIRTUAL_ENV=elsewhere, PATH=path)
     assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path}
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
+def test_under_uv_run_the_test_command_sees_the_callers_environment(
+    repo: Path, tmp_path: Path
+) -> None:
+    """uv replaces the caller's VIRTUAL_ENV and puts its own bin first; the test command gets the caller's back."""
+    venv = tmp_path / "caller-venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / "bin" / "python3").symlink_to(
+        sys.executable
+    )  # uv inspects an active environment's interpreter
+    path = os.pathsep.join([str(venv / "bin"), "/usr/bin", "/bin"])
+    seen = tmp_path / "seen.json"
+    script = tmp_path / "dump.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "keys = ('VIRTUAL_ENV', 'PATH', 'UV_RUN_RECURSION_DEPTH')\n"
+        "json.dump({k: os.environ.get(k) for k in keys}, open(sys.argv[1], 'w'))\n"
+    )
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    result = subprocess.run(
+        [
+            str(shutil.which("uv")),
+            "run",
+            "-q",
+            "--script",
+            str(MUTATE),
+            "--test",
+            f"{sys.executable} {script} {seen}; false",
+            "--log",
+            str(log_path(repo)),
+            str(killed),
+        ],
+        cwd=repo,
+        env={
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("VIRTUAL_ENV", "UV_RUN_RECURSION_DEPTH")
+        }
+        | {"VIRTUAL_ENV": str(venv), "PATH": path},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    got = json.loads(seen.read_text())
+    assert got["VIRTUAL_ENV"] == str(venv) and got["PATH"].startswith(path)
+    assert got["UV_RUN_RECURSION_DEPTH"] is None

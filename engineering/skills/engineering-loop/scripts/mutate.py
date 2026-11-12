@@ -107,20 +107,33 @@ def restore(top: Path, patch: Path) -> None:
 
 
 def leave_own_environment() -> None:
-    """Drop this script's own uv environment from the process environment, so every command it starts sees the
-    caller's: uv puts the script's environment in VIRTUAL_ENV and its bin first on PATH, and a tool that follows
-    VIRTUAL_ENV (a type checker) would check the project against the script's packages. A VIRTUAL_ENV the caller set
-    on purpose (another path) stays."""
+    """Hand every command this script starts the caller's environment, not the script's own. uv puts the script's
+    environment in VIRTUAL_ENV, its bin first on PATH and counts the run in UV_RUN_RECURSION_DEPTH, and a tool that
+    follows VIRTUAL_ENV (a type checker) would check the project against the script's packages. uv has also replaced
+    the caller's VIRTUAL_ENV, so it is read back from PATH: activating an environment puts its bin first, so a first
+    entry beside a pyvenv.cfg is the caller's environment. A VIRTUAL_ENV the caller set on purpose (another path
+    than this script's) is never touched."""
     own = os.path.normpath(sys.prefix)
     if os.path.normpath(os.environ.get("VIRTUAL_ENV", "\0")) != own:
         return
     del os.environ["VIRTUAL_ENV"]
     bin_dir = os.path.join(own, "bin")
-    os.environ["PATH"] = os.pathsep.join(
-        entry
-        for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if os.path.normpath(entry) != bin_dir
-    )
+    rest = [
+        e for e in os.environ.get("PATH", "").split(os.pathsep) if os.path.normpath(e) != bin_dir
+    ]
+    os.environ["PATH"] = os.pathsep.join(rest)
+    caller = os.path.dirname(os.path.normpath(rest[0])) if rest and rest[0] else ""
+    if (
+        caller
+        and os.path.basename(os.path.normpath(rest[0])) == "bin"
+        and os.path.isfile(os.path.join(caller, "pyvenv.cfg"))
+    ):
+        os.environ["VIRTUAL_ENV"] = caller
+    if (depth := os.environ.get("UV_RUN_RECURSION_DEPTH", "")).isdigit():
+        if int(depth) > 1:
+            os.environ["UV_RUN_RECURSION_DEPTH"] = str(int(depth) - 1)
+        else:
+            del os.environ["UV_RUN_RECURSION_DEPTH"]
 
 
 def main(argv: list[str]) -> int:
