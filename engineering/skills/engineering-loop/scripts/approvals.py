@@ -3577,15 +3577,24 @@ def squash_body(number: int, author: str | None) -> str:
         login = ((commit.get("author") or {}).get("login") or "").removesuffix("[bot]")
         who = commit["commit"].get("author") or {}
         line = f"{who.get('name')} <{who.get('email')}>"
-        if login and author and login != author.removesuffix("[bot]") and line.casefold() not in named:
+        if (
+            login
+            and author
+            and login != author.removesuffix("[bot]")
+            and line.casefold() not in named
+        ):
             named.add(line.casefold())
             authors.append(f"Co-authored-by: {line}")
     if len(messages) == 1:
-        body = "\n\n".join(part for part in (messages[0].partition("\n")[2].strip(), *authors) if part)
+        body = "\n\n".join(
+            part for part in (messages[0].partition("\n")[2].strip(), *authors) if part
+        )
     else:
         trailers = list(
             dict.fromkeys(
-                f"Co-authored-by: {match}" for message in messages for match in CO_AUTHOR.findall(message)
+                f"Co-authored-by: {match}"
+                for message in messages
+                for match in CO_AUTHOR.findall(message)
             )
         )
         body = "\n\n".join(f"* {message}" for message in messages)

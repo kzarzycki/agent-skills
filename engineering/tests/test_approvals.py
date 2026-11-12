@@ -3401,7 +3401,10 @@ def test_a_commit_author_other_than_the_prs_is_a_co_author_of_the_squash(
     def commit(login: str, name: str, message: str) -> dict[str, Any]:
         return {
             "author": {"login": login},
-            "commit": {"message": message, "author": {"name": name, "email": f"{login}@example.com"}},
+            "commit": {
+                "message": message,
+                "author": {"name": name, "email": f"{login}@example.com"},
+            },
         }
 
     def gh(*args: str, data: str | None = None) -> str:
