@@ -2155,7 +2155,8 @@ def test_the_owners_go_covers_its_head_only(
     high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
     assert approvals.owner_waits(high, [], LOOP) == []
     assert approvals.owner_waits({**high, "headRefOid": "c" * 40}, [], LOOP) == [
-        HELD.replace(HEAD, "c" * 40) + "`risk:high` is on PR #7"
+        HELD.replace(HEAD, "c" * 40) + "`risk:high` is on PR #7",
+        f"PR #7: the go on {HEAD} carries nothing to {'c' * 40}: no verifier review is on {'c' * 40}",
     ]
     monkeypatch.setattr(approvals, "writer", lambda login: False)
     hub[HEAD] = [status("owner", "The owner's go", by="contributor")]  # anyone can't give it
@@ -2424,6 +2425,60 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(gatekeeper_md())))
     assert approvals.main(["brief", "7"]) == 0
     assert capsys.readouterr().out.splitlines()[-1] == "- Read the loop file's brief."
+
+
+def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A verifier on another host makes its own detached worktree at the head there: the brief gives the fetch and the
+    worktree line, the role in that worktree, and the report, previous report and proof logs in its clone's tmp/loop/,
+    where start --file writes them. A relative --far is no path there."""
+    earlier = "c" * 40
+    pr = pull(
+        body="Closes #12.\n", reviews=(verdict_on(earlier, heading="Verifier (codex), pass 1"),)
+    )
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(approvals, "merge_base", lambda base, head: BASE)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    root = Path(approvals.__file__).resolve().parents[4]
+    monkeypatch.setattr(approvals, "toplevel", lambda: root)
+    proof = tmp_path / "gate.log"
+    proof.write_text(f"{HEAD}\nok\n")
+    assert approvals.main(["brief", "7", "--far", "/there/repo", "--proof", str(proof)]) == 0
+    tree = "/there/repo/tmp/loop/pr7-v2-tree"
+    assert capsys.readouterr().out.splitlines() == [
+        f"Review PR #7 as the verifier, pass 2, following {tree}/engineering/skills/engineering-loop/verifier.md.",
+        f"- Base: {BASE}",
+        f"- Reviewed head: {HEAD}",
+        "- Spec: #12",
+        (
+            f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
+            f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
+        ),
+        "- Report: /there/repo/tmp/loop/pr7-v2.md",
+        (
+            f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and"
+            " rerun its repros"
+        ),
+        "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
+    ]
+    # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tmp" / "loop").mkdir(parents=True)
+    (tmp_path / "tmp/loop/pr7-v1.md").write_text(
+        "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
+        " tmp/loop/pr7-v1.md and tmp/loop/pr7-v1-tree/x.py\n"
+    )
+    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert [line for line in out if line.startswith("- Repro")] == [
+        "- Repro: /there/repo/tmp/loop/pr7-v1-repro.py"
+    ]
+    # a verifier here works where the lead copied its repros: the brief lists none
+    assert approvals.main(["brief", "7"]) == 0
+    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("- Repro")]
+    assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
+    assert capsys.readouterr().out == "--far there/repo: an absolute path on the verifier's host\n"
 
 
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
@@ -8361,6 +8416,124 @@ def test_a_clean_merge_of_main_carries_the_verdict_but_never_the_local_ci_record
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {carries(merge_sha, head, case['base'], case['since'])}"
     ]
+
+
+# --- the go on a head carries over merges of the base a verifier pass says change no logic (#808) ---
+
+NO_LOGIC = "Logic change: none\n"
+
+
+def go_over(
+    case: dict[str, str],
+    hub: dict[str, list[dict[str, Any]]],
+    logic: str = NO_LOGIC,
+    satisfied: str = "yes",
+    on: str = "merge",
+) -> dict[str, Any]:
+    """A high-risk PR whose head is the case's `merge`, with the owner's go on the head it merged the base into and a
+    verifier pass on `on` ending in `logic`."""
+    review = verdict_on(case[on], satisfied=satisfied)
+    review["body"] += logic
+    pr = pull(reviews=(review,), checks=(), files=("app.py",), labels=("risk:high",))
+    pr.update(headRefOid=case["head"], baseRefOid=case["base"])
+    given_go(pr, hub)
+    pr["headRefOid"] = case["merge"]
+    return pr
+
+
+def held_at(case: dict[str, str], why: str) -> list[str]:
+    return [
+        HELD.replace(HEAD, case["merge"]) + "`risk:high` is on PR #7",
+        f"PR #7: the go on {case['head']} carries nothing to {case['merge']}: {why}",
+    ]
+
+
+def test_the_go_carries_over_a_merge_of_the_base_with_conflict_fixes_a_verdict_calls_no_logic_change(
+    carrying: Callable[..., dict[str, str]], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    case = carrying(
+        {"app.py": CONFLICTED}, resolve={"app.py": APP.replace("line 1\n", "line 1, both\n")}
+    )
+    pr = go_over(case, hub)
+    assert approvals.owner_waits(pr, [], LOOP) == []
+    assert approvals.whose(pr, LOOP) == [
+        (
+            f"PR #7: the go on {case['head']} is the owner's, carried to {case['merge']}: every commit since is a"
+            " merge of main, and the verifier's pass on it says `Logic change: none`"
+        )
+    ]
+    # a go withdrawn on the old head has nothing to carry
+    withdrawn = status("owner", "The owner withdrew their go", state="failure")
+    hub[case["head"]].insert(0, withdrawn)
+    held = [HELD.replace(HEAD, case["merge"]) + "`risk:high` is on PR #7"]
+    assert approvals.owner_waits(pr, [], LOOP) == held
+    hub[case["head"]].pop(0)
+    # a go withdrawn on the new head stays withdrawn, whatever the older one says
+    hub[case["merge"]] = [withdrawn]
+    assert approvals.owner_waits(pr, [], LOOP) == held
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        (
+            {"then": {"app.py": APP.replace("line 2\n", "line 2, after\n")}},
+            "it is no merge of two parents",
+        ),
+        ({"base": "main"}, "its second parent {base} is not on main"),
+    ],
+    ids=["a PR commit after the merge", "a merge of another branch"],
+)
+def test_the_go_carries_nothing_over_a_commit_other_than_a_merge_of_the_base(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    given: dict[str, Any],
+    why: str,
+) -> None:
+    case = carrying({"other.txt": "main moved\n"}, then=given.get("then"))
+    pr = go_over(case, hub)
+    if (
+        "base" in given
+    ):  # the branch merged in is not the base: the base's tip stayed where the PR started
+        pr["baseRefOid"] = case["since"]
+    assert approvals.owner_waits(pr, [], LOOP) == held_at(case, why.format(**case))
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        ({"on": "head"}, "no verifier review is on {merge}"),
+        (
+            {"satisfied": "no"},
+            "the verifier's pass 1 on {merge} is not satisfied, or has a blocker or major open",
+        ),
+        ({"logic": ""}, "the verifier's pass 1 on {merge} does not say `Logic change: none`"),
+        (
+            {"logic": "Logic change: the retry count\n"},
+            "the verifier's pass 1 on {merge} does not say `Logic change: none`",
+        ),
+    ],
+    ids=["no verdict on the new head", "an unsatisfied verdict", "no logic line", "a logic change"],
+)
+def test_the_go_carries_nothing_without_a_satisfied_verdict_on_the_new_head_saying_no_logic_change(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    given: dict[str, str],
+    why: str,
+) -> None:
+    case = carrying({"other.txt": "main moved\n"})
+    assert approvals.owner_waits(go_over(case, hub, **given), [], LOOP) == held_at(
+        case, why.format(**case)
+    )
+
+
+def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(
+        f"Verifier: claude, pass 2 (merge of main)\n\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+        f"SATISFIED: yes\nRisk: low — a merge\n{NO_LOGIC}"
+    )
+    assert approvals.parse_report(report)[3][-1] == NO_LOGIC.strip()
 
 
 def test_a_carried_verdicts_risk_line_still_holds_the_merge(

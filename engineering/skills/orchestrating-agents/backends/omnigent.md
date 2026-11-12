@@ -66,8 +66,7 @@ time to compare.
 verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
 (`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
 `claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
-Omnigent launches an unlisted id on the harness default with no error. Pass `--model` only when the owner asked for that model or the project's instructions
-name it: a lead never picks one on its own, so the user's configuration decides model and cost in one place. A
+Omnigent launches an unlisted id on the harness default with no error. Pass `--model` on every start: the owner's model, the project's, else one fit for the job (engineering-loop SKILL.md, Models). A
 tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
 its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
 lead's own instructions name its family's newest models, and `sys_list_models` lists none for Claude. A
@@ -339,6 +338,20 @@ in the first message, because its file would be on this host, so a Claude lead m
 pasted text and ask for a go-ahead; and the report is written there, so `wait` takes its path
 as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the report is instead the path here
 that `wait --pr <n>` writes the PR comment to.
+
+**Verifiers on another host.** A verifier (a `--role` whose file is `verifier.md`) starts on another host
+the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
+<report>`, where `<clone>` is an absolute path there holding a clone of the repo and the report
+is under its `tmp/loop/`. Its `--pr` names the PR it reviews, not a report channel: it writes its
+report file as any child does. With a `Verifier hosts: <name>, <name>` line in the project's
+`docs/agents/loop.md`, `start` refuses a host the line does not list, naming the list; without
+it any host goes. Other sessions holding that clone don't stop it, since it works in a detached
+worktree of its own under the clone's `tmp/loop/` and never switches the clone's branch; every
+other start keeps the in-use refusal. Each `--file <local>` (a proof log, the previous report) is written beside the
+report there through the file API before the brief lands. `wait --verdict` reads the report
+there and copies it to `tmp/loop/<name>` here, printing that path for `approvals.py verdict`;
+the check that a child left no tracked change is skipped, with a line saying so, since the file
+API runs no git and the verifier's worktree is its own.
 
 **Relaying to a lead.** `python3 scripts/omnigent_agent.py relay <session> <message-file>`
 posts a message that owes no report, such as the owner's words for a top-level lead, and
