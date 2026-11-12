@@ -111,6 +111,27 @@ def hub(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
     return found
 
 
+RECORD_REF = approvals.record_ref
+PUSH_RECORD = approvals.push_record
+DROP_RECORDS = approvals.drop_records
+
+
+@pytest.fixture(autouse=True)
+def refs(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """origin as publish() would push a pass to it as a ref: holding none and refusing each push, which the list
+    records; the ref tests put the real functions back on real repos."""
+    pushes: list[dict[str, Any]] = []
+
+    def refused(record: dict[str, Any]) -> str:
+        pushes.append(record)
+        raise subprocess.CalledProcessError(1, "git push", stderr="no origin to push to")
+
+    monkeypatch.setattr(approvals, "record_ref", lambda _held, _command, _env: None)
+    monkeypatch.setattr(approvals, "push_record", refused)
+    monkeypatch.setattr(approvals, "drop_records", lambda _heads, _command: None)
+    return pushes
+
+
 def status(
     context: str, description: str, by: str = "loop", state: str = "success"
 ) -> dict[str, Any]:
@@ -8128,6 +8149,252 @@ def test_a_spec_or_plan_is_never_the_delegates_to_approve(
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
     assert "approve spec is the owner's" in capsys.readouterr().out
     assert github == []
+
+
+# --- a pass pushed as a ref where the status write is refused (#798) ---
+
+PROXY = "gh: Write access to this GitHub API path is not permitted through this proxy. (HTTP 403)"
+
+
+def no_status(*_args: Any) -> Any:
+    raise subprocess.CalledProcessError(1, "gh", stderr=PROXY)
+
+
+def real_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, real in (
+        ("record_ref", RECORD_REF),
+        ("push_record", PUSH_RECORD),
+        ("drop_records", DROP_RECORDS),
+    ):
+        monkeypatch.setattr(approvals, name, real)
+
+
+def pushed_from_a_cloud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[str, str]:
+    """A cloud session (clone `a`, whose status write GitHub refuses) records a pass of `true` on a pushed head; the
+    test then runs in host `b`, a clone with no record of it, where the status write works. Returns the head and the
+    line local-ci printed."""
+    head = published_on_a_with(tmp_path, monkeypatch, no_status)
+    return head, capsys.readouterr().out
+
+
+def published_on_a_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, post: Any) -> str:
+    real_refs(monkeypatch)
+    hosted = approvals.post_status
+    monkeypatch.setattr(approvals, "post_status", post)
+    head = published_on_a(tmp_path, monkeypatch)
+    monkeypatch.setattr(approvals, "post_status", hosted)
+    git_in(tmp_path / "b", "fetch", "-q", "origin")
+    return head
+
+
+def name_of(head: str, command: str = "true") -> str:
+    return f"{approvals.tree_of(head)}-{approvals.gate_key(command)}"
+
+
+def test_a_refused_status_publishes_the_pass_as_a_ref_and_another_clone_reuses_it(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The cloud session says where the pass went; host B reuses it for `local-ci <pr>` without running the gate,
+    names the ref, and writes the `gate` status the record holds on the head."""
+    head, out = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    ref = f"refs/loop/gate/{name_of(head)}"
+    assert f"published in origin as the ref {ref}, since GitHub refused the status: {PROXY}" in out
+    assert hub.get(head) is None  # the cloud session wrote no status
+    message = git_in(tmp_path / "origin.git", "log", "-1", "--format=%B", ref)
+    line = f"Tree {approvals.tree_of(head)} on {head[:12]}: true"
+    assert message.splitlines()[0] == line
+
+    def never(*_args: Any) -> Any:
+        raise AssertionError("host B ran the gate")
+
+    monkeypatch.setattr(approvals, "run_local_ci", never)
+    assert approvals.main(["local-ci", "7"]) == 0
+    [(_, _, body)] = github
+    assert f"Reused by tree from the pass recorded on {head} at 2026-" in body
+    assert f"and pushed as {ref}, not run again." in body
+    assert [(s["context"], s["state"], s["description"]) for s in hub[head]] == [
+        ("gate", "success", line)
+    ]
+
+
+def test_check_merge_and_land_reuse_a_pushed_ref_for_a_high_risk_pr(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A ref counts at every risk level: a `risk:high` PR whose only record is the ref has no gate line in check
+    merge, and land's batch gate on that tree is reused, naming the ref."""
+    monkeypatch.chdir(PROJECT)
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    monkeypatch.chdir(tmp_path / "b")
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    high = {
+        **pull(reviews=(verdict_on(head),), labels=(*OWNED, "risk:high"), checks=()),
+        "headRefOid": head,
+    }
+    monkeypatch.setattr(approvals, "record_ref", lambda _held, _command, _env: None)
+    assert NO_LOCAL_CHECK in merge(high, [approved(1, "area:web")], no_ci)  # without the ref
+    real_refs(monkeypatch)
+    lines = merge(high, [approved(1, "area:web")], no_ci)
+    assert lines and not [line for line in lines if "local check" in line]
+    hub.clear()
+    git_in(tmp_path / "b", "checkout", "-q", head)
+    monkeypatch.setattr(approvals, "ran_gate", lambda *_a, **_k: pytest.fail("land ran the gate"))
+    assert approvals.gate_batch(tmp_path / "b", [high]) == (approvals.tree_of(head), "reused")
+    assert f"passed on it before, reused from refs/loop/gate/{name_of(head)}" in (
+        capsys.readouterr().out
+    )
+
+
+def forged(tmp_path: Path, head: str, name: str, *, tree: str, line: str, env: str) -> None:
+    """Push to origin, under `name`, a record whose content is what the test says, as anyone who can push may."""
+    a = tmp_path / "a"
+    commit = git_in(a, "commit-tree", tree, "-p", head, "-m", f"{line}\n\nEnv: {env}\n").strip()
+    git_in(a, "push", "-q", "-f", "origin", f"{commit}:refs/loop/gate/{name}")
+
+
+@pytest.mark.parametrize(
+    "wrong", ["none", "another tree", "another command", "another env", "another commit"]
+)
+def test_a_ref_whose_content_is_not_the_pass_asked_for_is_not_reused(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wrong: str,
+) -> None:
+    """The ref's name says which tree and command it holds, and its commit must say the same: its tree, the command
+    in its line, the env and the commit the line names. One field off and the gate runs; `none` is the forged record
+    with nothing off, reused, so each other case fails only on its own field."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    held, base = approvals.tree_of(head), git_in(tmp_path / "a", "rev-parse", "HEAD~1").strip()
+    other = git_in(tmp_path / "a", "rev-parse", "HEAD~1^{tree}").strip()
+    fields = {
+        "tree": other if wrong == "another tree" else held,
+        "line": f"Tree {held} on {(base if wrong == 'another commit' else head)[:12]}: "
+        + ("true --tier" if wrong == "another command" else "true"),
+        "env": '{"TIER": "light"}' if wrong == "another env" else "{}",
+    }
+    forged(tmp_path, head, name_of(head), **fields)
+    git_in(tmp_path / "b", "fetch", "-q", "origin")
+    assert (approvals.reusable(head) is None) == (wrong != "none")
+
+
+def test_a_ref_for_another_tree_or_command_is_not_reused(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The ref is found by the tree asked about and today's gate command: another head's tree, or a changed gate,
+    looks for another name and runs the gate."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    b = tmp_path / "b"
+    assert approvals.reusable(head) is not None
+    hub.clear()
+    base = git_in(b, "rev-parse", "origin/main").strip()
+    assert approvals.reusable(base) is None
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true", "--another-tier"])
+    hub.clear()
+    assert approvals.reusable(head) is None
+
+
+def test_a_record_on_the_prs_fork_does_not_count(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only origin, the base repo, is read: a fork's owner may push any ref to the fork."""
+    real_refs(monkeypatch)
+    fork = tmp_path / "fork.git"
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    git_in(tmp_path, "init", "-q", "--bare", str(fork))
+    a, b = tmp_path / "a", tmp_path / "b"
+    committed(a)
+    git_in(a, "remote", "add", "origin", str(fork))  # the fork's clone
+    head = git_in(a, "rev-parse", "HEAD").strip()
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(a, "push", "-q", str(origin), "HEAD:refs/heads/main")
+    git_in(tmp_path, "clone", "-q", str(origin), str(b))
+    git_in(b, "remote", "add", "fork", str(fork))  # the host fetches the PR's fork too
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "post_status", no_status)
+    monkeypatch.chdir(a)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert "published in origin as the ref refs/loop/gate/" in capsys.readouterr().out
+    assert git_in(fork, "for-each-ref", "refs/loop/gate/")
+    monkeypatch.chdir(b)
+    assert approvals.reusable(head) is None
+    ref = f"refs/loop/gate/{name_of(head)}"
+    record = git_in(fork, "rev-parse", ref).strip()
+    git_in(a, "push", "-q", str(origin), f"{record}:{ref}")  # the same record, in the base
+    assert approvals.reusable(head)["ref"] == ref
+
+
+def test_where_the_status_write_works_no_ref_is_pushed(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    assert f"published on {head} as the commit status `gate`" in capsys.readouterr().out
+    assert (
+        git_in(tmp_path / "origin.git", "for-each-ref", "refs/loop/", "refs/heads/loop-gate/") == ""
+    )
+
+
+def test_a_session_refused_refs_outside_branches_pushes_a_branch_that_land_deletes(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Where origin refuses refs/loop/, the record goes as a branch, which another clone reuses, and land deletes once
+    the PR has landed."""
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text(
+        "#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/*) ;; *) echo refused $ref; exit 1;; esac;"
+        " done\n"
+    )
+    hook.chmod(0o755)
+    head, out = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    branch = f"refs/heads/loop-gate/{name_of(head)}"
+    assert f"published in origin as the ref {branch}" in out
+    assert approvals.reusable(head)["ref"] == branch
+    approvals.drop_records([head], "true")
+    assert git_in(origin, "for-each-ref", "refs/heads/loop-gate/") == ""
+
+
+def test_land_deletes_the_record_branches_of_the_prs_it_merged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dropped: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(
+        approvals, "drop_records", lambda heads, command: dropped.append((heads, command))
+    )
+    monkeypatch.setattr(approvals, "gh", lambda *_a, **_k: "")
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "git", lambda *args: TREE if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(approvals, "publish", lambda *_a, **_k: None)
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    landed = [(pull(), TREE, TREE, "run")]
+    approvals.merges(landed, "main", BASE, tmp_path, LOOP, set())
+    assert dropped == [([HEAD], "mise run check:all")]
 
 
 # --- risk.merge_paths: paths whose merge only the owner's go on the head allows (#791) ---
