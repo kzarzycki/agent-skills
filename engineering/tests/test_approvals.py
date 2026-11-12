@@ -8564,6 +8564,39 @@ def test_an_open_head_whose_tree_is_unknown_keeps_every_record_but_the_landed_on
     assert gone not in loop_gate_branches(origin)
 
 
+def test_a_landing_on_the_gated_tree_leaves_no_record_of_it_and_shows_the_pass_on_the_tip(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F3: merges() publishes the pass on the new tip, which pushes the landed tree's record again when it is the
+    head's tree; the record clean-up runs after it, so origin ends with no record of the landed tree, and the tip
+    still shows the `gate` status."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    b, origin = tmp_path / "b", tmp_path / "origin.git"
+    tree = approvals.tree_of(head)
+    assert branch_of(head) in loop_gate_branches(origin)
+    listing = open_prs()
+
+    def gh(*args: str) -> str:
+        if args[:2] == ("pr", "merge"):
+            git_in(b, "push", "-q", "origin", f"{head}:refs/heads/main")
+            return ""
+        return listing(*args)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    hub.clear()
+    approvals.merges(
+        [({**pull(), "headRefOid": head}, tree, tree, "reused")], "main", head, b, LOOP, set()
+    )
+    assert loop_gate_branches(origin) == set()
+    assert f"published in origin as the record branch {branch_of(head)}" in capsys.readouterr().out
+    assert [found["context"] for found in hub[head]] == [approvals.PUBLISHED]
+
+
 def test_land_deletes_the_record_branches_of_the_prs_it_merged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

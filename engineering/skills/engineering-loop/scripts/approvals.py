@@ -4030,7 +4030,6 @@ def merges(
         done.append((pull, tree, gated, how))
     if not done:
         return
-    drop_records([pull["headRefOid"] for pull, *_ in done])
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
     actual, (_, tree, gated, _) = git("rev-parse", f"{tip}^{{tree}}").strip(), done[-1]
@@ -4050,6 +4049,8 @@ def merges(
                 publish(tip, {"head": tip, "tree": actual, "command": command})
         except MachineFault as exc:  # the PRs landed: each still gets its comment
             print(exc)
+    # after every publication above, which pushes the landed tree's record again when it is the heads' tree
+    drop_records([pull["headRefOid"] for pull, *_ in done])
     numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
     for pull, tree, gated, how in done:
         comment(
