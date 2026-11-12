@@ -552,6 +552,10 @@ or the owner's private network.
   cloud.
 - **Nothing on GitHub names a host, a path or a session**: not the report, the verdict, the
   evidence or a brief's text quoted there, since a public repo publishes them.
+  The commits too: the cloud harness tells each session to end every commit with a
+  `Claude-Session:` link, and a brief can't override it, so the project commits a
+  `.claude/settings.json` whose `attribution.commit` is only the co-author line (and
+  `attribution.pr` empty), which replaces that instruction in every session cloned from it.
 - **Auto-fix stays off on loop PRs** (a cloud session that subscribes to its own PR), since it
   pushes fixes and replies on threads by its own judgment, which is the lead's triage, and the
   lead already briefs the worker on each fix.

@@ -1,6 +1,5 @@
 .work/
 .worktrees/
-.claude/settings.json
 .claude/settings.local.json
 .claude/hooks/
 .pi/
