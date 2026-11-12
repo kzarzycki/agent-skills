@@ -8776,3 +8776,54 @@ def test_reap_force_is_a_flag_of_the_command(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     assert omnigent_agent.main(["reap", "k", "--force"]) == 0
     assert og.archived == ["k"]
+
+
+@pytest.mark.parametrize("ages", [(10**5, 60), (60, 10**5)])
+def test_a_session_with_an_old_and_a_recent_item_is_running_and_kept_by_reap_force(
+    ages: tuple[float, float],
+) -> None:
+    og = running_session(60)
+    og.sessions["k"] = [
+        {"id": f"i{n}", "type": "message", "role": "user", "created_at": time.time() - age}
+        for n, age in enumerate(ages)
+    ]
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.interrupted == [] and og.archived == []
+    assert lines[0].startswith("k kid: kept (running)")
+
+
+def test_check_tells_a_stuck_child_owing_a_report_once_naming_reap_force(
+    tmp_path: Path,
+) -> None:
+    og = running_session(3600)
+    og.active = lambda sid: 0.0  # type: ignore[attr-defined]
+    og.send = lambda sid, text: None  # type: ignore[method-assign]
+    said: list[str] = []
+    resumed: dict[str, float] = {}
+
+    def look() -> str:
+        return omnigent_agent.check(
+            og, "k", tmp_path / "absent", 10**6, resumed, set(), said.append
+        )[0]
+
+    assert look() == "" and look() == ""
+    assert len(said) == 1
+    assert "stuck (no activity for 60 min)" in said[0] and "reap --force k" in said[0]
+    og.sessions["k"] = [{"id": "i2", "type": "message", "role": "user", "created_at": time.time()}]
+    assert look() == "" and len(said) == 1 and "stuck:k" not in resumed
+    og.sessions["k"] = [
+        {"id": "i3", "type": "message", "role": "user", "created_at": time.time() - 7200}
+    ]
+    look()
+    assert len(said) == 2  # a new stretch is news again
+
+
+def test_check_does_not_call_a_child_stuck_while_its_own_workers_are_active(
+    tmp_path: Path,
+) -> None:
+    og = running_session(3600)
+    og.active = lambda sid: time.time() - 5  # type: ignore[attr-defined]
+    said: list[str] = []
+    omnigent_agent.check(og, "k", tmp_path / "absent", 10**6, {}, set(), said.append)
+    assert said == []

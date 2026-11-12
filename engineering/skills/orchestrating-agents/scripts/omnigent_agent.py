@@ -128,7 +128,7 @@ question, nor one given ``--keep``, which a fix round then reaches with ``send``
 the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
 session. A session running with no new history item for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
-command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)``, and
+command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
 ``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
 leave its patch applied); a running session with recent activity stays kept.
 
@@ -3168,7 +3168,8 @@ def check(
     once when an input already waits undelivered (a resume line would queue behind it). Each of
     those is told to ``say`` at once. ``resumed`` holds when this process sent each resume line,
     since one held in ``pending_inputs`` is not in the history yet; ``unsent`` the revived sessions
-    whose revive line did not go out, sent again at their next look; ``ended`` when each session
+    whose revive line did not go out, sent again at their next look; a stuck session (``stuck_minutes``)
+    is told to ``say`` once, naming ``reap --force``, and its mark in ``resumed`` ends with its stretch; ``ended`` when each session
     was first seen out of its turn (``settled``), across looks.
     """
     # ponytail: compares the server's item clock with local time and file times, as send does; a
@@ -3217,6 +3218,13 @@ def check(
         og.send(sid, revive_line(report, briefs_for(report, briefs or [], far)))
         unsent.discard(sid)
         return "", since
+    stuck = f"stuck:{sid}"  # told once per stuck stretch; a new history item ends it
+    if (minutes := stuck_minutes(info, items)) is None:
+        resumed.pop(stuck, None)
+    elif stuck not in resumed and time.time() - og.active(sid) > STUCK_SECONDS:
+        # a session waiting on its own worker writes nothing meanwhile, so its subtree counts too
+        say(f"{head}: stuck (no activity for {minutes} min); `reap --force {sid}` closes it")
+        resumed[stuck] = time.time()
     resent = max(resent, resumed.get(sid, 0.0))
     last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
     quiet = time.time() - max(last, resent)
