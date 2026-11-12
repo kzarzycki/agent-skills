@@ -411,7 +411,7 @@ def test_check_build_before_the_pr_judges_the_issue(
 
     def git(*args: str) -> str:
         if args[0] == "diff":
-            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            assert args == ("diff", "--name-only", "--no-renames", "-z", "origin/main...HEAD")
             if changed[0] is None:
                 raise subprocess.CalledProcessError(128, ["git", *args])
             return "".join(f"{path}\0" for path in changed[0].split())
@@ -5728,7 +5728,7 @@ def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
 
     def git(*args: str) -> str:
         if args[0] == "diff":
-            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            assert args == ("diff", "--name-only", "--no-renames", "-z", "origin/main...HEAD")
             if changed[0] is None:
                 raise subprocess.CalledProcessError(128, ["git", *args])
             return "".join(f"{path}\0" for path in changed[0].split())
@@ -7988,3 +7988,87 @@ def test_land_never_merges_a_merge_path_pr_without_the_owners_go_on_its_head(
     code, lines = lands["land"]("7")
     assert code == 0, lines
     assert lands["merged"]() == ["7"]
+
+
+@pytest.mark.parametrize(
+    ("change", "old", "new"),
+    [
+        ("RENAMED", "src/orders/place.py", "outside/place.py"),
+        ("COPIED", "src/orders/place.py", "outside/copy.py"),
+        ("RENAMED", "outside/place.py", "src/orders/place.py"),
+    ],
+    ids=["renamed-out", "copied-out", "renamed-in"],
+)
+def test_merge_paths_and_risk_paths_match_a_moved_files_old_name_as_well_as_its_new_one(
+    change: str, old: str, new: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's GraphQL names only a moved file's new path: the old one is read from the REST file list."""
+    asked: list[int] = []
+
+    def changes(number: int) -> list[dict[str, Any]]:
+        asked.append(number)
+        return [{"filename": new, "previous_filename": old, "status": change.lower()}]
+
+    monkeypatch.setattr(approvals, "pr_changes", changes)
+    moved = orders_pull(new)
+    moved["files"]["nodes"][0]["changeType"] = change
+    held = ORDERS_HELD.replace(
+        "`src/orders/place.py`", f"`{new if new.startswith('src/orders/') else old}`"
+    )
+    assert approvals.owner_waits(moved, [], ORDERS) == [held]
+    assert sorted(approvals.paths(moved)) == sorted({old, new})
+    assert asked == [7]  # read once per PR
+    rule = loop_md("risk:\n  paths:\n    - src/orders/**\n")
+    assert approvals.risk(moved, [], rule) == "it matches a risk rule (path `src/orders/**`)"
+
+
+def test_a_moved_file_whose_old_name_github_wont_give_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_number: int) -> list[dict[str, Any]]:
+        raise subprocess.CalledProcessError(1, ("gh", "api"), stderr="HTTP 502")
+
+    monkeypatch.setattr(approvals, "pr_changes", refused)
+    moved = orders_pull("outside/place.py")
+    moved["files"]["nodes"][0]["changeType"] = "RENAMED"
+    assert approvals.paths(moved) is None
+    assert approvals.owner_waits(moved, [], ORDERS) == [
+        ORDERS_HELD.split(", since ")[0]
+        + ", since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner"
+        " judges them"
+    ]
+    assert approvals.risk(moved, [], GITHUB_RULE) == (
+        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    )
+
+
+def test_a_deleted_file_under_a_merge_path_holds_the_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: pytest.fail("no old name to read"))
+    gone = orders_pull()
+    gone["files"]["nodes"][0]["changeType"] = "DELETED"
+    assert approvals.owner_waits(gone, [], ORDERS) == [ORDERS_HELD]
+
+
+def test_check_build_before_the_pr_lists_a_moved_files_old_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    committed(clone)
+    git_in(clone, "branch", "-M", "main")
+    (clone / "src" / "orders").mkdir(parents=True)
+    (clone / "src" / "orders" / "place.py").write_text("orders\n" * 20)
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-qm", "orders")
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "push", "-q", "origin", "main")
+    git_in(clone, "remote", "set-head", "origin", "main")
+    git_in(clone, "checkout", "-q", "-b", "loop/1-fix")
+    (clone / "outside").mkdir()
+    git_in(clone, "mv", "src/orders/place.py", "outside/place.py")
+    git_in(clone, "commit", "-qm", "move")
+    monkeypatch.chdir(clone)
+    assert sorted(approvals.paths(approvals.unopened())) == [
+        "outside/place.py",
+        "src/orders/place.py",
+    ]

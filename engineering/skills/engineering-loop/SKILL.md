@@ -321,8 +321,10 @@ gatekeeper.md's policy (Settings) holds:
   matched exactly on the PR and its issues as GitHub names them (`size:L` and `size:XL`
   for large or larger, `area:billing`, `kind:bug`); `paths`, globs matched on the PR's
   files; `always: true`; and `verifier: true`. `approvals.py` reads the keys, never the
-  words, so a path such as `docs/verifier.md` is only a path. Paths it can't judge, past
-  the one page of files it reads, hold, since nothing else would enforce them.
+  words, so a path such as `docs/verifier.md` is only a path. A glob matches every path
+  the PR touches on either side of the change, a renamed or copied file's old name too, since
+  moving a file out of a listed directory changes it as much as editing it. Paths it can't
+  judge, past the one page of files it reads, hold, since nothing else would enforce them.
   The `verifier` term holds when the verifier judges the change high: the newest
   pass on the head, by a trusted account, says `Risk: high`, any word but `low`, or has no
   `Risk:` line (verifier.md). Paths beside it hold whatever the verifier says, so

@@ -289,7 +289,9 @@ label names matched exactly on the PR and its issues; `paths`, globs matched on 
 touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and only the owner's go
 on its head lets it merge, into any branch, so `check merge`, `check queue` and `land` wait for it, `approve merge
 --by delegate` and `delegate` refuse it, and the label is no go; files it can't read hold. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
-label can never read as a term. Paths it can't judge, past the one page of files it reads, hold. The `plan` rule asks
+label can never read as a term. A glob matches every path the PR touches on either side of the change: a
+deleted file's, and a renamed or copied file's old name as well as its new one. Paths it can't judge, past the one
+page of files it reads or an old name GitHub won't give, hold. The `plan` rule asks
 for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `bot.<login>` section,
 such as `bot.dependabot[bot]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
 review when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it changes, none renamed or copied,
@@ -756,12 +758,14 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
     file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
     or commits than the gate reads: no exemption."""
-    author, files = pull.get("author") or {}, paths(pull)
     renamed = any(
         file.get("changeType") in ("RENAMED", "COPIED") for file in pull["files"]["nodes"]
     )
     labels = {label["name"] for label in pull["labels"]["nodes"]}
-    if not files or renamed or "verify" in labels:
+    if renamed or "verify" in labels:
+        return False
+    author, files = pull.get("author") or {}, paths(pull)
+    if not files:
         return False
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}
@@ -795,10 +799,33 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
 
 
 def paths(pull: dict[str, Any]) -> list[str] | None:
-    """The files the PR changes; None past the one page of 100 the gate reads."""
+    """Every path the PR touches on either side of the change: each file's path (a deleted file's is its old one), and
+    a renamed or copied file's old name too (previous), since moving a file out of a ruled directory changes it as
+    much as editing it; None past the one page of 100 the gate reads, or when an old name can't be read."""
     files = pull["files"]
     found = [file["path"] for file in files["nodes"]]
-    return None if (files.get("totalCount") or 0) > len(found) else found
+    if (files.get("totalCount") or 0) > len(found):
+        return None
+    if any(file.get("changeType") in ("RENAMED", "COPIED") for file in files["nodes"]):
+        old = previous(pull)
+        if old is None:
+            return None
+        found += [path for path in old if path not in found]
+    return found
+
+
+def previous(pull: dict[str, Any]) -> list[str] | None:
+    """The old names of the PR's renamed and copied files, which GitHub's GraphQL omits, read once per PR from its
+    REST file list (pr_changes); None when GitHub can't give them, so a rule on paths holds rather than misses one."""
+    if "previousPaths" not in pull:
+        try:
+            changes = pr_changes(pull["number"])
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            return None
+        pull["previousPaths"] = [
+            change["previous_filename"] for change in changes if change.get("previous_filename")
+        ]
+    return pull["previousPaths"]
 
 
 def ruled(
@@ -2944,7 +2971,8 @@ def unopened() -> dict[str, Any]:
     try:
         base = git("rev-parse", "--abbrev-ref", "origin/HEAD").strip()
         # NUL-separated, since git quotes a non-ASCII name and a name may hold spaces
-        found = git("diff", "--name-only", "-z", f"{base}...HEAD").split("\0")[:-1]
+        # --no-renames: a moved file lists its old name too, since moving it out of a ruled path changes it
+        found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD").split("\0")[:-1]
     except subprocess.CalledProcessError:
         return {"labels": {"nodes": []}, "files": {"nodes": [], "totalCount": 1}}
     return {"labels": {"nodes": []}, "files": {"nodes": [{"path": path} for path in found]}}
