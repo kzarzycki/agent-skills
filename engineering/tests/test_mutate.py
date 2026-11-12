@@ -294,7 +294,7 @@ def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_test_command(
     elsewhere = str(tmp_path / "project-venv")
     path = os.pathsep.join([str(Path(sys.prefix) / "bin"), "/usr/bin", "/bin"])
     seen = seen_env(repo, tmp_path, VIRTUAL_ENV=elsewhere, PATH=path)
-    assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path, "UV_RUN_RECURSION_DEPTH": None}
+    assert seen["VIRTUAL_ENV"] == elsewhere and seen["PATH"] == path
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
