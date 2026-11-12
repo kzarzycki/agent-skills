@@ -3900,6 +3900,50 @@ def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_w
     )
 
 
+def test_a_land_that_lost_one_race_and_took_the_lock_on_its_retry_releases_that_take(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # another land takes and releases the lock between this one's read and its push: its retry from the new free tip
+    # wins, and its release is of that commit, not of the first one origin never took
+    lands["open"](7, {"7.txt": "7\n"})
+    other: list[str] = []
+    real = approvals.git
+
+    def git(*args: str) -> str:
+        out = real(*args)
+        if args[:2] == ("rev-parse", f"refs/remotes/origin/{NAME}") and not other:
+            other.append("")
+            assert approvals.locked("main", other)
+            assert approvals.unlock("main", other[-1]).returncode == 0
+        return out
+
+    tip = lock_commit(lands, 60)
+    git_in(
+        lands["work"], "push", "-q", "origin", f"{approvals.lock_commit(approvals.FREE, tip)}:{REF}"
+    )
+    monkeypatch.setattr(approvals, "git", git)
+    assert lands["land"]("7")[0] == 0
+    assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
+    assert len(lands["tips"]()) == 6  # theirs taken and released, then ours
+
+
+def test_the_batch_starts_from_the_base_as_origin_has_it_when_the_lock_is_taken(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    # main moves on origin, to a tree of its own, after this checkout last fetched it
+    work, tip = lands["work"], lands["main"]()
+    (work / "elsewhere.txt").write_text("elsewhere\n")
+    git_in(work, "add", "elsewhere.txt")
+    git_in(work, "commit", "-qm", "elsewhere")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    moved = git_in(work, "rev-parse", "HEAD").strip()
+    git_in(work, "update-ref", "refs/remotes/origin/main", tip)
+    assert lands["land"]("7")[0] == 0
+    # one gate, on the batch made from the moved base, so the base ended at the gated tree without a second
+    assert (lands["runs"](), lands["main"]("~1")) == (1, moved)
+
+
 def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_grows(
     lands: dict[str, Any],
 ) -> None:
