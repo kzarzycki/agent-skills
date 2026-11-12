@@ -134,3 +134,12 @@ def test_a_held_approval_prompt_is_never_routed_around() -> None:
             "A tool call held for approval waits for the owner, not a hang: never make its change"
             " by another route, since the approval is theirs to give (SKILL.md, Owner steps park)."
         ) in text, role
+
+
+def test_the_verifier_keeps_real_data_out_of_the_report_it_posts() -> None:
+    """The report is posted as the PR review, so real data goes in a local evidence file."""
+    verifier = " ".join((LOOP / "verifier.md").read_text().split())
+    assert "Real data you see may go in your report" not in verifier
+    assert "The report is posted as the PR review, so it holds no real data" in verifier
+    assert "local file next to the report (under `tmp/loop/`)" in verifier
+    assert "cites that file by path and says what it shows, without the values" in verifier

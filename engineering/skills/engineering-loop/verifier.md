@@ -79,8 +79,10 @@ yourself, keeping standards and spec as separate axes.
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
-  looked right. Real data you see may go in your report, never in anything bound for the
-  tracker. When the sandbox can't reach the instance or its log, say so.
+  looked right. The report is posted as the PR review, so it holds no real data: a figure,
+  name or record you saw on the instance goes in a local file next to the report (under
+  `tmp/loop/`), and the report cites that file by path and says what it shows, without the
+  values. When the sandbox can't reach the instance or its log, say so.
 - **Run loop.md § Verifier checklist**, when it has one.
 - **Mutation-check the new tests.** Undo each production change the spec adds on its own
   (one condition, branch or value), never the whole diff at once, since a whole-patch revert
