@@ -157,9 +157,12 @@ def checkout(tmp_path, monkeypatch):
     def codex(cmd: list[str], brief: str) -> int:
         seen.update(cmd=cmd, brief=brief, head=git(work, "rev-parse", "HEAD"))
         Path(cmd[cmd.index("-o") + 1]).write_text(seen.get("final", "final\nSATISFIED: yes\n"))
-        if "report" in seen:
-            (work / "tmp/loop").mkdir(parents=True, exist_ok=True)
-            (work / "tmp/loop/pr7-v1.md").write_text(seen["report"])
+        (work / "tmp/loop").mkdir(parents=True, exist_ok=True)
+        for key, name in (("report", "pr7-v1.md"), ("question", "pr7-v1.md.question")):
+            if key in seen:
+                (work / "tmp/loop" / name).write_text(seen[key])
+        if "edit" in seen:
+            (work / "a.txt").write_text(seen["edit"])
         return seen.get("exit", 0)
 
     real_run = cv.run
@@ -216,3 +219,24 @@ def test_a_tree_with_uncommitted_changes_is_refused_before_codex_runs(checkout) 
 def test_the_signature_names_the_model_and_effort_as_the_launcher_does() -> None:
     assert cv.signature("gpt-6.1-terra", "medium") == "codex/terra-6.1/med"
     assert cv.signature(None, None) == "codex/?/?"
+
+
+def test_a_question_is_posted_instead_of_a_report_and_an_earlier_pass_is_not_reused(
+    checkout,
+) -> None:
+    work, _, brief, posted, seen = checkout
+    (work / ".git/info/exclude").write_text("tmp/\n")
+    (work / "tmp/loop").mkdir(parents=True)
+    (work / "tmp/loop/pr7-v1.md").write_text("an earlier pass\nSATISFIED: yes\n")
+    seen.update(
+        final="tmp/loop/pr7-v1.md.question\n", question="Please run the gate at this head.\n"
+    )
+    assert cv.verify(7, brief, None, None) == 3
+    assert posted == ["## Verifier question\n\nPlease run the gate at this head.\n"]
+
+
+def test_tracked_edits_the_verifier_left_are_reported_not_hidden(checkout, capsys) -> None:
+    _, head, brief, _, seen = checkout
+    seen["edit"] = "the verifier's leftover\n"
+    assert cv.verify(7, brief, None, None) == 0  # the report still counts
+    assert f"the checkout stays at {head}, not claude/worker" in capsys.readouterr().err

@@ -579,7 +579,8 @@ or the owner's private network.
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
   the host's Codex is configured with as `--model` and `--effort` (or the `Verifier model:` tier's model);
-  without them the CLI's own default runs. Exit 2 names a missing precondition, such as a login that ran out:
+  without them the CLI's own default runs. Exit 3 means the verifier stopped on a question, posted as that
+  comment: answer it and send the pass again. Exit 2 names a missing precondition, such as a login that ran out:
   seed again and start a fresh session, since a session gets the login when it starts. The project accepts
   three things with the line: the author's session starts its own verifier, though the script, not the
   session, picks the head and posts the report; the environment holds a ChatGPT login that every process in

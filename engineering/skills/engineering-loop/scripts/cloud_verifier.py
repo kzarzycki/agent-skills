@@ -30,7 +30,10 @@ off (the VM is the sandbox, and the verifier needs Docker and the network), unde
 naming the model and effort it was given, and posts the report as one comment on
 the PR through REST, byte for byte, printing the comment's URL as its last line. The report is the file the brief's
 `- Report: <path>` line names (approvals.py brief), else Codex's final message; one without a `SATISFIED:` line is
-not posted. It returns the checkout to where it was. Exit 0 posted, 1 the pass failed, 2 a precondition is missing.
+not posted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
+instead, headed `## Verifier question`. It returns the checkout to where it was, and says so on stderr when the
+verifier's leftover edits stop that. Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a
+question posted.
 The carrier session runs it detached and polls, since a foreground command in the VM stops at 10 minutes.
 
 Standard library only, plus `gh`, `git` and `npm` in the VM and `codex` and the Claude Code login on the host.
@@ -284,18 +287,27 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         run("git", "fetch", "-q", "origin", ref)
         run("git", "checkout", "-q", "--detach", head)
     report, final = report_path(brief), Path(f"/tmp/cloud-verifier-pr{pr}.md")
-    for stale in filter(None, (report, final)):
-        stale.unlink(missing_ok=True)
+    question = report.with_name(report.name + ".question") if report else None
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
     cmd += ["-m", model] if model else []
     cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
     try:
+        for stale in filter(None, (report, question, final)):
+            stale.unlink(missing_ok=True)  # an earlier pass's file is not this pass's answer
         started = time.time()
         code = codex_exec([*cmd, "-"], brief)
         print(f"codex exited {code} after {time.time() - started:.0f} s", flush=True)
     finally:
-        if moved:
-            run("git", "checkout", "-q", was, check=False)
+        if moved and (back := run("git", "checkout", "-q", was, check=False)).returncode:
+            # the verifier left tracked edits: say so, since the next step in this checkout would build on them
+            print(
+                f"cloud_verifier: the checkout stays at {head}, not {was}: {back.stderr.strip()}",
+                file=sys.stderr,
+            )
+    if not code and question and question.exists() and question.read_text().strip():
+        # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
+        print(post(pr, f"## Verifier question\n\n{question.read_text()}"))
+        return 3
     body = next(
         (p.read_text() for p in (report, final) if p and p.exists() and p.read_text().strip()), ""
     )
@@ -304,6 +316,12 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             f"no report with a SATISFIED: line (codex exit {code}); the last of what it wrote:\n{body[-1500:]}"
         )
         return 1
+    print(post(pr, body))
+    return 0
+
+
+def post(pr: int, body: str) -> str:
+    """Post one comment on the PR through REST (GraphQL answers 403 in the VM) and return its URL."""
     posted = run(
         "gh",
         "api",
@@ -313,8 +331,7 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         "--jq",
         ".html_url",
     )
-    print(posted.stdout.strip())
-    return 0
+    return posted.stdout.strip()
 
 
 def main(argv: list[str] | None = None) -> int:
