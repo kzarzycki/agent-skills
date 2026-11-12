@@ -5327,7 +5327,9 @@ def test_local_ci_record_in_a_shallow_clone_gives_the_gate_a_merge_base_and_reco
     assert approvals.main(["local-ci", "--record"]) == 0
     assert seen.read_text().strip() == fork
     [record] = (clone / ".git" / "approvals" / "local-ci").glob("*.json")
-    assert json.loads(record.read_text())["tree"] == git_in(clone, "rev-parse", "HEAD^{tree}").strip()
+    assert (
+        json.loads(record.read_text())["tree"] == git_in(clone, "rev-parse", "HEAD^{tree}").strip()
+    )
     assert git_in(clone, "rev-parse", "HEAD").strip() == head
 
 

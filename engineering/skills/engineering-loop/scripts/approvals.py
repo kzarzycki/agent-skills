@@ -3978,7 +3978,11 @@ def base_branch(pr: int | None) -> str | None:
     if pr is not None:
         return str(pull_request(pr)["baseRefName"])
     with contextlib.suppress(subprocess.CalledProcessError):
-        return git("symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip().removeprefix("origin/")
+        return (
+            git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+            .strip()
+            .removeprefix("origin/")
+        )
     with contextlib.suppress(subprocess.CalledProcessError):
         for line in git("ls-remote", "--symref", "origin", "HEAD").splitlines():
             if line.startswith("ref: refs/heads/"):
@@ -3999,22 +4003,36 @@ def deepened(pr: int | None) -> None:
         return
     base = base_branch(pr)
     if base is None:
-        print("local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr)
+        print(
+            "local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr
+        )
         return
     ref = f"origin/{base}"
     spec = f"+refs/heads/{base}:refs/remotes/{ref}"
 
     def fetch(*flags: str) -> bool:
         done = subprocess.run(
-            ["git", "fetch", "--quiet", *flags, "origin", spec], capture_output=True, text=True, check=False
+            ["git", "fetch", "--quiet", *flags, "origin", spec],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         what = " ".join(flags) or "fetch"
-        outcome = "ok" if done.returncode == 0 else f"failed: {done.stderr.strip() or done.returncode}"
-        print(f"local-ci: shallow clone, git fetch {what} origin {base}: {outcome}", file=sys.stderr)
+        outcome = (
+            "ok" if done.returncode == 0 else f"failed: {done.stderr.strip() or done.returncode}"
+        )
+        print(
+            f"local-ci: shallow clone, git fetch {what} origin {base}: {outcome}", file=sys.stderr
+        )
         return done.returncode == 0
 
     def found() -> bool:
-        return subprocess.run(["git", "merge-base", ref, "HEAD"], capture_output=True, check=False).returncode == 0
+        return (
+            subprocess.run(
+                ["git", "merge-base", ref, "HEAD"], capture_output=True, check=False
+            ).returncode
+            == 0
+        )
 
     if fetch() and found():
         return
