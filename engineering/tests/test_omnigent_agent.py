@@ -6233,7 +6233,7 @@ def test_report_reads_a_relative_path_in_the_workspace_without_base(
 ) -> None:
     seen = serve_files(monkeypatch, {f"{FS}/tmp/r.md?limit=1000": {"content": "hi"}})
     assert omnigent_agent.main(["report", "s9", "tmp/r.md"]) == 0
-    assert seen == [f"{FS}/tmp/r.md?limit=1000"]
+    assert seen == ["/v1/sessions/s9", f"{FS}/tmp/r.md?limit=1000"]  # its record names no cloud
 
 
 def test_report_reads_an_absolute_path_inside_the_workspace_relative_to_it(
@@ -6246,7 +6246,8 @@ def test_report_reads_an_absolute_path_inside_the_workspace_relative_to_it(
     }
     seen = serve_files(monkeypatch, files)
     assert omnigent_agent.main(["report", "s9", "/Users/k/ws/tmp/r.md"]) == 0
-    assert seen == ["/v1/sessions/s9", f"{FS}/tmp/r.md?limit=1000"]
+    # the record twice: report's look for a cloud harness, then the read's for the workspace
+    assert seen == ["/v1/sessions/s9", "/v1/sessions/s9", f"{FS}/tmp/r.md?limit=1000"]
     assert (
         omnigent_agent.main(["report", "s9", "/Users/k/wsx/r.md"]) == 4
     )  # a sibling stays absolute

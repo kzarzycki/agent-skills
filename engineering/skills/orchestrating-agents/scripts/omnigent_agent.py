@@ -5012,7 +5012,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise usage
             args.path = str(line[0])
         if args.cmd == "report":
-            info = og.info(sid)
+            try:
+                info = og.info(sid)
+            except Fail:  # no record names its harness: the file read, as before, says what fails
+                info = {}
             # a cloud session's report stays in its VM: its last message is the report, written here
             if (
                 info.get("harness") == CLOUD_HARNESS
