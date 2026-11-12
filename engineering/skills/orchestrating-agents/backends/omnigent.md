@@ -340,7 +340,7 @@ pasted text and ask for a go-ahead; and the report is written there, so `wait` t
 as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the report is instead the path here
 that `wait --pr <n>` writes the PR comment to.
 
-**Verifiers on another host.** A verifier (`--role` naming `verifier`) starts on another host
+**Verifiers on another host.** A verifier (a `--role` whose file is `verifier.md`) starts on another host
 the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
 <report>`, where `<clone>` is an absolute path there holding a clone of the repo and the report
 is under its `tmp/loop/`. Its `--pr` names the PR it reviews, not a report channel: it writes its

@@ -8788,3 +8788,16 @@ def test_a_far_file_that_is_missing_here_or_fails_there_starts_no_verifier(
     assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 1
     assert "a --file did not reach its host: PUT: HTTP 403" in capsys.readouterr().err
     assert og.archived == ["s0"] and og.there_at_brief == []
+
+
+def test_a_role_that_only_names_verifier_keeps_the_worker_pr_meaning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the verifier's role file (verifier.md) takes --pr as the PR it reviews: another role
+    whose path holds the word is a worker, refused --pr on a native agent."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("roles/verifier.md")] = "roles/not-a-verifier-helper.md"
+    assert omnigent_agent.main(argv) == 1
+    assert "is not a cloud agent" in capsys.readouterr().err
+    assert og.sessions == {}

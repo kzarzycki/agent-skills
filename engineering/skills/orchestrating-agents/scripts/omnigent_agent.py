@@ -146,8 +146,8 @@ starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1
 child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
-writes here. A verifier (a ``--role`` naming ``verifier``) takes ``--pr`` as the PR it reviews,
-not a report channel, and runs on another host only when the project's loop.md has no
+writes here. A verifier (a ``--role`` whose file is ``verifier.md``) takes ``--pr`` as the PR it
+reviews, not a report channel, and runs on another host only when the project's loop.md has no
 ``Verifier hosts: <name>, <name>`` line or that line lists the host; ``--file`` writes a local
 file (a proof log, the previous report) beside its report there before its brief, and
 ``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
@@ -3111,6 +3111,12 @@ def bring_home(og: Omnigent, sid: str, report: Path) -> Path:
     return home.resolve()
 
 
+def reviews(role: str | None) -> bool:
+    """Whether ``role`` is the verifier's role file (``verifier.md``): only that one reviews a PR,
+    so only it takes ``--pr`` as the PR it reviews."""
+    return bool(role) and Path(str(role)).name == "verifier.md"
+
+
 def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
     """Remove ``path`` on ``sid``'s host (``far``: another one), if it is there."""
     if not far:
@@ -5035,7 +5041,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
-        verifier = args.cmd in ("run", "start") and bool(args.role and "verifier" in args.role)
+        verifier = args.cmd in ("run", "start") and reviews(args.role)
         if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
             args.pr = None
         if verifier and args.host:
