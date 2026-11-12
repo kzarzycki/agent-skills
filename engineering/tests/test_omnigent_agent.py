@@ -8670,7 +8670,9 @@ def running_session(age: float) -> FakeOmnigent:
     """A fake whose only session ``k`` is running, its newest item ``age`` seconds old."""
     og = FakeOmnigent()
     og.create("claude", "kid")
-    og.sessions["k"] = [{"id": "i1", "type": "message", "role": "user", "created_at": time.time() - age}]
+    og.sessions["k"] = [
+        {"id": "i1", "type": "message", "role": "user", "created_at": time.time() - age}
+    ]
     og.info = lambda s: {  # type: ignore[method-assign]
         "status": "running",
         "title": "kid",
