@@ -3,7 +3,9 @@ after every run, a killed one included."""
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -53,7 +55,12 @@ def patch(repo: Path, name: str, old: str, new: str) -> Path:
 
 
 def mutate(
-    repo: Path, *patches: Path, test: str = TESTS, cwd: Path | None = None, to: Path | None = None
+    repo: Path,
+    *patches: Path,
+    test: str = TESTS,
+    cwd: Path | None = None,
+    to: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -67,7 +74,7 @@ def mutate(
         ],
         cwd=cwd or repo,
         # a mutate.py run over these tests passes its switch down, which would hide this one lacking it
-        env={k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"},
+        env={k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"} | (env or {}),
         capture_output=True,
         text=True,
         check=False,
@@ -254,3 +261,109 @@ def test_a_failure_while_a_patch_is_applied_still_restores_the_tree(repo: Path) 
     result = mutate(repo, killed, test=f"rm -rf {gone}; {TESTS}", to=gone / "m.log")
     assert result.returncode == 1 and "FileNotFoundError" in result.stderr
     assert clean(repo) and (repo / "calc.py").read_text() == MODULE
+
+
+def seen_env(repo: Path, tmp_path: Path, **env: str) -> dict[str, str]:
+    """The VIRTUAL_ENV and PATH the test command sees when mutate.py starts with `env` over its own."""
+    seen = tmp_path / "seen.json"
+    script = tmp_path / "dump.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "json.dump({k: os.environ.get(k) for k in ('VIRTUAL_ENV', 'PATH', 'UV_RUN_RECURSION_DEPTH')}, open(sys.argv[1], 'w'))\n"
+    )
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, killed, test=f"{sys.executable} {script} {seen}; false", env=env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(seen.read_text())
+
+
+def test_the_test_command_does_not_see_the_scripts_own_environment(
+    repo: Path, tmp_path: Path
+) -> None:
+    own_bin = str(Path(sys.prefix) / "bin")
+    seen = seen_env(
+        repo, tmp_path, VIRTUAL_ENV=sys.prefix, PATH=os.pathsep.join([own_bin, "/usr/bin", "/bin"])
+    )
+    assert seen["VIRTUAL_ENV"] is None
+    assert own_bin not in seen["PATH"].split(os.pathsep) and "/usr/bin" in seen["PATH"]
+
+
+def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_test_command(
+    repo: Path, tmp_path: Path
+) -> None:
+    elsewhere = str(tmp_path / "project-venv")
+    path = os.pathsep.join([str(Path(sys.prefix) / "bin"), "/usr/bin", "/bin"])
+    seen = seen_env(repo, tmp_path, VIRTUAL_ENV=elsewhere, PATH=path)
+    assert seen["VIRTUAL_ENV"] == elsewhere and seen["PATH"] == path
+
+
+# the cases a path heuristic can't tell apart: uv replaces the caller's VIRTUAL_ENV before the script starts, so
+# neither is reconstructed, whether or not the caller activated an environment
+CALLERS = {
+    "activated, another directory in front of its bin": lambda venv: (
+        str(venv),
+        ["/usr/bin", str(venv / "bin"), "/bin"],
+    ),
+    "not activated, its bin first on PATH": lambda venv: (
+        None,
+        [str(venv / "bin"), "/usr/bin", "/bin"],
+    ),
+}
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
+@pytest.mark.parametrize("case", CALLERS)
+def test_under_uv_run_the_test_command_gets_no_virtual_env_and_the_callers_path(
+    repo: Path, tmp_path: Path, case: str
+) -> None:
+    """The test command gets no VIRTUAL_ENV, never a guessed one, and the caller's PATH without the script's bin."""
+    venv = tmp_path / "caller-venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    # uv inspects an active environment's interpreter
+    (venv / "bin" / "python3").symlink_to(sys.executable)
+    virtual_env, entries = CALLERS[case](venv)
+    path = os.pathsep.join(entries)
+    seen = tmp_path / "seen.json"
+    script = tmp_path / "dump.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "keys = ('VIRTUAL_ENV', 'PATH')\n"
+        "json.dump({k: os.environ.get(k) for k in keys}, open(sys.argv[1], 'w'))\n"
+    )
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    env = {
+        k: v for k, v in os.environ.items() if k not in ("VIRTUAL_ENV", "UV_RUN_RECURSION_DEPTH")
+    } | {"PATH": path}
+    if virtual_env:
+        env["VIRTUAL_ENV"] = virtual_env
+    result = subprocess.run(
+        [
+            str(shutil.which("uv")),
+            "run",
+            "-q",
+            "--script",
+            str(MUTATE),
+            "--test",
+            f"{sys.executable} {script} {seen}; false",
+            "--log",
+            str(log_path(repo)),
+            str(killed),
+        ],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    got = json.loads(seen.read_text())
+    assert got["VIRTUAL_ENV"] is None and got["PATH"] == path
+
+
+def test_a_run_nested_under_another_uv_run_sees_the_callers_environment_depth(
+    repo: Path, tmp_path: Path
+) -> None:
+    """uv counts each nested run in UV_RUN_RECURSION_DEPTH; the test command gets the count minus this script's."""
+    seen = seen_env(repo, tmp_path, VIRTUAL_ENV=sys.prefix, UV_RUN_RECURSION_DEPTH="2")
+    assert seen["UV_RUN_RECURSION_DEPTH"] == "1"

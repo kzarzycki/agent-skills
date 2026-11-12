@@ -287,7 +287,16 @@ waits for the owner. `spec.auto: true` approves every spec the same
 way, epics included, except one the risk rule matches on the labels of the issue and the PR and the PR's files (at
 `check build` the files pushed so far), or one opened by an account without write access: those need the owner's
 record and label, and `check` says why. Under `spec.auto: true` the risk rule holds the spec instead of the merge, since
-the owner approved the change before it was built; `risk:high` and the cap still hold the merge. Without `auto`, or
+the owner approved the change before it was built; `risk:high` and the cap still hold the merge. The list may also
+hold a `paths` term (`- paths: [mise.toml, docs/agents/**]`), globs as a rule's `paths` are: it approves by policy the
+spec of an issue labelled `spec:paths`, which the lead adds to declare that the change stays inside them, since the
+gate can't tell that from the spec alone and the setting alone would approve every spec until its merge. `check build`
+and `check merge` judge it on the issue's and the PR's labels and every path the PR touches, at `check build` before
+the PR the branch's files so far: it approves only while every path matches a glob, a moved file's old name as well
+as its new one, so a rename across the boundary either way voids it; GitHub gives the whole file list and every old
+name; neither carries `risk:high` nor the risk rule holds (its `verifier` term too, once a review is read); and the
+issue's author can write to the repo. Otherwise the owner approves the spec, and `check` names why, the files outside
+the globs included. The label without the term approves nothing. Without `auto`, or
 with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change that is not high risk.
 
 A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
@@ -350,6 +359,8 @@ except ImportError:  # run as `python3 approvals.py` where PyYAML isn't installe
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
 BUG, EPIC = "kind:bug", "epic"
+# the lead's claim that a spec's change stays inside `spec.auto`'s `paths`, which the policy then approves (scoped)
+SCOPED = "spec:paths"
 CATEGORIES = {BUG, "kind:enhancement", "kind:chore", "kind:documentation"}
 # a component's label is `area:<name>` and a category's `kind:<name>`; the docs name them bare or in full (qualified)
 PREFIXES = {"component": "area:", "category": "kind:"}
@@ -635,10 +646,23 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             if not (isinstance(value, str) and value in kind):
                 raise Refused(f"{file}'s {where} must be one of {', '.join(kind)}, not {value!r}")
         elif isinstance(kind, tuple):  # true, false, or a list naming some of the tuple's values
+            # `spec.auto`'s list may also hold a `paths` term, a list of globs (spec_paths)
+            for term in value if isinstance(value, list) else []:
+                if not isinstance(term, dict):
+                    continue
+                globs = term.get("paths")
+                if list(term) != ["paths"] or not (
+                    isinstance(globs, list)
+                    and globs
+                    and all(isinstance(g, str) and g for g in globs)
+                ):
+                    raise Refused(
+                        f"{file}'s {where} term must be `paths`, a list of globs, not {term!r}"
+                    )
             if not (
                 isinstance(value, bool)
                 or isinstance(value, list)
-                and all(isinstance(item, str) and item in kind for item in value)
+                and all(isinstance(item, dict) or item in kind for item in value)
             ):
                 raise Refused(
                     f"{file}'s {where} must be true, false or a list of {', '.join(kind)}, not {value!r}"
@@ -738,7 +762,15 @@ def spec_kinds(loop: str | None) -> set[str]:
     """The kinds of spec loop.md's `spec.auto` list names (SPEC_KINDS), which the policy approves; empty when it
     is no list."""
     auto = settings(loop).get("spec", {}).get("auto")
-    return set(auto) if isinstance(auto, list) else set()
+    return {kind for kind in auto if isinstance(kind, str)} if isinstance(auto, list) else set()
+
+
+def spec_paths(loop: str | None) -> list[str]:
+    """The globs of loop.md's `spec.auto` `paths` terms, inside which a spec carrying SCOPED is approved by policy
+    (scoped); empty without one."""
+    auto = settings(loop).get("spec", {}).get("auto")
+    terms = [term for term in auto if isinstance(term, dict)] if isinstance(auto, list) else []
+    return [glob for term in terms for glob in term["paths"]]
 
 
 def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) -> str | bool | None:
@@ -811,6 +843,45 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
     files = pull["files"]
     found = [file["path"] for file in files["nodes"]]
     return None if (files.get("totalCount") or 0) > len(found) else found
+
+
+def touched(pull: dict[str, Any]) -> list[str] | None:
+    """Every path the PR touches on either side of the change: each file's path (a deleted file's is its old one), and
+    a renamed or copied file's old name too (previous), since moving a file across a boundary changes both sides;
+    None past the one page of 100 the gate reads, or when any moved file's old name can't be read, so a rule on paths
+    holds rather than misses one. The one place the gate reads renames (#791 reads them here too)."""
+    found = paths(pull)
+    if found is None:
+        return None
+    moved = [
+        file["path"]
+        for file in pull["files"]["nodes"]
+        if file.get("changeType") in ("RENAMED", "COPIED")
+    ]
+    if moved:
+        old = previous(pull)
+        # every moved file needs its own old name: a response that lacks one (an entry without it, a file list that
+        # changed between the two reads) proves nothing about where it came from
+        if old is None or not all(old.get(path) for path in moved):
+            return None
+        found = found + [old[path] for path in moved if old[path] not in found]
+    return found
+
+
+def previous(pull: dict[str, Any]) -> dict[str, str] | None:
+    """Each renamed or copied file's old name by its new one, which GitHub's GraphQL omits, read once per PR from its
+    REST file list (pr_changes); None when GitHub can't give the list."""
+    if "previousPaths" not in pull:
+        try:
+            changes = pr_changes(pull["number"])
+        except (subprocess.CalledProcessError, OSError, ValueError, KeyError):
+            return None
+        pull["previousPaths"] = {
+            change["filename"]: change["previous_filename"]
+            for change in changes
+            if change.get("filename") and change.get("previous_filename")
+        }
+    return pull["previousPaths"]
 
 
 def ruled(
@@ -1209,6 +1280,37 @@ def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> 
     return None
 
 
+def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
+    """Why the issue's SCOPED label doesn't approve its spec, or None when loop.md's `spec.auto` `paths` term
+    (spec_paths) does: the term is set; neither the issue nor the PR carries `risk:high`; the risk rule, the
+    verifier's `Risk:` line included once a review is read, doesn't hold on their labels and every path the PR
+    touches (touched); its author can write to the repo; and every path the PR touches, a moved file's old name
+    too, matches one of the globs. A file list the gate can't read in full voids it, so the change is never judged
+    on part of its files. At `check build` before the PR exists the files are the branch's so far (unopened); the
+    merge judges the PR's."""
+    globs = spec_paths(loop)
+    if not globs:
+        return f"`spec.auto` names no `paths`, so `{SCOPED}` approves nothing"
+    marked = [f"#{issue['number']}"] * (RISK_LABEL in names(issue))
+    if RISK_LABEL in names(pull):  # an unopened branch has no number and no labels
+        marked.append(f"PR #{pull['number']}")
+    if marked:
+        return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    files = touched(pull)
+    verdict = judged(pull, loop) if "reviews" in pull else None
+    if why := ruled(names(issue) | names(pull), files, loop, verdict):
+        return why
+    login = (issue.get("author") or {}).get("login")
+    if not (login and writer(login)):
+        return f"its author {f'@{login}' if login else '(no account)'} can't write to the repo"
+    if files is None:
+        return "GitHub can't give every file the PR changes, an old name of a moved file included"
+    outside = [path for path in files if not any(fnmatch.fnmatch(path, glob) for glob in globs)]
+    if outside:
+        return f"the PR changes {', '.join(f'`{path}`' for path in outside)}, outside `spec.auto`'s `paths`"
+    return None
+
+
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`."""
@@ -1400,7 +1502,8 @@ def proofs(
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without docs/agents/loop.md (`loop` None) an issue needs only the
     `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
-    (spec_policy) or `spec.auto: true` does (spec_hold). A plan needs them where the `plan` rule asks. What the merge
+    (spec_policy), `spec.auto: true` does (spec_hold), or its `paths` term does an issue labelled SCOPED (scoped).
+    A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
     rule, found = settings(loop), []
     kinds, every = spec_kinds(loop), spec_auto(loop)
@@ -1415,7 +1518,15 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        if not (every and spec_hold(pull, issue, loop) is None or spec_policy(issue, kinds)):
+        covered = every and spec_hold(pull, issue, loop) is None or spec_policy(issue, kinds)
+        if not covered and SCOPED in labels:
+            why = scoped(pull, issue, loop)
+            covered = why is None
+            if why:
+                found.append(
+                    f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
+                )
+        if not covered:
             found += approvals(where, issue, "spec", version(spec_holder(issue)))
         plan = headed(issue, "## Plan")
         if plan is not None:
@@ -4515,6 +4626,28 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
     return 0
 
 
+def leave_own_environment() -> None:
+    """Hand every command this script starts the caller's environment, not the script's own. uv puts the script's
+    environment in VIRTUAL_ENV, its bin first on PATH and counts the run in UV_RUN_RECURSION_DEPTH, and a tool that
+    follows VIRTUAL_ENV (a type checker) would check the project against the script's packages. A VIRTUAL_ENV equal
+    to this script's own is dropped with its bin on PATH, and one that points elsewhere (the script started by an
+    interpreter directly) is passed on unchanged; no value is reconstructed, so under `uv run`, which replaces the
+    caller's VIRTUAL_ENV before the script starts, the caller's own value does not reach the commands."""
+    own = os.path.normpath(sys.prefix)
+    if os.path.normpath(os.environ.get("VIRTUAL_ENV", "\0")) != own:
+        return
+    del os.environ["VIRTUAL_ENV"]
+    bin_dir = os.path.join(own, "bin")
+    os.environ["PATH"] = os.pathsep.join(
+        e for e in os.environ.get("PATH", "").split(os.pathsep) if os.path.normpath(e) != bin_dir
+    )
+    if (depth := os.environ.get("UV_RUN_RECURSION_DEPTH", "")).isdigit():
+        if int(depth) > 1:
+            os.environ["UV_RUN_RECURSION_DEPTH"] = str(int(depth) - 1)
+        else:
+            del os.environ["UV_RUN_RECURSION_DEPTH"]
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -4629,6 +4762,7 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    leave_own_environment()  # before any command it starts
     detached = os.environ.pop(
         DETACHED, None
     )  # set by detach() for the run it starts, and for no process under it

@@ -526,6 +526,19 @@ at once; each once per occurrence; and `archived`, which is the
 only event that drops the line, so a relay needs no re-arm. Each is posted once per message.
 A restart posts an end it finds again.
 
+The supervisor also watches the default branch of each repo a followed lead's workspace is a
+checkout of, since a lead that lands a PR between two turn ends, or writes the landing under a
+`STILL WORKING` wait, tells no one, and a step owed after a landing (a restart, a rebuild, a board
+update) then waits. It reads each lead's origin once through the file API (`.git/config`, or a
+worktree's common dir), so on any host, and the head with `gh api repos/<owner>/<name>/commits/HEAD`
+at most once a minute per repo. A head that moved raises one `landed` event per repo and new head,
+on the repo's first lead in the registry: `<owner>/<name>: its default branch moved to <sha>; merged
+since <old sha>: #12, #13` (the `(#N)` ending each commit's subject, or a `Merge pull request #N`).
+The first head seen for a repo is only stored, so a start reports no old merge; with `--console` it
+is kept in the state (`heads`), so a restart reports a landing made while it was down, and only
+that one. A workspace outside a checkout is not watched; a failed read is logged once and tried
+again. The lead's words play no part, so `route` and `lead.md` stay as they are.
+
 **`--console`**, the chief of staff's console, adds what its supervisor needs and no other: a
 state file, an events log, status labels, a progress deadline, settled events kept across
 restarts, and routing (below). Without it `supervise --registry` writes none of them, and the paragraphs above are
@@ -571,6 +584,7 @@ routed, since the owner reads them there, and the `no event in <n>s` log line le
 
 | Event | Settled by | What happens |
 |---|---|---|
+| `landed`: the default branch of a repo the followed leads work in moved | rule | act, one per repo and new head, naming the new sha and the PRs merged since |
 | `archived` | rule | its line and state entry dropped; no post |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
@@ -639,7 +653,8 @@ A lead that waits on another is started with `start --top-level --after <session
   `revives`, `nudged_at`, `occurrences`, the last event, the labels last written); under
   `settled` the ids of the events routed, the newest 20 per session; `intents` (each open, done,
   failed or escalated; the newest 50 closed ones), `attention`, `pending_posts`, `rate`
-  (`next_post_at`, `model_calls`: the times of this hour's calls) and `notify_label`. It is
+  (`next_post_at`, `model_calls`: the times of this hour's calls), `notify_label` and `heads`
+  (each watched repo's last default-branch head). It is
   loaded on start, so a restart re-raises no settled event and keeps `progress_at`, budgets,
   open intents, the queue, a pending post, the rate windows and labels. A session gone from the registry leaves it; an unreadable file or another
   schema is a warning and a fresh start.
