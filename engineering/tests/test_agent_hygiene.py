@@ -95,11 +95,16 @@ def test_brew_skips_a_prefix_whose_lock_folder_it_cannot_write(tmp_path, monkeyp
         return (tmp_path / "log").read_text()
 
     assert "would run brew cleanup" in said()
-    locks.chmod(0o555)
-    try:
-        assert said().endswith(f"skip brew: this account does not own {prefix}\n")
-    finally:
-        locks.chmod(0o755)
+    # fake the write check the code uses: file modes do not stop root
+    real_access = hygiene.os.access
+    monkeypatch.setattr(
+        hygiene.os,
+        "access",
+        lambda path, mode, *a, **k: (
+            False if Path(path) == locks else real_access(path, mode, *a, **k)
+        ),
+    )
+    assert said().endswith(f"skip brew: this account does not own {prefix}\n")
 
 
 def test_agent_hygiene(tmp_path, monkeypatch):
