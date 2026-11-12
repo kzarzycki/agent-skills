@@ -135,13 +135,14 @@ def checkout(tmp_path, monkeypatch):
         git(origin, "config", key, value)
     (origin / "a.txt").write_text("one\n")
     (origin / "old.txt").write_text("only on the worker's branch\n")
+    (origin / ".gitignore").write_text("local.txt\n")  # a rule the PR's head drops
     git(origin, "add", "."), git(origin, "commit", "-qm", "one")
     git(tmp_path, "clone", "-q", str(origin), str(work))
     git(work, "checkout", "-qb", "claude/worker")
     git(origin, "checkout", "-qb", "feat/pr")
     (origin / "a.txt").write_text("two\n")
     (origin / "new.txt").write_text("only on the PR's head\n")
-    git(origin, "rm", "-q", "old.txt"), git(origin, "add", ".")
+    git(origin, "rm", "-q", "old.txt", ".gitignore"), git(origin, "add", ".")
     git(origin, "commit", "-qm", "two")
     head = git(origin, "rev-parse", "HEAD")
     posted: list[str] = []
@@ -152,6 +153,11 @@ def checkout(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(
                 cmd, 0, json.dumps({"head": {"sha": head, "ref": "feat/pr"}}), ""
             )
+        if cmd[:2] == ("gh", "api") and seen.get("post fails"):
+            raise cv.Refused("`gh api` exited 1: HTTP 502")
+        if cmd[:2] == ("git", "checkout") and "--detach" in cmd and "half" in seen:
+            (work / "a.txt").write_text(seen["half"])
+            return subprocess.CompletedProcess(cmd, 1, "", "error: external filter failed")
         if cmd[:2] == ("gh", "api"):
             posted.append(next(a for a in cmd if a.startswith("body="))[5:])
             return subprocess.CompletedProcess(cmd, 0, "https://example.com/comment/1\n", "")
@@ -338,3 +344,75 @@ def test_a_failed_pass_that_left_changes_also_says_the_checkout_needs_a_look(che
     seen.update(exit=1, do=lambda: (work / "a.txt").write_text("the verifier's\n"))
     assert cv.verify(7, brief, None, None) == 4
     assert posted == [] and (work / "a.txt").read_text() == "the verifier's\n"
+
+
+def test_a_comment_that_can_not_be_posted_is_a_failed_pass_not_a_missing_precondition(
+    checkout, capsys
+) -> None:
+    work, head, brief, posted, seen = checkout
+    seen["post fails"] = True
+    assert cv.main(["verify", "--pr", "7", "--brief", str(brief)]) == 1
+    assert "HTTP 502" in capsys.readouterr().err and posted == []
+    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
+    seen["do"] = lambda: (work / "a.txt").write_text("the verifier's\n")
+    assert (
+        cv.main(["verify", "--pr", "7", "--brief", str(brief)]) == 4
+    )  # the changed tree still shows
+    assert git(work, "rev-parse", "HEAD") == head
+
+
+def test_what_the_checkout_of_the_head_itself_shows_is_not_the_verifiers_doing(checkout) -> None:
+    work, head, brief, posted, seen = checkout
+    (work / "local.txt").write_text("ignored on the worker's branch only\n")
+    assert cv.verify(7, brief, None, None) == 0
+    assert seen["head"] == head
+    assert posted == ["final\nSATISFIED: yes\n"]
+    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
+    assert (work / "local.txt").read_text() == "ignored on the worker's branch only\n"
+
+
+def test_a_checkout_that_fails_part_way_is_reported_as_a_changed_tree(checkout, capsys) -> None:
+    work, _, brief, posted, seen = checkout
+    seen["half"] = "half written\n"
+    assert cv.main(["verify", "--pr", "7", "--brief", str(brief)]) == 4
+    assert "failed part way" in capsys.readouterr().err
+    assert "cmd" not in seen and posted == []
+    assert (work / "a.txt").read_text() == "half written\n"  # left for someone to look at
+
+
+def test_a_report_file_the_return_checkout_writes_is_not_this_passs_report(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    (work / "tmp/loop").mkdir(parents=True)
+    (work / "tmp/loop/pr7-v1.md").write_text("committed on the worker's branch\nSATISFIED: yes\n")
+    git(work, "add", "-f", "tmp/loop/pr7-v1.md")
+    git(
+        work,
+        "-c",
+        "user.email=w@example.com",
+        "-c",
+        "user.name=w",
+        "commit",
+        "-qm",
+        "a report, tracked",
+    )
+    seen["final"] = "I wrote no report.\n"
+    assert cv.verify(7, brief, None, None) == 1
+    assert posted == []
+    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
+
+
+def test_the_report_is_posted_with_its_line_ends_and_odd_bytes_do_not_fail_the_pass(
+    checkout,
+) -> None:
+    work, _, brief, posted, seen = checkout
+    seen["do"] = lambda: (work / "tmp/loop/pr7-v1.md").write_bytes(b"# R\r\nSATISFIED: yes\r\n\xff")
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == ["# R\r\nSATISFIED: yes\r\n\ufffd"]
+
+
+def test_a_report_at_the_top_of_the_checkout_exempts_only_itself(checkout) -> None:
+    work, *_ = checkout
+    for name in ("pr7.md", "pr7.md.question", "other.md"):
+        (work / name).write_text("x\n")
+    assert cv.changes(Path("pr7.md")) == [("??", "other.md")]
+    assert cv.changes(None) == [("??", "other.md"), ("??", "pr7.md"), ("??", "pr7.md.question")]

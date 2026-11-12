@@ -29,7 +29,7 @@ report's own folder pass: a fresh clone ignores `tmp/loop/` only where the proje
 out the PR's head detached, so nothing the verifier does moves the worker's branch, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
-the PR through REST, byte for byte, printing the comment's URL as its last line. The report is the file the brief's
+the PR through REST, unchanged, printing the comment's URL as its last line. The report is the file the brief's
 `- Report: <path>` line names (approvals.py brief), else Codex's final message; one without a `SATISFIED:` line is
 not posted, and a report or question file counts only when this pass wrote it, so an earlier pass's file is never
 posted again and none is deleted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
@@ -38,8 +38,10 @@ a change outside that folder, the script deletes and restores nothing, since git
 older file: the checkout stays detached at the PR's head, the changes are named on stderr, and the exit is 4.
 Neither checkout replaces an ignored file: where one is in the way, the first is refused (exit 2) and the second
 leaves the checkout as it is (exit 4).
-Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a question posted, 4 the checkout needs a
-look, whatever else the pass did (a posted comment's URL is still printed).
+What the checkout of the PR's head itself shows as changed, such as a submodule the PR moved, is not counted.
+Exit 0 report posted, 1 the pass failed (Codex failed, wrote no report, or the comment could not be posted), 2 a
+precondition is missing and nothing was touched, 3 a question posted, 4 the checkout needs a look, whatever else the
+pass did (a posted comment's URL is still printed).
 The carrier session runs it detached and polls, since a foreground command in the VM stops at 10 minutes.
 
 Standard library only, plus `gh`, `git` and `npm` in the VM and `codex` and the Claude Code login on the host.
@@ -271,9 +273,13 @@ def signature(model: str | None, effort: str | None) -> str:
 
 
 def changes(report: Path | None) -> list[tuple[str, str]]:
-    """(status, path) of every uncommitted path but the files in the report's own folder: the pass's reports and
-    proof logs live there, and a fresh clone ignores that folder only where the project's .gitignore does."""
-    keep = f"{report.parent}/" if report and not report.is_absolute() else None
+    """(status, path) of every uncommitted path but the pass's own: the report, its question and the untracked
+    files in the report's folder, where the proof logs live and which a fresh clone ignores only where the project's
+    .gitignore does. Run from the top of the checkout, since git names paths from there."""
+    own, keep = set(), None
+    if report and not report.is_absolute():
+        own = {report.as_posix(), f"{report.as_posix()}.question"}
+        keep = f"{report.parent.as_posix()}/" if report.parent != Path() else None
     fields = iter(
         run("git", "status", "--porcelain", "-z", "--untracked-files=all").stdout.split("\0")
     )
@@ -284,7 +290,7 @@ def changes(report: Path | None) -> list[tuple[str, str]]:
         status, path = field[:2], field[3:]
         if status[0] in "RC":
             next(fields, None)  # a rename's or copy's source follows as a field of its own
-        if not (keep and status == "??" and path.startswith(keep)):
+        if not (status == "??" and (path in own or (keep and path.startswith(keep)))):
             found.append((status, path))
     return found
 
@@ -295,23 +301,34 @@ def uncommitted(report: Path | None) -> str:
 
 def written(path: Path) -> int | None:
     """When the file was last written, or None when there is none."""
-    return path.stat().st_mtime_ns if path.exists() else None
+    return path.stat().st_mtime_ns if path.is_file() else None
+
+
+def text(path: Path) -> str:
+    """The file as it is, line ends included; a byte that is no UTF-8 is shown as such instead of failing the pass."""
+    return path.read_bytes().decode("utf-8", "replace") if path.is_file() else ""
 
 
 def codex_exec(cmd: list[str], brief: str) -> int:
     return subprocess.run(cmd, input=brief, text=True, check=False).returncode
 
 
+def needs_a_look(why: str, what: str) -> None:
+    print(
+        f"cloud_verifier: {why}; look and put it back before the next pass:\n{what}",
+        file=sys.stderr,
+    )
+
+
 def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> int:
     brief = brief_file.read_text()
     if not brief.startswith("AGENT_SIGNATURE="):
         brief = f"AGENT_SIGNATURE={signature(model, effort)}\n{brief}"
+    os.chdir(run("git", "rev-parse", "--show-toplevel").stdout.strip())
     ensure_codex()
-    report, final = (
-        report_path(brief),
-        Path(tempfile.mkdtemp(prefix="cloud-verifier-")) / "final.md",
-    )
+    report = report_path(brief)
     question = report.with_name(report.name + ".question") if report else None
+    final = Path(tempfile.mkdtemp(prefix="cloud-verifier-")) / "final.md"
     if dirty := uncommitted(report):
         raise Refused(
             f"the tree has uncommitted changes, and a verifier reviews a pushed head only:\n{dirty[:600]}"
@@ -326,52 +343,70 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         run("git", "fetch", "-q", "origin", ref)
     # always detached, so a commit or a branch switch by the verifier never moves the worker's branch; and never
     # over an ignored file, which git's checkout replaces by default and the status above can't see
-    run("git", "checkout", "-q", "--no-overwrite-ignore", "--detach", head)
+    went = run("git", "checkout", "-q", "--no-overwrite-ignore", "--detach", head, check=False)
+    if went.returncode:
+        if half := uncommitted(
+            report
+        ):  # a checkout that failed part way, as a filter or a full disk makes it
+            needs_a_look(
+                f"`git checkout {head}` failed part way ({went.stderr.strip()[-300:]})", half
+            )
+            return 4
+        raise Refused(f"`git checkout {head}` was refused: {went.stderr.strip()[-600:]}")
+    # what the checkout itself shows as changed (a submodule the PR moved, a file only the worker's branch ignores)
+    # is not the verifier's doing
+    baseline = uncommitted(report)
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
     cmd += ["-m", model] if model else []
     cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
     # an earlier pass's file is not this pass's answer: one counts only when this pass wrote it
     before = {p: written(p) for p in (report, question) if p}
+    code, wrote, stuck = 1, {}, ""
     try:
         started = time.time()
         code = codex_exec([*cmd, "-"], brief)
         print(f"codex exited {code} after {time.time() - started:.0f} s", flush=True)
+        # read before the checkout back, which rewrites a report path that both commits track
+        wrote = {
+            p: text(p) for p in (report, question) if p and written(p) not in (None, before[p])
+        }
+        wrote[final] = text(final)
     finally:
-        # The script never deletes or restores a file: the tree was clean before the pass, but git can't say
-        # which leftover hides something older (an ignored file, a folder with its own repository), so a tree the
-        # verifier changed stays as it is, detached at the PR's head, for someone to look at.
-        left = uncommitted(report)
-        back = (
-            None
-            if left
-            else run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
-        )
-        stuck = left or (back.returncode and (back.stderr.strip() or f"git checkout {was} failed"))
-        if stuck:
-            print(
-                "cloud_verifier: the verifier left the checkout changed, so it stays detached at the PR's head; "
-                f"look, put it back and check out {was} before the next pass:\n{stuck}",
-                file=sys.stderr,
+        # The script never deletes or restores a file: git can't say which leftover hides something older (an
+        # ignored file, a folder with its own repository), so a tree the verifier changed stays as it is,
+        # detached at the PR's head, for someone to look at.
+        try:
+            stuck = (
+                "" if (left := uncommitted(report)) == baseline else left or "(a change was undone)"
             )
-    fresh = [p for p in (report, question) if p and written(p) not in (None, before[p])]
-    if not code and question in fresh and question.read_text().strip():
-        # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
-        print(post(pr, f"## Verifier question\n\n{question.read_text()}"))
-        return 4 if stuck else 3
-    body = next(
-        (
-            p.read_text()
-            for p in (report, final)
-            if p in (*fresh, final) and p.exists() and p.read_text().strip()
-        ),
-        "",
+            if not stuck:
+                back = run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
+                stuck = back.returncode and (back.stderr.strip() or f"git checkout {was} failed")
+        except Refused as e:
+            stuck = str(e)
+        if stuck:
+            needs_a_look(
+                "the verifier left the checkout changed, so it stays detached at the PR's head",
+                stuck,
+            )
+    ask, body = (
+        wrote.get(question, ""),
+        wrote.get(report, "").strip() and wrote[report] or wrote[final],
     )
-    if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
-        print(
-            f"no report with a SATISFIED: line (codex exit {code}); the last of what it wrote:\n{body[-1500:]}"
-        )
+    try:
+        if not code and ask.strip():
+            # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
+            print(post(pr, f"## Verifier question\n\n{ask}"))
+            return 4 if stuck else 3
+        if code or not re.search(r"^SATISFIED:", body, re.MULTILINE):
+            print(
+                f"no report with a SATISFIED: line (codex exit {code}); the last of what it wrote:\n{body[-1500:]}"
+            )
+            return 4 if stuck else 1
+        print(post(pr, body))
+    except Refused as e:  # the comment was not posted: a failed pass, not a missing precondition
+        print(f"cloud_verifier: {e}", file=sys.stderr)
         return 4 if stuck else 1
-    print(post(pr, body))
     return 4 if stuck else 0
 
 

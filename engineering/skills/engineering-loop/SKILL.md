@@ -580,11 +580,12 @@ or the owner's private network.
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
   the host's Codex is configured with as `--model` and `--effort` (or the `Verifier model:` tier's model);
   without them the CLI's own default runs. Exit 3 means the verifier stopped on a question, posted as that
-  comment: answer it and send the pass again. Exit 4 means the comment is posted but the verifier left the
-  checkout changed: the script deletes and restores nothing, since git can't say which leftover hides an older
-  file, so the checkout stays detached at the PR's head and the worker puts it back before the next pass, which
-  refuses it otherwise. Exit 2 names a missing precondition, such as a login that ran out:
-  seed again and start a fresh session, since a session gets the login when it starts. The project accepts
+  comment: answer it and send the pass again. Exit 4 means the verifier left the checkout changed, whatever else the pass did:
+  the script deletes and restores nothing, since git can't say which leftover hides an older file, so the
+  checkout stays detached at the PR's head and the worker puts it back before the next pass, which refuses a
+  tree with changes. Exit 1 is a failed pass: Codex failed (a login that ran out shows here, in its output),
+  wrote no report, or the comment could not be posted. Exit 2 names a missing precondition, such as a session
+  without a login: seed again and start a fresh session, since a session gets the login when it starts. The project accepts
   three things with the line: the author's session starts its own verifier, though the script, not the
   session, picks the head and posts the report; the environment holds a ChatGPT login that every process in
   the VM can read, good for up to 10 days, so it suits PRs the owner's own agents wrote and not ones from
