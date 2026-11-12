@@ -301,6 +301,22 @@ def uncommitted(report: Path | None) -> str:
     return "\n".join(f"{status} {path}" for status, path in changes(report))
 
 
+def showing(report: Path | None) -> str:
+    """What git shows as changed, or why it could not say: a status that fails is a tree to look at, not a clean one."""
+    try:
+        return uncommitted(report)
+    except Refused as e:
+        return str(e)
+
+
+def returned(was: str, report: Path | None) -> str:
+    """Check out where the pass started: '' when the tree is back there and clean, else what stands in the way."""
+    back = run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
+    if back.returncode:
+        return back.stderr.strip() or f"`git checkout {was}` exited {back.returncode}"
+    return showing(report)  # clean there before the pass, so a change still showing is the pass's
+
+
 def written(path: Path) -> int | None:
     """When the file was last written, or None when there is none."""
     return path.stat().st_mtime_ns if path.is_file() else None
@@ -347,21 +363,17 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
     # over an ignored file, which git's checkout replaces by default and the status above can't see
     went = run("git", "checkout", "-q", "--no-overwrite-ignore", "--detach", head, check=False)
     if went.returncode:
-        if half := uncommitted(
-            report
-        ):  # a checkout that failed part way, as a filter or a full disk makes it
-            needs_a_look(
-                f"`git checkout {head}` failed part way ({went.stderr.strip()[-300:]})", half
-            )
+        why = went.stderr.strip() or f"exit {went.returncode}"
+        if half := showing(report):  # it failed part way, as a filter or a full disk makes it
+            needs_a_look(f"`git checkout {head}` failed part way ({why[-300:]})", half)
             return 4
-        raise Refused(f"`git checkout {head}` was refused: {went.stderr.strip()[-600:]}")
+        raise Refused(f"`git checkout {head}` was refused: {why[-600:]}")
     # The tree must be clean at the head too, so that any change after the pass is the verifier's. Comparing with
     # what the checkout itself shows (a submodule the PR moved, a file only the worker's branch ignores) would
     # miss an edit to one of those, so such a checkout is returned and refused instead.
-    if shown := uncommitted(report):
-        back = run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
-        if back.returncode or (still := uncommitted(report)):
-            needs_a_look("the checkout could not be returned", back.stderr.strip() or still)
+    if shown := showing(report):
+        if still := returned(was, report):
+            needs_a_look("the checkout could not be returned", still)
             return 4
         raise Refused(
             "at the PR's head this checkout shows changes of its own, and a verifier reviews the pushed head only; "
@@ -386,23 +398,9 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         # The script never deletes or restores a file: git can't say which leftover hides something older (an
         # ignored file, a folder with its own repository), so a tree the verifier changed stays as it is,
         # detached at the PR's head, for someone to look at.
-        try:
-            stuck = uncommitted(report)
-            if not stuck:
-                back = run("git", "checkout", "-q", "--no-overwrite-ignore", was, check=False)
-                # back where the tree was clean before the pass: a change still showing is the verifier's
-                stuck = (
-                    (back.stderr.strip() or f"git checkout {was} failed")
-                    if back.returncode
-                    else uncommitted(report)
-                )
-        except Refused as e:
-            stuck = str(e)
+        stuck = showing(report) or returned(was, report)
         if stuck:
-            needs_a_look(
-                "the pass left the checkout changed, so it stays as it is",
-                stuck,
-            )
+            needs_a_look("the pass left the checkout changed, so it stays as it is", stuck)
     ask, body = (
         wrote.get(question, ""),
         wrote.get(report, "").strip() and wrote[report] or wrote[final],
@@ -418,11 +416,7 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             )
             return 4 if stuck else 1
         print(post(pr, body))
-    except (
-        Refused,
-        OSError,
-        ValueError,
-    ) as e:  # not posted: a failed pass, not a missing precondition
+    except (Refused, OSError, ValueError) as e:  # not posted, so a failed pass
         print(f"cloud_verifier: {e}", file=sys.stderr)
         return 4 if stuck else 1
     return 4 if stuck else 0

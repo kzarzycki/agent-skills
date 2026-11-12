@@ -158,6 +158,8 @@ def checkout(tmp_path, monkeypatch):
         if cmd[:2] == ("git", "checkout") and "--detach" in cmd and "half" in seen:
             (work / "a.txt").write_text(seen["half"])
             return subprocess.CompletedProcess(cmd, 1, "", "error: external filter failed")
+        if cmd[:2] == ("git", "checkout") and "--detach" not in cmd and seen.get("no return"):
+            return subprocess.CompletedProcess(cmd, 137, "", "")  # killed: no message
         if cmd[:2] == ("gh", "api"):
             assert "body=@-" in cmd  # the body goes in through stdin
             posted.append(kw["input"])
@@ -436,3 +438,19 @@ def test_a_change_still_showing_after_the_return_is_reported(checkout, capsys, m
     monkeypatch.setattr(cv, "uncommitted", uncommitted)
     assert cv.verify(7, brief, None, None) == 4
     assert posted == ["final\nSATISFIED: yes\n"] and " M sub" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("before_codex", [True, False])
+def test_a_return_that_fails_without_a_word_is_still_reported(
+    checkout, capsys, before_codex
+) -> None:
+    work, head, brief, _, seen = checkout
+    seen["no return"] = True
+    if (
+        before_codex
+    ):  # the head's checkout shows a change of its own, so the pass returns before Codex
+        (work / "local.txt").write_text("ignored on the worker's branch only\n")
+    assert cv.main(["verify", "--pr", "7", "--brief", str(brief)]) == 4
+    assert "exited 137" in capsys.readouterr().err
+    assert ("cmd" in seen) is not before_codex
+    assert git(work, "rev-parse", "HEAD") == head
