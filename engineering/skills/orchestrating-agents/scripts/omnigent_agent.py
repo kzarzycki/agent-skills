@@ -39,10 +39,14 @@ exit is the wake. ``send`` answers that question in the same session, also mid-t
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
+``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
+it is out, delivery unconfirmed, and running ``send`` again is safe, since it finds the earlier
+copy before it posts; a failure before the post stays exit 1.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
-delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
+delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
+a later read failed (delivered, unconfirmed: run it again, it posts no second copy). A session blocked only
 on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
@@ -231,6 +235,7 @@ TRANSIENT = (
     ConnectionRefusedError,
     ConnectionAbortedError,
     ssl.SSLEOFError,
+    socket.gaierror,  # name resolution on an overloaded host
 )
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
 # Writes Omnigent holds for the owner's approval when made as a tool call: the client refuses
@@ -399,6 +404,7 @@ LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
+SENT_UNCONFIRMED = 7  # send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
 BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
@@ -537,6 +543,13 @@ class Undeleted(Fail):
 
 class Queued(Fail):
     code = QUEUED
+
+
+class SentUnconfirmed(Fail):
+    """The message was posted and a later read failed: it is out, delivery unconfirmed. ``send``
+    again is safe, since it finds an earlier copy before it posts."""
+
+    code = SENT_UNCONFIRMED
 
 
 def question_of(report: Path) -> Path:
@@ -1383,6 +1396,7 @@ def send(
     not replied to yet is that first copy.
     """
     text, question = brief.strip(), question_of(report) if report else None
+    posted = False  # set once this call's POST has returned
     # Read once, first: the sender of the first copy deletes the question once that copy lands,
     # on the session's host (``far``: another one), where it reads it.
     at = file_mtime(og, sid, question, far) if question else None
@@ -1429,10 +1443,20 @@ def send(
         )
     else:
         send_to_confirm(og, sid, brief)
+        posted = True
     deadline, held = time.monotonic() + confirm_seconds, None
     while True:
-        info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
-        if any(str(i.get("id")) not in old for i in copies(og.items(sid))):
+        try:
+            info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
+            landed = any(str(i.get("id")) not in old for i in copies(og.items(sid)))
+        except Fail as e:
+            if not posted:  # a copy already there was no post of ours: a plain failure
+                raise
+            raise SentUnconfirmed(
+                f"session {sid}: the message was posted but its delivery is unconfirmed ({e});"
+                " `send` again is safe, it finds the copy before it posts"
+            ) from e
+        if landed:
             break
         if pending(info):
             if held is None and queued_after is None:  # relay says it once it returns queued
@@ -1667,6 +1691,8 @@ def broadcast(
             )
         except Queued as e:
             return str(e).removeprefix(f"session {sid}: ")
+        except SentUnconfirmed as e:  # out, only unconfirmed: not a failure
+            return f"delivered, unconfirmed: {str(e).removeprefix(f'session {sid}: ')}"
         except Exception as e:  # noqa: BLE001 - one target's failure is its line, never the others'
             return f"failed: {reason(e)}"
 
@@ -3981,8 +4007,8 @@ def supervise_registry(
                 if prompts_of(og.info(sid)):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
                 relay(og, sid, text, ACTION_SECONDS)
-            except Queued:
-                pass  # held by the session's current step: it lands when the step ends
+            except (Queued, SentUnconfirmed):
+                pass  # held by the session's current step, or out and unconfirmed: it landed or lands
             except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
                 intent["status"] = "failed"
                 head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
