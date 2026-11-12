@@ -4730,7 +4730,8 @@ def drop_records(heads: list[str]) -> None:
     each whose tree is no open PR's head tree and whose record is over a day old (RECORD_AGE), a head that was
     replaced or never landed. The day spares a record pushed before its PR was opened. Only a host deletes, since a
     cloud session can't delete a ref; a refusal is said, and the branch stays for the next land. The open PRs
-    unreadable: only the landed trees' branches go."""
+    unreadable, or an open PR's head tree unknown here (a fork's head this clone can't fetch): only the landed trees'
+    branches go, since the unknown tree may be one an old record holds."""
     landed = {held for head in heads if (held := tree_of(head))}
     try:
         # whole objects, since rest_pages decodes each line as JSON and a bare SHA is none
@@ -4738,6 +4739,8 @@ def drop_records(heads: list[str]) -> None:
             tree_of(pull["head"]["sha"]) for pull in rest_pages("pulls?state=open&per_page=100")
         }
     except (subprocess.CalledProcessError, OSError, ValueError):
+        open_trees = None
+    if open_trees is not None and None in open_trees:
         open_trees = None
     try:
         git(

@@ -8532,6 +8532,38 @@ def test_an_old_record_goes_while_a_pr_is_open_reading_the_open_prs_as_gh_prints
     assert capsys.readouterr().out == ""
 
 
+def test_an_open_head_whose_tree_is_unknown_keeps_every_record_but_the_landed_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2: an open PR's head this clone can't fetch (a fork's) has no tree here, so whether an old record is its
+    head's is unknown: only the landed trees' records go, as when the open PRs are unreadable."""
+    real_refs(monkeypatch)
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    author, clone = tmp_path / "author", tmp_path / "clone"
+    committed(author)
+    git_in(author, "remote", "add", "origin", str(origin))
+    git_in(author, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(tmp_path, "clone", "-q", "--single-branch", "--branch", "main", str(origin), str(clone))
+    for value in ("2", "3"):
+        (author / "app.py").write_text(f"value = {value}\n")
+        git_in(author, "commit", "-qam", f"value {value}")
+    fork = git_in(author, "rev-parse", "HEAD").strip()
+    landed = git_in(author, "rev-parse", "HEAD~1").strip()
+    git_in(author, "push", "-q", "origin", f"{landed}:refs/heads/main")
+    monkeypatch.chdir(author)
+    old = "2026-01-01T00:00:00Z"
+    kept = recorded_in_origin(author, fork, old)
+    gone = recorded_in_origin(author, landed, old)
+    monkeypatch.chdir(clone)
+    git_in(clone, "fetch", "-q", "origin")
+    monkeypatch.setattr(approvals, "gh", open_prs(fork))
+    assert approvals.tree_of(fork) is None
+    approvals.drop_records([landed])
+    assert loop_gate_branches(origin) == {kept}
+    assert gone not in loop_gate_branches(origin)
+
+
 def test_land_deletes_the_record_branches_of_the_prs_it_merged(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
