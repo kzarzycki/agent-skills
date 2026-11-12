@@ -5333,6 +5333,37 @@ def test_local_ci_record_in_a_shallow_clone_gives_the_gate_a_merge_base_and_reco
     assert git_in(clone, "rev-parse", "HEAD").strip() == head
 
 
+def test_a_shallow_clone_that_already_reaches_the_base_is_not_deepened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the clone holds the fork point, but not origin/main yet
+    clone, fork, _ = shallow_clone(tmp_path, depth=4)
+    monkeypatch.chdir(clone)
+    approvals.deepened(None)
+    assert git_in(clone, "merge-base", "origin/main", "HEAD").strip() == fork
+    assert git_in(clone, "rev-parse", "--is-shallow-repository").strip() == "true"
+    err = capsys.readouterr().err
+    assert "--deepen" not in err and "--unshallow" not in err
+
+
+def test_local_ci_record_on_a_changed_shallow_checkout_gives_the_gate_a_merge_base_and_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, fork, _ = shallow_clone(tmp_path)
+    (clone / "app.py").write_text("value = 99\n")
+    seen = tmp_path / "seen"
+    script = tmp_path / "gate.sh"
+    script.write_text(f"#!/bin/sh\ngit merge-base origin/main HEAD > {seen}\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "LOCAL_CI", [str(script)])
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert seen.read_text().strip() == fork
+    assert "nothing is recorded" in capsys.readouterr().out
+    assert not list((clone / ".git" / "approvals" / "local-ci").glob("*.json"))
+
+
 def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_env(
     github: list[tuple[Any, ...]],
     hub: dict[str, list[dict[str, Any]]],
