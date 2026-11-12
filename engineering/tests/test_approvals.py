@@ -3250,6 +3250,7 @@ def lands(
         "pulls": {},
         "calls": [],
         "comments": [],
+        "squash": "COMMIT_MESSAGES",
     }
     pulls = state["pulls"]
 
@@ -3295,8 +3296,9 @@ def lands(
                 json.dumps(
                     {
                         "author": pulls[number]["author"],
+                        "parents": [{"sha": "p"}],
                         "commit": {
-                            "message": git_in(origin, "log", "-1", "--format=%B", sha),
+                            "message": git_in(origin, "log", "-1", "--format=%B", sha).strip(),
                             "author": {"name": "Builder", "email": "builder@example.com"},
                         },
                     }
@@ -3304,6 +3306,8 @@ def lands(
                 + "\n"
                 for sha in listed
             )
+        if args == ("api", "repos/{owner}/{repo}"):
+            return json.dumps({"squash_merge_commit_message": state["squash"]})
         if args[:2] == ("pr", "merge"):
             state["calls"].append(args)
             number, head = int(args[2]), args[args.index("--match-head-commit") + 1]
@@ -3386,7 +3390,7 @@ def test_land_squashes_with_the_commit_messages_less_every_claude_session_line(
     code, lines = lands["land"]()
     assert code == 0, lines
     assert lands["bodies"] == {
-        7: "Why 7.\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+        7: "Why 7.\n\nCo-authored-by: Claude <noreply@anthropic.com>",
         8: "* Add 8\n\nWhy 8.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
         "* Test 8\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
         "---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
@@ -3395,30 +3399,126 @@ def test_land_squashes_with_the_commit_messages_less_every_claude_session_line(
     assert "Claude-Session" not in landed and "Why 8." in landed
 
 
-def test_a_commit_author_other_than_the_prs_is_a_co_author_of_the_squash(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def commit(login: str, name: str, message: str) -> dict[str, Any]:
-        return {
-            "author": {"login": login},
-            "commit": {
-                "message": message,
-                "author": {"name": name, "email": f"{login}@example.com"},
-            },
-        }
+def rest_commit(
+    message: str, login: str, name: str, email: str, parents: int = 1
+) -> dict[str, Any]:
+    """One commit as REST's `pulls/<n>/commits` lists it, with the fields squash_body reads."""
+    return {
+        "author": {"login": login},
+        "parents": [{"sha": f"p{each}"} for each in range(parents)],
+        "commit": {"message": message, "author": {"name": name, "email": email}},
+    }
 
-    def gh(*args: str, data: str | None = None) -> str:
-        return "".join(json.dumps(each) + "\n" for each in listed)
 
-    monkeypatch.setattr(approvals, "gh", gh)
-    listed = [commit("app[bot]", "App", "Bump\n\nWhy.\nClaude-Session: x")]
-    assert approvals.squash_body(7, "app") == "Why."
-    assert approvals.squash_body(7, "owner") == "Why.\n\nCo-authored-by: App <app[bot]@example.com>"
-    listed += [commit("owner", "Owner", "Fix"), commit("app[bot]", "App", "Again")]
-    # a co-author is named once, however many commits they authored
-    assert approvals.squash_body(7, "owner") == (
-        "* Bump\n\nWhy.\n\n* Fix\n\n* Again\n\n---------\n\nCo-authored-by: App <app[bot]@example.com>"
+CLAUDE = ("claude", "Claude", "noreply@anthropic.com")
+OPUS = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+
+
+def test_squash_body_reproduces_a_real_squash_of_several_commits() -> None:
+    """The two commits of this repo's PR #805 as REST lists them, each less its `Claude-Session:` line, and the body
+    GitHub wrote for their squash (fe20c11), less the same lines: the trailers stay in their items and the footer
+    names the commits' author once, since the trailer shares its email (#638)."""
+    first = (
+        "engineering-loop: spec.auto takes a paths term, a spec approved by policy while its PR stays"
+        " inside them (#803)\n\nA spec labelled spec:paths is approved by the policy's `- paths: [...]` term"
+        " at check build and check merge\nwhile every path the PR touches, a renamed or copied file's old"
+        " name included, matches a glob. A file\noutside, a rename across the boundary either way, a file"
+        " list GitHub can't give in full, risk:high, the\nrisk rule (its verifier term too), an author"
+        " without write access, or the label without the term each\nleave the spec to the owner, naming"
+        " why. Renames are read in one function, touched(), the same code\n#791's merge-path hold uses, so"
+        f" the two merge into one.\n\n{OPUS}"
     )
+    second = (
+        "engineering-loop: check merge and land refuse a spec:paths PR crossing the paths (#803)\n\n"
+        "Entry-point tests drive `check merge`, `check build` then `check merge`, and `land` through main()"
+        " for a\nrename into and out of the paths, a copy into and out of them, a deleted file outside them"
+        " and a diff\nthat left them after check build; a copy into the paths had no test before.\n\n"
+        f"{OPUS}"
+    )
+    commits = [rest_commit(first, *CLAUDE), rest_commit(second, *CLAUDE)]
+    assert approvals.squash_body(commits, "owner") == (
+        f"* {first}\n\n* {second}\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    )
+
+
+def test_squash_body_of_one_commit_moves_its_co_authors_to_the_end() -> None:
+    """One commit, shaped as this repo's PR #799 (4065939), its link replaced: GitHub empties each trailer line in
+    place and names the co-authors after the message; land then drops the link and the blank lines it leaves."""
+    message = (
+        "Make the test independent\n\nFake the check instead.\n\n"
+        "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nClaude-Session: https://example.com/s"
+    )
+    body = approvals.squash_body([rest_commit(message, *CLAUDE)], "owner")
+    assert body == (
+        "Fake the check instead.\n\n\nClaude-Session: https://example.com/s\n\n"
+        "Co-authored-by: Claude <noreply@anthropic.com>"
+    )
+    assert approvals.unlinked(body) == (
+        "Fake the check instead.\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    )
+    # a body of trailers alone leaves only the co-authors, and a commit of the PR's author none
+    trailers = rest_commit(f"Fix\n\n{OPUS}", "owner", "Owner", "owner@example.com")
+    assert approvals.squash_body([trailers], "owner") == f"Co-authored-by: {OPUS[16:]}"
+    assert approvals.squash_body([rest_commit("Fix", "owner", "Owner", "o@x")], "owner") == ""
+
+
+def test_squash_body_names_each_co_author_once_by_email_the_first_seen_keeping_its_name() -> None:
+    """As squashes on this repo's main show: in commit order, a commit's author other than the PR's, then the
+    trailers its message names; one line per email (#754 and #759); a merge commit is no item but its author is a
+    co-author (#711)."""
+    commits = [
+        rest_commit(f"One\n\n{OPUS}", "owner", "Owner", "owner@example.com"),
+        rest_commit("Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>", *CLAUDE),
+        rest_commit("Three\n\nCo-authored-by: Pat <pat@example.com>", "owner", "Owner", "o@x"),
+    ]
+    assert approvals.squash_body(commits, "owner") == (
+        "* One\n\n" + OPUS + "\n\n* Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>\n\n"
+        "* Three\n\nCo-authored-by: Pat <pat@example.com>\n\n---------\n\n"
+        f"Co-authored-by: {OPUS[16:]}\nCo-authored-by: Pat <pat@example.com>"
+    )
+    bump = rest_commit(
+        "chore: adopt v1", "actions[bot]", "actions[bot]", "1+actions[bot]@example.com"
+    )
+    merge = rest_commit("Merge branch 'main'", "owner", "Owner", "owner@example.com", parents=2)
+    assert approvals.squash_body([bump, merge], "updater[bot]") == (
+        "Co-authored-by: actions[bot] <1+actions[bot]@example.com>\n"
+        "Co-authored-by: Owner <owner@example.com>"
+    )
+
+
+def test_land_passes_the_prs_body_under_the_pr_description_default(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """The repo's squash default is the PR's description: land passes that, less its link (#638)."""
+    lands["squash"] = "PR_BODY"
+    lands["open"](
+        7,
+        {"7.txt": "7\n"},
+        messages=("Add 7\n\nWhy 7.",),
+        body="## Evidence\n\nlog line\n\nClaude-Session: https://example.com/s\n\nThanks.\n",
+    )
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["bodies"] == {7: "## Evidence\n\nlog line\n\nThanks."}
+
+
+def test_land_passes_no_body_where_github_writes_none(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """A blank default, or a commit-messages default with nothing to write, leaves GitHub's own body; one whose body
+    is only a link goes as an empty one (#638)."""
+    lands["squash"] = "BLANK"
+    lands["open"](7, {"7.txt": "7\n"}, messages=("Add 7\n\nClaude-Session: x",))
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    lands["squash"] = "COMMIT_MESSAGES"
+    lands["open"](8, {"8.txt": "8\n"}, messages=("Add 8",))
+    lands["open"](9, {"9.txt": "9\n"}, messages=("Add 9\n\nClaude-Session: x",))
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    merges = {int(args[2]): args for args in lands["calls"] if args[:2] == ("pr", "merge")}
+    assert "--body" not in merges[7] and "--body" not in merges[8]
+    assert lands["bodies"][9] == ""
 
 
 def test_land_gates_three_landable_prs_once_and_the_base_ends_at_the_gated_tree(
