@@ -2988,17 +2988,6 @@ def pull_request(pr: int) -> dict[str, Any]:
     )
 
 
-def pr_head(pr: int) -> str:
-    """PR `pr`'s head commit, read through GraphQL (pull_request) or, where GraphQL answers 403 as a cloud session's
-    GitHub proxy does, through REST, so `local-ci <pr>` runs there too."""
-    try:
-        return str(pull_request(pr)["headRefOid"])
-    except subprocess.CalledProcessError as exc:
-        if "HTTP 403" not in (exc.stderr or ""):
-            raise
-    return gh("api", f"repos/{{owner}}/{{repo}}/pulls/{pr}", "--jq", ".head.sha").strip()
-
-
 def pr_changes(number: int) -> list[dict[str, Any]]:
     """Every file a PR changes, with its patch, as GitHub's REST API pages them: up to 3000."""
     out = gh(
@@ -4984,7 +4973,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
         elif not record.get("published"):
             publish(head, record)
         return 0
-    head = pr_head(pr)
+    head = pull_request(pr)["headRefOid"]
     if record := reusable(head):
         source = f"{reused(record)}\n"
     else:

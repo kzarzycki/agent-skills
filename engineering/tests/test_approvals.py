@@ -8397,26 +8397,6 @@ def test_land_deletes_the_record_branches_of_the_prs_it_merged(
     assert dropped == [([HEAD], "mise run check:all")]
 
 
-def test_local_ci_on_a_pr_runs_the_gate_when_graphql_answers_403(
-    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def graphql(_n: int) -> Any:
-        raise subprocess.CalledProcessError(
-            1,
-            "gh",
-            stderr="gh: GitHub GraphQL is not available from Claude Code sessions (HTTP 403)",
-        )
-
-    asked: list[tuple[str, ...]] = []
-    monkeypatch.setattr(approvals, "pull_request", graphql)
-    monkeypatch.setattr(approvals, "gh", lambda *args, **_k: asked.append(args) or f"{HEAD}\n")
-    assert approvals.main(["local-ci", "7"]) == 0
-    assert checkout["runs"] == 1
-    assert asked == [("api", "repos/{owner}/{repo}/pulls/7", "--jq", ".head.sha")]
-    [(kind, number, body)] = github
-    assert (kind, number) == ("comment", 7) and f"Head: {HEAD}\n" in body
-
-
 # --- risk.merge_paths: paths whose merge only the owner's go on the head allows (#791) ---
 
 ORDERS = loop_md("risk:\n  merge_paths:\n    - src/orders/**\n")
