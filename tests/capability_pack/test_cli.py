@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from tools.capability_pack import cli
+from tools.capability_pack import cli, qualify
 from tools.capability_pack.model import QualificationResult
 from tools.capability_pack.qualify import (
     BreakingDriftError,
@@ -107,3 +108,44 @@ def test_cli_maps_malformed_vendir_and_license_structures_to_configuration_exit(
     (package / "vendir.yml").write_text(malformed)
 
     assert cli.main(["check", str(package)]) == 2
+
+
+def test_cli_a_step_past_qualify_timeout_exits_78_with_the_timeout_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Catch a host too loaded to finish a step reading as a red change: land reruns exit 78, then stops."""
+    package = tmp_path / "engineering"
+    package.mkdir()
+    (package / "vendir.yml").write_text(
+        "apiVersion: vendir.k14s.io/v1alpha1\nkind: Config\ndirectories: []\n"
+    )
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "vendir").write_text("#!/bin/sh\nsleep 5\n")
+    (tools / "vendir").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("QUALIFY_TIMEOUT", "1")
+    monkeypatch.setattr(
+        cli, "qualify", lambda root, mode, summary=None: qualify._sync_manifest(root, mode)
+    )
+
+    assert cli.main(["check", str(package)]) == 78
+    assert (
+        "vendir sync timed out after 1 seconds; on a loaded host raise QUALIFY_TIMEOUT"
+        in capsys.readouterr().err
+    )
+
+
+def test_cli_a_qualification_failure_that_is_no_timeout_still_exits_4(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch the timeout mapping swallowing a real failure: a failing test is red, never a machine fault."""
+    package = tmp_path / "engineering"
+    package.mkdir()
+
+    def fail(*args, **kwargs):
+        raise QualificationError("non-live package tests failed")
+
+    monkeypatch.setattr(cli, "qualify", fail)
+
+    assert cli.main(["check", str(package)]) == 4
