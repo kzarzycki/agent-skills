@@ -6045,6 +6045,117 @@ def test_without_the_paths_term_the_label_approves_nothing_and_the_kinds_work_as
     ]
 
 
+def changes(pr: dict[str, Any], *files: tuple[str, str, str | None]) -> dict[str, Any]:
+    """`pr` changing `files`, each (path, GraphQL changeType, old name): a RENAMED or COPIED file's old name is in
+    the REST list (renames), a DELETED file's path its old one, as GitHub gives them."""
+    pr["files"] = {
+        "totalCount": len(files),
+        "nodes": [{"path": path, "changeType": kind} for path, kind, _ in files],
+    }
+    return pr
+
+
+INSIDE = ("docs/agents/loop.md", "MODIFIED", None)
+CROSSINGS = [
+    (("src/loop.md", "RENAMED", "docs/agents/loop.md"), "src/loop.md"),
+    (("docs/agents/app.py", "RENAMED", "src/app.py"), "src/app.py"),
+    (("src/copy.md", "COPIED", "docs/agents/loop.md"), "src/copy.md"),
+    (("docs/agents/app.py", "COPIED", "src/app.py"), "src/app.py"),
+    (("src/old.py", "DELETED", None), "src/old.py"),
+]
+CROSSING_IDS = ["rename-out", "rename-in", "copy-out", "copy-in", "deleted-outside"]
+
+
+@pytest.fixture
+def merges(
+    writers: list[str],
+    renames: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> Callable[..., tuple[int, list[str]]]:
+    """`check merge 7` and `check build 7` through main() under SCOPED, on a PR closing a writer's `spec:paths`
+    issue with a `Risk: low` verdict on its head; `run(point, *files)` gives (exit, lines)."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, SCOPED))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+
+    def run(point: str, *files: tuple[str, str, str | None]) -> tuple[int, list[str]]:
+        renames["old"] = {path: old for path, kind, old in files if kind in ("RENAMED", "COPIED")}
+        pr = changes(pull(reviews=(LOW,)), *files)
+        pr["closingIssuesReferences"]["nodes"] = [tooling()]
+        monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+        code = approvals.main(["check", point, "7"])
+        return code, capsys.readouterr().out.splitlines()
+
+    return run
+
+
+def test_check_merge_lands_a_spec_paths_pr_inside_the_paths(
+    merges: Callable[..., tuple[int, list[str]]],
+) -> None:
+    code, lines = merges("merge", INSIDE, ("docs/agents/new.md", "RENAMED", "docs/agents/old.md"))
+    assert code == 0 and not any("owner's to approve" in line for line in lines), lines
+
+
+@pytest.mark.parametrize(("crossing", "outside"), CROSSINGS, ids=CROSSING_IDS)
+def test_check_merge_refuses_a_spec_paths_pr_crossing_the_paths(
+    merges: Callable[..., tuple[int, list[str]]],
+    crossing: tuple[str, str, str | None],
+    outside: str,
+) -> None:
+    code, lines = merges("merge", INSIDE, crossing)
+    assert code == 1
+    assert lines[:3] == owners(f"the PR changes `{outside}`, outside `spec.auto`'s `paths`")
+
+
+def test_check_merge_refuses_a_spec_paths_pr_whose_diff_left_the_paths_after_check_build(
+    merges: Callable[..., tuple[int, list[str]]],
+) -> None:
+    code, lines = merges("build", INSIDE)
+    assert code == 0 and not any("owner's to approve" in line for line in lines), lines
+    code, lines = merges("merge", INSIDE, ("src/app.py", "ADDED", None))
+    assert code == 1
+    assert lines[:3] == owners("the PR changes `src/app.py`, outside `spec.auto`'s `paths`")
+
+
+@pytest.mark.parametrize(("crossing", "outside"), CROSSINGS, ids=CROSSING_IDS)
+def test_land_lands_a_spec_paths_pr_inside_the_paths_and_refuses_one_crossing_them(
+    lands: dict[str, Any],
+    writers: list[str],
+    renames: dict[str, Any],
+    crossing: tuple[str, str, str | None],
+    outside: str,
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(SCOPED)
+    git_in(lands["work"], "add", "-A")
+    git_in(lands["work"], "commit", "-qm", "the paths policy")
+    git_in(lands["work"], "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(lands["work"], "fetch", "-q", "origin")
+    for number in (7, 8):
+        lands["open"](number, {f"docs/agents/{number}.md": f"{number}\n"}, reviews=())
+        pr = lands["pulls"][number]
+        pr["reviews"]["nodes"] = [
+            {
+                **verdict_on(pr["headRefOid"]),
+                "body": verdict_on(pr["headRefOid"])["body"] + "Risk: low\n",
+            }
+        ]
+        pr["closingIssuesReferences"]["nodes"] = [
+            by("worker", specced(100 + number, "kind:chore", "spec:paths"))
+        ]
+    changes(lands["pulls"][7], INSIDE)
+    changes(lands["pulls"][8], INSIDE, crossing)
+    renames["old"] = {crossing[0]: crossing[2]} if crossing[2] else {}
+    code, lines = lands["land"]("8")
+    assert code == 1
+    assert (
+        "#108: its spec is the owner's to approve, though it carries `spec:paths`, since the PR changes"
+        f" `{outside}`, outside `spec.auto`'s `paths`"
+    ) in "\n".join(lines), lines
+    # land names #8 and refuses it, and lands every landable PR into that base: #7, inside the paths
+    assert lands["merged"]() == ["7"]
+    assert lands["pulls"][8]["state"] == "OPEN"
+
+
 @pytest.mark.parametrize(
     "term",
     [
