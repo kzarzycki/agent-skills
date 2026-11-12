@@ -3582,8 +3582,14 @@ def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
 
 
 def unlinked(text: str) -> str:
-    """text less every `Claude-Session:` line, the blank lines it leaves folded into one."""
-    return re.sub(r"\n{3,}", "\n\n", SESSION_LINE.sub("", text)).strip()
+    """text less every `Claude-Session:` line, the blank lines around each removed one folded into one (none when
+    it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
+    marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
+
+    def fold(run: re.Match[str]) -> str:  # each removed line held one of the run's line breaks
+        return "\n\n" if run[0].count("\n") - run[0].count("\0") >= 2 else "\n"
+
+    return re.sub(r"\n*(?:\0(?:\n|$))+\n*", fold, marked).strip()
 
 
 def land_body(pull: dict[str, Any]) -> str | None:

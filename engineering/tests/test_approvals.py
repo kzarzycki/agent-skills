@@ -8414,3 +8414,11 @@ def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
         {"VIRTUAL_ENV": sys.prefix, "UV_RUN_RECURSION_DEPTH": "2", "PATH": "/usr/bin:/bin"},
     )
     assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
+
+
+def test_unlinked_keeps_the_blank_lines_no_session_line_left() -> None:
+    """A PR body's own blank lines stay; only those a removed line left beside another fold."""
+    body = "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nClaude-Session: https://x\n\nend"
+    assert approvals.unlinked(body) == "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nend"
+    assert approvals.unlinked("a\nClaude-Session: x\nb") == "a\nb"
+    assert approvals.unlinked("a\n\nClaude-Session: x") == "a"
