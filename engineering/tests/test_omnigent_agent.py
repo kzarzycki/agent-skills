@@ -3337,9 +3337,12 @@ def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
         in err
     )
     assert og.sessions == {}
+    og.procs["far"]["/proc/meminfo"] = mem(2500)
+    assert omnigent_agent.main(argv) == 0  # the minimum itself is room
+    og.archived = ["s0"]
     og.procs["far"]["/proc/meminfo"] = mem(3000)
     assert omnigent_agent.main(argv) == 0  # this host's own load is not the bridge host's
-    assert og.hosts_of == {"s0": "far"}
+    assert og.hosts_of == {"s0": "far", "s1": "far"}
 
 
 def test_a_host_s_row_overridden_by_its_variable(
@@ -3483,6 +3486,9 @@ def test_this_host_s_row_adds_its_absolute_load_and_memory_line(
     )
     meminfo.write_text(mem(2600))
     with pytest.raises(omnigent_agent.Fail, match="load 41.3 \\(max 40\\), 2600 MB"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (40.0, 0.0, 0.0))
+    with pytest.raises(omnigent_agent.Fail, match="load 40.0 \\(max 40\\)"):  # 40 or more refuses
         omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
     monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (39.0, 0.0, 0.0))
     monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 3.0)
