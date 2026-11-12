@@ -4733,8 +4733,9 @@ def drop_records(heads: list[str]) -> None:
     unreadable: only the landed trees' branches go."""
     landed = {held for head in heads if (held := tree_of(head))}
     try:
+        # whole objects, since rest_pages decodes each line as JSON and a bare SHA is none
         open_trees: set[str | None] | None = {
-            tree_of(sha) for sha in rest_pages("pulls?state=open&per_page=100", ".[].head.sha")
+            tree_of(pull["head"]["sha"]) for pull in rest_pages("pulls?state=open&per_page=100")
         }
     except (subprocess.CalledProcessError, OSError, ValueError):
         open_trees = None

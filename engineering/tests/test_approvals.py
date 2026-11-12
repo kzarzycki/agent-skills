@@ -8419,6 +8419,32 @@ def recorded_in_origin(b: Path, tree_of_commit: str, when: str) -> str:
     return approvals.push_record(record)
 
 
+def open_prs(*heads: str) -> Any:
+    """gh answering `api --paginate .../pulls?state=open --jq <items>` for open PRs on `heads` as gh prints it: one
+    line per item, a string bare and anything else as compact JSON."""
+
+    def gh(*args: str) -> str:
+        assert args[:2] == ("api", "--paginate") and "pulls?state=open" in args[2], args
+        assert args[3] == "--jq", args
+        selector = args[4]
+        assert selector.startswith(".[]"), selector
+        lines = []
+        for number, sha in enumerate(heads, 1):
+            item: Any = {"number": number, "head": {"sha": sha, "ref": f"pr-{number}"}}
+            for key in filter(None, selector.removeprefix(".[]").split(".")):
+                item = item[key]
+            lines.append(item if isinstance(item, str) else json.dumps(item, separators=(",", ":")))
+        return "".join(f"{line}\n" for line in lines)
+
+    return gh
+
+
+def loop_gate_branches(origin: Path) -> set[str]:
+    return set(
+        git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
+    )
+
+
 def test_land_deletes_the_records_it_landed_and_old_ones_no_open_pr_needs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -8449,7 +8475,7 @@ def test_land_deletes_the_records_it_landed_and_old_ones_no_open_pr_needs(
             "time": old,
         }
     )
-    monkeypatch.setattr(approvals, "rest_pages", lambda path, items=".[]": [commits["open"]])
+    monkeypatch.setattr(approvals, "gh", open_prs(commits["open"]))
     capsys.readouterr()
     approvals.drop_records([head])
     left = set(
@@ -8485,6 +8511,25 @@ def test_a_refused_delete_is_said_and_without_the_open_prs_only_landed_records_g
     approvals.drop_records([head])
     left = git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
     assert left == [other]  # old, but whether an open PR needs it is unknown
+
+
+def test_an_old_record_goes_while_a_pr_is_open_reading_the_open_prs_as_gh_prints_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F1: the open PRs come through rest_pages() from gh's own output, which JSON-decodes each line; an open PR
+    on the published head keeps its record, and an old record of another tree goes."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    b, origin = tmp_path / "b", tmp_path / "origin.git"
+    stale = recorded_in_origin(
+        b, git_in(b, "rev-parse", "origin/main").strip(), "2026-01-01T00:00:00Z"
+    )
+    monkeypatch.setattr(approvals, "gh", open_prs(head))
+    capsys.readouterr()
+    approvals.drop_records([])
+    left = loop_gate_branches(origin)
+    assert stale not in left
+    assert left == {branch_of(head)}
+    assert capsys.readouterr().out == ""
 
 
 def test_land_deletes_the_record_branches_of_the_prs_it_merged(
