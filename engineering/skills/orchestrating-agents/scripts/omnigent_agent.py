@@ -1838,6 +1838,7 @@ CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EFFORTS = {
     "claude": CLAUDE_EFFORTS,
     "claude-native": CLAUDE_EFFORTS,
+    CLOUD_HARNESS: CLAUDE_EFFORTS,  # passed to the server as reasoning_effort, Claude's levels
     "codex": None,
     "codex-native": None,
 }
