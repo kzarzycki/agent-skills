@@ -8495,6 +8495,33 @@ def test_the_supervisor_takes_a_cloud_child_s_report_from_its_marked_last_messag
     assert report.read_text() == "Gates: 0\n"
 
 
+def test_the_supervisor_takes_a_cloud_verifier_s_report_only_with_its_verdict(
+    tmp_path: Path,
+) -> None:
+    """A verifier's marked reply without its ``SATISFIED:`` line is no report, as a host file
+    without one isn't (#706)."""
+    report = tmp_path / "r.md"
+    og = CloudOwing(
+        [told("brief", 120), ending("REPORT\nStill running checks.", 60)], {"status": "idle"}
+    )
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print, verdict=True)
+    assert "report written" not in event and not report.exists()
+    og = CloudOwing(
+        [told("brief", 120), ending("REPORT\nVERDICT: 0\nSATISFIED: yes", 60)], {"status": "idle"}
+    )
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print, verdict=True)
+    assert event == f"a coord: report written: {report}"
+
+
+def test_wait_takes_a_cloud_verifier_s_reply_only_with_its_verdict(tmp_path: Path) -> None:
+    og = CloudFake(reply="REPORT\nStill running checks.")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    with pytest.raises(omnigent_agent.Fail, match="ended \\(idle\\) without"):
+        omnigent_agent.wait(og, sid, report, verdict=True)
+    assert not report.exists()
+
+
 def test_the_supervisor_ignores_a_stale_host_file_of_a_cloud_child(tmp_path: Path) -> None:
     report = tmp_path / "r.md"
     report.write_text("an old report, newer than the brief")

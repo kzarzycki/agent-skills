@@ -516,24 +516,25 @@ def cloud_preamble(preamble: str, pr: int | None) -> str:
     return preamble.removesuffix("\n") + CLOUD_NOTE + "\n"
 
 
-def cloud_reply(items: list[dict]) -> tuple[str, str] | None:
+def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:
     """What a cloud session without ``--pr`` gives as its last message, when that is the history's
     last and an assistant's and is marked (``CLOUD_REPLIES``): ``("report", <body>)`` for a lead's
     that opens with its ending line (the whole message) or a child's whose first line is
     ``CLOUD_REPORT_LINE`` (what follows it), ``("question", <body>)`` for one whose first line is
     ``CLOUD_QUESTION_LINE``; else None, since a turn can end on a progress line ("Committing the
-    fix...") or an unmarked question."""
+    fix...") or an unmarked question. With ``verdict`` a report without a ``VERDICT:`` line is
+    None too, as a host report file without one doesn't count."""
     last = last_message(items)
     if not last or last.get("role") != "assistant":
         return None
     text = text_of(last).strip()
     first, _, rest = text.partition("\n")
     if CLOUD_LEAD_ENDING.match(first):
-        return "report", text + "\n"
+        return None if verdict and not VERDICT.search(text) else ("report", text + "\n")
     mark = first.strip().strip("*_#` ").rstrip(":").strip()
     rest = rest.strip()
     if mark == CLOUD_REPORT_LINE and rest:
-        return "report", rest + "\n"
+        return None if verdict and not VERDICT.search(rest) else ("report", rest + "\n")
     if mark == CLOUD_QUESTION_LINE and rest:
         return "question", rest + "\n"
     return None
@@ -2452,7 +2453,7 @@ def wait(
             report.write_text(body)
             carry_files(body, report)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
-        if turn_ended and cloud and status != "failed" and (reply := cloud_reply(items)):
+        if turn_ended and cloud and status != "failed" and (reply := cloud_reply(items, verdict)):
             kind, body = reply
             path = question if kind == "question" else report
             if not far:
@@ -3265,7 +3266,9 @@ def check(
         return not FAILED_LINE.fullmatch(text) and (not verdict or bool(VERDICT.search(text)))
 
     if cloud:
-        if str(info.get("status")) not in RUNNING | {"failed"} and (reply := cloud_reply(items)):
+        if str(info.get("status")) not in RUNNING | {"failed"} and (
+            reply := cloud_reply(items, verdict)
+        ):
             kind, body = reply
             path = question_of(report) if kind == "question" else report
             if not far:
