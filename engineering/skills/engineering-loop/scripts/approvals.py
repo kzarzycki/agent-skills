@@ -96,13 +96,20 @@ prints the same line and exits 1, so the loop never merges it. Risk rules and `r
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
 repository's default branch, as one batch:
-1. It takes the landing lock: it pushes a commit with no parent (the base's tree, titled `landing lock`, with its pid
-and a random value, so two lands in the same second never make the same commit and both push it) to
-`refs/loop/landing` on `origin`, which refuses a second such push while the ref is there, as no fast-forward, so two
-hosts never land at once; a ref outside `refs/heads/` starts no workflow. The lock's commit date is its age. Held by
-another: exit 3, naming its age. One older than 2 hours is stale, left by a land that died: it is deleted and taken. The
-lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128 plus the signal), but only while
-it is still ours, so a stale one broken and taken by another land stays theirs; SIGKILL leaves it to be broken as stale.
+1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
+pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
+tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
+with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid and a
+random value (no hostname, since the branch is public and never rewritten) (so two lands in the same second never make the same commit), and its commit date is its age. A land
+pushes a `held` child of a `free` tip (or the first lock commit, with no parent, where the branch is missing), leased on
+that tip with `--force-with-lease`, so of two lands from one tip one wins. A `held` tip is another land's: exit 3,
+naming its holder and age. One older than 2 hours is stale, left by a land that died: it is broken and taken in the same
+push, a `held` child of it. The lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128
+plus the signal), by pushing a `free` child of ours leased on it, so a stale one broken and taken by another land stays
+theirs; SIGKILL leaves it to be broken as stale. No push deletes a ref or rewrites one, so the branch's history only
+grows. While the previous version's lock `refs/loop/landing` is on `origin` (read, never written), `land` waits on it
+(exit 3), so a host still on that version and this one never land at once; one older than 2 hours is stale, passed
+over and left in place. The base is fetched once the lock is taken, so the batch starts from the base as it is then.
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
@@ -400,8 +407,10 @@ VOICED = {"owner": "Approved by the owner.", DELEGATE: "Approved under the owner
 DELEGATED = ", under the owner's delegation"
 MERGE_LABEL = "approved:merge"
 # the go on a high-risk head, the owner's or the delegate's, a commit status on that one commit (approve merge), so no
-# push carries it over
+# push carries it over but merges of the base a verifier pass says change no logic (carried_go)
 OWNER_GO = "owner"
+# the verdict line a verifier pass on a merge-only delta writes, `Logic change: none`, which carries the go (carried_go)
+LOGIC = "Logic change"
 # how an OWNER_GO status the gate once turned from the `approved:merge` label ends: no go, since the label can be a
 # delegate's
 LABELLED = f"from their `{MERGE_LABEL}` label"
@@ -498,8 +507,14 @@ ATTACHMENT = "https://github.com/user-attachments/"
 POLL, CEILING = 30, 2 * 60 * 60
 # the signals that stop a land and release its lock (stopped)
 STOPS = (signal.SIGTERM, signal.SIGHUP)
-# the landing lock: a ref outside refs/heads/, so pushing it starts no workflow
-LOCK = "refs/loop/landing"
+# the landing lock of a base: a branch that only moves forward, since a host may be allowed only to create and
+# fast-forward a branch (a cloud session's proxy refuses a push outside refs/heads/ and every delete); its tip's title
+# says whether it is held, and [skip ci] in it starts no workflow
+LOCK = "refs/heads/loop-landing/{}"
+HELD, FREE = "landing lock: held", "landing lock: free"
+# the lock before #814, a ref outside refs/heads/: a land waits while it is on origin, never writing it, so a host still
+# on that version and this one never land at once
+LEGACY = "refs/loop/landing"
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
 PAGED = "CI checks: the gate reads one page"
 
@@ -1683,7 +1698,7 @@ def proofs(
 
 
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
-    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:` lines: a body
+    """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Logic change:` lines: a body
     starting `Verifier (<family>), pass <n>`, by the PR's author, the account running this or a writer (writer), since
     anyone can review a public repo, and a colleague (or their agent) verifying someone else's PR posts as themself.
     A string names why none can be read."""
@@ -1706,7 +1721,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                     for key, _, value in (
                         line.partition(":") for line in review["body"].splitlines()
                     )
-                    if key.strip() in ("VERDICT", "SATISFIED", "Risk")
+                    if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC)
                 },
             },
         )
@@ -2141,12 +2156,35 @@ def carried(
     guard = settings(loop).get("carry_over_main")
     if guard is None:
         return None
+    walked = base_merges(pull, verified)
+    if isinstance(walked, str):
+        return walked
+    base, lines = pull["baseRefName"], []
+    for commit, first, second in walked:
+        found = merged(first, second, guard["except"], base)
+        if isinstance(found, str):
+            return found
+        try:
+            tree = git("rev-parse", f"{commit}^{{tree}}").strip()
+        except (subprocess.CalledProcessError, OSError) as exc:
+            return f"git failed reading {commit}: {exc}"
+        if found[0] != tree:
+            return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
+        lines.insert(0, carry_line(commit, first, second, found[1], base))
+    return verified, lines
+
+
+def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] | str:
+    """Each commit on the PR head's first-parent line down to `since`, newest first, as (commit, first parent, second
+    parent), when every one is a merge whose second parent is on the base (an ancestor of its tip), so nothing but
+    merges of the base, conflict fixes and all, came after `since`; a string names the first commit that is anything
+    else. Fail-closed: a git error is a why."""
     head, tip, base = pull["headRefOid"].lower(), pull["baseRefOid"].lower(), pull["baseRefName"]
-    commit, lines = head, []
+    commit, found = head, []
     try:
         if not (fetched(head) and fetched(tip)):
             return f"the head or {base}'s head {tip} is not a commit origin has"
-        while commit != verified:
+        while commit != since:
             it, its = ("it", "its") if commit == head else (commit, f"{commit}'s")
             parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
             if len(parents) != 2:
@@ -2155,16 +2193,11 @@ def carried(
             on_base = ["git", "merge-base", "--is-ancestor", second, tip]
             if subprocess.run(on_base, capture_output=True, check=False).returncode:
                 return f"{its} second parent {second} is not on {base}"
-            found = merged(first, second, guard["except"], base)
-            if isinstance(found, str):
-                return found
-            if found[0] != git("rev-parse", f"{commit}^{{tree}}").strip():
-                return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
-            lines.insert(0, carry_line(commit, first, second, found[1], base))
+            found.append((commit, first, second))
             commit = first
     except (subprocess.CalledProcessError, OSError) as exc:
         return f"git failed reading {commit}: {exc}"
-    return verified, lines
+    return found
 
 
 def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
@@ -2282,7 +2315,8 @@ def owner_waits(
     why = risk(pull, issues, loop)
     if why is None:
         return found
-    by, sole = owned(pull, loop), owners_only(pull, loop)
+    carry, sole = carried_go(pull, loop), owners_only(pull, loop)
+    by = carry[0] if isinstance(carry, tuple) else None
     if by == "owner" or by and not sole:
         return found
     command = f"`approve merge {pull['number']} --head {pull['headRefOid']} --by owner`"
@@ -2294,19 +2328,23 @@ def owner_waits(
                 f" no go), since {sole}"
             )
         ]
+    # why the go on an earlier head stops short of this one, so the lead knows what a new verdict could fix
+    stale = [f"{where}: {carry}"] if isinstance(carry, str) else []
     if default(pull):
         return [
             (
                 f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
                 f" is no go), since it is high risk: {why}"
-            )
+            ),
+            *stale,
         ]
     if MERGE_LABEL not in names(pull):
         return [
             (
                 f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is high"
                 f" risk: {why}"
-            )
+            ),
+            *stale,
         ]
     added = max(
         (
@@ -2329,15 +2367,68 @@ def owner_waits(
 
 
 def owned(pull: dict[str, Any], loop: str | None = None) -> str | None:
-    """Whose go (go) is on the PR's head, `owner` or `delegate`, else None: the newest `owner` status there by the
-    account running this or a writer (a status is the repo's to write) is green, so a later one withdrawing it wins,
-    and the PR holds the record by the same approver naming that head. The delegate's (its description says so) counts
-    into the default branch only while loop.md's `delegate` is `all`, so removing the setting withdraws it. A status
-    once turned from the label (LABELLED) is no go. GitHub unreachable: no go."""
-    try:
-        found = statuses(pull["headRefOid"])
-    except (subprocess.CalledProcessError, OSError, ValueError):
+    """Whose go covers the PR's head, `owner` or `delegate`, else None: one on the head, or one carried to it
+    (carried_go)."""
+    found = carried_go(pull, loop)
+    return found[0] if isinstance(found, tuple) else None
+
+
+def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str | None:
+    """(whose, the head it is on) for the go (go_on) covering the PR's head: the go on the head itself, else the go
+    on the head of the PR's newest merge record, when every commit since is a merge of the base (base_merges) and the
+    newest verifier pass on the head is satisfied with no blocker or major open and says `Logic change: none`, since
+    the approver saw that change and a merge adds none to it. Any status on the head decides alone, so a go withdrawn
+    there stays withdrawn. A string names why the older go carries nothing; None: no go to carry."""
+    head = pull["headRefOid"]
+    by = go_on(pull, head, loop)
+    if by is not None:
+        return (by, head) if by else None
+    earlier = [
+        record["head"]
+        for record in records(pull, "merge")
+        if record.get("head") and record["head"].lower() != head.lower()
+    ]
+    if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
+    old = earlier[-1]
+    why = unchanged(pull, old.lower())
+    return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
+
+
+def unchanged(pull: dict[str, Any], old: str) -> str | None:
+    """Why the PR's head may not keep the go on `old` (carried_go), or None: the newest verifier pass on the head is
+    satisfied with no blocker or major open and says `Logic change: none`, and every commit since `old` is a merge of
+    the base (base_merges). The verdict is read first, since it needs no git."""
+    head = pull["headRefOid"].lower()
+    verdicts = passes(pull)
+    if isinstance(verdicts, str):
+        return f"the PR {verdicts}"
+    on_head = [(n, lines) for commit, n, lines in verdicts if commit == head]
+    if not on_head:
+        return f"no verifier review is on {head}"
+    last = max(n for n, _ in on_head)
+    same = [lines for n, lines in on_head if n == last]
+    if not all(held(lines) for lines in same):
+        return (
+            f"the verifier's pass {last} on {head} is not satisfied, or has a blocker or major open"
+        )
+    if any(lines.get(LOGIC, "").lower().split()[:1] != ["none"] for lines in same):
+        return f"the verifier's pass {last} on {head} does not say `{LOGIC}: none`"
+    walked = base_merges(pull, old)
+    return walked if isinstance(walked, str) else None
+
+
+def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
+    """Whose go (go) is on `head`, `owner` or `delegate`; '' when a status there is no go; None with no status there:
+    the newest `owner` status there by the account running this or a writer (a status is the repo's to write) is green,
+    so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. The
+    delegate's (its description says so) counts into the default branch only while loop.md's `delegate` is `all`, so
+    removing the setting withdraws it. A status once turned from the label (LABELLED) is no go. GitHub unreachable: no
+    go."""
+    try:
+        found = statuses(head)
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        return ""
     for status in found:  # newest first
         login = (status.get("creator") or {}).get("login")
         if (
@@ -2355,18 +2446,26 @@ def owned(pull: dict[str, Any], loop: str | None = None) -> str | None:
             and default(pull)
             and delegation(loop) != "all"
         ):
-            return None
-        return by if current(pull, "merge", "head", pull["headRefOid"], by) else None
+            return ""
+        return by if current(pull, "merge", "head", head, by) else ""
     return None
 
 
 def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
-    """The line check merge and land print for a head that carries a go (owned): whose it is."""
-    by = owned(pull, loop)
-    if by is None:
+    """The line check merge and land print for a head that carries a go (owned): whose it is, and the head it was given
+    on when carried there (carried_go)."""
+    found = carried_go(pull, loop)
+    if not isinstance(found, tuple):
         return []
-    head = f"PR #{pull['number']}: the go on {pull['headRefOid']}"
-    return [f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"]
+    by, old = found
+    head = f"PR #{pull['number']}: the go on {old}"
+    line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
+    if old != pull["headRefOid"]:
+        line += (
+            f", carried to {pull['headRefOid']}: every commit since is a merge of {pull['baseRefName']}, and the"
+            f" verifier's pass on it says `{LOGIC}: none`"
+        )
+    return [line]
 
 
 def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int:
@@ -3522,40 +3621,28 @@ def landing(pr: int | None) -> tuple[int, bool]:
     )
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
-    ours, taken = None, None  # taken stays None while the lock's push may have reached origin
+    # every lock commit pushed, each before its push; taken stays None while the last one's push may have reached origin
+    held: list[str] = []
+    taken = None
     try:
         for sig in stoppable:  # a land under nohup still outlives a hangup
             signal.signal(sig, stopped)
-        ours = lock_commit(base)
-        taken = locked(ours)
+        taken = locked(base, held)
         if not taken:
             return WAITING, True
+        # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
         return batched(named, base, tracker, loop)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
         # children (ssh, gh as the credential helper) unblock the signals, and a stop of the land's group would end them
         mask = signal.pthread_sigmask(signal.SIG_BLOCK, STOPS)
-        if ours and taken is not False:
-            # only while it is still ours: a lock broken as stale and taken by another land stays theirs
-            released = subprocess.run(
-                [
-                    "git",
-                    "push",
-                    "-q",
-                    "--no-verify",
-                    f"--force-with-lease={LOCK}:{ours}",
-                    "origin",
-                    f":{LOCK}",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                start_new_session=True,
-            )
+        if held and taken is not False:
+            released = unlock(base, held[-1])
             if released.returncode and taken:
                 print(
-                    f"the landing lock {LOCK} was not released: {' '.join(released.stderr.split())}"
+                    f"the landing lock {lock_name(base)} was not released: {' '.join(released.stderr.split())}"
                 )
         for sig, handler in previous.items():
             if handler is not None:  # None: a handler set outside Python, which can't be put back
@@ -3579,67 +3666,114 @@ def stopped(signum: int, _frame: Any) -> None:
     sys.exit(128 + signum)
 
 
-def lock_commit(base: str) -> str:
-    """The landing lock's commit: parentless, the base's tree, with the pid and a random value, since two lands in the
-    same second, under one identity, would otherwise build one commit, and the second push of it would succeed as a
-    no-op."""
-    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+def lock_name(base: str) -> str:
+    """The landing lock's branch for `base`, as messages name it."""
+    return LOCK.format(base).removeprefix("refs/heads/")
+
+
+def lock_commit(title: str, parent: str | None) -> str:
+    """A landing lock commit: the empty tree, `title` (HELD or FREE) with [skip ci], `parent` the tip it moves on from,
+    and the pid and a random value in its body (no hostname: the branch is public and never rewritten), since two lands in the same second, under one identity, would
+    otherwise build one commit, and the second push of it would succeed as a no-op. Its commit date is its age."""
+    empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
     return git(
         "commit-tree",
+        *(["-p", parent] if parent else []),
         "-m",
-        f"landing lock\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
-        f"refs/remotes/origin/{base}^{{tree}}",
+        f"{title} [skip ci]\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
+        empty,
     ).strip()
 
 
-def locked(ours: str) -> bool:
-    """Take the landing lock: push `ours` (lock_commit) to LOCK, which origin refuses as no fast-forward while another
-    is there, so any host sees it. Its commit date is its age; one older than CEILING is stale, deleted and taken.
-    False after saying who holds it since when."""
-    for _ in range(2):
-        pushed = subprocess.run(
-            ["git", "push", "-q", "--no-verify", "origin", f"{ours}:{LOCK}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+def leased(base: str, ours: str, tip: str | None, **kw: Any) -> subprocess.CompletedProcess[str]:
+    """Push `ours`, a child of `tip` (None: the branch is missing), to the base's lock branch, leased on `tip`, so of
+    two lands pushing from one tip one wins and nothing is ever rewritten. --no-verify, since a lock commit holds the
+    empty tree and a project's pre-push checks have nothing of it to check."""
+    ref = LOCK.format(base)
+    return subprocess.run(
+        [
+            "git",
+            "push",
+            "-q",
+            "--no-verify",
+            f"--force-with-lease={ref}:{tip or ''}",
+            "origin",
+            f"{ours}:{ref}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        **kw,
+    )
+
+
+def unlock(base: str, ours: str) -> subprocess.CompletedProcess[str]:
+    """Release the landing lock: push a FREE child of `ours`, leased on it, so a lock broken as stale and taken by
+    another land meanwhile stays theirs. In a session of its own (landing says why)."""
+    return leased(base, lock_commit(FREE, ours), ours, start_new_session=True)
+
+
+def locked(base: str, held: list[str]) -> bool:
+    """Take the base's landing lock: push a HELD child of its FREE tip (the first lock commit, with no parent, where the
+    branch is missing), leased on that tip. A HELD tip is another land's; one older than CEILING by its commit date is
+    stale, broken and taken by the same push of a HELD child. Each commit is put in `held` before its push, so a stop
+    as it reaches origin still releases it. False, after saying who holds it since when, while another land holds it
+    or LEGACY, the previous version's lock, is on origin and no older than CEILING."""
+    ref, name = LOCK.format(base), lock_name(base)
+    tip, refused = (
+        "",
+        "",
+    )  # "": not read yet; a refusal of a push from the tip read again is origin's, not a race's
+    for _ in range(3):
+        listed = {
+            line.split("\t")[1] for line in git("ls-remote", "origin", LEGACY, ref).splitlines()
+        }
+        if LEGACY in listed:
+            try:
+                git("fetch", "-q", "origin", f"+{LEGACY}:{LEGACY}")
+            except subprocess.CalledProcessError as exc:
+                if git(
+                    "ls-remote", "origin", LEGACY
+                ).strip():  # still there: the fetch itself failed
+                    raise Refused(
+                        f"could not read the previous version's landing lock {LEGACY}: {' '.join(str(exc.stderr).split())}"
+                    ) from exc
+                continue  # released since the listing: read origin again
+            age = int(time.time()) - int(git("log", "-1", "--format=%ct", LEGACY).strip())
+            if age <= CEILING:
+                print(
+                    f"a land of the previous version holds the landing lock {LEGACY}: land --wait waits for it"
+                )
+                return False
+            # stale, left by a land that died: passed over, never written, as the previous version would break it
+        before, tip = tip, None
+        if ref in listed:
+            git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+            tip = git("rev-parse", f"refs/remotes/origin/{name}").strip()
+        if refused and tip == before:
+            raise Refused(f"origin refused the landing lock {name}: {refused}")
+        if tip:
+            stamp, title, holder = git("log", "-1", "--format=%ct%x00%s%x00%b", tip).split("\0")
+            if title.startswith(HELD):
+                taken = int(stamp)
+                age = int(time.time()) - taken
+                holder = holder.strip().split(", nonce ")[0]
+                if age <= CEILING:
+                    print(
+                        f"another land holds the landing lock {name} ({holder}), taken {age // 60} minutes ago"
+                        f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
+                    )
+                    return False
+                print(
+                    f"the landing lock {name} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
+                )
+        held.append(lock_commit(HELD, tip))
+        pushed = leased(base, held[-1], tip)
         if not pushed.returncode:
             return True
-        held = git("ls-remote", "origin", LOCK).split()
-        if not held:
-            raise Refused(
-                f"origin refused the landing lock {LOCK}: {' '.join(pushed.stderr.split())}"
-            )
-        try:
-            git("fetch", "-q", "origin", LOCK)
-            taken = int(git("log", "-1", "--format=%ct", held[0]).strip())
-        except subprocess.CalledProcessError:  # released meanwhile: push again
-            continue
-        age = int(time.time()) - taken
-        if age <= CEILING:
-            print(
-                f"another land holds the landing lock {LOCK}, taken {age // 60} minutes ago"
-                f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
-            )
-            return False
-        print(
-            f"the landing lock {LOCK} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
-        )
-        subprocess.run(
-            [
-                "git",
-                "push",
-                "-q",
-                "--no-verify",
-                f"--force-with-lease={LOCK}:{held[0]}",
-                "origin",
-                f":{LOCK}",
-            ],
-            capture_output=True,
-            check=False,
-        )
+        refused = " ".join(pushed.stderr.split())
     print(
-        f"another land took the landing lock {LOCK} as this one broke it: land --wait waits for it"
+        f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
     return False
 
@@ -4196,7 +4330,7 @@ def parse_report(
     report: Path,
 ) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
     """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
-    `VERDICT:`, `SATISFIED:` and `Risk:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
+    `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
     none). Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
@@ -4257,7 +4391,8 @@ def parse_report(
             "was not run on a `Not run: <step>, owner action: <what>` line"
         )
     family, number, qualifier = passes[-1].groups()
-    closing = [verdicts[-1], satisfied[-1], judgments[-1]]
+    logic = [line for line in lines if line.startswith(f"{LOGIC}:")]
+    closing = [verdicts[-1], satisfied[-1], judgments[-1], *logic[-1:]]
     heading = f"Verifier ({family}), pass {number}"
     return heading, heads[-1].lower(), found, closing, qualifier
 
@@ -4998,12 +5133,16 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
     return 0
 
 
-def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
+def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None = None) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. A proof log whose first line isn't the head is refused, since the
-    verifier counts a stale proof as missing and spends the pass on it."""
+    verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
+    absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
+    detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
+    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the last two, as are the previous
+    pass's repros, each named by its path there from the copy of that report `wait` brought to `tmp/loop/` here."""
     _, loop = project()
     if isinstance(loop, Policy):
         loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
@@ -5027,21 +5166,44 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
         {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
         | set(named(pull["body"] or ""))
     )
-    role = os.path.relpath(Path(__file__).resolve().parents[1] / "verifier.md")
+    role = Path(__file__).resolve().parents[1] / "verifier.md"
+    loop_dir = far / "tmp" / "loop" if far else Path("tmp/loop")  # the verifier's tmp/loop/
+    tree = loop_dir / f"pr{pr}-v{number}-tree"
+    if far:
+        if not far.is_absolute():
+            raise Refused(f"--far {far}: an absolute path on the verifier's host")
+        role = tree / role.relative_to(toplevel())  # the worktree's own copy
     lines = [
-        f"Review PR #{pr} as the verifier, pass {number}, following {role}.",
+        f"Review PR #{pr} as the verifier, pass {number}, following {os.path.relpath(role) if not far else role}.",
         f"- Base: {base}",
         f"- Reviewed head: {head}",
         f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
-        f"- Report: tmp/loop/pr{pr}-v{number}.md",
     ]
+    if far:
+        lines.append(
+            f"- Worktree: first, in {far}, run `git fetch origin pull/{pr}/head` and"
+            f" `git worktree add --detach {tree} {head}`, then run every command of this brief in {tree}"
+        )
+    lines.append(f"- Report: {loop_dir / f'pr{pr}-v{number}.md'}")
     if reviewed:
         newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
         lines.append(
-            f"- Previous report: tmp/loop/pr{pr}-v{number - 1}.md, on {newest}: review the diff since that head and"
-            " rerun its repros"
+            f"- Previous report: {loop_dir / f'pr{pr}-v{number - 1}.md'}, on {newest}: review the diff since that head"
+            " and rerun its repros"
         )
-    lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
+        # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
+        # tmp/loop/: each by its path there, from the copy wait brought home
+        if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():
+            saved = re.findall(r"tmp/loop/([\w.-]+)(?![\w./-])", home.read_text())
+            lines += [
+                f"- Repro: {loop_dir / name}"
+                for name in dict.fromkeys(saved)
+                if name not in (home.name, f"pr{pr}-v{number}.md")
+            ]
+    lines += [
+        f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
+        for log in proofs
+    ]
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]
     # as written, but for the blank lines around it: indentation may be a snippet's
@@ -5115,6 +5277,8 @@ def main(argv: list[str]) -> int:
     merging.add_argument("--wait", action="store_true")
     briefing = commands.add_parser("brief")
     briefing.add_argument("pr", type=int)
+    # a verifier on another host: the absolute path there holding a clone of the repo
+    briefing.add_argument("--far", type=Path)
     briefing.add_argument("--priorities", type=Path)
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
@@ -5173,7 +5337,7 @@ def main(argv: list[str]) -> int:
         if args.command == "land":
             return land(args.pr, args.wait)
         if args.command == "brief":
-            return brief(args.pr, args.priorities, args.proof)
+            return brief(args.pr, args.priorities, args.proof, args.far)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)
