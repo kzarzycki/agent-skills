@@ -7896,3 +7896,15 @@ def test_under_uv_run_the_gate_sees_the_callers_environment(tmp_path: Path) -> N
 def test_under_uv_run_with_no_caller_environment_the_gate_sees_none(tmp_path: Path) -> None:
     seen = gate_sees(tmp_path, UV, {"PATH": "/usr/bin:/bin"})
     assert seen["VIRTUAL_ENV"] is None and (seen["PATH"] or "").startswith("/usr/bin")
+
+
+def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
+    tmp_path: Path,
+) -> None:
+    """uv counts each nested run in UV_RUN_RECURSION_DEPTH; the gate gets the count minus this script's."""
+    seen = gate_sees(
+        tmp_path,
+        [sys.executable],
+        {"VIRTUAL_ENV": sys.prefix, "UV_RUN_RECURSION_DEPTH": "2", "PATH": "/usr/bin:/bin"},
+    )
+    assert seen["UV_RUN_RECURSION_DEPTH"] == "1"

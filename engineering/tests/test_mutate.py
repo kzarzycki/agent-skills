@@ -269,7 +269,7 @@ def seen_env(repo: Path, tmp_path: Path, **env: str) -> dict[str, str]:
     script = tmp_path / "dump.py"
     script.write_text(
         "import json, os, sys\n"
-        "json.dump({k: os.environ.get(k) for k in ('VIRTUAL_ENV', 'PATH')}, open(sys.argv[1], 'w'))\n"
+        "json.dump({k: os.environ.get(k) for k in ('VIRTUAL_ENV', 'PATH', 'UV_RUN_RECURSION_DEPTH')}, open(sys.argv[1], 'w'))\n"
     )
     killed = patch(repo, "add.patch", "a + b", "a - b")
     result = mutate(repo, killed, test=f"{sys.executable} {script} {seen}; false", env=env)
@@ -294,7 +294,7 @@ def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_test_command(
     elsewhere = str(tmp_path / "project-venv")
     path = os.pathsep.join([str(Path(sys.prefix) / "bin"), "/usr/bin", "/bin"])
     seen = seen_env(repo, tmp_path, VIRTUAL_ENV=elsewhere, PATH=path)
-    assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path}
+    assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path, "UV_RUN_RECURSION_DEPTH": None}
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
@@ -345,3 +345,11 @@ def test_under_uv_run_the_test_command_sees_the_callers_environment(
     got = json.loads(seen.read_text())
     assert got["VIRTUAL_ENV"] == str(venv) and got["PATH"].startswith(path)
     assert got["UV_RUN_RECURSION_DEPTH"] is None
+
+
+def test_a_run_nested_under_another_uv_run_sees_the_callers_environment_depth(
+    repo: Path, tmp_path: Path
+) -> None:
+    """uv counts each nested run in UV_RUN_RECURSION_DEPTH; the test command gets the count minus this script's."""
+    seen = seen_env(repo, tmp_path, VIRTUAL_ENV=sys.prefix, UV_RUN_RECURSION_DEPTH="2")
+    assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
