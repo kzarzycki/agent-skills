@@ -1381,9 +1381,9 @@ def send(
     confirm_seconds: float,
     queued_after: float | None = None,
     far: bool = False,
-) -> str:
+) -> tuple[str, bool]:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
-    ``delivered``, or ``already`` when a copy had landed before. With ``queued_after`` (a relay),
+    ``delivered``, or ``already`` when a copy had landed before, and whether this call posted. With ``queued_after`` (a relay),
     ``queued`` once the copy has been pending that long instead. ``far``: the session runs on
     another host (``elsewhere``), where ``report`` and its question are.
 
@@ -1436,7 +1436,7 @@ def send(
         print(f"session {sid}: this message already landed", file=sys.stderr)
         if question:
             file_unlink(og, sid, question, far)
-        return "already"
+        return "already", False
     # or it landed between the two reads
     if pending(info) or any(str(i.get("id")) not in old for i in copies(og.items(sid))):
         print(
@@ -1468,7 +1468,7 @@ def send(
                 )
             held = held or time.monotonic()
             if queued_after is not None and time.monotonic() - held >= queued_after:
-                return "queued"
+                return "queued", posted
             deadline = time.monotonic() + confirm_seconds
         elif time.monotonic() >= deadline:
             raise Gone(
@@ -1478,7 +1478,7 @@ def send(
         time.sleep(POLL_SECONDS)
     if question:  # kept until the answer lands, for the fresh run
         file_unlink(og, sid, question, far)
-    return "delivered"
+    return "delivered", posted
 
 
 def relay(
@@ -1519,9 +1519,17 @@ def relay(
         return f"session {sid}: answered its open question: {'; '.join(asks)}"
     if by and not source:
         text = f"{RELAYED.format(who=by)}\n{text}"
-    outcome = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
+    outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":
-        info = og.info(sid)
+        try:
+            info = og.info(sid)
+        except Fail as e:
+            if not posted:  # an earlier copy, not this call's post: a plain failure
+                raise
+            raise SentUnconfirmed(
+                f"session {sid}: the message was posted but its delivery is unconfirmed ({e});"
+                " `send` again is safe, it finds the copy before it posts"
+            ) from e
         asks = questions_of(info)
         approvals = [p for p in prompts_of(info) if p not in asks]
         held = []

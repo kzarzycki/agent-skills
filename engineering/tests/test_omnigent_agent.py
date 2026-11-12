@@ -7031,6 +7031,46 @@ def test_a_supervisor_action_posted_but_unconfirmed_is_not_reported_as_failed(
     assert not any("was not delivered" in p for p in posted(og))
 
 
+def test_a_relay_queued_after_its_own_post_exits_7_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        if og.posts:
+            reads[0] += 1
+            if reads[0] == 2:  # the read that says why it is queued
+                raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.SENT_UNCONFIRMED
+    assert og.posts == 1
+
+
+def test_a_relay_queued_behind_an_earlier_copy_keeps_exit_1_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.send(sid, "[relayed by cos]\ngo")  # an earlier copy, pending
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        reads[0] += 1
+        if reads[0] == 4:  # relay's, send's, its poll's, then the one after the queued return
+            raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert reads[0] == 4 and og.posts == 1
+
+
 def test_a_send_whose_copy_was_already_there_and_whose_poll_fails_is_exit_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -8487,10 +8527,10 @@ def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
     here = omnigent_agent.question_of(report)
     here.parent.mkdir(parents=True)
     here.write_text("another session's")
-    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True) == "already"
+    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True)[0] == "already"
     assert og.posts == 1
     assert "tmp/loop/r.md.question" not in og.files  # answered: deleted on its host
-    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True) == "delivered"
+    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True)[0] == "delivered"
     assert here.read_text() == "another session's"
 
 
