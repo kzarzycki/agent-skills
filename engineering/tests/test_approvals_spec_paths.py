@@ -20,6 +20,7 @@ from approvals_harness import (
     attached,  # noqa: F401
     by,
     git_in,
+    graphql_answers,  # noqa: F401
     hub,  # noqa: F401
     lands,  # noqa: F401
     loop_md,

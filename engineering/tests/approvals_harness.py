@@ -33,6 +33,7 @@ from test_approvals import (
     by,
     gatekeeper_md,
     git_in,
+    graphql_answers,
     hub,
     issue,
     lands,
@@ -53,7 +54,17 @@ from test_approvals import (
 )
 
 # The fixtures every test of approvals.py runs under; a module imports each by name.
-AUTOUSE = ("attached", "pushed", "others_open", "hub", "refs", "required", "added", "assigned")
+AUTOUSE = (
+    "attached",
+    "pushed",
+    "others_open",
+    "hub",
+    "refs",
+    "required",
+    "added",
+    "assigned",
+    "graphql_answers",
+)
 
 __all__ = [
     "AS_WRITTEN",
@@ -82,6 +93,7 @@ __all__ = [
     "by",
     "gatekeeper_md",
     "git_in",
+    "graphql_answers",
     "hub",
     "issue",
     "lands",
