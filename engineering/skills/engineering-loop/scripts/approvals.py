@@ -5075,12 +5075,16 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
     return 0
 
 
-def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
+def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None = None) -> int:
     """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
     verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. A proof log whose first line isn't the head is refused, since the
-    verifier counts a stale proof as missing and spends the pass on it."""
+    verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
+    absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
+    detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
+    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the last two, as are the previous
+    pass's repros, each named by its path there from the copy of that report `wait` brought to `tmp/loop/` here."""
     _, loop = project()
     if isinstance(loop, Policy):
         loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
@@ -5104,21 +5108,44 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
         {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
         | set(named(pull["body"] or ""))
     )
-    role = os.path.relpath(Path(__file__).resolve().parents[1] / "verifier.md")
+    role = Path(__file__).resolve().parents[1] / "verifier.md"
+    loop_dir = far / "tmp" / "loop" if far else Path("tmp/loop")  # the verifier's tmp/loop/
+    tree = loop_dir / f"pr{pr}-v{number}-tree"
+    if far:
+        if not far.is_absolute():
+            raise Refused(f"--far {far}: an absolute path on the verifier's host")
+        role = tree / role.relative_to(toplevel())  # the worktree's own copy
     lines = [
-        f"Review PR #{pr} as the verifier, pass {number}, following {role}.",
+        f"Review PR #{pr} as the verifier, pass {number}, following {os.path.relpath(role) if not far else role}.",
         f"- Base: {base}",
         f"- Reviewed head: {head}",
         f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
-        f"- Report: tmp/loop/pr{pr}-v{number}.md",
     ]
+    if far:
+        lines.append(
+            f"- Worktree: first, in {far}, run `git fetch origin pull/{pr}/head` and"
+            f" `git worktree add --detach {tree} {head}`, then run every command of this brief in {tree}"
+        )
+    lines.append(f"- Report: {loop_dir / f'pr{pr}-v{number}.md'}")
     if reviewed:
         newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
         lines.append(
-            f"- Previous report: tmp/loop/pr{pr}-v{number - 1}.md, on {newest}: review the diff since that head and"
-            " rerun its repros"
+            f"- Previous report: {loop_dir / f'pr{pr}-v{number - 1}.md'}, on {newest}: review the diff since that head"
+            " and rerun its repros"
         )
-    lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
+        # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
+        # tmp/loop/: each by its path there, from the copy wait brought home
+        if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():
+            saved = re.findall(r"tmp/loop/([\w.-]+)(?![\w./-])", home.read_text())
+            lines += [
+                f"- Repro: {loop_dir / name}"
+                for name in dict.fromkeys(saved)
+                if name not in (home.name, f"pr{pr}-v{number}.md")
+            ]
+    lines += [
+        f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
+        for log in proofs
+    ]
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]
     # as written, but for the blank lines around it: indentation may be a snippet's
@@ -5192,6 +5219,8 @@ def main(argv: list[str]) -> int:
     merging.add_argument("--wait", action="store_true")
     briefing = commands.add_parser("brief")
     briefing.add_argument("pr", type=int)
+    # a verifier on another host: the absolute path there holding a clone of the repo
+    briefing.add_argument("--far", type=Path)
     briefing.add_argument("--priorities", type=Path)
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
@@ -5250,7 +5279,7 @@ def main(argv: list[str]) -> int:
         if args.command == "land":
             return land(args.pr, args.wait)
         if args.command == "brief":
-            return brief(args.pr, args.priorities, args.proof)
+            return brief(args.pr, args.priorities, args.proof, args.far)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)
