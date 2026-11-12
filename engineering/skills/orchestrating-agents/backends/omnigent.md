@@ -339,13 +339,20 @@ archive it with `reap <session>`.
 
 A cloud session started without `--pr` (`claude-cloud`, a lead or not) keeps its report file
 in its VM, which no file API here reaches, so its preamble has it reply with the full report as
-its last message, a lead's opening with its ending line (`DONE: ... Report: <path>`). `wait`
-takes a turn that ends on more than a report's path as that report and writes it to the report
-path (on the session's host), a file already there never counting; one that ends on less gets
-a nudge to reply with it. `report <session> [<path>]` prints that message and writes it to the
-path, rather than reading the file. The supervisor takes a followed cloud lead's ending and wait
-from the `report_head` of its last message and reads no file, and its post shows that head as
-the report's. A host session keeps the file.
+its last message, marked: a lead's opens with its ending line (`DONE:`, `USER NEEDED:`,
+`STILL WORKING:`, `PARKED:`), a child's with a first line `REPORT`, and a child's question with a
+first line `QUESTION`. A turn can end on a progress line ("Committing the fix...") or an unmarked
+question, so only a marked last message counts. `wait` writes a marked report to the report path
+(on the session's host), a file already there never counting, and a marked question to
+`<report>.question`, exiting 3 as for a host child's question; any other turn end gets a nudge to
+reply with the marked report. `report <session> [<path>]` prints a marked report and writes it to
+the path, else reads the file as for a host session. The supervisor's per-child look takes a
+cloud child's report or question from its marked last message by the same rule, reads no file
+for it, and sends it a resume and revive line that names no file path. It takes a followed cloud
+lead's ending and wait from the `report_head` of its last message and reads no file, and its post
+shows that head as the report's. A session is a cloud one when its agent's harness is
+`acp:claude-cloud` (its record's `agent_name`, else `agent_id`; looked up once per agent), since
+the record's own `harness` is the transport, `acp`. A host session keeps the file.
 
 `--host <name|id>` starts the lead on another Omnigent host (`GET /v1/hosts` lists them).
 It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a host other

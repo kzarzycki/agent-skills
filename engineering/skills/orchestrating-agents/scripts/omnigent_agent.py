@@ -469,32 +469,42 @@ CLOUD_NOTE = (
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
 )
 # A cloud session without --pr reports in its last message, since its report file stays in the VM,
-# which the host's file API can't read: wait and report write that message to the report path.
+# which the host's file API can't read: wait and report write that message to the report path. A
+# turn can end on a progress line or a question, so only a marked message counts (``cloud_reply``):
+# a child's first line is ``CLOUD_REPORT_LINE`` or ``CLOUD_QUESTION_LINE``, a lead's its ending line.
+CLOUD_REPORT_LINE, CLOUD_QUESTION_LINE = "REPORT", "QUESTION"
 CLOUD_REPLIES = {
     # (PREAMBLE's sentence, its cloud form)
     "Write your final report to {report}, once, when done: keep any progress notes in another"
     " file, since the report path is read as your answer.": (
         "Your files stay in this cloud VM, which the host never reads, so your final report is your"
-        " last message, once, when done: reply with the full report, which the host writes to"
-        " {report}, and keep progress notes out of that message."
+        f" last message, once, when done: a first line `{CLOUD_REPORT_LINE}`, then the full report,"
+        " which the host writes to {report}. Any other last message is read as unfinished and"
+        " nudged, so keep progress notes out of it."
     ),
     "write the question to {report}.question, reply with only that path, and stop: the answer"
     " comes as your next message.": (
-        "put the question in that reply and stop: the answer comes as your next message."
+        f"reply with a first line `{CLOUD_QUESTION_LINE}`, then the question, and stop: the answer"
+        " comes as your next message."
     ),
     "When done, reply with only the report path.\n": "",
     # LEAD_PREAMBLE's
     "Write your final report to {report}. End every turn with one line": (
         "Your files stay in this cloud VM, which the host never reads, so your final report is"
         " your last message: when done, reply with the full report, opening with its ending line"
-        " (below) rather than ending on it, and the host writes it to {report}. End every other"
-        " turn with one line"
+        " (below) rather than ending on it, and the host writes it to {report}; a last message that"
+        " opens with no ending line is read as unfinished and nudged. End every other turn with"
+        " one line"
     ),
 }
 CLOUD_NUDGE = (
     NO_REPORT + " Poll any long run you started detached, then reply with the full report as your"
-    " brief says: your files stay in the cloud VM, which the host never reads."
+    f" brief says, its first line `{CLOUD_REPORT_LINE}` (a lead's: its ending line), or with a first"
+    f" line `{CLOUD_QUESTION_LINE}` and your question: your files stay in the cloud VM, which the"
+    " host never reads."
 )
+# A lead's cloud report opens with the ending line LEAD_PREAMBLE names.
+CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
 
 
 def cloud_preamble(preamble: str, pr: int | None) -> str:
@@ -506,14 +516,40 @@ def cloud_preamble(preamble: str, pr: int | None) -> str:
     return preamble.removesuffix("\n") + CLOUD_NOTE + "\n"
 
 
-def cloud_report(items: list[dict]) -> str | None:
-    """The report a cloud session without ``--pr`` gives as its last message: that message when it
-    is the history's last and an assistant's, holding more than a report's path, else None."""
+def cloud_reply(items: list[dict]) -> tuple[str, str] | None:
+    """What a cloud session without ``--pr`` gives as its last message, when that is the history's
+    last and an assistant's and is marked (``CLOUD_REPLIES``): ``("report", <body>)`` for a lead's
+    that opens with its ending line (the whole message) or a child's whose first line is
+    ``CLOUD_REPORT_LINE`` (what follows it), ``("question", <body>)`` for one whose first line is
+    ``CLOUD_QUESTION_LINE``; else None, since a turn can end on a progress line ("Committing the
+    fix...") or an unmarked question."""
     last = last_message(items)
     if not last or last.get("role") != "assistant":
         return None
     text = text_of(last).strip()
-    return None if not text or REPORT_PATH.fullmatch(text) else text + "\n"
+    first, _, rest = text.partition("\n")
+    if CLOUD_LEAD_ENDING.match(first):
+        return "report", text + "\n"
+    mark = first.strip().strip("*_#` ").rstrip(":").strip()
+    rest = rest.strip()
+    if mark == CLOUD_REPORT_LINE and rest:
+        return "report", rest + "\n"
+    if mark == CLOUD_QUESTION_LINE and rest:
+        return "question", rest + "\n"
+    return None
+
+
+def cloud_session(og: Omnigent, info: dict) -> bool:
+    """Whether the session ``info`` describes runs on ``acp:claude-cloud``. Its record's own
+    ``harness`` is the transport (``acp``): the cloud harness is its agent's, looked up by the
+    record's ``agent_name`` (else ``agent_id``); an agent that can't be looked up is no cloud one."""
+    agent = info.get("agent_name") or info.get("agent_id")
+    if not agent:
+        return False
+    try:
+        return og.harness(str(agent)) == CLOUD_HARNESS
+    except Fail:
+        return False
 
 
 def repo_name() -> str:
@@ -612,8 +648,11 @@ def briefs_for(report: Path, listed: list[Path], far: bool = False) -> list[Path
     return listed or [b for b in [brief_of(report)] if not far and b.exists()]
 
 
-def revive_line(report: Path, briefs: list[Path]) -> str:
+def revive_line(report: Path, briefs: list[Path], cloud: bool = False) -> str:
+    """The revive line; a ``cloud`` session's names no report file, which stays in its VM."""
     read = f" Read your brief: {', '.join(map(str, briefs))}." if briefs else ""
+    if cloud:
+        return f"{REVIVED}{read} Reply with the full report as your brief says, once done."
     return f"{REVIVED}{read} Write your report to {report}."
 
 
@@ -759,7 +798,11 @@ class Omnigent:
         return str(self.agent(name)["id"])
 
     def harness(self, name: str) -> str:
-        return str(self.agent(name).get("harness") or "")
+        """Agent ``name``'s harness, looked up once per name: a poll asks it at every look."""
+        cache = self.__dict__.setdefault("_harnesses", {})
+        if name not in cache:
+            cache[name] = str(self.agent(name).get("harness") or "")
+        return cache[name]
 
     def models(self, name: str, host_id: str | None = None) -> list[str]:
         """The model ids agent ``name``'s harness lists on the host it would run on: each picker
@@ -2303,8 +2346,9 @@ def wait(
     session the same way (``run``'s; without it, it fails), and one that stalled gets one continue
     message; a second of either fails, naming the first. An ``acp:claude-cloud`` child without
     ``pr`` reports in its last message (``CLOUD_REPLIES``), since its files stay in its VM: a turn
-    ending on more than a report's path has that message written to ``report`` (on the session's
-    host); a file already there never counts, as with ``pr``.
+    ending on a marked report (``cloud_reply``) has it written to ``report`` (on the session's
+    host), one ending on a marked question has it written to ``<report>.question`` and raises
+    ``Asked``, and any other gets the nudge; a file already there never counts, as with ``pr``.
     """
     deadline = time.monotonic() + timeout
     far = False  # on another host (no ``pr``): its files are read through its file API, not here
@@ -2338,7 +2382,7 @@ def wait(
     while True:
         info = og.info(sid)
         far = not pr and elsewhere(og, info)
-        cloud = not pr and info.get("harness") == CLOUD_HARNESS
+        cloud = not pr and cloud_session(og, info)
         if stamp(question) is not None:
             raise Asked(str(question))
         status = str(info.get("status"))
@@ -2408,17 +2452,14 @@ def wait(
             report.write_text(body)
             carry_files(body, report)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
-        if (
-            turn_ended
-            and cloud
-            and status != "failed"
-            and (body := cloud_report(items)) is not None
-        ):
-            if far:
-                file_write(og, sid, report, body, far)
-            else:
-                report.parent.mkdir(parents=True, exist_ok=True)
-                report.write_text(body)
+        if turn_ended and cloud and status != "failed" and (reply := cloud_reply(items)):
+            kind, body = reply
+            path = question if kind == "question" else report
+            if not far:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            file_write(og, sid, path, body, far)
+            if kind == "question":
+                raise Asked(str(question))
             break  # the turn has ended on it: a later turn is a follow-up's
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
@@ -3205,7 +3246,9 @@ def check(
     # skewed server clock shifts the silence and the report's baseline by the skew.
     info, items = og.info(sid), og.items(sid)
     head = f"{sid} {info.get('title') or ''}".rstrip()
-    resume = NUDGE.format(report=report)
+    # a cloud child's files stay in its VM: its marked last message is its report or question
+    cloud = cloud_session(og, info)
+    resume = CLOUD_NUDGE if cloud else NUDGE.format(report=report)
     since, resent = instructed(items, resume)
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
@@ -3221,7 +3264,19 @@ def check(
         text = file_text(og, sid, report, far)
         return not FAILED_LINE.fullmatch(text) and (not verdict or bool(VERDICT.search(text)))
 
-    if counts():
+    if cloud:
+        if str(info.get("status")) not in RUNNING | {"failed"} and (reply := cloud_reply(items)):
+            kind, body = reply
+            path = question_of(report) if kind == "question" else report
+            if not far:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            file_write(og, sid, path, body, far)
+            return (
+                f"{head}: asked: {path}"
+                if kind == "question"
+                else f"{head}: report written: {path}"
+            ), since
+    elif counts():
         stamp = file_mtime(og, sid, report, far)
         if settled(stamp, info, items, {} if ended is None else ended, sid) and counts():
             return f"{head}: report written: {report}", since
@@ -3244,7 +3299,7 @@ def check(
         say(f"{head}: revived (no live runner)")
         unsent.add(sid)
     if sid in unsent:  # once online, the revived runner never comes this way again: retry here
-        og.send(sid, revive_line(report, briefs_for(report, briefs or [], far)))
+        og.send(sid, revive_line(report, briefs_for(report, briefs or [], far), cloud))
         unsent.discard(sid)
         return "", since
     resent = max(resent, resumed.get(sid, 0.0))
@@ -4353,7 +4408,7 @@ def supervise_registry(
             follow=followed,
             direct=direct,
             waits_on=[after] if after else [],
-            cloud=info.get("harness") == CLOUD_HARNESS,
+            cloud=cloud_session(og, info),
             **lead_status(info, items),
         )
         if console:
@@ -5016,11 +5071,14 @@ def main(argv: list[str] | None = None) -> int:
                 info = og.info(sid)
             except Fail:  # no record names its harness: the file read, as before, says what fails
                 info = {}
-            # a cloud session's report stays in its VM: its last message is the report, written here
+            # a cloud session's report stays in its VM: its marked last message is the report,
+            # written here; an unmarked one (a progress line, a question) is none
             if (
-                info.get("harness") == CLOUD_HARNESS
-                and (body := cloud_report(og.items(sid))) is not None
+                cloud_session(og, info)
+                and (reply := cloud_reply(og.items(sid)))
+                and reply[0] == "report"
             ):
+                body = reply[1]
                 far = elsewhere(og, info)
                 path = Path(args.path)
                 if not path.is_absolute() and not far:  # as read_file takes it: the workspace's
