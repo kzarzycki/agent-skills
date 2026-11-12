@@ -53,6 +53,12 @@ REFUSED = (
     "returned error: 403",  # git push through the proxy
     "must authenticate via a github app",
 )
+AUTH_ERRORS = (
+    "bad credentials",
+    "authentication failed",
+    "invalid credentials",
+    "could not read username",
+)
 
 
 def classify(rc, out, ok=True):
@@ -60,7 +66,10 @@ def classify(rc, out, ok=True):
     output, else `inconclusive`: a network, auth or registry failure says nothing about policy."""
     if ok and rc == 0:
         return "allowed"
-    return "refused" if any(t in out.lower() for t in REFUSED) else "inconclusive"
+    low = out.lower()
+    if any(t in low for t in AUTH_ERRORS):  # a credential failure is not a policy answer
+        return "inconclusive"
+    return "refused" if any(t in low for t in REFUSED) else "inconclusive"
 
 
 def api(method, path, *fields):
