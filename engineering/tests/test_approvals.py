@@ -5635,6 +5635,136 @@ def published_on_a(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     return head
 
 
+def shallow_clone(tmp_path: Path, behind: int = 3, depth: int = 1) -> tuple[Path, str, str]:
+    """A bare origin whose main has one commit and whose `feature` is `behind` commits past it, and a `--depth`
+    clone of `feature` that holds none of main. Returns the clone, the fork point and the clone's head."""
+    origin, work, clone = tmp_path / "origin.git", tmp_path / "work", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    fork = committed(work)
+    git_in(work, "branch", "-M", "main")
+    git_in(work, "remote", "add", "origin", str(origin))
+    git_in(work, "push", "-q", "origin", "main")
+    for n in range(behind):
+        (work / "app.py").write_text(f"value = {n + 2}\n")
+        git_in(work, "commit", "-qam", f"change {n}")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    git_in(
+        tmp_path, "clone", "-q", "--depth", str(depth), "--branch", "feature",
+        f"file://{origin}", str(clone),
+    )  # fmt: skip
+    return clone, fork, git_in(clone, "rev-parse", "HEAD").strip()
+
+
+def test_a_shallow_clone_is_deepened_until_the_merge_base_with_the_base_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, fork, head = shallow_clone(tmp_path)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "baseRefName": "main"})
+    assert git_in(clone, "rev-parse", "--is-shallow-repository").strip() == "true"
+    approvals.deepened(None)
+    assert git_in(clone, "merge-base", "origin/main", "HEAD").strip() == fork
+    assert git_in(clone, "rev-parse", "HEAD").strip() == head
+    err = capsys.readouterr().err.splitlines()
+    assert err and all(line.startswith("local-ci: ") for line in err)
+    assert any("--deepen" in line for line in err)
+
+
+def test_a_pr_s_base_is_the_one_a_shallow_clone_is_deepened_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone, fork, _ = shallow_clone(tmp_path)
+    origin = tmp_path / "origin.git"
+    git_in(origin, "branch", "release", fork)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "baseRefName": "release"})
+    approvals.deepened(7)
+    assert git_in(clone, "merge-base", "origin/release", "HEAD").strip() == fork
+
+
+def test_a_history_deeper_than_one_step_unshallows_when_deepening_falls_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, fork, _ = shallow_clone(tmp_path, behind=400)
+    monkeypatch.chdir(clone)
+    approvals.deepened(None)
+    assert git_in(clone, "merge-base", "origin/main", "HEAD").strip() == fork
+    assert "--unshallow" in capsys.readouterr().err
+
+
+def test_a_full_clone_runs_no_deepening_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, _, _ = shallow_clone(tmp_path)
+    git_in(clone, "fetch", "-q", "--unshallow", "origin")
+    calls: list[list[str]] = []
+    real = subprocess.run
+
+    def traced(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append(list(cmd))
+        return real(cmd, *args, **kwargs)
+
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(subprocess, "run", traced)
+    approvals.deepened(None)
+    assert not [c for c in calls if "--deepen" in c or "--unshallow" in c or "fetch" in c]
+    assert capsys.readouterr().err == ""
+
+
+def test_local_ci_record_in_a_shallow_clone_gives_the_gate_a_merge_base_and_records_the_head_tree(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clone, fork, head = shallow_clone(tmp_path)
+    seen = tmp_path / "seen"
+    script = tmp_path / "gate.sh"
+    script.write_text(f"#!/bin/sh\ngit merge-base origin/main HEAD > {seen}\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "LOCAL_CI", [str(script)])
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert seen.read_text().strip() == fork
+    [record] = (clone / ".git" / "approvals" / "local-ci").glob("*.json")
+    assert (
+        json.loads(record.read_text())["tree"] == git_in(clone, "rev-parse", "HEAD^{tree}").strip()
+    )
+    assert git_in(clone, "rev-parse", "HEAD").strip() == head
+
+
+def test_a_shallow_clone_that_already_reaches_the_base_is_not_deepened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the clone holds the fork point, but not origin/main yet
+    clone, fork, _ = shallow_clone(tmp_path, depth=4)
+    monkeypatch.chdir(clone)
+    approvals.deepened(None)
+    assert git_in(clone, "merge-base", "origin/main", "HEAD").strip() == fork
+    assert git_in(clone, "rev-parse", "--is-shallow-repository").strip() == "true"
+    err = capsys.readouterr().err
+    assert "--deepen" not in err and "--unshallow" not in err
+
+
+def test_local_ci_record_on_a_changed_shallow_checkout_gives_the_gate_a_merge_base_and_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, fork, _ = shallow_clone(tmp_path)
+    (clone / "app.py").write_text("value = 99\n")
+    seen = tmp_path / "seen"
+    script = tmp_path / "gate.sh"
+    script.write_text(f"#!/bin/sh\ngit merge-base origin/main HEAD > {seen}\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "LOCAL_CI", [str(script)])
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert seen.read_text().strip() == fork
+    assert "nothing is recorded" in capsys.readouterr().out
+    assert not list((clone / ".git" / "approvals" / "local-ci").glob("*.json"))
+
+
 def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_env(
     github: list[tuple[Any, ...]],
     hub: dict[str, list[dict[str, Any]]],

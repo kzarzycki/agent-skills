@@ -163,6 +163,11 @@ is missing. Without the section nothing changes.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
+In a shallow clone (a cloud session's), before the gate it fetches the base (the PR's, else the default branch) into
+`refs/remotes/origin/<base>` and deepens (`git fetch --deepen 50`, up to three times, then `--unshallow`) until `git
+merge-base origin/<base> HEAD` answers, so a gate step that diffs against the merge base gets a ref; each step's outcome
+is one `local-ci:` line on stderr. A full clone runs nothing new, and no tracked file changes, so the recorded tree is
+the same.
 The check is the gate: loop.md's `gate` under `loop` (default `mise run check:all`), variables it sets in front of
 its command included (`GATE_UI_TESTS=0 mise run check:all`), one command run with no shell, so an operator
 such as `&&` is refused. It runs with every name loop.md's `local_ci_env` lists
@@ -4552,6 +4557,78 @@ def checkout_state() -> tuple[str, str]:
     return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
 
+def base_branch(pr: int | None) -> str | None:
+    """The branch `local-ci` diffs against: PR `pr`'s base, else the default branch (`origin/HEAD`, else what `origin`
+    says its HEAD is); None when neither answers."""
+    if pr is not None:
+        return str(pull_request(pr)["baseRefName"])
+    with contextlib.suppress(subprocess.CalledProcessError):
+        return (
+            git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+            .strip()
+            .removeprefix("origin/")
+        )
+    with contextlib.suppress(subprocess.CalledProcessError):
+        for line in git("ls-remote", "--symref", "origin", "HEAD").splitlines():
+            if line.startswith("ref: refs/heads/"):
+                return line.split("\t")[0].removeprefix("ref: refs/heads/")
+    return None
+
+
+DEEPEN_STEPS = 3
+DEEPEN_BY = 50
+
+
+def deepened(pr: int | None) -> None:
+    """In a shallow clone, fetch the base (base_branch) into `refs/remotes/origin/<base>` and deepen until `git
+    merge-base origin/<base> HEAD` answers (`--deepen 50` up to DEEPEN_STEPS times, then `--unshallow`), so a gate
+    step that diffs against the merge base gets a ref; each step's outcome is a line on stderr. A full clone runs
+    nothing, and no tracked file changes, so the tree a pass records is the same."""
+    if git("rev-parse", "--is-shallow-repository").strip() != "true":
+        return
+    base = base_branch(pr)
+    if base is None:
+        print(
+            "local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr
+        )
+        return
+    ref = f"origin/{base}"
+    spec = f"+refs/heads/{base}:refs/remotes/{ref}"
+
+    def fetch(*flags: str) -> bool:
+        done = subprocess.run(
+            ["git", "fetch", "--quiet", *flags, "origin", spec],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        what = " ".join(flags) or "fetch"
+        outcome = (
+            "ok" if done.returncode == 0 else f"failed: {done.stderr.strip() or done.returncode}"
+        )
+        print(
+            f"local-ci: shallow clone, git fetch {what} origin {base}: {outcome}", file=sys.stderr
+        )
+        return done.returncode == 0
+
+    def found() -> bool:
+        return (
+            subprocess.run(
+                ["git", "merge-base", ref, "HEAD"], capture_output=True, check=False
+            ).returncode
+            == 0
+        )
+
+    if fetch() and found():
+        return
+    for _ in range(DEEPEN_STEPS):
+        if fetch("--deepen", str(DEEPEN_BY)) and found():
+            return
+    if fetch("--unshallow") and found():
+        return
+    print(f"local-ci: no merge base of {ref} and HEAD after deepening", file=sys.stderr)
+
+
 def run_local_ci(
     pr: int | None, head: str | None, passed: list[str] | tuple[str, ...] = ()
 ) -> dict[str, Any]:
@@ -4566,6 +4643,7 @@ def run_local_ci(
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
     command, _, env = gate(passed)
+    deepened(pr)
     code = ran_gate(passed=passed)
     if code == settings(project()[1]).get("machine_exit"):
         raise Refused(
@@ -5113,6 +5191,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
         RAN["command"] = gate(passed)[0]
         head, changes = checkout_state()
         if changes:
+            deepened(None)
             command, code = gate(passed)[0], ran_gate(passed=passed)
             print(
                 f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
