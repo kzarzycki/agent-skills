@@ -457,6 +457,7 @@ it was never gated on:
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
+`land <pr> --only` lands that PR alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the batch landed or needs someone
 (exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
