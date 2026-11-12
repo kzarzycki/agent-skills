@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -7808,3 +7809,114 @@ def test_a_spec_or_plan_is_never_the_delegates_to_approve(
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
     assert "approve spec is the owner's" in capsys.readouterr().out
     assert github == []
+
+
+def gate_sees(tmp_path: Path, launcher: list[str], env: dict[str, str]) -> dict[str, str | None]:
+    """The VIRTUAL_ENV, PATH and UV_RUN_RECURSION_DEPTH the gate command sees when the real script, started by
+    `launcher` with `env` over a bare one, runs `local-ci --record` in a checkout whose gate dumps them."""
+    repo, seen = tmp_path / "repo", tmp_path / "seen.json"
+    (repo / "docs" / "agents").mkdir(parents=True)
+    (repo / "docs" / "agents" / "loop.md").write_text(loop_md("loop:\n  gate: python3 dump.py\n"))
+    (repo / "dump.py").write_text(
+        "import json, os\n"
+        f"keys = ('VIRTUAL_ENV', 'PATH', 'UV_RUN_RECURSION_DEPTH')\n"
+        f"json.dump({{k: os.environ.get(k) for k in keys}}, open({str(seen)!r}, 'w'))\n"
+    )
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+    script = SCRIPTS / "approvals.py"
+    run = subprocess.run(
+        [*launcher, str(script), "local-ci", "--record"],
+        cwd=repo,
+        env={
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("VIRTUAL_ENV", "UV_RUN_RECURSION_DEPTH")
+        }
+        | env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    return json.loads(seen.read_text())
+
+
+def caller_venv(tmp_path: Path) -> Path:
+    """An environment a caller activated: a folder with a pyvenv.cfg and a bin."""
+    venv = tmp_path / "caller-venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / "bin" / "python3").symlink_to(
+        sys.executable
+    )  # uv inspects an active environment's interpreter
+    return venv
+
+
+UV = [shutil.which("uv") or "uv", "run", "-q", "--script"]
+needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
+
+
+def test_the_gate_started_in_the_scripts_own_environment_does_not_see_it(tmp_path: Path) -> None:
+    """The script's entry point strips its own environment before the gate starts."""
+    own_bin = os.path.join(sys.prefix, "bin")
+    seen = gate_sees(
+        tmp_path,
+        [sys.executable],
+        {"VIRTUAL_ENV": sys.prefix, "PATH": os.pathsep.join([own_bin, "/usr/bin", "/bin"])},
+    )
+    assert seen["VIRTUAL_ENV"] is None
+    assert own_bin not in (seen["PATH"] or "").split(os.pathsep) and "/usr/bin" in seen["PATH"]
+
+
+def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_gate(tmp_path: Path) -> None:
+    path = os.pathsep.join([os.path.join(sys.prefix, "bin"), "/usr/bin", "/bin"])
+    elsewhere = str(tmp_path / "project-venv")
+    seen = gate_sees(tmp_path, [sys.executable], {"VIRTUAL_ENV": elsewhere, "PATH": path})
+    assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path, "UV_RUN_RECURSION_DEPTH": None}
+
+
+# the cases a path heuristic can't tell apart: uv replaces the caller's VIRTUAL_ENV before the script starts, so
+# neither is reconstructed, whether or not the caller activated an environment
+CALLERS = {
+    "activated, another directory in front of its bin": lambda venv: (
+        str(venv),
+        ["/usr/bin", str(venv / "bin"), "/bin"],
+    ),
+    "not activated, its bin first on PATH": lambda venv: (
+        None,
+        [str(venv / "bin"), "/usr/bin", "/bin"],
+    ),
+}
+
+
+@needs_uv
+@pytest.mark.parametrize("case", CALLERS)
+def test_under_uv_run_the_gate_gets_no_virtual_env_and_the_callers_path(
+    tmp_path: Path, case: str
+) -> None:
+    """The gate gets no VIRTUAL_ENV, never a guessed one, and the caller's PATH without the script's own bin."""
+    virtual_env, entries = CALLERS[case](caller_venv(tmp_path))
+    path = os.pathsep.join(entries)
+    seen = gate_sees(
+        tmp_path, UV, {"PATH": path} | ({"VIRTUAL_ENV": virtual_env} if virtual_env else {})
+    )
+    assert seen["VIRTUAL_ENV"] is None
+    assert seen["PATH"] == path
+
+
+def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
+    tmp_path: Path,
+) -> None:
+    """uv counts each nested run in UV_RUN_RECURSION_DEPTH; the gate gets the count minus this script's."""
+    seen = gate_sees(
+        tmp_path,
+        [sys.executable],
+        {"VIRTUAL_ENV": sys.prefix, "UV_RUN_RECURSION_DEPTH": "2", "PATH": "/usr/bin:/bin"},
+    )
+    assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
