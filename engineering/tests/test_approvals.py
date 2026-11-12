@@ -5858,6 +5858,211 @@ def test_under_spec_auto_a_risk_rule_holds_no_merge_but_risk_high_and_the_cap_do
     assert approvals.risk(done, [owned], POLICY) == "it matches a risk rule (path `billing/**`)"
 
 
+# --- spec.auto's `paths` term: a spec labelled spec:paths is approved by policy while its PR stays inside them ---
+
+SCOPED = loop_md(
+    "spec:\n  auto:\n    - bug\n    - paths:\n        - mise.toml\n        - docs/agents/**\n"
+    "risk:\n  verifier: true\n  paths:\n    - billing/**\n"
+)
+LOW = {**VERDICT, "body": VERDICT["body"] + "Risk: low\n"}
+OWNER_SPEC = [
+    "#1 has no `Approved: spec` record by the owner",
+    "#1 lacks the `approved:spec` label",
+]
+
+
+def tooling(*labels: str, author: str = "worker") -> dict[str, Any]:
+    """A writer's chore spec the lead declared path-scoped, with no approval of the owner's."""
+    return by(author, specced(1, "kind:chore", "spec:paths", *labels))
+
+
+def owners(why: str) -> list[str]:
+    """check's lines for #1 when the paths term does not approve its spec."""
+    return [
+        f"#1: its spec is the owner's to approve, though it carries `spec:paths`, since {why}",
+        *OWNER_SPEC,
+    ]
+
+
+def moved(*files: tuple[str, str | None]) -> dict[str, Any]:
+    """A PR with the head's verdict changing `files`, each a (path, old name) pair: a pair with an old name is a
+    rename, as GraphQL gives it (the new path only); approvals.py reads the old name from the REST list."""
+    pr = pull(reviews=(LOW,))
+    pr["files"] = {
+        "totalCount": len(files),
+        "nodes": [
+            {"path": path, "changeType": "RENAMED" if old else "MODIFIED"} for path, old in files
+        ],
+    }
+    return pr
+
+
+@pytest.fixture
+def renames(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The PR's REST file list (pr_changes), each renamed file's `previous_filename` by its new name; `fail` makes
+    GitHub refuse the list."""
+    found: dict[str, Any] = {"old": {}, "fail": False}
+
+    def changes(number: int) -> list[dict[str, Any]]:
+        if found["fail"]:
+            raise subprocess.CalledProcessError(1, ["gh", "api"])
+        return [{"filename": new, "previous_filename": old} for new, old in found["old"].items()]
+
+    monkeypatch.setattr(approvals, "pr_changes", changes)
+    return found
+
+
+def test_check_build_passes_a_spec_paths_issue_with_no_owner_record(
+    writers: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Before the PR, the setting and the label approve the spec: the branch's files so far stay inside the paths."""
+    spec = {1: tooling(), 2: by("worker", specced(2, "kind:chore"))}
+    changed = ["docs/agents/loop.md\n"]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            return "".join(f"{path}\0" for path in changed[0].split())
+        return "origin/main\n" if args[-1] == "origin/HEAD" else "loop/1-fix\n"
+
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, SCOPED))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(number: int) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", "--issue", str(number)])
+        return code, capsys.readouterr().out.splitlines()
+
+    assert build(1) == (0, ["#1: every build proof holds; no PR yet"])
+    # no label, no policy: the owner approves it
+    assert build(2) == (
+        1,
+        ["#2 has no `Approved: spec` record by the owner", "#2 lacks the `approved:spec` label"],
+    )
+    changed[0] = "docs/agents/loop.md app.py\n"
+    assert build(1) == (1, owners("the PR changes `app.py`, outside `spec.auto`'s `paths`"))
+
+
+def test_check_merge_passes_a_spec_paths_pr_inside_the_paths_and_names_each_file_outside(
+    writers: list[str],
+) -> None:
+    inside = pull(reviews=(LOW,), files=("mise.toml", "docs/agents/loop.md"))
+    assert merge(inside, [tooling()], SCOPED) == []
+    outside = pull(reviews=(LOW,), files=("mise.toml", "src/app.py", "README.md"))
+    assert approvals.proofs("merge", outside, [tooling()], SCOPED) == owners(
+        "the PR changes `src/app.py`, `README.md`, outside `spec.auto`'s `paths`"
+    )
+
+
+@pytest.mark.parametrize(
+    ("new", "old"),
+    [("src/loop.md", "docs/agents/loop.md"), ("docs/agents/app.py", "src/app.py")],
+    ids=["out-of-the-paths", "into-the-paths"],
+)
+def test_a_rename_across_the_paths_either_way_voids_the_policy(
+    writers: list[str], renames: dict[str, Any], new: str, old: str
+) -> None:
+    renames["old"] = {new: old}
+    outside = new if old.startswith("docs/agents/") else old
+    assert approvals.proofs("merge", moved((new, old)), [tooling()], SCOPED) == owners(
+        f"the PR changes `{outside}`, outside `spec.auto`'s `paths`"
+    )
+    # a rename that stays inside them is approved
+    renames["old"] = {"docs/agents/new.md": "docs/agents/loop.md"}
+    within = moved(("docs/agents/new.md", "docs/agents/loop.md"))
+    assert approvals.proofs("merge", within, [tooling()], SCOPED) == []
+
+
+def test_a_file_list_github_cannot_give_in_full_voids_the_policy(
+    writers: list[str], renames: dict[str, Any]
+) -> None:
+    unreadable = "GitHub can't give every file the PR changes, an old name of a moved file included"
+    crowded = pull(reviews=(LOW,), files=("mise.toml",))
+    crowded["files"]["totalCount"] = 101
+    assert approvals.proofs("merge", crowded, [tooling()], SCOPED) == owners(
+        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    )
+    unruled = loop_md("spec:\n  auto:\n    - paths:\n        - mise.toml\n")
+    assert approvals.proofs("merge", crowded, [tooling()], unruled) == owners(unreadable)
+    # a rename whose old name GitHub won't give, or gives for another file only
+    renames["fail"] = True
+    rename = moved(("docs/agents/new.md", "docs/agents/loop.md"))
+    assert approvals.proofs("merge", rename, [tooling()], unruled) == owners(unreadable)
+    renames["fail"], renames["old"] = False, {"docs/agents/other.md": "docs/agents/loop.md"}
+    rename = moved(("docs/agents/new.md", "docs/agents/loop.md"))
+    assert approvals.proofs("merge", rename, [tooling()], unruled) == owners(unreadable)
+
+
+def test_a_spec_paths_pr_the_risk_rule_holds_still_needs_the_owners_approval(
+    writers: list[str],
+) -> None:
+    inside = ("docs/agents/loop.md",)
+    marked = pull(reviews=(LOW,), files=inside, labels=("risk:high",))
+    assert approvals.proofs("merge", marked, [tooling()], SCOPED)[:3] == owners(
+        "`risk:high` is on PR #7"
+    )
+    assert approvals.proofs("build", pull(files=inside), [tooling("risk:high")], SCOPED) == owners(
+        "`risk:high` is on #1"
+    )
+    ruled = loop_md(
+        "spec:\n  auto:\n    - paths:\n        - docs/agents/**\nrisk:\n  paths:\n    - docs/agents/gatekeeper.md\n"
+    )
+    held = pull(reviews=(LOW,), files=("docs/agents/gatekeeper.md",))
+    assert approvals.proofs("merge", held, [tooling()], ruled) == owners(
+        "it matches a risk rule (path `docs/agents/gatekeeper.md`)"
+    )
+    # the verifier's `Risk: high` holds it too, once a review is read
+    high = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
+    high["body"] += "Risk: high\n"
+    judged = pull(reviews=(high,), files=inside)
+    assert approvals.proofs("merge", judged, [tooling()], SCOPED)[:3] == owners(
+        "it matches a risk rule (verifier): the verifier's pass 1 on aaaaaaa says `Risk: high`"
+    )
+    # so does an author who can't write to the repo
+    assert approvals.proofs(
+        "build", pull(files=inside), [tooling(author="drive-by")], SCOPED
+    ) == owners("its author @drive-by can't write to the repo")
+
+
+def test_without_the_paths_term_the_label_approves_nothing_and_the_kinds_work_as_before(
+    writers: list[str],
+) -> None:
+    inside = pull(files=("docs/agents/loop.md",))
+    for policy in (POLICY, AUTO.replace("area:api", "area:none"), BARE):
+        assert approvals.spec_paths(policy) == []
+    assert approvals.proofs("build", inside, [tooling()], POLICY) == owners(
+        "`spec.auto` names no `paths`, so `spec:paths` approves nothing"
+    )
+    # `spec.auto: true` approves it as it did, label or not, and the kind list its kinds
+    assert approvals.proofs("build", inside, [tooling()], AUTO) == []
+    assert approvals.proofs("build", inside, [by("worker", specced(1, "kind:bug"))], SCOPED) == []
+    assert approvals.spec_kinds(SCOPED) == {"bug"}
+    assert approvals.spec_paths(SCOPED) == ["mise.toml", "docs/agents/**"]
+    assert approvals.settings(SCOPED)["spec"]["auto"] == [
+        "bug",
+        {"paths": ["mise.toml", "docs/agents/**"]},
+    ]
+
+
+@pytest.mark.parametrize(
+    "term",
+    [
+        "    - path:\n        - a/**\n",
+        "    - paths: a/**\n",
+        "    - paths: []\n",
+        "    - paths:\n        - a/**\n      labels:\n        - b\n",
+    ],
+    ids=["misspelt", "a-string", "empty", "a-second-key"],
+)
+def test_a_paths_term_off_its_shape_is_refused_naming_the_key(term: str) -> None:
+    with pytest.raises(approvals.Refused) as raised:
+        approvals.settings(loop_md(f"spec:\n  auto:\n{term}"))
+    assert str(raised.value).startswith(
+        "loop.md's `spec.auto` term must be `paths`, a list of globs"
+    )
+
+
 def test_a_policy_line_is_no_condition_so_a_low_risk_pr_waits_for_nothing() -> None:
     done = pull(reviews=(VERDICT,), files=("app.py",))
     assert merge(done, [specced(1, "kind:bug")], POLICY) == []
