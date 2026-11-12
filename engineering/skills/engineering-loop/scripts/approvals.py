@@ -54,7 +54,7 @@ commit after a verdict needs one of its own; on a high-risk change (below), that
 one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
 only for a change it rates low; no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
-author posted one, that embeds its videos as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
 of the aggregate `check` when it requires none (with
 `ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
@@ -439,7 +439,7 @@ GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
 # the commit status the project's approvals workflow posts
 APPROVALS = "loop:approvals"
-# a URL in a `## Demo` comment; gh's --attach embeds a video as a bare user-attachments one, which plays inline
+# a URL in a `## Demo` comment; gh's --attach embeds a video or image as a bare user-attachments one, which plays inline
 URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 ATTACHMENT = "https://github.com/user-attachments/"
 # land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
@@ -1354,9 +1354,9 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
 
 
 def demo_form(pull: dict[str, Any]) -> list[str]:
-    """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video
-    (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR with no
-    demo has none. A stranger's demo neither holds nor clears the merge."""
+    """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video or
+    screenshot (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR
+    with no demo has none. A stranger's demo neither holds nor clears the merge."""
     shown = lambda note: not note.get("isMinimized") and trusted(pull, note)
     demo = headed(pull, "## Demo", shown) if "comments" in pull else None
     if demo is None:
@@ -1365,11 +1365,11 @@ def demo_form(pull: dict[str, Any]) -> list[str]:
     linked = [url for url in urls if not url.startswith(ATTACHMENT)]
     if not linked and urls:
         return []
-    what = f"links {linked[0]}" if linked else "embeds no video"
+    what = f"links {linked[0]}" if linked else "embeds no video or screenshot"
     return [
         (
             f"PR #{pull['number']}: its `## Demo` comment {what}: post the demo with the demo skill's"
-            " `scripts/demo.sh`, which embeds each video as an attachment that plays inline"
+            " `scripts/demo.sh`, which embeds each video or screenshot as an attachment that plays inline"
         )
     ]
 
