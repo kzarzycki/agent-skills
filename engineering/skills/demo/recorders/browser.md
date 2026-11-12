@@ -22,3 +22,9 @@ In Playwright Test, `use: { video: "on" }` records each test.
   `storageState` for the recorded one.
 - Launch with `slowMo` (around 300 ms) so a viewer can follow clicks and typing.
 - Pass the `.webm` to `scripts/demo.sh`, which converts it to H.264 MP4.
+- A recording starts when the page is created, so a slow first load (a dev server compiling
+  the page) fills the video with a spinner. Load the page once first in a context that does
+  not record, which warms the server, and in the recorded scenario wait for the content to
+  show (`await expect(locator).toBeVisible()`) before the first action. If nothing moves
+  after the load, take a screenshot (`page.screenshot({ path })`) instead and pass the
+  `.png` to `scripts/demo.sh`.

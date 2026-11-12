@@ -109,6 +109,25 @@ def test_one_comment_attaches_every_recording_and_minimizes_only_my_earlier_demo
     assert not any(call.startswith("gh release") for call in calls)
 
 
+@pytest.mark.parametrize("name", ["card.png", "card.jpg"])
+def test_a_screenshot_is_attached_as_it_is_in_one_demo_comment(tmp_path: Path, name: str) -> None:
+    result, calls = run(tmp_path, recording(tmp_path, name))
+
+    assert result.returncode == 0, result.stderr
+    comment = next(call for call in calls if call.startswith("gh pr comment 7"))
+    assert "## Demo" in comment and f"{name}, on aaaaaaa." in comment
+    assert comment.count("--attach") == 1
+    assert f"/pr7-aaaaaaa-1.{name[-3:]}" in comment
+    assert not any(call.startswith(("vhs ", "ffmpeg ")) for call in calls)
+
+
+def test_a_screenshot_and_a_video_go_in_the_same_comment(tmp_path: Path) -> None:
+    result, calls = run(tmp_path, recording(tmp_path, "card.png"), recording(tmp_path, "a.mp4"))
+
+    assert result.returncode == 0, result.stderr
+    assert sum(call.startswith("gh pr comment") for call in calls) == 1
+
+
 def test_explicit_pr_and_caption(tmp_path: Path) -> None:
     result, calls = run(
         tmp_path, "--pr", "12", "--caption", "the dry run", recording(tmp_path, "a.mp4")
@@ -153,11 +172,12 @@ def test_untracked_files_are_read_whatever_show_untracked_files_says(tmp_path: P
 
 @pytest.mark.parametrize(
     "args",
-    [(), ("missing.mp4",), ("--pr", "feat/x", "a.mp4"), ("--caption",), ("notes.txt",)],
+    [(), ("missing.mp4",), ("--pr", "feat/x", "a.mp4"), ("--caption",), ("notes.txt",), ("card.gif",)],
 )
 def test_refuses_bad_arguments_before_any_call(tmp_path: Path, args: tuple[str, ...]) -> None:
     recording(tmp_path, "a.mp4")
     recording(tmp_path, "notes.txt")
+    recording(tmp_path, "card.gif")
 
     result, calls = run(tmp_path, *args)
 
