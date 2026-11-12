@@ -5147,7 +5147,8 @@ def path_only_lead(tmp_path: Path, report: str | None) -> tuple[Path, Lead, list
     real = og.read_file
 
     def read_file(sid: str, p: str) -> str:
-        reads.append(p)
+        if p == path:  # the report's reads, not the landing watch's look for a checkout
+            reads.append(p)
         return real(sid, p)
 
     og.read_file = read_file  # type: ignore[method-assign]
@@ -8483,3 +8484,179 @@ def test_a_project_managers_board_adds_the_root_boards_standing_decisions(tmp_pa
     assert omnigent_agent.standing(node / "board.md") == "- merge on green"
     (node / "notes.md").write_text("- local\n")  # another file there is not a manager's board
     assert omnigent_agent.standing(node / "notes.md") == "- local"
+
+
+# --- a landing reaches the manager, whatever the lead writes (#784) ---
+
+OLD, NEW = "a" * 40, "b" * 40
+GIT_CONFIG = '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:o/r.git\n'
+
+
+def in_checkout(og: Fleet) -> None:
+    """Each session's workspace is a checkout whose origin is ``o/r``."""
+    og.files[".git"] = "HEAD\nconfig\nobjects/"
+    og.files[".git/config"] = GIT_CONFIG
+
+
+def github(monkeypatch: pytest.MonkeyPatch, head: list[str]) -> list[tuple[str, ...]]:
+    """``gh`` faked: the default branch's head is ``head[0]``, which a test moves between polls;
+    a comparison lists two merges. Each call is recorded."""
+    monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 0)
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, timeout: float = 0) -> str:
+        calls.append(args)
+        if args[1] == "repos/o/r/commits/HEAD":
+            return head[0] + "\n"
+        if args[1] == f"repos/o/r/compare/{OLD}...{NEW}":
+            return "Fix the gate (#12)\nSupervisor: one more (#781) (#13)\nchore: bump\n"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    return calls
+
+
+def landed(registry: Path) -> list[dict]:
+    path = registry.with_suffix(".events.jsonl")
+    return [e for e in events_of(registry) if e["kind"] == "landed"] if path.exists() else []
+
+
+def test_a_moved_default_branch_raises_one_act_event_for_its_new_head_and_then_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING: waiting on the verifier", 5))
+    in_checkout(og)
+    head = [OLD]
+    github(monkeypatch, head)
+    seen: list[int] = []
+
+    def later(poll: int) -> None:
+        seen.append(len(landed(registry)))
+        if poll == 2:
+            head[0] = NEW  # a PR landed between the second and third poll
+
+    supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
+    assert seen == [0, 0, 1]  # nothing for the same head twice, one once it moved, none after
+    (event,) = landed(registry)
+    assert event["id"] == f"landed:o/r:{NEW}"
+    assert (event["settled"], event["action"]) == ("rule", "act")
+    assert NEW in event["line"] and "#12, #13" in event["line"]
+    assert state_of(registry)["heads"] == {"o/r": NEW}
+
+
+def test_the_first_head_seen_for_a_repo_is_stored_and_raises_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    in_checkout(og)
+    calls = github(monkeypatch, [OLD])
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert state_of(registry)["heads"] == {"o/r": OLD}
+    assert landed(registry) == [] and posted(og) == []
+    assert [c[1] for c in calls] == ["repos/o/r/commits/HEAD"]  # no comparison: no old head
+
+
+def test_a_restart_reports_a_landing_made_while_it_was_down_but_not_one_it_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    in_checkout(og)
+    head = [OLD]
+    github(monkeypatch, head)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    head[0] = NEW
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert [e["id"] for e in landed(registry)] == [f"landed:o/r:{NEW}"]
+
+
+def test_two_leads_in_one_repo_raise_one_event_for_one_new_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\tfollow\nb={tmp_path / 'b.md'}\tfollow\n")
+    og = Fleet(a=[told("brief", 60)], b=[told("brief", 60)])
+    in_checkout(og)
+    head = [OLD]
+    calls = github(monkeypatch, head)
+    supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), console=True)
+    (event,) = landed(registry)
+    assert (event["session"], event["id"]) == ("a", f"landed:o/r:{NEW}")
+    assert [c[1] for c in calls].count("repos/o/r/commits/HEAD") == 2  # one read per poll
+
+
+def test_a_landing_the_lead_wrote_under_a_named_wait_reaches_the_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The issue's first case: the turn end routes `record` on its named wait, and the landing
+    below it reaches the notified session anyway, as one post naming the new sha and the PRs."""
+    registry = following(tmp_path)
+    end = (
+        "STILL WORKING: waiting on the second full gate run for #B\n- #A: landed. Restart, rebuild."
+    )
+    og = Lead(told("brief", 600), ending(end, 400))
+    in_checkout(og)
+    head = [OLD]
+    github(monkeypatch, head)
+    own = omnigent_agent.route({"kind": "ended", "last": end}, lambda: ("none", "unasked"))
+    assert own == ("rule", "record", "names its wait: second")  # its own words reach no one
+    moved = lambda poll: head.__setitem__(0, NEW)
+    supervised(og, registry, monkeypatch, 2, moved, notify="cos", console=True)
+    (post,) = posted(og)
+    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
+    assert f"[act] {line} (its default branch moved: a step owed after a landing)" in post
+
+
+def test_without_console_a_landing_is_posted_as_a_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    in_checkout(og)
+    head = [OLD]
+    github(monkeypatch, head)
+    supervised(og, registry, monkeypatch, 2, lambda poll: head.__setitem__(0, NEW), notify="cos")
+    line = f"o/r: its default branch moved to {NEW}; merged since {OLD[:12]}: #12, #13"
+    assert posted(og) == [f"Supervisor: {line}"]
+
+
+def test_a_lead_outside_a_checkout_or_a_failed_head_read_raises_nothing_and_logs_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60))
+    calls = github(monkeypatch, [OLD])
+    supervised(og, registry, monkeypatch, 2, console=True)
+    assert calls == []  # no checkout: no repo to watch
+    in_checkout(og)
+
+    def down(*args: str, timeout: float = 0) -> str:
+        raise omnigent_agent.Fail("gh api repos/o/r/commits/HEAD: HTTP 502")
+
+    monkeypatch.setattr(omnigent_agent, "gh", down)
+    capsys.readouterr()
+    supervised(og, registry, monkeypatch, 3, console=True)
+    err = capsys.readouterr().err
+    assert err.count("o/r: default branch not read: gh api repos/o/r/commits/HEAD: HTTP 502") == 1
+    assert landed(registry) == []
+
+
+def test_a_worktree_s_repo_is_read_from_its_common_dir_on_any_host() -> None:
+    og = Fleet()
+    og.files[".git"] = "gitdir: /src/r/.git/worktrees/lead-1\n"
+    og.files["/src/r/.git/worktrees/lead-1/commondir"] = "../..\n"
+    og.files["/src/r/.git/config"] = GIT_CONFIG
+    assert omnigent_agent.workspace_repo(og, "a") == "o/r"  # type: ignore[arg-type]
+    assert omnigent_agent.workspace_repo(Fleet(), "a") == ""  # type: ignore[arg-type]
+    for url in (
+        "https://github.com/o/r.git",
+        "https://github.com/o/r",
+        "ssh://git@github.com/o/r.git",
+        "http://proxy@127.0.0.1:9/git/o/r",
+    ):
+        assert omnigent_agent.origin_repo(f'[remote "origin"]\n\turl = {url}\n') == "o/r"
+    upstream_only = '[remote "upstream"]\n\turl = https://github.com/x/y\n'
+    assert omnigent_agent.origin_repo(upstream_only) == ""
