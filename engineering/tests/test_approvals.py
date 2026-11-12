@@ -12,7 +12,6 @@ import re
 import shlex
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import textwrap
@@ -3457,7 +3456,7 @@ def lock_commit(lands: dict[str, Any], seconds_ago: int) -> str:
             "commit-tree",
             *(["-p", tip] if tip else []),
             "-m",
-            f"{approvals.HELD} [skip ci]\n\npid 1, host elsewhere, nonce 00",
+            f"{approvals.HELD} [skip ci]\n\npid 1, nonce 00",
             tree,
         ],
         cwd=lands["work"],
@@ -3476,7 +3475,7 @@ def test_a_held_lock_waits_naming_its_age_and_a_stale_one_is_broken(lands: dict[
     code, lines = lands["land"]("7")
     assert code == approvals.WAITING
     assert lines[0].startswith(
-        f"another land holds the landing lock {NAME} (pid 1, host elsewhere), taken 10 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid 1), taken 10 minutes ago ("
     )
     assert (lands["lock"](), lands["merged"]()) == (held, [])
     lock_commit(lands, 3 * 60 * 60)
@@ -3895,8 +3894,7 @@ def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_w
     assert lands["lock"]() == winner[-1]
     assert git_in(lands["origin"], "rev-parse", f"{winner[-1]}^").strip() == free
     assert lines[-1].startswith(
-        f"another land holds the landing lock {NAME} (pid {os.getpid()}, host {socket.gethostname()}),"
-        " taken 0 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid {os.getpid()}), taken 0 minutes ago ("
     )
 
 
@@ -3967,9 +3965,7 @@ def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_g
     commits = [ids.split() for ids, _ in tips]
     assert [rest for _, *rest in commits] == [[c[0]] for c in commits[1:]] + [[]]
     body = git_in(lands["origin"], "log", "-1", "--format=%b", f"{REF}~1").strip()
-    assert re.fullmatch(
-        rf"pid {os.getpid()}, host {re.escape(socket.gethostname())}, nonce [0-9a-f]{{16}}", body
-    )
+    assert re.fullmatch(rf"pid {os.getpid()}, nonce [0-9a-f]{{16}}", body)
     assert lands["lock"]() == ""
 
 
@@ -4051,6 +4047,51 @@ def test_a_land_waits_on_the_previous_versions_lock_and_never_writes_it(
     assert git_in(lands["origin"], "rev-parse", approvals.LEGACY).strip() == theirs
     git_in(lands["origin"], "update-ref", "-d", approvals.LEGACY)
     assert lands["land"]("7")[0] == 0
+
+
+def test_a_stale_lock_of_the_previous_version_is_passed_over_and_left_in_place(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    when = f"@{int(datetime.now(UTC).timestamp()) - approvals.CEILING - 60} +0000"
+    tree = git_in(lands["work"], "hash-object", "-t", "tree", "-w", os.devnull).strip()
+    theirs = subprocess.run(
+        ["git", "commit-tree", "-m", "landing lock", tree],
+        cwd=lands["work"],
+        env={**os.environ, "GIT_COMMITTER_DATE": when},
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_in(lands["work"], "push", "-q", "origin", f"{theirs}:{approvals.LEGACY}")
+    assert lands["land"]("7")[0] == 0
+    assert git_in(lands["origin"], "rev-parse", approvals.LEGACY).strip() == theirs
+
+
+def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Origin's base moves after any earlier fetch but before the lock is taken: the batch is merged onto the moved
+    base and gated once."""
+    lands["open"](7, {"7.txt": "7\n"})
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: set())
+    work = lands["work"]
+    fetched = git_in(work, "rev-parse", "refs/remotes/origin/main").strip()
+    real = approvals.locked
+    moved: list[str] = []
+
+    def move_then_lock(base: str, held: list[str]) -> bool:
+        (work / "elsewhere.txt").write_text("elsewhere\n")
+        git_in(work, "add", "elsewhere.txt")
+        git_in(work, "commit", "-qm", "origin moves before the lock is taken")
+        git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+        moved.append(git_in(work, "rev-parse", "HEAD").strip())
+        git_in(work, "update-ref", "refs/remotes/origin/main", fetched)
+        return real(base, held)
+
+    monkeypatch.setattr(approvals, "locked", move_then_lock)
+    assert lands["land"]("7")[0] == 0
+    assert (lands["runs"](), lands["main"]("~1")) == (1, moved[0])
 
 
 @pytest.fixture
@@ -4223,7 +4264,7 @@ def test_breaking_a_stale_lock_leaves_one_another_land_took_first(
     code, lines = lands["land"]("7")
     assert (code, lands["lock"](), lands["merged"]()) == (approvals.WAITING, fresh[0], [])
     assert lines[-1].startswith(
-        f"another land holds the landing lock {NAME} (pid 1, host elsewhere), taken 1 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid 1), taken 1 minutes ago ("
     )
 
 

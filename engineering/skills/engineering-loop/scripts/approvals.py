@@ -98,8 +98,8 @@ repository's default branch, as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
 tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
-with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid, host and a
-random value (so two lands in the same second never make the same commit), and its commit date is its age. A land
+with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid and a
+random value (no hostname, since the branch is public and never rewritten) (so two lands in the same second never make the same commit), and its commit date is its age. A land
 pushes a `held` child of a `free` tip (or the first lock commit, with no parent, where the branch is missing), leased on
 that tip with `--force-with-lease`, so of two lands from one tip one wins. A `held` tip is another land's: exit 3,
 naming its holder and age. One older than 2 hours is stale, left by a land that died: it is broken and taken in the same
@@ -107,7 +107,8 @@ push, a `held` child of it. The lock is released at the end whatever happened, a
 plus the signal), by pushing a `free` child of ours leased on it, so a stale one broken and taken by another land stays
 theirs; SIGKILL leaves it to be broken as stale. No push deletes a ref or rewrites one, so the branch's history only
 grows. While the previous version's lock `refs/loop/landing` is on `origin` (read, never written), `land` waits on it
-(exit 3), so a host still on that version and this one never land at once.
+(exit 3), so a host still on that version and this one never land at once; one older than 2 hours is stale, passed
+over and left in place. The base is fetched once the lock is taken, so the batch starts from the base as it is then.
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
@@ -3102,10 +3103,11 @@ def landing(pr: int | None) -> tuple[int, bool]:
     try:
         for sig in stoppable:  # a land under nohup still outlives a hangup
             signal.signal(sig, stopped)
-        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
         taken = locked(base, held)
         if not taken:
             return WAITING, True
+        # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
+        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
         return batched(named, base, tracker, loop)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
@@ -3147,14 +3149,14 @@ def lock_name(base: str) -> str:
 
 def lock_commit(title: str, parent: str | None) -> str:
     """A landing lock commit: the empty tree, `title` (HELD or FREE) with [skip ci], `parent` the tip it moves on from,
-    and the pid, host and a random value in its body, since two lands in the same second, under one identity, would
+    and the pid and a random value in its body (no hostname: the branch is public and never rewritten), since two lands in the same second, under one identity, would
     otherwise build one commit, and the second push of it would succeed as a no-op. Its commit date is its age."""
     empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
     return git(
         "commit-tree",
         *(["-p", parent] if parent else []),
         "-m",
-        f"{title} [skip ci]\n\npid {os.getpid()}, host {socket.gethostname()}, nonce {os.urandom(8).hex()}",
+        f"{title} [skip ci]\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
         empty,
     ).strip()
 
@@ -3192,7 +3194,7 @@ def locked(base: str, held: list[str]) -> bool:
     branch is missing), leased on that tip. A HELD tip is another land's; one older than CEILING by its commit date is
     stale, broken and taken by the same push of a HELD child. Each commit is put in `held` before its push, so a stop
     as it reaches origin still releases it. False, after saying who holds it since when, while another land holds it
-    or LEGACY, the previous version's lock, is on origin."""
+    or LEGACY, the previous version's lock, is on origin and no older than CEILING."""
     ref, name = LOCK.format(base), lock_name(base)
     tip, refused = (
         "",
@@ -3203,10 +3205,14 @@ def locked(base: str, held: list[str]) -> bool:
             line.split("\t")[1] for line in git("ls-remote", "origin", LEGACY, ref).splitlines()
         }
         if LEGACY in listed:
-            print(
-                f"a land of the previous version holds the landing lock {LEGACY}: land --wait waits for it"
-            )
-            return False
+            git("fetch", "-q", "origin", f"+{LEGACY}:{LEGACY}")
+            age = int(time.time()) - int(git("log", "-1", "--format=%ct", LEGACY).strip())
+            if age <= CEILING:
+                print(
+                    f"a land of the previous version holds the landing lock {LEGACY}: land --wait waits for it"
+                )
+                return False
+            # stale, left by a land that died: passed over, never written, as the previous version would break it
         before, tip = tip, None
         if ref in listed:
             git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
