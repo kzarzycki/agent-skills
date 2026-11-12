@@ -8801,3 +8801,37 @@ def test_a_role_that_only_names_verifier_keeps_the_worker_pr_meaning(
     assert omnigent_agent.main(argv) == 1
     assert "is not a cloud agent" in capsys.readouterr().err
     assert og.sessions == {}
+
+
+def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A far verifier works in a worktree of its own under the clone, so a lead holding the clone
+    does not stop it; a worker there, or a verifier on this host, is still refused."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    og.others = [
+        {
+            "id": "L",
+            "title": "lead",
+            "host_id": "mac",
+            "workspace": "/there/repo",
+            "status": "idle",
+        },
+        {"id": "M", "title": "lead", "host_id": "h", "workspace": str(tmp_path), "status": "idle"},
+    ]
+    assert omnigent_agent.main(VERIFY_FAR) == 0
+    assert "the verifier works in its own worktree" in capsys.readouterr().err
+    worker = [*VERIFY_FAR]
+    worker[worker.index("roles/verifier.md")] = "roles/worker.md"
+    worker[worker.index("--pr") : worker.index("--pr") + 2] = []
+    worker[1] = "w"
+    assert omnigent_agent.main(worker) == 1
+    err = capsys.readouterr().err
+    assert "is in use on host mac by live session" in err and "L lead" in err
+    here = [*VERIFY_FAR]
+    here[here.index("mac")] = "h"
+    here[here.index("/there/repo")] = str(tmp_path)
+    here[1], here[4] = "u", str(tmp_path / "tmp/loop/pr7-v1.md")
+    assert omnigent_agent.main(here) == 1
+    err = capsys.readouterr().err
+    assert "is in use on host h by live session" in err and "M lead" in err

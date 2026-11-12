@@ -4409,7 +4409,8 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None
     verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
     absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
     detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
-    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the last two."""
+    the proof logs are in `far`'s `tmp/loop/`, where the lead's `start --file` writes the last two, as are the previous
+    pass's repros, each named by its path there from the copy of that report `wait` brought to `tmp/loop/` here."""
     _, loop = project()
     if isinstance(loop, Policy):
         loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
@@ -4458,6 +4459,15 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None
             f"- Previous report: {loop_dir / f'pr{pr}-v{number - 1}.md'}, on {newest}: review the diff since that head"
             " and rerun its repros"
         )
+        # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
+        # tmp/loop/: each by its path there, from the copy wait brought home
+        if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():
+            saved = re.findall(r"tmp/loop/([\w.-]+)(?![\w./-])", home.read_text())
+            lines += [
+                f"- Repro: {loop_dir / name}"
+                for name in dict.fromkeys(saved)
+                if name not in (home.name, f"pr{pr}-v{number}.md")
+            ]
     lines += [
         f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
         for log in proofs

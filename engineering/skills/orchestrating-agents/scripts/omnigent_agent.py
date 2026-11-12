@@ -147,7 +147,8 @@ child always runs on its parent's runner. On a host other than this one ``--work
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
 writes here. A verifier (a ``--role`` whose file is ``verifier.md``) takes ``--pr`` as the PR it
-reviews, not a report channel, and runs on another host only when the project's loop.md has no
+reviews, not a report channel, starts on another host's clone however many sessions hold it (it
+works in a worktree of its own), and runs on another host only when the project's loop.md has no
 ``Verifier hosts: <name>, <name>`` line or that line lists the host; ``--file`` writes a local
 file (a proof log, the previous report) beside its report there before its brief, and
 ``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
@@ -2089,7 +2090,14 @@ def start(
     # without a role (a lead) coordinates from a shared checkout.
     if role and harness != CLOUD_HARNESS:
         place, on = workspace or os.getcwd(), host_id or og.host_id
-        if users := og.users(place, on):
+        if reviews(role) and on != og.host_id:
+            # it fetches and works in a detached worktree of its own under the clone, never
+            # switching the clone's branch, so the leads that hold the clone keep it
+            print(
+                f"workspace {place} on host {on} may be in use: the verifier works in its own worktree",
+                file=sys.stderr,
+            )
+        elif users := og.users(place, on):
             named = ", ".join(f"{s.get('id')} {s.get('title') or ''}".rstrip() for s in users)
             raise Fail(
                 f"workspace {place} is in use on host {on} by live session {named}: give each"
@@ -3113,7 +3121,7 @@ def bring_home(og: Omnigent, sid: str, report: Path) -> Path:
 
 def reviews(role: str | None) -> bool:
     """Whether ``role`` is the verifier's role file (``verifier.md``): only that one reviews a PR,
-    so only it takes ``--pr`` as the PR it reviews."""
+    so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
     return bool(role) and Path(str(role)).name == "verifier.md"
 
 

@@ -2432,6 +2432,21 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         ),
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
     ]
+    # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tmp" / "loop").mkdir(parents=True)
+    (tmp_path / "tmp/loop/pr7-v1.md").write_text(
+        "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
+        " tmp/loop/pr7-v1.md and tmp/loop/pr7-v1-tree/x.py\n"
+    )
+    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert [line for line in out if line.startswith("- Repro")] == [
+        "- Repro: /there/repo/tmp/loop/pr7-v1-repro.py"
+    ]
+    # a verifier here works where the lead copied its repros: the brief lists none
+    assert approvals.main(["brief", "7"]) == 0
+    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("- Repro")]
     assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
     assert capsys.readouterr().out == "--far there/repo: an absolute path on the verifier's host\n"
 

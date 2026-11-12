@@ -346,7 +346,9 @@ the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --w
 is under its `tmp/loop/`. Its `--pr` names the PR it reviews, not a report channel: it writes its
 report file as any child does. With a `Verifier hosts: <name>, <name>` line in the project's
 `docs/agents/loop.md`, `start` refuses a host the line does not list, naming the list; without
-it any host goes. Each `--file <local>` (a proof log, the previous report) is written beside the
+it any host goes. Other sessions holding that clone don't stop it, since it works in a detached
+worktree of its own under the clone's `tmp/loop/` and never switches the clone's branch; every
+other start keeps the in-use refusal. Each `--file <local>` (a proof log, the previous report) is written beside the
 report there through the file API before the brief lands. `wait --verdict` reads the report
 there and copies it to `tmp/loop/<name>` here, printing that path for `approvals.py verdict`;
 the check that a child left no tracked change is skipped, with a line saying so, since the file
