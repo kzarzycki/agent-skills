@@ -1454,7 +1454,10 @@ def test_start_refuses_an_effort_for_antigravity_and_ignores_the_variables(
 @pytest.mark.parametrize(
     ("agent", "harness", "effort", "refused"),
     [
-        ("cloud", "acp:claude-cloud", "max", "applies no effort"),  # its executor drops it
+        ("cloud", "acp:claude-cloud", "ultra", "runs only low, medium, high, xhigh, max"),
+        ("cloud", "acp:claude-cloud", "max", None),
+        ("cloud", "acp:claude-cloud", "low", None),
+        ("agy", "antigravity-native", "high", "applies no effort"),
         ("claude", "", "ultra", "runs only low, medium, high, xhigh, max"),  # its launch drops it
         ("native", "claude-native", "none", "runs only low"),
         ("claude", "", "max", None),
