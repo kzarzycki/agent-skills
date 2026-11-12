@@ -7043,7 +7043,7 @@ def test_a_send_whose_copy_was_already_there_and_whose_poll_fails_is_exit_1(
 
     def flaky(s: str) -> dict:
         calls[0] += 1
-        if calls[0] > 1:
+        if calls[0] > 2:
             raise omnigent_agent.Fail("GET info: down")
         return info(s)
 
