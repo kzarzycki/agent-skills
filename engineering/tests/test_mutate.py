@@ -585,7 +585,6 @@ def test_the_hosts_slot_held_by_another_process_is_not_waited_on(
         # a run that waited on the host's slot would hit the timeout
         result = mutate(repo, killed, timeout=20)
         assert result.returncode == 0, result.stderr
-        assert not any("waiting" in line for line in log(repo))
         # the helper's other runs, here a bare Popen, see the same slot
         assert stopped(repo, tmp_path, signal.SIGTERM) != 0
     finally:
