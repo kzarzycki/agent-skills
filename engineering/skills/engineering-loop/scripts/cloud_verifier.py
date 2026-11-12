@@ -26,14 +26,15 @@ has to run `login` again (no seed login, or its refresh token was refused).
 `verify` installs the Codex CLI when the VM lacks it, writes the seeded login to `~/.codex/auth.json` when Codex is
 not logged in, and refuses a tree with uncommitted changes, since a verifier reviews a pushed head only (files in the
 report's own folder pass: a fresh clone ignores `tmp/loop/` only where the project's own .gitignore does). It checks
-out the PR's head (detached) when the checkout is elsewhere, runs `codex exec` on the brief with Codex's own sandbox
+out the PR's head detached, so nothing the verifier does moves the worker's branch, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
 the PR through REST, byte for byte, printing the comment's URL as its last line. The report is the file the brief's
 `- Report: <path>` line names (approvals.py brief), else Codex's final message; one without a `SATISFIED:` line is
 not posted. A verifier that stops on a question (`<report>.question`, verifier.md) gets that file posted
-instead, headed `## Verifier question`. It returns the checkout to where it was, first dropping any change the verifier
-left outside that folder, named on stderr. Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a
+instead, headed `## Verifier question`. It returns the checkout to where it was, first dropping what the verifier
+left outside that folder, named on stderr: staged changes are unstaged, tracked files restored and new files removed,
+while ignored files and a repository made inside the checkout stay, since those may hold files from before the pass. Exit 0 report posted, 1 the pass failed, 2 a precondition is missing, 3 a
 question posted.
 The carrier session runs it detached and polls, since a foreground command in the VM stops at 10 minutes.
 
@@ -303,12 +304,18 @@ def drop_leftovers(report: Path | None) -> None:
     )
     run("git", "checkout", "-q", "--", ":/")
     for status, path in left:
-        if status == "??":
-            target = Path(path)
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target)  # a nested repository shows as its folder
-            else:
-                target.unlink(missing_ok=True)
+        target = Path(path)
+        if status != "??":
+            continue
+        if target.is_dir() and not target.is_symlink():
+            # git names a nested repository as one folder and can't say which of its files were there before the
+            # pass, so it stays; the next pass refuses the tree until someone has looked
+            print(
+                f"cloud_verifier: left in place, a repository inside the checkout: {path}",
+                file=sys.stderr,
+            )
+        else:
+            target.unlink(missing_ok=True)
 
 
 def codex_exec(cmd: list[str], brief: str) -> int:
@@ -332,10 +339,10 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         run("git", "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
         or run("git", "rev-parse", "HEAD").stdout.strip()
     )
-    moved = run("git", "rev-parse", "HEAD").stdout.strip() != head
-    if moved:
+    if run("git", "rev-parse", "HEAD").stdout.strip() != head:
         run("git", "fetch", "-q", "origin", ref)
-        run("git", "checkout", "-q", "--detach", head)
+    # always detached, so a commit or a branch switch by the verifier never moves the worker's branch
+    run("git", "checkout", "-q", "--detach", head)
     cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
     cmd += ["-m", model] if model else []
     cmd += ["-c", f"model_reasoning_effort={effort}"] if effort else []
@@ -347,8 +354,7 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         print(f"codex exited {code} after {time.time() - started:.0f} s", flush=True)
     finally:
         drop_leftovers(report)
-        if moved:
-            run("git", "checkout", "-q", was)
+        run("git", "checkout", "-q", was)
     if not code and question and question.exists() and question.read_text().strip():
         # verifier.md: a verifier that needs something from the lead writes <report>.question and stops
         print(post(pr, f"## Verifier question\n\n{question.read_text()}"))

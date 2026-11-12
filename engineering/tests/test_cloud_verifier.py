@@ -285,3 +285,43 @@ def test_an_ignored_file_the_verifier_staged_is_unstaged_not_deleted(checkout) -
     assert (work / "private.txt").read_text() == "the worker's own\n"
     assert git(work, "status", "--porcelain") == ""
     assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
+
+
+def test_a_repository_the_verifier_made_inside_the_checkout_is_left_and_named(
+    checkout, capsys
+) -> None:
+    work, _, brief, posted, seen = checkout
+    (work / ".git/info/exclude").write_text("scratch/keep.txt\n")
+    (work / "scratch").mkdir()
+    (work / "scratch/keep.txt").write_text("from before the pass\n")
+    seen["do"] = lambda: git(work, "init", "-q", "scratch")
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == ["final\nSATISFIED: yes\n"]
+    assert (work / "scratch/keep.txt").read_text() == "from before the pass\n"
+    assert "scratch/" in capsys.readouterr().err
+    with pytest.raises(
+        cv.Refused, match="scratch/"
+    ):  # the next pass says so instead of reviewing over it
+        cv.verify(7, brief, None, None)
+
+
+def test_a_commit_by_the_verifier_never_moves_the_workers_branch(checkout) -> None:
+    work, head, brief, posted, seen = checkout
+    git(work, "fetch", "-q", "origin", "feat/pr")
+    git(work, "reset", "-q", "--hard", head)  # the worker's branch is already at the PR's head
+    seen["do"] = lambda: git(
+        work,
+        "-c",
+        "user.email=v@example.com",
+        "-c",
+        "user.name=v",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "stray",
+    )
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == ["final\nSATISFIED: yes\n"]
+    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"
+    assert git(work, "rev-parse", "claude/worker") == head
