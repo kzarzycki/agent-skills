@@ -78,6 +78,9 @@ spec:
     - bug
     - follow-up
     - sub-issue
+    - paths:   # a spec labelled spec:paths whose PR stays inside these globs
+        - mise.toml
+        - docs/agents/**
 
 loop:
   cap: 3
@@ -145,7 +148,7 @@ carry_over_main:
 
 | Section | Key | Value | Without it |
 |---|---|---|---|
-| `spec` | `auto` | a list of `bug`, `follow-up` and `sub-issue`, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
+| `spec` | `auto` | a list of `bug`, `follow-up`, `sub-issue` and `paths` terms, or `true` for every spec (Approvals and proof) | every spec waits for the owner |
 | `loop` | `cap` | a whole number (The cap) | the default |
 | | `ci` | deprecated, goes in the next release (Approvals and proof); `false` for a project without CI, whose merge proof is then `uv run <this skill's folder>/scripts/approvals.py local-ci <pr>` (its docstring says what it records) | `true` |
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
@@ -305,6 +308,18 @@ gatekeeper.md's policy (Settings) holds:
   epic the owner approved (their current record and `approved:spec`), opened by an account
   with write access to the repo. Any other spec, a new epic for one, needs the owner's
   approval; without `auto`, or with `false` or an empty list, every spec does.
+- A `paths` term in the `spec.auto` list (`- paths: [mise.toml, docs/agents/**]`), globs
+  matched as a rule's `paths` are, approves by policy the spec of an issue labelled
+  `spec:paths`, which the lead adds when the spec's change stays inside them, such as the
+  project's own tooling. The label is the claim, since the gate can't read where a change
+  lands from the spec; `check build` and `check merge` judge it on every path the PR touches
+  (before the PR, the branch's files so far). It approves only while every path matches a
+  glob, a renamed or copied file's old name as well as its new one, so a move across the
+  boundary either way voids it; GitHub gives every file and old name; neither the issue nor
+  the PR carries `risk:high` and the `risk` rule doesn't hold, its `verifier` term included
+  once a review is read; and the issue's author can write to the repo. Otherwise the spec
+  waits for the owner's record and `approved:spec`, and `check` names why, the files outside
+  the globs included. The label without the term approves nothing.
 - `spec.auto: true` approves every spec by policy, epics included, so the owner reads only the
   critical ones: a spec the `risk` rule matches, or one opened by an account without write
   access, since anyone who can open an issue would otherwise approve their own, waits for
