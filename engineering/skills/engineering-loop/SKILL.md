@@ -398,7 +398,8 @@ that name it the delegate's, so the PR shows whose go landed it, and `check merg
 print whose go they used. Into the default branch it is refused unless the policy sets
 `delegate: all` under `loop`, and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
-it never covers code the approver did not see. Into the default branch these are the only go:
+it never covers code the approver did not see; it carries to a head whose commits since are
+only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
 anyone with triage rights can add a label, so `approved:merge` there is no go. On a change that is not high risk
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated

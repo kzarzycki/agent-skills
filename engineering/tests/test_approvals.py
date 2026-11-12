@@ -2150,7 +2150,8 @@ def test_the_owners_go_covers_its_head_only(
     high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
     assert approvals.owner_waits(high, [], LOOP) == []
     assert approvals.owner_waits({**high, "headRefOid": "c" * 40}, [], LOOP) == [
-        HELD.replace(HEAD, "c" * 40) + "`risk:high` is on PR #7"
+        HELD.replace(HEAD, "c" * 40) + "`risk:high` is on PR #7",
+        f"PR #7: the go on {HEAD} carries nothing to {'c' * 40}: no verifier review is on {'c' * 40}",
     ]
     monkeypatch.setattr(approvals, "writer", lambda login: False)
     hub[HEAD] = [status("owner", "The owner's go", by="contributor")]  # anyone can't give it
@@ -7722,6 +7723,124 @@ def test_a_clean_merge_of_main_carries_the_verdict_but_never_the_local_ci_record
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {carries(merge_sha, head, case['base'], case['since'])}"
     ]
+
+
+# --- the go on a head carries over merges of the base a verifier pass says change no logic (#808) ---
+
+NO_LOGIC = "Logic change: none\n"
+
+
+def go_over(
+    case: dict[str, str],
+    hub: dict[str, list[dict[str, Any]]],
+    logic: str = NO_LOGIC,
+    satisfied: str = "yes",
+    on: str = "merge",
+) -> dict[str, Any]:
+    """A high-risk PR whose head is the case's `merge`, with the owner's go on the head it merged the base into and a
+    verifier pass on `on` ending in `logic`."""
+    review = verdict_on(case[on], satisfied=satisfied)
+    review["body"] += logic
+    pr = pull(reviews=(review,), checks=(), files=("app.py",), labels=("risk:high",))
+    pr.update(headRefOid=case["head"], baseRefOid=case["base"])
+    given_go(pr, hub)
+    pr["headRefOid"] = case["merge"]
+    return pr
+
+
+def held_at(case: dict[str, str], why: str) -> list[str]:
+    return [
+        HELD.replace(HEAD, case["merge"]) + "`risk:high` is on PR #7",
+        f"PR #7: the go on {case['head']} carries nothing to {case['merge']}: {why}",
+    ]
+
+
+def test_the_go_carries_over_a_merge_of_the_base_with_conflict_fixes_a_verdict_calls_no_logic_change(
+    carrying: Callable[..., dict[str, str]], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    case = carrying(
+        {"app.py": CONFLICTED}, resolve={"app.py": APP.replace("line 1\n", "line 1, both\n")}
+    )
+    pr = go_over(case, hub)
+    assert approvals.owner_waits(pr, [], LOOP) == []
+    assert approvals.whose(pr, LOOP) == [
+        (
+            f"PR #7: the go on {case['head']} is the owner's, carried to {case['merge']}: every commit since is a"
+            " merge of main, and the verifier's pass on it says `Logic change: none`"
+        )
+    ]
+    # a go withdrawn on the old head has nothing to carry
+    withdrawn = status("owner", "The owner withdrew their go", state="failure")
+    hub[case["head"]].insert(0, withdrawn)
+    held = [HELD.replace(HEAD, case["merge"]) + "`risk:high` is on PR #7"]
+    assert approvals.owner_waits(pr, [], LOOP) == held
+    hub[case["head"]].pop(0)
+    # a go withdrawn on the new head stays withdrawn, whatever the older one says
+    hub[case["merge"]] = [withdrawn]
+    assert approvals.owner_waits(pr, [], LOOP) == held
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        (
+            {"then": {"app.py": APP.replace("line 2\n", "line 2, after\n")}},
+            "it is no merge of two parents",
+        ),
+        ({"base": "main"}, "its second parent {base} is not on main"),
+    ],
+    ids=["a PR commit after the merge", "a merge of another branch"],
+)
+def test_the_go_carries_nothing_over_a_commit_other_than_a_merge_of_the_base(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    given: dict[str, Any],
+    why: str,
+) -> None:
+    case = carrying({"other.txt": "main moved\n"}, then=given.get("then"))
+    pr = go_over(case, hub)
+    if (
+        "base" in given
+    ):  # the branch merged in is not the base: the base's tip stayed where the PR started
+        pr["baseRefOid"] = case["since"]
+    assert approvals.owner_waits(pr, [], LOOP) == held_at(case, why.format(**case))
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        ({"on": "head"}, "no verifier review is on {merge}"),
+        (
+            {"satisfied": "no"},
+            "the verifier's pass 1 on {merge} is not satisfied, or has a blocker or major open",
+        ),
+        ({"logic": ""}, "the verifier's pass 1 on {merge} does not say `Logic change: none`"),
+        (
+            {"logic": "Logic change: the retry count\n"},
+            "the verifier's pass 1 on {merge} does not say `Logic change: none`",
+        ),
+    ],
+    ids=["no verdict on the new head", "an unsatisfied verdict", "no logic line", "a logic change"],
+)
+def test_the_go_carries_nothing_without_a_satisfied_verdict_on_the_new_head_saying_no_logic_change(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    given: dict[str, str],
+    why: str,
+) -> None:
+    case = carrying({"other.txt": "main moved\n"})
+    assert approvals.owner_waits(go_over(case, hub, **given), [], LOOP) == held_at(
+        case, why.format(**case)
+    )
+
+
+def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(
+        f"Verifier: claude, pass 2 (merge of main)\n\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+        f"SATISFIED: yes\nRisk: low — a merge\n{NO_LOGIC}"
+    )
+    assert approvals.parse_report(report)[3][-1] == NO_LOGIC.strip()
 
 
 def test_a_carried_verdicts_risk_line_still_holds_the_merge(
