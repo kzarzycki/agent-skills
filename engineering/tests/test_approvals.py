@@ -4085,6 +4085,24 @@ def test_a_previous_version_lock_released_after_it_was_listed_lets_the_land_go_o
     assert lands["land"]("7")[0] == 0
 
 
+def test_a_failed_fetch_of_a_previous_version_lock_still_there_is_refused_not_waited_on(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, lands["main"]())
+    real = approvals.git
+
+    def failing_fetch(*args: str) -> str:
+        if args[:3] == ("fetch", "-q", "origin") and args[3].startswith(f"+{approvals.LEGACY}:"):
+            raise subprocess.CalledProcessError(128, ["git", *args], stderr="transport failed")
+        return real(*args)
+
+    monkeypatch.setattr(approvals, "git", failing_fetch)
+    code, lines = lands["land"]("7")
+    assert code == 1 and "transport failed" in "\n".join(lines)
+    assert lands["merged"]() == []
+
+
 def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

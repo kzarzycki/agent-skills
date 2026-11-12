@@ -3207,8 +3207,14 @@ def locked(base: str, held: list[str]) -> bool:
         if LEGACY in listed:
             try:
                 git("fetch", "-q", "origin", f"+{LEGACY}:{LEGACY}")
-            except subprocess.CalledProcessError:  # released since the listing: read origin again
-                continue
+            except subprocess.CalledProcessError as exc:
+                if git(
+                    "ls-remote", "origin", LEGACY
+                ).strip():  # still there: the fetch itself failed
+                    raise Refused(
+                        f"could not read the previous version's landing lock {LEGACY}: {' '.join(str(exc.stderr).split())}"
+                    ) from exc
+                continue  # released since the listing: read origin again
             age = int(time.time()) - int(git("log", "-1", "--format=%ct", LEGACY).strip())
             if age <= CEILING:
                 print(
