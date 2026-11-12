@@ -8513,8 +8513,11 @@ def test_the_supervisor_takes_a_cloud_verifier_s_report_only_with_its_verdict(
     assert event == f"a coord: report written: {report}"
 
 
-def test_wait_takes_a_cloud_verifier_s_reply_only_with_its_verdict(tmp_path: Path) -> None:
-    og = CloudFake(reply="REPORT\nStill running checks.")
+@pytest.mark.parametrize("reply", ["REPORT\nStill running checks.", "DONE: checks still running"])
+def test_wait_takes_a_cloud_verifier_s_reply_only_with_its_verdict(
+    tmp_path: Path, reply: str
+) -> None:
+    og = CloudFake(reply=reply)
     report = tmp_path / "r.md"
     sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
     with pytest.raises(omnigent_agent.Fail, match="ended \\(idle\\) without"):
