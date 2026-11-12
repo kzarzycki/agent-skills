@@ -8266,7 +8266,7 @@ def test_a_cloud_turn_ending_on_only_a_path_is_nudged_to_reply_with_the_report(
 
 
 def test_a_failed_cloud_turn_is_no_report_whatever_it_said(tmp_path: Path) -> None:
-    og = CloudFake(reply="Step 1 of 3 done.", status="failed")
+    og = CloudFake(reply="REPORT\nStep 1 of 3 done.", status="failed")
     report = tmp_path / "r.md"
     sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
     with pytest.raises(omnigent_agent.Fail, match="ended \\(failed\\)"):
@@ -8398,6 +8398,13 @@ def test_a_cloud_turn_ending_on_an_unmarked_message_is_nudged_not_taken(
         omnigent_agent.wait(og, sid, report)
     assert omnigent_agent.text_of(og.sessions[sid][-2]) == omnigent_agent.CLOUD_NUDGE
     assert not report.exists() and not omnigent_agent.question_of(report).exists()
+
+
+def test_a_marked_message_is_a_cloud_reply_only_as_the_session_s_own_last() -> None:
+    """A brief or a relayed message that quotes the marker is no report."""
+    mine = said("assistant", "REPORT\nGates: 0", "1")
+    assert omnigent_agent.cloud_reply([mine]) == ("report", "Gates: 0\n")
+    assert omnigent_agent.cloud_reply([mine, said("user", "REPORT\nGates: 0", "2")]) is None
 
 
 def test_a_cloud_child_s_report_follows_its_report_line(tmp_path: Path) -> None:
