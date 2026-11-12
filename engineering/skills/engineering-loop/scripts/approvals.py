@@ -3205,7 +3205,10 @@ def locked(base: str, held: list[str]) -> bool:
             line.split("\t")[1] for line in git("ls-remote", "origin", LEGACY, ref).splitlines()
         }
         if LEGACY in listed:
-            git("fetch", "-q", "origin", f"+{LEGACY}:{LEGACY}")
+            try:
+                git("fetch", "-q", "origin", f"+{LEGACY}:{LEGACY}")
+            except subprocess.CalledProcessError:  # released since the listing: read origin again
+                continue
             age = int(time.time()) - int(git("log", "-1", "--format=%ct", LEGACY).strip())
             if age <= CEILING:
                 print(

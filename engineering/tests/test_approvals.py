@@ -4068,6 +4068,23 @@ def test_a_stale_lock_of_the_previous_version_is_passed_over_and_left_in_place(
     assert git_in(lands["origin"], "rev-parse", approvals.LEGACY).strip() == theirs
 
 
+def test_a_previous_version_lock_released_after_it_was_listed_lets_the_land_go_on(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, lands["main"]())
+    real = approvals.git
+
+    def released_after_listing(*args: str) -> str:
+        out = real(*args)
+        if args[:2] == ("ls-remote", "origin") and approvals.LEGACY in out:
+            git_in(lands["origin"], "update-ref", "-d", approvals.LEGACY)
+        return out
+
+    monkeypatch.setattr(approvals, "git", released_after_listing)
+    assert lands["land"]("7")[0] == 0
+
+
 def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
