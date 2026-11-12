@@ -180,7 +180,7 @@ def test_a_pass_runs_on_the_pr_head_posts_the_report_file_and_returns_the_checko
     seen["report"] = "# Report\n\nHead: x\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n"
     assert cv.verify(7, brief, "gpt-x", "medium") == 0
     assert seen["head"] == head  # Codex ran on the PR's head, not the worker's branch
-    assert seen["brief"] == brief.read_text()
+    assert seen["brief"] == "AGENT_SIGNATURE=codex/x/med\n" + brief.read_text()
     assert seen["cmd"][-5:] == ["-m", "gpt-x", "-c", "model_reasoning_effort=medium", "-"]
     assert posted == [seen["report"]]  # the file the brief names, byte for byte
     assert capsys.readouterr().out.strip().endswith("https://example.com/comment/1")
@@ -211,3 +211,8 @@ def test_a_tree_with_uncommitted_changes_is_refused_before_codex_runs(checkout) 
     with pytest.raises(cv.Refused, match="uncommitted"):
         cv.verify(7, brief, None, None)
     assert "cmd" not in seen and posted == []
+
+
+def test_the_signature_names_the_model_and_effort_as_the_launcher_does() -> None:
+    assert cv.signature("gpt-6.1-terra", "medium") == "codex/terra-6.1/med"
+    assert cv.signature(None, None) == "codex/?/?"

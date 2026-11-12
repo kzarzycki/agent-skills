@@ -26,7 +26,8 @@ has to run `login` again (no seed login, or its refresh token was refused).
 `verify` installs the Codex CLI when the VM lacks it, writes the seeded login to `~/.codex/auth.json` when Codex is
 not logged in, and refuses a tree with uncommitted changes, since a verifier reviews a pushed head only. It checks
 out the PR's head (detached) when the checkout is elsewhere, runs `codex exec` on the brief with Codex's own sandbox
-off (the VM is the sandbox, and the verifier needs Docker and the network), and posts the report as one comment on
+off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
+naming the model and effort it was given, and posts the report as one comment on
 the PR through REST, byte for byte, printing the comment's URL as its last line. The report is the file the brief's
 `- Report: <path>` line names (approvals.py brief), else Codex's final message; one without a `SATISFIED:` line is
 not posted. It returns the checkout to where it was. Exit 0 posted, 1 the pass failed, 2 a precondition is missing.
@@ -250,12 +251,23 @@ def report_path(brief: str) -> Path | None:
     return Path(found[1]) if found else None
 
 
+def signature(model: str | None, effort: str | None) -> str:
+    """`codex/<model>/<effort>` as orchestrating-agents' launcher writes it atop a brief (`gpt-6.1-terra` is
+    `terra-6.1`, `medium` is `med`, `?` for the CLI's own default), so the report's `Verifier:` line names what ran."""
+    short = re.sub(r"^gpt-", "", model or "")
+    if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):
+        short = f"{found[3]}-{found[1]}.{found[2]}"
+    return f"codex/{short or '?'}/{ {'medium': 'med'}.get(effort or '', effort) or '?' }"
+
+
 def codex_exec(cmd: list[str], brief: str) -> int:
     return subprocess.run(cmd, input=brief, text=True, check=False).returncode
 
 
 def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> int:
     brief = brief_file.read_text()
+    if not brief.startswith("AGENT_SIGNATURE="):
+        brief = f"AGENT_SIGNATURE={signature(model, effort)}\n{brief}"
     ensure_codex()
     if dirty := run("git", "status", "--porcelain").stdout.strip():
         raise Refused(
