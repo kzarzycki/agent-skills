@@ -47,7 +47,7 @@ def head():
     return sh("git rev-parse HEAD")[1]
 
 
-REFUSED = ("403", "not permitted", "not available", "must authenticate via a github app")
+REFUSED = ("403", "not permitted through this proxy", "not available from claude code")
 
 
 def classify(rc, out, ok=True):
@@ -105,7 +105,10 @@ def probe_refs():
             if rc_rm == 0
             else f"pushed, and the cleanup failed so {ref} remains: {out_rm[-120:]}"
         )
-    res["non_branch_ref"] = (classify(rc_ref, out_ref), detail)
+    answer = classify(rc_ref, out_ref)
+    if answer == "allowed" and "remains" in detail:
+        answer = "allowed-ref-left-behind"  # differs from any baseline, so it is reported
+    res["non_branch_ref"] = (answer, detail)
     if rc != 0:
         res["ref_delete"] = ("inconclusive", "no probe branch to delete: the branch push failed")
         return res
@@ -113,7 +116,7 @@ def probe_refs():
     if rc_del != 0:
         rc_rest, out_rest = sh(f"gh api -X DELETE repos/{repo()}/git/refs/heads/{br} 2>&1")
         res["ref_delete"] = (
-            classify(rc_rest, out_del + out_rest),
+            classify(rc_rest, out_rest),
             f"git: {out_del[-80:]}; REST: {out_rest[-80:]}",
         )
     else:
@@ -147,8 +150,7 @@ def probe_container():
         return "absent", "no docker or podman on PATH"
     # ponytail: a failed run is `refused` only on an "operation not permitted" error; a pull or daemon failure
     # stays `inconclusive`, since it says nothing about whether the VM may run containers.
-    text = " ".join(tried).lower()
-    refused = "operation not permitted" in text
+    refused = all("operation not permitted" in t.lower() for t in tried)
     return ("refused" if refused else "inconclusive"), "; ".join(tried)
 
 
@@ -188,7 +190,9 @@ def main():
     }
     print(json.dumps({"results": res, "changed": changed, "inconclusive": inconclusive}, indent=2))
     if a.update_baseline:
-        BASELINE.write_text(json.dumps({k: v["answer"] for k, v in res.items()}, indent=2) + "\n")
+        # an inconclusive answer keeps the last known one
+        new = {k: v["answer"] for k, v in res.items() if v["answer"] != "inconclusive"}
+        BASELINE.write_text(json.dumps({**base, **new}, indent=2) + "\n")
     if changed and a.comment:
         lines = [
             f"- `{k}`: {o} → {n} (`{res[k]['detail'][:120]}`)" for k, (o, n) in changed.items()
