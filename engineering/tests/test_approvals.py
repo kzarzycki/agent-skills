@@ -3979,6 +3979,20 @@ def test_origin_refuses_a_delete_or_rewrite_of_the_lock_so_no_land_ever_pushed_o
     assert git_in(lands["origin"], "rev-parse", REF).strip() == tip
 
 
+def test_origin_refusing_the_locks_push_is_refused_naming_its_reason(
+    lands: dict[str, Any],
+) -> None:
+    # a refusal of a push from the tip read again is origin's, not another land's race: no wait clears it
+    lands["open"](7, {"7.txt": "7\n"})
+    hook = lands["origin"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho no pushes to the lock >&2\nexit 1\n")
+    with pytest.raises(
+        approvals.Refused, match=f"origin refused the landing lock {NAME}: .*no pushes to the lock"
+    ):
+        approvals.locked("main", [])
+    assert lands["tips"]() == []
+
+
 def test_a_land_waits_on_the_previous_versions_lock_and_never_writes_it(
     lands: dict[str, Any],
 ) -> None:
