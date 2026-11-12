@@ -3,6 +3,7 @@ after every run, a killed one included."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -54,6 +55,14 @@ def patch(repo: Path, name: str, old: str, new: str) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def own_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test runs with a gate slot of its own: a run that took the host's would wait on a gate running above this
+    suite, or, started under a held slot, on its parent for good (#818)."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+
+
 def mutate(
     repo: Path,
     *patches: Path,
@@ -61,8 +70,11 @@ def mutate(
     cwd: Path | None = None,
     to: Path | None = None,
     env: dict[str, str] | None = None,
+    timeout: float = 60,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    """Run mutate.py in its own session; past `timeout` its whole process group is stopped, so a hung run leaves
+    nothing behind, and subprocess.TimeoutExpired is raised."""
+    run = subprocess.Popen(
         [
             sys.executable,
             str(MUTATE),
@@ -75,10 +87,25 @@ def mutate(
         cwd=cwd or repo,
         # a mutate.py run over these tests passes its switch down, which would hide this one lacking it
         env={k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"} | (env or {}),
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        out, err = run.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # TERM first: mutate.py stops its test command's own group and restores the tree on it
+        os.killpg(run.pid, signal.SIGTERM)
+        try:
+            run.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(run.pid, signal.SIGKILL)
+        run.communicate()
+        raise
+    return subprocess.CompletedProcess(run.args, run.returncode, out, err)
 
 
 def stopped(repo: Path, tmp_path: Path, *signals: signal.Signals, first: str = "") -> int:
@@ -367,3 +394,200 @@ def test_a_run_nested_under_another_uv_run_sees_the_callers_environment_depth(
     """uv counts each nested run in UV_RUN_RECURSION_DEPTH; the test command gets the count minus this script's."""
     seen = seen_env(repo, tmp_path, VIRTUAL_ENV=sys.prefix, UV_RUN_RECURSION_DEPTH="2")
     assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
+
+
+# the host gate slot (#818)
+TAKE_SLOT = """
+import fcntl, os, sys, time
+path = sys.argv[1]
+if os.environ.get("LOOP_GATE_SLOT_HELD") != path:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT)
+    end = time.monotonic() + 5
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() > end:
+                sys.exit(3)
+            time.sleep(0.05)
+sys.exit(0)
+"""
+
+
+def slot(tmp_path: Path) -> Path:
+    return tmp_path / "cache" / "engineering-loop" / "gate.1.lock"
+
+
+def slot_env(tmp_path: Path) -> dict[str, str]:
+    return {"XDG_CACHE_HOME": str(tmp_path / "cache")}
+
+
+def hold(path: Path) -> subprocess.Popen[str]:
+    """A process holding the slot until its stdin closes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    code = (
+        "import fcntl, os, sys\n"
+        f"fd = os.open({str(path)!r}, os.O_WRONLY | os.O_CREAT)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "print('held', flush=True)\n"
+        "sys.stdin.read()\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
+    return proc
+
+
+def test_the_test_command_waits_while_another_process_holds_the_slot(
+    repo: Path, tmp_path: Path
+) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    started = tmp_path / "started"
+    holder = hold(slot(tmp_path))
+    command = [sys.executable, str(MUTATE), "--test", f"touch {started} && exit 1"]
+    run = subprocess.Popen(
+        [*command, "--log", str(log_path(repo)), str(killed)],
+        cwd=repo,
+        env={**os.environ, **slot_env(tmp_path)},
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not (
+            log_path(repo).exists() and "waiting for the host" in log_path(repo).read_text()
+        ):
+            assert time.monotonic() < deadline and run.poll() is None
+            time.sleep(0.05)
+        time.sleep(0.5)
+        assert not started.exists()
+        released = time.time()
+        assert holder.stdin is not None
+        holder.stdin.close()
+        assert run.wait(timeout=30) == 0
+    finally:
+        holder.kill()
+        run.kill()
+    assert started.stat().st_mtime >= released - 0.05
+    assert f"{killed}: waiting for the host gate slot" in log(repo)
+    assert clean(repo)
+
+
+def test_a_free_slot_is_taken_without_a_wait_line(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    assert mutate(repo, killed, env=slot_env(tmp_path)).returncode == 0
+    assert not any("waiting" in line for line in log(repo))
+
+
+def test_the_slot_is_held_around_each_patchs_test_run_only(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    # the test command fails when it can't take the slot itself while its parent holds it (no re-entry variable)
+    probe = (
+        f'{sys.executable} -c "import fcntl,os,sys; fd=os.open({str(slot(tmp_path))!r}, os.O_WRONLY);'
+        ' fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)" && exit 0 || exit 1'
+    )
+    mutate(repo, killed, test=probe, env=slot_env(tmp_path))
+    assert log(repo)[2] == f"{killed}: exit 1 killed"
+    # between runs it is free
+    free = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                f"import fcntl,os; fd=os.open({str(slot(tmp_path))!r}, os.O_WRONLY);"
+                "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)"
+            ),
+        ],
+        check=False,
+    )
+    assert free.returncode == 0
+
+
+def test_a_test_command_that_takes_the_slot_by_the_reentry_rule_does_not_deadlock(
+    repo: Path, tmp_path: Path
+) -> None:
+    (repo / "tmp" / "take_slot.py").write_text(TAKE_SLOT)
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    test = f"{sys.executable} {repo / 'tmp' / 'take_slot.py'} {slot(tmp_path)} && {TESTS}"
+    result = mutate(repo, killed, test=test, env=slot_env(tmp_path))
+    assert result.returncode == 0, result.stderr
+    # exit 1 from the tests, not 3 from a wrapper that waited on its parent
+    assert log(repo)[2] == f"{killed}: exit 1 killed"
+
+
+def test_a_run_under_a_holder_of_the_slot_takes_no_lock(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    holder = hold(slot(tmp_path))
+    run = subprocess.Popen(
+        [sys.executable, str(MUTATE), "--test", TESTS, "--log", str(log_path(repo)), str(killed)],
+        cwd=repo,
+        env={**os.environ, **slot_env(tmp_path), "LOOP_GATE_SLOT_HELD": str(slot(tmp_path))},
+    )
+    try:
+        # a run that took the lock anyway would wait on the holder for good
+        assert run.wait(timeout=20) == 0
+    finally:
+        holder.kill()
+        run.kill()
+    assert not any("waiting" in line for line in log(repo))
+
+
+def test_the_slot_is_released_after_each_patch_so_the_next_does_not_wait(
+    repo: Path, tmp_path: Path
+) -> None:
+    first = patch(repo, "add.patch", "a + b", "a - b")
+    second = patch(repo, "add2.patch", "a + b", "a * b")
+    run = subprocess.Popen(
+        [sys.executable, str(MUTATE), "--test", TESTS, "--log", str(log_path(repo))]
+        + [str(first), str(second)],
+        cwd=repo,
+        env={**os.environ, **slot_env(tmp_path)},
+    )
+    try:
+        # a slot kept after the first patch would block the second for good
+        assert run.wait(timeout=20) == 0
+    finally:
+        run.kill()
+    assert not any("waiting" in line for line in log(repo))
+
+
+def test_a_run_that_hangs_is_stopped_with_everything_it_started(repo: Path, tmp_path: Path) -> None:
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    pidfile = tmp_path / "sleeper.pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        mutate(repo, killed, test=f"echo $$ > {pidfile} && exec sleep 300", timeout=3)
+    pid = int(pidfile.read_text())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("the test command of a timed-out run is still running")
+    assert clean(repo)
+
+
+def test_the_hosts_slot_held_by_another_process_is_not_waited_on(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a fake host: its cache is where a run without the fixture's XDG_CACHE_HOME would look for the slot
+    host = tmp_path / "host"
+    host_slot = host / ".cache" / "engineering-loop" / "gate.1.lock"
+    monkeypatch.setenv("HOME", str(host))
+    assert os.environ["XDG_CACHE_HOME"] == str(tmp_path / "cache")
+    assert "LOOP_GATE_SLOT_HELD" not in os.environ
+    holder = hold(host_slot)
+    try:
+        killed = patch(repo, "add.patch", "a + b", "a - b")
+        # a run that waited on the host's slot would hit the timeout
+        result = mutate(repo, killed, timeout=20)
+        assert result.returncode == 0, result.stderr
+        # the helper's other runs, here a bare Popen, see the same slot
+        assert stopped(repo, tmp_path, signal.SIGTERM) != 0
+    finally:
+        holder.kill()
+        holder.wait()
+    assert clean(repo)

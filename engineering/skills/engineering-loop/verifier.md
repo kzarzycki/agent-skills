@@ -92,8 +92,8 @@ yourself, keeping standards and spec as separate axes.
   <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
   change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
   also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
-  '<tests>' --log <log> <patch>…` (the test command under the heavy lock when your brief
-  names one), which applies each alone, restores the tree, stops cleanly on a signal and
+  '<tests>' --log <log> <patch>…` (the script queues on the host gate slot itself, so the
+  command takes no lock of its own), which applies each alone, restores the tree, stops cleanly on a signal and
   logs the head with each patch's exit code, rather than a harness of your own; the worker
   ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
   major. Before the report, `git status --porcelain` must match what it showed at the start:
