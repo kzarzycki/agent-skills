@@ -115,7 +115,8 @@ design, wireframes included for a UI, and delegate the rest.
    proof the spec's acceptance needs whose log names another commit, since the verifier
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Then start the verifier on that pushed
+   prints the ones to rerun. Where loop.md places the verifier in the worker's VM, the pass runs there
+   instead of in a host worktree (SKILL.md, Verifier in the worker's VM). Then start the verifier on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
    yours while it reviews and no commit of yours moves the head under review. Copy into its
