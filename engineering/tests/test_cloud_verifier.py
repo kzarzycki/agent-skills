@@ -164,6 +164,8 @@ def checkout(tmp_path, monkeypatch):
         if "edit" in seen:
             (work / "a.txt").write_text(seen["edit"])
             (work / "stray.txt").write_text("untracked\n")
+        if "do" in seen:
+            seen["do"]()
         return seen.get("exit", 0)
 
     real_run = cv.run
@@ -259,3 +261,27 @@ def test_an_untracked_file_outside_the_report_folder_is_refused(checkout) -> Non
     with pytest.raises(cv.Refused, match="conftest.py"):
         cv.verify(7, brief, None, None)
     assert "cmd" not in seen and posted == []
+
+
+def test_a_leftover_named_like_a_git_pattern_takes_nothing_else_with_it(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    (work / "tmp/loop").mkdir(parents=True)
+    (work / "tmp/loop/proof.log").write_text("from before the pass\n")
+    seen.update(report="# Report\nSATISFIED: yes\n")
+    seen["do"] = lambda: (work / ":(glob)**").write_text("a valid file name\n")
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == [seen["report"]]
+    assert (work / "tmp/loop/proof.log").exists() and not (work / ":(glob)**").exists()
+    assert (work / "a.txt").read_text() == "one\n"
+
+
+def test_an_ignored_file_the_verifier_staged_is_unstaged_not_deleted(checkout) -> None:
+    work, _, brief, posted, seen = checkout
+    (work / ".git/info/exclude").write_text("private.txt\n")
+    (work / "private.txt").write_text("the worker's own\n")
+    seen["do"] = lambda: git(work, "add", "-f", "private.txt")
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == ["final\nSATISFIED: yes\n"]
+    assert (work / "private.txt").read_text() == "the worker's own\n"
+    assert git(work, "status", "--porcelain") == ""
+    assert git(work, "symbolic-ref", "--short", "HEAD") == "claude/worker"

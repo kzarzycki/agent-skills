@@ -264,14 +264,51 @@ def signature(model: str | None, effort: str | None) -> str:
     return f"codex/{short or '?'}/{ {'medium': 'med'}.get(effort or '', effort) or '?' }"
 
 
-def uncommitted(report: Path | None) -> str:
-    """`git status --porcelain` without the files in the report's own folder: the pass's reports and proof logs
-    live there, and a fresh clone ignores that folder only where the project's .gitignore does."""
+def changes(report: Path | None) -> list[tuple[str, str]]:
+    """(status, path) of every uncommitted path but the files in the report's own folder: the pass's reports and
+    proof logs live there, and a fresh clone ignores that folder only where the project's .gitignore does."""
     keep = f"{report.parent}/" if report and not report.is_absolute() else None
-    lines = run("git", "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
-    return "\n".join(
-        l for l in lines if not (keep and l.startswith("?? ") and l[3:].startswith(keep))
+    fields = iter(
+        run("git", "status", "--porcelain", "-z", "--untracked-files=all").stdout.split("\0")
     )
+    found = []
+    for field in fields:
+        if not field:
+            continue
+        status, path = field[:2], field[3:]
+        if status[0] in "RC":
+            next(fields, None)  # a rename's or copy's source follows as a field of its own
+        if not (keep and status == "??" and path.startswith(keep)):
+            found.append((status, path))
+    return found
+
+
+def uncommitted(report: Path | None) -> str:
+    return "\n".join(f"{status} {path}" for status, path in changes(report))
+
+
+def drop_leftovers(report: Path | None) -> None:
+    """Put the tree back as it was before the pass, when it was clean: whatever is there now is the verifier's.
+    Unstage rather than reset hard, since a hard reset deletes an ignored file the verifier staged; restore the
+    tracked files; and remove each new file by its own name, since `git clean` reads a name such as `:(glob)**`
+    as a pattern and takes the reports with it."""
+    if not changes(report):
+        return
+    run("git", "reset", "-q")
+    left = changes(report)
+    print(
+        "cloud_verifier: dropping what the verifier left in the tree:\n"
+        + "\n".join(f"{status} {path}" for status, path in left),
+        file=sys.stderr,
+    )
+    run("git", "checkout", "-q", "--", ":/")
+    for status, path in left:
+        if status == "??":
+            target = Path(path)
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)  # a nested repository shows as its folder
+            else:
+                target.unlink(missing_ok=True)
 
 
 def codex_exec(cmd: list[str], brief: str) -> int:
@@ -309,18 +346,7 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
         code = codex_exec([*cmd, "-"], brief)
         print(f"codex exited {code} after {time.time() - started:.0f} s", flush=True)
     finally:
-        if left := uncommitted(report):
-            # the tree was clean before the pass, so these are the verifier's own leftovers: drop them, so the
-            # worker's next step doesn't build on them, and say which
-            print(
-                f"cloud_verifier: dropping what the verifier left in the tree:\n{left}",
-                file=sys.stderr,
-            )
-            run("git", "reset", "-q", "--hard")
-            if new := [line[3:] for line in left.splitlines() if line.startswith("?? ")]:
-                run(
-                    "git", "clean", "-fdq", "--", *new
-                )  # named paths only: a bare clean takes the reports too
+        drop_leftovers(report)
         if moved:
             run("git", "checkout", "-q", was)
     if not code and question and question.exists() and question.read_text().strip():
