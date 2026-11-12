@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import ssl
 import subprocess
 import sys
@@ -2279,6 +2280,100 @@ def test_a_get_retries_a_server_restarting_and_a_post_does_not(
     with pytest.raises(omnigent_agent.Fail):
         og.call("POST", "/x", {})
     assert calls == ["POST"]
+
+
+def test_a_get_retries_a_name_resolution_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        calls.append(req.get_method())
+        if len(calls) == 1:
+            raise URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    assert og.call("GET", "/x") == {"ok": True}
+    assert calls == ["GET", "GET"]
+
+
+def test_send_exits_7_when_the_post_went_out_and_the_next_read_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        reads[0] += 1
+        if og.posts and reads[0] > 1:  # the poll after the post
+            raise omnigent_agent.Fail("GET info: Temporary failure in name resolution")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.SENT_UNCONFIRMED == 7
+    err = capsys.readouterr().err
+    assert "the message was posted" in err and "`send` again is safe" in err
+    assert og.posts == 1
+    og.info = info  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 0  # the rerun finds the copy
+    assert og.posts == 1
+
+
+def test_send_with_a_report_exits_7_when_the_confirming_history_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    items = og.items
+    seen = [0]
+
+    def flaky(s: str) -> list[dict]:
+        seen[0] += 1
+        if og.posts:
+            raise omnigent_agent.Fail("GET items: ConnectionResetError")
+        return items(s)
+
+    og.items = flaky  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.SentUnconfirmed) as caught:
+        omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+    assert caught.value.code == 7
+    assert og.posts == 1
+
+
+def test_send_keeps_exit_1_when_the_post_itself_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.fail.add("send")
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 0
+
+
+def test_send_keeps_exit_1_when_a_read_before_the_post_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+
+    def down(s: str) -> list[dict]:
+        raise omnigent_agent.Fail("GET items: Temporary failure in name resolution")
+
+    og.items = down  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 0
+
+
+def test_a_broadcast_target_posted_but_unconfirmed_is_no_failure() -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    items = og.items
+    og.items = lambda s: (_ for _ in ()).throw(omnigent_agent.Fail("x")) if og.posts else items(s)  # type: ignore[method-assign]
+    assert omnigent_agent.broadcast(og, [(sid, "lead")], "hi", 0, "cos") is False
 
 
 def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6922,6 +7017,82 @@ def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer
     assert "the supervisor's tell was not delivered: it waits on a prompt" in posted(og)[0]
 
 
+def test_a_supervisor_action_posted_but_unconfirmed_is_not_reported_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b", after={"b": "a"})
+    og = Leads(a=[told("brief", 60), ending("DONE: merged", 5)], b=[told("brief", 60)])
+
+    def unconfirmed(*a: object, **k: object) -> str:
+        raise omnigent_agent.SentUnconfirmed("session b: the message was posted but unconfirmed")
+
+    monkeypatch.setattr(omnigent_agent, "relay", unconfirmed)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert not any("was not delivered" in p for p in posted(og))
+
+
+def test_a_relay_queued_after_its_own_post_exits_7_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        if og.posts:
+            reads[0] += 1
+            if reads[0] == 2:  # the read that says why it is queued
+                raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.SENT_UNCONFIRMED
+    assert og.posts == 1
+
+
+def test_a_relay_queued_behind_an_earlier_copy_keeps_exit_1_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.send(sid, "[relayed by cos]\ngo")  # an earlier copy, pending
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        reads[0] += 1
+        if reads[0] == 4:  # relay's, send's, its poll's, then the one after the queued return
+            raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert reads[0] == 4 and og.posts == 1
+
+
+def test_a_send_whose_copy_was_already_there_and_whose_poll_fails_is_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.send(sid, "[relayed by cos]\ngo")  # an earlier copy, pending
+    og.items = lambda s: (_ for _ in ()).throw(omnigent_agent.Fail("GET items: down"))  # type: ignore[method-assign]
+    info = og.info
+    calls = [0]
+
+    def flaky(s: str) -> dict:
+        calls[0] += 1
+        if calls[0] > 2:
+            raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.items = lambda s: og.sessions[s]  # type: ignore[method-assign]
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 1
+
+
 @pytest.mark.parametrize("why", ["model failed", "allowance spent"])
 def test_a_quiet_end_the_model_could_not_route_goes_to_the_chief_of_staff_not_a_nudge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
@@ -8356,10 +8527,10 @@ def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
     here = omnigent_agent.question_of(report)
     here.parent.mkdir(parents=True)
     here.write_text("another session's")
-    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True) == "already"
+    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True)[0] == "already"
     assert og.posts == 1
     assert "tmp/loop/r.md.question" not in og.files  # answered: deleted on its host
-    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True) == "delivered"
+    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True)[0] == "delivered"
     assert here.read_text() == "another session's"
 
 
