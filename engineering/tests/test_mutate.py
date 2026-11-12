@@ -78,6 +78,8 @@ def mutate(
         capture_output=True,
         text=True,
         check=False,
+        # a run that waits on a slot it already holds would otherwise hang the suite
+        timeout=60,
     )
 
 
