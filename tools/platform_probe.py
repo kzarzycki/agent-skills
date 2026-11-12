@@ -90,7 +90,11 @@ def probe_container():
     start_dockerd()
     for tool in ("docker", "podman"):
         if shutil.which(tool):
-            rc, out = sh(f"{tool} run --rm hello-world 2>&1 | head -5", 120)
+            for _ in range(3):  # a registry pull can fail on its own; only three failures in a row count
+                rc, out = sh(f"{tool} run --rm hello-world 2>&1 | head -5", 120)
+                if "Hello" in out:
+                    break
+                time.sleep(5)
             if "Hello" in out:
                 return "allowed", f"{tool} run hello-world works"
             return "refused", f"{tool} present, run failed: {out[-200:]}"
