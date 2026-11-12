@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
@@ -326,6 +326,8 @@ FAILED_LINE = re.compile(r"FAILED: \S+: [^\n]*\n?")
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
 AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
+# A followed manager's line: the registry of its own leads, the sessions its wait on its leads names
+LEADS_FIELD = "leads="
 # A followed lead the owner drives directly, in its own session: no deadline, nudge or quiet-end
 # routing, since the owner is its follower; its DONE, failures and prompts are still routed.
 DIRECT_FIELD = "direct"
@@ -3440,34 +3442,42 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         return []
 
 
-def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool]:
+def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool, str]:
     """A registry line: ``session=report``, then the session's brief files, each after a tab,
     whether its report is a verifier's (a ``verdict`` field, which ``run``, ``start`` and ``send``
     write for one), whether it is a lead followed (a ``follow`` field, which ``start
     --top-level`` writes), whose report ``follow`` never reads, and the lead it waits on (an
     ``after=<session>`` field, which ``start --top-level --after`` writes), else empty, and
-    whether the owner drives it directly (a ``direct`` field, which the ``direct`` command writes)."""
+    whether the owner drives it directly (a ``direct`` field, which the ``direct`` command writes),
+    and a manager's own leads registry (a ``leads=<file>`` field, which ``start --top-level
+    --leads`` writes), else empty."""
     head, *fields = line.split("\t")
     sid, report = pair(head)
     fields = [f.strip() for f in fields if f.strip()]
     after = next((f.removeprefix(AFTER_FIELD) for f in fields if f.startswith(AFTER_FIELD)), "")
+    leads = next((f.removeprefix(LEADS_FIELD) for f in fields if f.startswith(LEADS_FIELD)), "")
     marks = (VERDICT_FIELD, FOLLOW_FIELD, DIRECT_FIELD)
     return (
         sid,
         report,
-        [Path(f) for f in fields if f not in marks and not f.startswith(AFTER_FIELD)],
+        [
+            Path(f)
+            for f in fields
+            if f not in marks and not f.startswith((AFTER_FIELD, LEADS_FIELD))
+        ],
         VERDICT_FIELD in fields,
         FOLLOW_FIELD in fields,
         after,
         DIRECT_FIELD in fields,
+        leads,
     )
 
 
 def registered(
     path: Path,
-) -> tuple[dict[str, tuple[Path, list[Path], bool, bool, str, bool]], list[str]]:
+) -> tuple[dict[str, tuple[Path, list[Path], bool, bool, str, bool, str]], list[str]]:
     """The registry's sessions with the reports they owe, their brief files, verdict and follow
-    flags, the lead each waits on and its direct flag, the last line
+    flags, the lead each waits on, its direct flag and its own leads registry, the last line
     winning for a session listed twice, and its malformed lines. Blank lines and ``#`` comments
     are skipped."""
     owed, bad = {}, []
@@ -3499,9 +3509,11 @@ def arm(
     followed: bool = False,
     after: str = "",
     far: bool = False,
+    leads: str = "",
 ) -> None:
     """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
-    ``followed`` or ``after``, that field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
+    ``followed``, ``after`` or ``leads``, that field (``leads`` kept from the line it had), or with
+    ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
     goes after the brief files the line had, else after the one ``start`` wrote (``far``: the
     session runs on another host, and ``start`` wrote none)."""
 
@@ -3517,8 +3529,9 @@ def arm(
         files = briefs or []
         try:  # the owner's mark outlives a re-arm: no caller of arm sets it
             direct = bool(mine) and entry(mine[-1])[6]
+            had_leads = entry(mine[-1])[7] if mine else ""
         except Fail:
-            direct = False
+            direct, had_leads = False, ""
         if then:
             try:
                 had = entry(mine[-1])[2] if mine else []
@@ -3527,6 +3540,7 @@ def arm(
             files = [b for b in briefs_for(report, had, far) if b != then] + [then]
         flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
         flag += [AFTER_FIELD + after] if after else []
+        flag += [LEADS_FIELD + (leads or had_leads)] if leads or had_leads else []
         flag += [DIRECT_FIELD] * direct
         return rest + ["\t".join([f"{sid}={report}", *map(str, files), *flag])]
 
@@ -3564,6 +3578,7 @@ def arm_quietly(
     followed: bool = False,
     after: str = "",
     far: bool = False,
+    leads: str = "",
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
@@ -3579,6 +3594,7 @@ def arm_quietly(
                 followed=followed,
                 after=after,
                 far=far,
+                leads=leads,
             )
         except OSError as e:
             print(
@@ -4236,7 +4252,7 @@ def supervise_registry(
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             act_on(
                 eid,
-                [(other, "tell", result) for other, (*_, after, _) in owed.items() if after == sid],
+                [(other, "tell", result) for other, owes in owed.items() if owes[4] == sid],
             )
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
@@ -4376,7 +4392,13 @@ def supervise_registry(
         flush()
 
     def track(
-        sid: str, report: Path, briefs: list[Path], followed: bool, after: str, direct: bool
+        sid: str,
+        report: Path,
+        briefs: list[Path],
+        followed: bool,
+        after: str,
+        direct: bool,
+        leads: str = "",
     ) -> dict:
         """``sid``'s state entry, updated from what its look just read."""
         nonlocal hosts
@@ -4405,6 +4427,7 @@ def supervise_registry(
             follow=followed,
             direct=direct,
             waits_on=[after] if after else [],
+            leads=leads,
             **lead_status(info, items),
         )
         if console:
@@ -4543,12 +4566,46 @@ def supervise_registry(
                 say(line, sid, f"landed:{repo}:{sha}", "landed")
             heads[repo] = sha
 
+    def moving(sid: str, lead: dict) -> bool:
+        """Whether every session ``sid``'s wait names is running: not archived, its status running
+        and its ``updated_at`` within ``DEADLINE_SECONDS``. A wait names a full session id, or, for
+        a manager (its line's ``leads=`` registry), its leads as a group: the leads that registry
+        follows. A wait on anything else (the notified session, the owner, a word), a named
+        session that is idle, ended or not read, and a registry not read, are False: the deadline
+        is raised as without it."""
+        wait = lead["wait"]
+        if re.fullmatch(r"[0-9a-f]{32}", wait) and wait != notify:
+            named = [wait]
+        elif wait == "lead" and lead.get("leads"):
+            try:
+                named = [s for s, owes in registered(Path(lead["leads"]))[0].items() if owes[3]]
+            except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
+                log(("leads", sid), f"{sid}: leads registry not read: {reason(e)}")
+                return False
+            log(("leads", sid), None)
+        else:
+            return False
+        for other in named:
+            try:
+                info = og.info(other)
+            except Exception:  # noqa: BLE001 - gone or unread: not known to be moving
+                return False
+            updated = float(info.get("updated_at") or 0)
+            if (
+                info.get("archived")
+                or str(info.get("status")) not in RUNNING
+                or time.time() - updated >= DEADLINE_SECONDS
+            ):
+                return False
+        return bool(named)
+
     def overdue(sid: str, lead: dict) -> None:
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
         wait with no progress since its time raises one at its time, which wakes the lead, and
         once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``,
-        so new progress starts a new chain."""
+        so new progress starts a new chain. None while every session its wait names is running
+        (``moving``), since it is waiting, not stalled."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
         if lead["wait"] == "parked":
@@ -4566,6 +4623,8 @@ def supervise_registry(
             return
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
+        if due is None and moving(sid, lead):
+            return  # it waits on sessions that are all making progress: no stall of its own
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -4622,13 +4681,17 @@ def supervise_registry(
             log("registry", None)
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
-        for sid, (report, briefs, verdict, followed, after, direct) in owed.items():
+        for sid, (report, briefs, verdict, followed, after, direct, leads) in owed.items():
             if any(o[1] and o[1][0] == sid for o in outbox):
                 continue  # its event is found; it waits to be posted
             try:
                 if followed:  # no report rules: only --console's routing nudges or revives it
                     event, key = follow(rec, sid, idle_since, told, holding)
-                    lead = track(sid, report, briefs, followed, after, direct) if console else {}
+                    lead = (
+                        track(sid, report, briefs, followed, after, direct, leads)
+                        if console
+                        else {}
+                    )
                     since, kind = time.time(), key[0]
                     nth = [str(lead.get("occurrences"))] if kind in ("blocked", "failed") else []
                     eid = ":".join((kind, sid, *nth, *key[1:]))
@@ -4651,7 +4714,7 @@ def supervise_registry(
                         rec, sid, report, silent, resumed, unsent, notice, briefs, verdict, ended
                     )
                     if console:
-                        label(sid, track(sid, report, briefs, followed, after, direct))
+                        label(sid, track(sid, report, briefs, followed, after, direct, leads))
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
@@ -4799,6 +4862,13 @@ def main(argv: list[str] | None = None) -> int:
             metavar="SESSION",
             help="with --top-level and a registry, the lead this one waits on: the supervisor"
             " --console tells it that lead's DONE",
+        )
+        p.add_argument(
+            "--leads",
+            metavar="FILE",
+            type=Path,
+            help="with --top-level and a registry, the registry of the project manager's own leads:"
+            " the supervisor --console raises no deadline while every lead in it is running",
         )
     p = sub.add_parser("send")
     p.add_argument("session")
@@ -5008,6 +5078,10 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "after", None) and not (args.top_level and registry):
             raise Fail(
                 "--after needs --top-level and a registry: it marks the lead's registry line"
+            )
+        if getattr(args, "leads", None) and not (args.top_level and registry):
+            raise Fail(
+                "--leads needs --top-level and a registry: it marks the manager's registry line"
             )
         if args.cmd == "direct":
             if not registry:
@@ -5330,6 +5404,7 @@ def main(argv: list[str] | None = None) -> int:
                     verdict=verifier,
                     followed=args.top_level,
                     after=args.after or "",
+                    leads=str(args.leads.resolve()) if args.leads else "",
                 )
             print(sid, flush=True)
             return sid

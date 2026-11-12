@@ -98,7 +98,9 @@ its landing order.
   Without `--console` it posts `Supervisor: <line>` for every piece of news instead (the
   table below reads those too). A lead that waits on another is started with `start --top-level
   --after <session>`: the supervisor tells it that lead's `DONE` itself, so you send it no line of
-  yours. A subscription wakes you with a full
+  yours. A project manager is started with `start --top-level --leads <its leads registry>`
+  (`<repo>-leads.registry` beside yours), so its `STILL WORKING` on its leads raises no deadline
+  while every one of them is running. A subscription wakes you with a full
   context on every turn end, and most of those change nothing, so it is the fallback:
   `start --top-level` without a registry subscribes you to the lead it starts, and Omnigent posts
   `[System: session <title> (<id>) ended its turn (completed|cancelled|failed). Read it with
