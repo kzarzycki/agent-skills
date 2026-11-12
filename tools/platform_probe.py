@@ -8,7 +8,8 @@ posted on the tracking issue (#809), so a workaround is dropped once the platfor
 
     python3 tools/platform_probe.py [--comment] [--update-baseline] [--issue 809]
 
-Exit 0 when every answer matches the baseline, 1 when one changed. The probes leave nothing
+Exit 0 when every answer matches the baseline, 1 when one changed, 2 when a probe was
+`inconclusive` (a network, auth or registry failure, not a platform answer: rerun it). The probes leave nothing
 behind: a pending status, the one branch `claude/probe-platform` (its deletion is refused in a cloud session, so it stays and
 is force-pushed again each run: delete it from a host when you like), and a ref that is refused or removed.
 """
@@ -46,33 +47,42 @@ def head():
     return sh("git rev-parse HEAD")[1]
 
 
+REFUSED = ("403", "not permitted", "not available", "must authenticate via a github app")
+
+
+def classify(rc, out, ok=True):
+    """`allowed` when the call worked, `refused` only when the platform's refusal text is in the
+    output, else `inconclusive`: a network, auth or registry failure says nothing about policy."""
+    if ok and rc == 0:
+        return "allowed"
+    return "refused" if any(t in out.lower() for t in REFUSED) else "inconclusive"
+
+
 def api(method, path, *fields):
     f = " ".join(f"-f {k}={v}" for k, v in fields)
-    _rc, out = sh(f"gh api -X {method} {path} {f} -i 2>&1 | head -20")
-    status = next(
-        (l for l in out.splitlines() if l.startswith("HTTP/")),
-        out.splitlines()[0] if out else "no output",
-    )
-    return status.strip(), out
+    rc, out = sh(f"gh api -X {method} {path} {f} 2>&1")
+    return classify(rc, out), out[-200:].replace("\n", " ")
 
 
 def probe_graphql():
-    rc, out = sh("gh api graphql -f query='{viewer{login}}'")
-    return ("allowed" if rc == 0 else "refused"), out[:200]
+    rc, out = sh("gh api graphql -f query='{viewer{login}}' 2>&1")
+    return classify(rc, out), out[:200]
 
 
 def probe_status_write():
-    st, out = api(
+    return api(
         "POST",
         f"repos/{repo()}/statuses/{head()}",
         ("state", "pending"),
         ("context", "platform-probe"),
     )
-    return ("allowed" if " 201" in st else "refused"), st + " " + out[-160:].replace("\n", " ")
 
 
 def probe_checkrun_write():
-    st, out = api(
+    # ponytail: a check run cannot be deleted, so once this answer turns `allowed` each run adds
+    # one neutral check run on its HEAD. That turn is itself the change the probe reports; update
+    # the baseline then and drop this probe.
+    return api(
         "POST",
         f"repos/{repo()}/check-runs",
         ("name", "platform-probe"),
@@ -80,24 +90,35 @@ def probe_checkrun_write():
         ("status", "completed"),
         ("conclusion", "neutral"),
     )
-    return ("allowed" if " 201" in st else "refused"), st + " " + out[-160:].replace("\n", " ")
 
 
 def probe_refs():
     br, ref = "claude/probe-platform", "refs/probe/platform"
-    rc, out = sh(f"git push --force origin HEAD:refs/heads/{br}")
-    out_branch = "pushed" if rc == 0 else out[-160:]
-    rc_ref, out_ref = sh(f"git push origin HEAD:{ref}")
+    rc, out = sh(f"git push --force origin HEAD:refs/heads/{br} 2>&1")
+    res = {"branch_push": (classify(rc, out), "pushed" if rc == 0 else out[-160:])}
+    rc_ref, out_ref = sh(f"git push --force origin HEAD:{ref} 2>&1")
+    detail = out_ref[-160:]
     if rc_ref == 0:
-        sh(f"git push origin :{ref}")
-    rc_del, out_del = sh(f"git push origin --delete {br}") if rc == 0 else (1, "branch not pushed")
-    if rc_del != 0 and rc == 0:
-        sh(f"gh api -X DELETE repos/{repo()}/git/refs/heads/{br}")
-    return {
-        "branch_push": ("allowed" if rc == 0 else "refused", out_branch),
-        "non_branch_ref": ("allowed" if rc_ref == 0 else "refused", out_ref[-160:]),
-        "ref_delete": ("allowed" if rc_del == 0 else "refused", out_del[-160:]),
-    }
+        rc_rm, out_rm = sh(f"git push origin :{ref} 2>&1")
+        detail = (
+            "pushed"
+            if rc_rm == 0
+            else f"pushed, and the cleanup failed so {ref} remains: {out_rm[-120:]}"
+        )
+    res["non_branch_ref"] = (classify(rc_ref, out_ref), detail)
+    if rc != 0:
+        res["ref_delete"] = ("inconclusive", "no probe branch to delete: the branch push failed")
+        return res
+    rc_del, out_del = sh(f"git push origin --delete {br} 2>&1")
+    if rc_del != 0:
+        rc_rest, out_rest = sh(f"gh api -X DELETE repos/{repo()}/git/refs/heads/{br} 2>&1")
+        res["ref_delete"] = (
+            classify(rc_rest, out_del + out_rest),
+            f"git: {out_del[-80:]}; REST: {out_rest[-80:]}",
+        )
+    else:
+        res["ref_delete"] = ("allowed", "git push --delete worked")
+    return res
 
 
 def start_dockerd():
@@ -112,19 +133,23 @@ def start_dockerd():
 
 def probe_container():
     start_dockerd()
+    tried = []
     for tool in ("docker", "podman"):
-        if shutil.which(tool):
-            for _ in range(
-                3
-            ):  # a registry pull can fail on its own; only three failures in a row count
-                _rc, out = sh(f"{tool} run --rm hello-world 2>&1 | head -5", 120)
-                if "Hello" in out:
-                    break
-                time.sleep(5)
+        if not shutil.which(tool):
+            continue
+        for _ in range(3):  # a registry pull can fail on its own
+            _rc, out = sh(f"{tool} run --rm hello-world 2>&1 | head -5", 120)
             if "Hello" in out:
                 return "allowed", f"{tool} run hello-world works"
-            return "refused", f"{tool} present, run failed: {out[-200:]}"
-    return "absent", "no docker or podman on PATH"
+            time.sleep(5)
+        tried.append(f"{tool}: {out[-120:]}")
+    if not tried:
+        return "absent", "no docker or podman on PATH"
+    # ponytail: a failed run is `refused` only on an "operation not permitted" error; a pull or daemon failure
+    # stays `inconclusive`, since it says nothing about whether the VM may run containers.
+    text = " ".join(tried).lower()
+    refused = "operation not permitted" in text
+    return ("refused" if refused else "inconclusive"), "; ".join(tried)
 
 
 def probe_nested_virt():
@@ -155,8 +180,13 @@ def main():
     a = ap.parse_args()
     res = run()
     base = json.loads(BASELINE.read_text()) if BASELINE.exists() else {}
-    changed = {k: (base.get(k), v["answer"]) for k, v in res.items() if base.get(k) != v["answer"]}
-    print(json.dumps({"results": res, "changed": changed}, indent=2))
+    inconclusive = [k for k, v in res.items() if v["answer"] == "inconclusive"]
+    changed = {
+        k: (base.get(k), v["answer"])
+        for k, v in res.items()
+        if v["answer"] != "inconclusive" and base.get(k) != v["answer"]
+    }
+    print(json.dumps({"results": res, "changed": changed, "inconclusive": inconclusive}, indent=2))
     if a.update_baseline:
         BASELINE.write_text(json.dumps({k: v["answer"] for k, v in res.items()}, indent=2) + "\n")
     if changed and a.comment:
@@ -172,7 +202,7 @@ def main():
             check=False,
         )
         print(p.stdout + p.stderr)
-    return 1 if changed else 0
+    return 1 if changed else 2 if inconclusive else 0
 
 
 if __name__ == "__main__":
