@@ -801,30 +801,38 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
 def paths(pull: dict[str, Any]) -> list[str] | None:
     """Every path the PR touches on either side of the change: each file's path (a deleted file's is its old one), and
     a renamed or copied file's old name too (previous), since moving a file out of a ruled directory changes it as
-    much as editing it; None past the one page of 100 the gate reads, or when an old name can't be read."""
+    much as editing it; None past the one page of 100 the gate reads, or when any moved file's old name can't be
+    read, so a rule on paths holds rather than misses one."""
     files = pull["files"]
     found = [file["path"] for file in files["nodes"]]
     if (files.get("totalCount") or 0) > len(found):
         return None
-    if any(file.get("changeType") in ("RENAMED", "COPIED") for file in files["nodes"]):
+    moved = [
+        file["path"] for file in files["nodes"] if file.get("changeType") in ("RENAMED", "COPIED")
+    ]
+    if moved:
         old = previous(pull)
-        if old is None:
+        # every moved file needs its own old name: a response that lacks one (an entry without it, a file list that
+        # changed between the two reads) proves nothing about where it came from
+        if old is None or not all(old.get(path) for path in moved):
             return None
-        found += [path for path in old if path not in found]
+        found += [old[path] for path in moved if old[path] not in found]
     return found
 
 
-def previous(pull: dict[str, Any]) -> list[str] | None:
-    """The old names of the PR's renamed and copied files, which GitHub's GraphQL omits, read once per PR from its
-    REST file list (pr_changes); None when GitHub can't give them, so a rule on paths holds rather than misses one."""
+def previous(pull: dict[str, Any]) -> dict[str, str] | None:
+    """Each renamed or copied file's old name by its new one, which GitHub's GraphQL omits, read once per PR from its
+    REST file list (pr_changes); None when GitHub can't give the list."""
     if "previousPaths" not in pull:
         try:
             changes = pr_changes(pull["number"])
         except (subprocess.CalledProcessError, OSError, ValueError):
             return None
-        pull["previousPaths"] = [
-            change["previous_filename"] for change in changes if change.get("previous_filename")
-        ]
+        pull["previousPaths"] = {
+            change["filename"]: change["previous_filename"]
+            for change in changes
+            if change.get("filename") and change.get("previous_filename")
+        }
     return pull["previousPaths"]
 
 

@@ -8042,6 +8042,34 @@ def test_a_moved_file_whose_old_name_github_wont_give_holds(
     )
 
 
+@pytest.mark.parametrize(
+    "answer",
+    [
+        [],
+        [{"filename": "outside/place.py", "status": "renamed"}],
+        [{"filename": "other/new.py", "previous_filename": "other/old.py", "status": "renamed"}],
+        [{"filename": "outside/b.py", "previous_filename": "b.py", "status": "renamed"}],
+    ],
+    ids=["empty", "no-old-name", "another-file", "partial"],
+)
+def test_a_file_list_that_gives_no_old_name_for_each_moved_file_holds(
+    answer: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A REST answer that succeeds but lacks a moved file's old name (an entry without it, or a list that changed
+    since the GraphQL read) proves nothing about where that file came from, so both rules hold."""
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: answer)
+    moved = orders_pull("outside/place.py", "outside/b.py")
+    for node in moved["files"]["nodes"]:
+        node["changeType"] = "RENAMED"
+    assert approvals.paths(moved) is None
+    assert approvals.owner_waits(moved, [], ORDERS)[0].endswith(
+        "since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner judges them"
+    )
+    assert approvals.risk(moved, [], GITHUB_RULE) == (
+        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    )
+
+
 def test_a_deleted_file_under_a_merge_path_holds_the_merge(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "pr_changes", lambda _n: pytest.fail("no old name to read"))
     gone = orders_pull()
