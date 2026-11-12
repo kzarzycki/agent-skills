@@ -3310,6 +3310,8 @@ def lands(
     times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)
+    (origin / "hooks" / "pre-receive").chmod(0o755)
     committed(work)
     git_in(work, "remote", "add", "origin", str(origin))
     git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
@@ -3413,11 +3415,36 @@ def lands(
         runs=lambda: len(runs.read_text().splitlines()) if runs.exists() else 0,
         merged=lambda: [args[2] for args in state["calls"] if args[:2] == ("pr", "merge")],
         main=lambda what="": git_in(origin, "rev-parse", f"main{what}").strip(),
-        lock=lambda: git_in(
-            origin, "for-each-ref", "--format=%(objectname)", approvals.LOCK
-        ).strip(),
+        lock=lambda: held_tip(origin),
+        tips=lambda: (
+            git_in(origin, "log", "--format=%H %P%x00%s", REF).splitlines()
+            if git_in(origin, "for-each-ref", REF)
+            else []
+        ),
     )
     return state
+
+
+# the landing lock's branch on main, and what land's messages call it
+REF, NAME = approvals.LOCK.format("main"), "loop-landing/main"
+# origin's pre-receive hook: it refuses a push to a landing lock ref that deletes it or is no fast-forward, so a land
+# that ever pushed either fails, as a cloud session's proxy refuses it
+NO_REWRITE = """#!/bin/sh
+zero=0000000000000000000000000000000000000000
+while read old new ref; do
+  case "$ref" in refs/heads/loop-landing/*|refs/loop/*) ;; *) continue ;; esac
+  if [ "$new" = "$zero" ]; then echo "refused: delete of $ref" >&2; exit 1; fi
+  if [ "$old" != "$zero" ] && ! git merge-base --is-ancestor "$old" "$new"; then
+    echo "refused: non-fast-forward of $ref" >&2; exit 1
+  fi
+done
+"""
+
+
+def held_tip(origin: Path) -> str:
+    """The lock branch's tip while it is held, else "" (missing, or its tip `free`)."""
+    tip = git_in(origin, "for-each-ref", "--format=%(objectname) %(subject)", REF).strip()
+    return tip.split()[0] if f" {approvals.HELD}" in tip else ""
 
 
 def landed_note(lands: dict[str, Any], number: int) -> dict[str, str]:
@@ -3444,7 +3471,7 @@ def test_land_gates_three_landable_prs_once_and_the_base_ends_at_the_gated_tree(
         }
     assert hub[lands["main"]()][0]["description"].startswith(f"Tree {tree} on ")
     assert lands["lock"]() == ""
-    assert approvals.LOCK not in git_in(lands["work"], "worktree", "list")
+    assert NAME not in git_in(lands["work"], "worktree", "list")
 
 
 HEAD_PROOF = "head_proof:\n  status: gate-ui\n  env:\n    - GATE_UI_TESTS\n"
@@ -3498,17 +3525,26 @@ def test_an_up_to_date_pr_reuses_the_pass_on_its_head_and_runs_no_gate(
 
 
 def lock_commit(lands: dict[str, Any], seconds_ago: int) -> str:
+    """Another land's `held` lock commit, taken `seconds_ago`, pushed onto the lock branch's tip as a fast-forward."""
     when = f"@{int(datetime.now(UTC).timestamp()) - seconds_ago} +0000"
-    tree = git_in(lands["work"], "rev-parse", "origin/main^{tree}").strip()
+    tip = git_in(lands["origin"], "for-each-ref", "--format=%(objectname)", REF).strip()
+    tree = git_in(lands["work"], "hash-object", "-t", "tree", "-w", os.devnull).strip()
     held = subprocess.run(
-        ["git", "commit-tree", "-m", "landing lock", tree],
+        [
+            "git",
+            "commit-tree",
+            *(["-p", tip] if tip else []),
+            "-m",
+            f"{approvals.HELD} [skip ci]\n\npid 1, nonce 00",
+            tree,
+        ],
         cwd=lands["work"],
         env={**os.environ, "GIT_COMMITTER_DATE": when},
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    git_in(lands["work"], "push", "-q", "origin", f"{held}:{approvals.LOCK}")
+    git_in(lands["work"], "push", "-q", "origin", f"{held}:{REF}")
     return held
 
 
@@ -3518,15 +3554,14 @@ def test_a_held_lock_waits_naming_its_age_and_a_stale_one_is_broken(lands: dict[
     code, lines = lands["land"]("7")
     assert code == approvals.WAITING
     assert lines[0].startswith(
-        f"another land holds the landing lock {approvals.LOCK}, taken 10 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid 1), taken 10 minutes ago ("
     )
     assert (lands["lock"](), lands["merged"]()) == (held, [])
-    git_in(lands["origin"], "update-ref", "-d", approvals.LOCK)
     lock_commit(lands, 3 * 60 * 60)
     code, lines = lands["land"]("7")
     assert (code, lines[0]) == (
         0,
-        f"the landing lock {approvals.LOCK} is 3 hours old, past 2 hours: broken as stale",
+        f"the landing lock {NAME} is 3 hours old, past 2 hours: broken as stale",
     )
     assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
 
@@ -3907,17 +3942,270 @@ def test_a_pr_whose_required_check_is_red_is_no_candidate(
     assert lands["merged"]() == ["8"]
 
 
-def test_two_lands_in_the_same_second_cannot_both_take_the_lock(
+def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_waits(
     lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # one identity, one base and one commit second: the lock commit's nonce alone tells the two apart
+    # one identity and one commit second: the lock commit's nonce alone tells the two lands' commits apart, else the
+    # loser's push of the same commit would succeed as a no-op
+    lands["open"](7, {"7.txt": "7\n"})
+    earlier: list[str] = []
+    assert approvals.locked("main", earlier)
+    assert approvals.unlock("main", earlier[-1]).returncode == 0
+    free = git_in(lands["origin"], "rev-parse", REF).strip()
     now = f"@{int(datetime.now(UTC).timestamp())} +0000"
     monkeypatch.setenv("GIT_COMMITTER_DATE", now)
     monkeypatch.setenv("GIT_AUTHOR_DATE", now)
-    first, second = approvals.lock_commit("main"), approvals.lock_commit("main")
-    assert approvals.locked(first)
-    assert not approvals.locked(second)
-    assert lands["lock"]() == first
+    winner: list[str] = []
+    real = approvals.git
+
+    def git(*args: str) -> str:
+        out = real(*args)
+        if (
+            args[:1] == ("log",) and not winner
+        ):  # this land has read the free tip; another takes it first
+            winner.append("")
+            assert approvals.locked("main", winner)
+        return out
+
+    monkeypatch.setattr(approvals, "git", git)
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"]()) == (approvals.WAITING, [])
+    assert lands["lock"]() == winner[-1]
+    assert git_in(lands["origin"], "rev-parse", f"{winner[-1]}^").strip() == free
+    assert lines[-1].startswith(
+        f"another land holds the landing lock {NAME} (pid {os.getpid()}), taken 0 minutes ago ("
+    )
+
+
+def test_a_land_that_lost_one_race_and_took_the_lock_on_its_retry_releases_that_take(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # another land takes and releases the lock between this one's read and its push: its retry from the new free tip
+    # wins, and its release is of that commit, not of the first one origin never took
+    lands["open"](7, {"7.txt": "7\n"})
+    other: list[str] = []
+    real = approvals.git
+
+    def git(*args: str) -> str:
+        out = real(*args)
+        if args[:2] == ("rev-parse", f"refs/remotes/origin/{NAME}") and not other:
+            other.append("")
+            assert approvals.locked("main", other)
+            assert approvals.unlock("main", other[-1]).returncode == 0
+        return out
+
+    tip = lock_commit(lands, 60)
+    git_in(
+        lands["work"], "push", "-q", "origin", f"{approvals.lock_commit(approvals.FREE, tip)}:{REF}"
+    )
+    monkeypatch.setattr(approvals, "git", git)
+    assert lands["land"]("7")[0] == 0
+    assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
+    assert len(lands["tips"]()) == 6  # theirs taken and released, then ours
+
+
+def test_the_batch_starts_from_the_base_as_origin_has_it_when_the_lock_is_taken(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    # main moves on origin, to a tree of its own, after this checkout last fetched it
+    work, tip = lands["work"], lands["main"]()
+    (work / "elsewhere.txt").write_text("elsewhere\n")
+    git_in(work, "add", "elsewhere.txt")
+    git_in(work, "commit", "-qm", "elsewhere")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    moved = git_in(work, "rev-parse", "HEAD").strip()
+    git_in(work, "update-ref", "refs/remotes/origin/main", tip)
+    assert lands["land"]("7")[0] == 0
+    # one gate, on the batch made from the moved base, so the base ended at the gated tree without a second
+    assert (lands["runs"](), lands["main"]("~1")) == (1, moved)
+
+
+def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_grows(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]("7")[0] == 0
+    first = git_in(lands["origin"], "rev-parse", REF).strip()
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]("8")[0] == 0
+    second = git_in(lands["origin"], "rev-parse", REF).strip()
+    git_in(lands["origin"], "merge-base", "--is-ancestor", first, second)
+    empty = git_in(lands["origin"], "hash-object", "-t", "tree", os.devnull).strip()
+    assert git_in(lands["origin"], "log", "--format=%T", REF).split() == [empty] * 4
+    tips = [line.split("\0") for line in lands["tips"]()]
+    assert [subject for _, subject in tips] == [
+        f"{approvals.FREE} [skip ci]",
+        f"{approvals.HELD} [skip ci]",
+        f"{approvals.FREE} [skip ci]",
+        f"{approvals.HELD} [skip ci]",
+    ]
+    # each commit's parent is the one below it, and the first lock commit has none
+    commits = [ids.split() for ids, _ in tips]
+    assert [rest for _, *rest in commits] == [[c[0]] for c in commits[1:]] + [[]]
+    body = git_in(lands["origin"], "log", "-1", "--format=%b", f"{REF}~1").strip()
+    assert re.fullmatch(rf"pid {os.getpid()}, nonce [0-9a-f]{{16}}", body)
+    assert lands["lock"]() == ""
+
+
+def test_a_stale_lock_is_broken_and_taken_in_one_push_and_its_holders_release_then_leaves_it(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old: list[str] = []
+    monkeypatch.setenv(
+        "GIT_COMMITTER_DATE", f"@{int(datetime.now(UTC).timestamp()) - 3 * 60 * 60} +0000"
+    )
+    assert approvals.locked("main", old)
+    monkeypatch.delenv("GIT_COMMITTER_DATE")
+    pushes: list[str] = []
+    run = subprocess.run
+
+    def counted(args: Any, *rest: Any, **kw: Any) -> Any:
+        if isinstance(args, list) and args[:2] == ["git", "push"]:
+            pushes.append(args[-1])
+        return run(args, *rest, **kw)
+
+    monkeypatch.setattr(approvals.subprocess, "run", counted)
+    new: list[str] = []
+    assert approvals.locked("main", new)
+    assert (
+        capsys.readouterr().out
+        == f"the landing lock {NAME} is 3 hours old, past 2 hours: broken as stale\n"
+    )
+    assert pushes == [f"{new[-1]}:{REF}"]
+    assert git_in(lands["origin"], "rev-parse", f"{new[-1]}^").strip() == old[-1]
+    released = approvals.unlock("main", old[-1])
+    assert released.returncode != 0
+    assert "stale info" in released.stderr
+    assert lands["lock"]() == new[-1]
+
+
+def test_origin_refuses_a_delete_or_rewrite_of_the_lock_so_no_land_ever_pushed_one(
+    lands: dict[str, Any],
+) -> None:
+    # the fixture's pre-receive hook is what every land test pushes the lock past: it is no hook that passes everything
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]("7")[0] == 0
+    tip = git_in(lands["origin"], "rev-parse", REF).strip()
+    for refspec in (f":{REF}", f"+{tip}~1:{REF}"):
+        pushed = subprocess.run(
+            ["git", "-C", str(lands["work"]), "push", "-q", "origin", refspec],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert pushed.returncode != 0 and "refused: " in pushed.stderr, pushed.stderr
+    assert git_in(lands["origin"], "rev-parse", REF).strip() == tip
+
+
+def test_origin_refusing_the_locks_push_is_refused_naming_its_reason(
+    lands: dict[str, Any],
+) -> None:
+    # a refusal of a push from the tip read again is origin's, not another land's race: no wait clears it
+    lands["open"](7, {"7.txt": "7\n"})
+    hook = lands["origin"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho no pushes to the lock >&2\nexit 1\n")
+    with pytest.raises(
+        approvals.Refused, match=f"origin refused the landing lock {NAME}: .*no pushes to the lock"
+    ):
+        approvals.locked("main", [])
+    assert lands["tips"]() == []
+
+
+def test_a_land_waits_on_the_previous_versions_lock_and_never_writes_it(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    theirs = lands["main"]()
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, theirs)
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"](), lands["tips"]()) == (approvals.WAITING, [], [])
+    assert lines == [
+        f"a land of the previous version holds the landing lock {approvals.LEGACY}: land --wait waits for it"
+    ]
+    assert git_in(lands["origin"], "rev-parse", approvals.LEGACY).strip() == theirs
+    git_in(lands["origin"], "update-ref", "-d", approvals.LEGACY)
+    assert lands["land"]("7")[0] == 0
+
+
+def test_a_stale_lock_of_the_previous_version_is_passed_over_and_left_in_place(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    when = f"@{int(datetime.now(UTC).timestamp()) - approvals.CEILING - 60} +0000"
+    tree = git_in(lands["work"], "hash-object", "-t", "tree", "-w", os.devnull).strip()
+    theirs = subprocess.run(
+        ["git", "commit-tree", "-m", "landing lock", tree],
+        cwd=lands["work"],
+        env={**os.environ, "GIT_COMMITTER_DATE": when},
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_in(lands["work"], "push", "-q", "origin", f"{theirs}:{approvals.LEGACY}")
+    assert lands["land"]("7")[0] == 0
+    assert git_in(lands["origin"], "rev-parse", approvals.LEGACY).strip() == theirs
+
+
+def test_a_previous_version_lock_released_after_it_was_listed_lets_the_land_go_on(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, lands["main"]())
+    real = approvals.git
+
+    def released_after_listing(*args: str) -> str:
+        out = real(*args)
+        if args[:2] == ("ls-remote", "origin") and approvals.LEGACY in out:
+            git_in(lands["origin"], "update-ref", "-d", approvals.LEGACY)
+        return out
+
+    monkeypatch.setattr(approvals, "git", released_after_listing)
+    assert lands["land"]("7")[0] == 0
+
+
+def test_a_failed_fetch_of_a_previous_version_lock_still_there_is_refused_not_waited_on(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, lands["main"]())
+    real = approvals.git
+
+    def failing_fetch(*args: str) -> str:
+        if args[:3] == ("fetch", "-q", "origin") and args[3].startswith(f"+{approvals.LEGACY}:"):
+            raise subprocess.CalledProcessError(128, ["git", *args], stderr="transport failed")
+        return real(*args)
+
+    monkeypatch.setattr(approvals, "git", failing_fetch)
+    code, lines = lands["land"]("7")
+    assert code == 1 and "transport failed" in "\n".join(lines)
+    assert lands["merged"]() == []
+
+
+def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Origin's base moves after any earlier fetch but before the lock is taken: the batch is merged onto the moved
+    base and gated once."""
+    lands["open"](7, {"7.txt": "7\n"})
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: set())
+    work = lands["work"]
+    fetched = git_in(work, "rev-parse", "refs/remotes/origin/main").strip()
+    real = approvals.locked
+    moved: list[str] = []
+
+    def move_then_lock(base: str, held: list[str]) -> bool:
+        (work / "elsewhere.txt").write_text("elsewhere\n")
+        git_in(work, "add", "elsewhere.txt")
+        git_in(work, "commit", "-qm", "origin moves before the lock is taken")
+        git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+        moved.append(git_in(work, "rev-parse", "HEAD").strip())
+        git_in(work, "update-ref", "refs/remotes/origin/main", fetched)
+        return real(base, held)
+
+    monkeypatch.setattr(approvals, "locked", move_then_lock)
+    assert lands["land"]("7")[0] == 0
+    assert (lands["runs"](), lands["main"]("~1")) == (1, moved[0])
 
 
 @pytest.fixture
@@ -3968,10 +4256,13 @@ def test_a_stop_while_the_lock_is_pushed_still_releases_it(
 
     def pushing(args: Any, *rest: Any, **kw: Any) -> Any:
         target = args[-1] if isinstance(args, list) and args[:2] == ["git", "push"] else ""
-        taking = target.endswith(f":{approvals.LOCK}") and not target.startswith(":")
-        if (when == "before taking" and taking) or (
-            when.startswith("releasing") and target == f":{approvals.LOCK}"
-        ):
+        state = (
+            git_in(lands["work"], "log", "-1", "--format=%s", target.split(":")[0])
+            if target.endswith(f":{REF}")
+            else ""
+        )
+        taking, releasing = state.startswith(approvals.HELD), state.startswith(approvals.FREE)
+        if (when == "before taking" and taking) or (when.startswith("releasing") and releasing):
             os.kill(os.getpid(), signal.SIGTERM)
         done = run(args, *rest, **kw)
         if when == "taking" and taking:
@@ -4059,13 +4350,12 @@ def test_a_lock_another_land_took_meanwhile_stays_theirs(
     theirs: list[str] = []
 
     def broken_and_taken(*_args: Any) -> None:
-        git_in(lands["origin"], "update-ref", "-d", approvals.LOCK)
         theirs.append(lock_commit(lands, 0))
 
     monkeypatch.setattr(approvals, "merges", broken_and_taken)
     _, lines = lands["land"]("7")
     assert lands["lock"]() == theirs[0]
-    assert lines[-1].startswith(f"the landing lock {approvals.LOCK} was not released: ")
+    assert lines[-1].startswith(f"the landing lock {NAME} was not released: ")
 
 
 def test_breaking_a_stale_lock_leaves_one_another_land_took_first(
@@ -4079,9 +4369,8 @@ def test_breaking_a_stale_lock_leaves_one_another_land_took_first(
     def git(*args: str) -> str:
         out = real(*args)
         if (
-            args[:1] == ("ls-remote",) and not fresh
-        ):  # another land breaks the stale lock first, and takes it
-            git_in(lands["origin"], "update-ref", "-d", approvals.LOCK)
+            args[:1] == ("log",) and not fresh
+        ):  # this land has read the stale tip; another breaks and takes it first
             fresh.append(lock_commit(lands, 60))
         return out
 
@@ -4089,7 +4378,7 @@ def test_breaking_a_stale_lock_leaves_one_another_land_took_first(
     code, lines = lands["land"]("7")
     assert (code, lands["lock"](), lands["merged"]()) == (approvals.WAITING, fresh[0], [])
     assert lines[-1].startswith(
-        f"another land holds the landing lock {approvals.LOCK}, taken 1 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid 1), taken 1 minutes ago ("
     )
 
 
