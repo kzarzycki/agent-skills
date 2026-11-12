@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import ssl
 import subprocess
 import sys
@@ -2279,6 +2280,100 @@ def test_a_get_retries_a_server_restarting_and_a_post_does_not(
     with pytest.raises(omnigent_agent.Fail):
         og.call("POST", "/x", {})
     assert calls == ["POST"]
+
+
+def test_a_get_retries_a_name_resolution_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        calls.append(req.get_method())
+        if len(calls) == 1:
+            raise URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    assert og.call("GET", "/x") == {"ok": True}
+    assert calls == ["GET", "GET"]
+
+
+def test_send_exits_7_when_the_post_went_out_and_the_next_read_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        reads[0] += 1
+        if og.posts and reads[0] > 1:  # the poll after the post
+            raise omnigent_agent.Fail("GET info: Temporary failure in name resolution")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.SENT_UNCONFIRMED == 7
+    err = capsys.readouterr().err
+    assert "the message was posted" in err and "`send` again is safe" in err
+    assert og.posts == 1
+    og.info = info  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 0  # the rerun finds the copy
+    assert og.posts == 1
+
+
+def test_send_with_a_report_exits_7_when_the_confirming_history_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    items = og.items
+    seen = [0]
+
+    def flaky(s: str) -> list[dict]:
+        seen[0] += 1
+        if og.posts:
+            raise omnigent_agent.Fail("GET items: ConnectionResetError")
+        return items(s)
+
+    og.items = flaky  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.SentUnconfirmed) as caught:
+        omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+    assert caught.value.code == 7
+    assert og.posts == 1
+
+
+def test_send_keeps_exit_1_when_the_post_itself_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.fail.add("send")
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 0
+
+
+def test_send_keeps_exit_1_when_a_read_before_the_post_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+
+    def down(s: str) -> list[dict]:
+        raise omnigent_agent.Fail("GET items: Temporary failure in name resolution")
+
+    og.items = down  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 0
+
+
+def test_a_broadcast_target_posted_but_unconfirmed_is_no_failure() -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    items = og.items
+    og.items = lambda s: (_ for _ in ()).throw(omnigent_agent.Fail("x")) if og.posts else items(s)  # type: ignore[method-assign]
+    assert omnigent_agent.broadcast(og, [(sid, "lead")], "hi", 0, "cos") is False
 
 
 def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6922,6 +7017,82 @@ def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer
     assert "the supervisor's tell was not delivered: it waits on a prompt" in posted(og)[0]
 
 
+def test_a_supervisor_action_posted_but_unconfirmed_is_not_reported_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b", after={"b": "a"})
+    og = Leads(a=[told("brief", 60), ending("DONE: merged", 5)], b=[told("brief", 60)])
+
+    def unconfirmed(*a: object, **k: object) -> str:
+        raise omnigent_agent.SentUnconfirmed("session b: the message was posted but unconfirmed")
+
+    monkeypatch.setattr(omnigent_agent, "relay", unconfirmed)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert not any("was not delivered" in p for p in posted(og))
+
+
+def test_a_relay_queued_after_its_own_post_exits_7_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        if og.posts:
+            reads[0] += 1
+            if reads[0] == 2:  # the read that says why it is queued
+                raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.SENT_UNCONFIRMED
+    assert og.posts == 1
+
+
+def test_a_relay_queued_behind_an_earlier_copy_keeps_exit_1_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.send(sid, "[relayed by cos]\ngo")  # an earlier copy, pending
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        reads[0] += 1
+        if reads[0] == 4:  # relay's, send's, its poll's, then the one after the queued return
+            raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert reads[0] == 4 and og.posts == 1
+
+
+def test_a_send_whose_copy_was_already_there_and_whose_poll_fails_is_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.send(sid, "[relayed by cos]\ngo")  # an earlier copy, pending
+    og.items = lambda s: (_ for _ in ()).throw(omnigent_agent.Fail("GET items: down"))  # type: ignore[method-assign]
+    info = og.info
+    calls = [0]
+
+    def flaky(s: str) -> dict:
+        calls[0] += 1
+        if calls[0] > 2:
+            raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.items = lambda s: og.sessions[s]  # type: ignore[method-assign]
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 1
+
+
 @pytest.mark.parametrize("why", ["model failed", "allowance spent"])
 def test_a_quiet_end_the_model_could_not_route_goes_to_the_chief_of_staff_not_a_nudge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
@@ -8356,10 +8527,10 @@ def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
     here = omnigent_agent.question_of(report)
     here.parent.mkdir(parents=True)
     here.write_text("another session's")
-    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True) == "already"
+    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True)[0] == "already"
     assert og.posts == 1
     assert "tmp/loop/r.md.question" not in og.files  # answered: deleted on its host
-    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True) == "delivered"
+    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True)[0] == "delivered"
     assert here.read_text() == "another session's"
 
 
@@ -8660,3 +8831,178 @@ def test_a_worktree_s_repo_is_read_from_its_common_dir_on_any_host() -> None:
         assert omnigent_agent.origin_repo(f'[remote "origin"]\n\turl = {url}\n') == "o/r"
     upstream_only = '[remote "upstream"]\n\turl = https://github.com/x/y\n'
     assert omnigent_agent.origin_repo(upstream_only) == ""
+
+
+class FarVerifierHost(FarFiles, FakeOmnigent):
+    """Hosts ``here`` (this one, ``h``) and ``mac``, where every session runs; each brief that lands
+    records which files were already there."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.there_at_brief: list[list[str]] = []
+
+    def host(self, name: str) -> str:
+        return {"here": "h", "h": "h", "mac": "mac"}[name]
+
+    def hosts(self) -> dict[str, str]:
+        return {"h": "here", "mac": "mac"}
+
+    def land(self, sid: str, text: str) -> None:
+        self.there_at_brief.append(sorted(self.files))
+        super().land(sid, text)
+
+
+def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) -> FarVerifierHost:
+    og = FarVerifierHost()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs/agents/loop.md").write_text(f"# Loop\n\n{hosts}")
+    (tmp_path / "b.md").write_text(
+        "Review PR #7 as the verifier; first `git worktree add --detach`"
+    )
+    (tmp_path / "gate.log").write_text("abc\nok\n")
+    return og
+
+
+VERIFY_FAR = ["start", "claude", "v", "b.md", "/there/repo/tmp/loop/pr7-v1.md", "--top-level"]
+VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", "roles/verifier.md"]
+VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
+
+
+def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_reports_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Its --pr names the PR it reviews, not a cloud report channel: the brief goes inline to a
+    top-level session on that host, the proof log is there before the brief, and wait reads its
+    report through the file API and writes it to tmp/loop/ here, the only file made here."""
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, mac\n")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 0
+    assert (
+        og.top_level == [True] and og.workspaces == ["/there/repo"] and og.hosts_of["s0"] == "mac"
+    )
+    brief = omnigent_agent.text_of(og.sessions["s0"][1])
+    assert brief.startswith("Work on v. Your brief:") and "git worktree add --detach" in brief
+    assert "issues/7/comments" not in brief  # no PR preamble: its report is a file there
+    assert og.there_at_brief == [["/there/repo/tmp/loop/gate.log"]]
+    assert og.files["/there/repo/tmp/loop/gate.log"] == "abc\nok\n"
+    report = "VERDICT: 0 blocker\nSATISFIED: yes\n"
+    og.files["/there/repo/tmp/loop/pr7-v1.md"] = report
+    capsys.readouterr()
+    argv = ["wait", "s0", "/there/repo/tmp/loop/pr7-v1.md", "--verdict", "--timeout", "5"]
+    assert omnigent_agent.main(argv) == 0
+    out, err = capsys.readouterr()
+    home = tmp_path / "tmp" / "loop" / "pr7-v1.md"
+    assert out.strip() == str(home) and home.read_text() == report
+    assert "tracked changes are not checked here" in err
+    made = {p for p in tmp_path.rglob("*") if ".git" not in p.parts}
+    assert made - {tmp_path / p for p in ("docs", "docs/agents", "docs/agents/loop.md")} == {
+        tmp_path / "b.md",
+        tmp_path / "gate.log",
+        tmp_path / "tmp",
+        tmp_path / "tmp/loop",
+        home,
+    }
+
+
+@pytest.mark.parametrize("host", ["mac", "h"])
+def test_a_verifier_on_a_host_loop_md_does_not_list_is_refused_with_the_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], host: str
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, other\n")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = host
+    assert omnigent_agent.main(argv) == 1
+    assert f"--host {host} is no verifier host loop.md lists: box, other" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_without_a_verifier_hosts_line_a_verifier_starts_on_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Owner: someone\n")
+    assert omnigent_agent.main(VERIFY_FAR) == 0
+    assert og.hosts_of["s0"] == "mac"
+
+
+def test_a_lead_names_a_host_by_its_id_and_a_file_needs_another_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The line lists names; a host given by its id is checked by its name. --file is refused for
+    a session here, which reads its own worktree."""
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: here\n")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = "h"
+    argv[argv.index("/there/repo")] = str(tmp_path)
+    argv[4] = str(tmp_path / "tmp/loop/pr7-v1.md")
+    assert omnigent_agent.main([*argv, "--file", "gate.log"]) == 1
+    assert "--file is for a session on another host" in capsys.readouterr().err
+    assert omnigent_agent.main(argv) == 0
+    assert og.hosts_of["s0"] == "h"
+
+
+def test_a_far_file_that_is_missing_here_or_fails_there_starts_no_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing file is refused before any session; a write the far host refuses abandons the
+    session it made, before its brief names a file that is not there."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "absent.log"]) == 1
+    assert "--file: no file at absent.log" in capsys.readouterr().err
+    assert og.sessions == {}
+
+    def refuse(sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+        raise omnigent_agent.Fail("PUT: HTTP 403")
+
+    og.filesystem = refuse  # type: ignore[method-assign]
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 1
+    assert "a --file did not reach its host: PUT: HTTP 403" in capsys.readouterr().err
+    assert og.archived == ["s0"] and og.there_at_brief == []
+
+
+def test_a_role_that_only_names_verifier_keeps_the_worker_pr_meaning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the verifier's role file (verifier.md) takes --pr as the PR it reviews: another role
+    whose path holds the word is a worker, refused --pr on a native agent."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("roles/verifier.md")] = "roles/not-a-verifier-helper.md"
+    assert omnigent_agent.main(argv) == 1
+    assert "is not a cloud agent" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A far verifier works in a worktree of its own under the clone, so a lead holding the clone
+    does not stop it; a worker there, or a verifier on this host, is still refused."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    og.others = [
+        {
+            "id": "L",
+            "title": "lead",
+            "host_id": "mac",
+            "workspace": "/there/repo",
+            "status": "idle",
+        },
+        {"id": "M", "title": "lead", "host_id": "h", "workspace": str(tmp_path), "status": "idle"},
+    ]
+    assert omnigent_agent.main(VERIFY_FAR) == 0
+    assert "the verifier works in its own worktree" in capsys.readouterr().err
+    worker = [*VERIFY_FAR]
+    worker[worker.index("roles/verifier.md")] = "roles/worker.md"
+    worker[worker.index("--pr") : worker.index("--pr") + 2] = []
+    worker[1] = "w"
+    assert omnigent_agent.main(worker) == 1
+    err = capsys.readouterr().err
+    assert "is in use on host mac by live session" in err and "L lead" in err
+    here = [*VERIFY_FAR]
+    here[here.index("mac")] = "h"
+    here[here.index("/there/repo")] = str(tmp_path)
+    here[1], here[4] = "u", str(tmp_path / "tmp/loop/pr7-v1.md")
+    assert omnigent_agent.main(here) == 1
+    err = capsys.readouterr().err
+    assert "is in use on host h by live session" in err and "M lead" in err
