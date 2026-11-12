@@ -123,9 +123,11 @@ the base runs no gate. GitHub's required checks never stand in for it, since the
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`). A merge GitHub refuses, or leaves unmerged (a base requiring a merge queue only queues it, to
-merge later on a tree no gate saw), stops there: that PR and those after it wait for the next land. Then it fetches
-and compares the base's tree with the gated tree. Equal: the pass is published as the `gate` status on the new tip.
+--match-head-commit`), with the body GitHub's squash would write (one commit: its message after the subject; several:
+each message as a `* ` item, then `---------` and their co-authors) less every `Claude-Session:` line, since a cloud
+session's harness adds its link to each commit and the PR may be public. A merge GitHub refuses, or leaves unmerged
+(a base requiring a merge queue only queues it, to merge later on a tree no gate saw), stops there: that PR and those
+after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is published as the `gate` status on the new tip.
 Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
 which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
 `Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
@@ -3548,6 +3550,50 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
     )
 
 
+# a cloud session's link, which its harness adds to every commit message; land drops it from the squash body
+SESSION_LINE = re.compile(r"^Claude-Session:.*(?:\n|$)", re.MULTILINE)
+CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.+?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+
+
+def squash_body(number: int, author: str | None) -> str:
+    """The body GitHub's squash would write for PR #number, from its commits as REST lists them, with every
+    `Claude-Session:` line dropped. One commit: its message after the subject. Several: each message as a `* ` item,
+    then `---------` and one `Co-authored-by:` per co-author their trailers name. Either way a commit author other
+    than the PR's `author` gets a `Co-authored-by:` line too, as GitHub adds. ponytail: REST lists 250 commits."""
+    commits = [
+        json.loads(line)
+        for line in gh(
+            "api",
+            "--paginate",
+            f"repos/{{owner}}/{{repo}}/pulls/{number}/commits?per_page=100",
+            "--jq",
+            ".[]",
+        ).splitlines()
+    ]
+    messages = [commit["commit"]["message"].strip() for commit in commits]
+    named = {match.casefold() for message in messages for match in CO_AUTHOR.findall(message)}
+    authors: list[str] = []
+    for commit in commits:
+        login = ((commit.get("author") or {}).get("login") or "").removesuffix("[bot]")
+        who = commit["commit"].get("author") or {}
+        line = f"{who.get('name')} <{who.get('email')}>"
+        if login and author and login != author.removesuffix("[bot]") and line.casefold() not in named:
+            named.add(line.casefold())
+            authors.append(f"Co-authored-by: {line}")
+    if len(messages) == 1:
+        body = "\n\n".join(part for part in (messages[0].partition("\n")[2].strip(), *authors) if part)
+    else:
+        trailers = list(
+            dict.fromkeys(
+                f"Co-authored-by: {match}" for message in messages for match in CO_AUTHOR.findall(message)
+            )
+        )
+        body = "\n\n".join(f"* {message}" for message in messages)
+        if trailers or authors:
+            body += "\n\n---------\n\n" + "\n".join(trailers + authors)
+    return re.sub(r"\n{3,}", "\n\n", SESSION_LINE.sub("", body)).strip()
+
+
 def merges(
     landed: list[tuple[dict[str, Any], str, str, str]],
     base: str,
@@ -3570,7 +3616,17 @@ def merges(
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                gh("pr", "merge", str(pull["number"]), "--squash", "--match-head-commit", head)
+                body = squash_body(pull["number"], (pull.get("author") or {}).get("login"))
+                gh(
+                    "pr",
+                    "merge",
+                    str(pull["number"]),
+                    "--squash",
+                    "--body",
+                    body,
+                    "--match-head-commit",
+                    head,
+                )
                 # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
                 if (state := pull_request(pull["number"])["state"]) != "MERGED":
                     raise Refused(f"GitHub left it {state}, not merged")

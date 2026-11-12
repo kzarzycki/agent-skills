@@ -3253,13 +3253,16 @@ def lands(
     }
     pulls = state["pulls"]
 
-    def open_pr(number: int, files: dict[str, str], **fields: Any) -> str:
+    def open_pr(
+        number: int, files: dict[str, str], messages: tuple[str, ...] = (), **fields: Any
+    ) -> str:
         git_in(work, "switch", "-q", "--detach", "origin/main")
         for name, text in files.items():
             (work / name).parent.mkdir(parents=True, exist_ok=True)
             (work / name).write_text(text)
         git_in(work, "add", *files)
-        git_in(work, "commit", "-qm", f"PR {number}")
+        for message in messages or (f"PR {number}",):
+            git_in(work, "commit", "-q", "--allow-empty", "-m", message)
         head = git_in(work, "rev-parse", "HEAD").strip()
         git_in(
             work,
@@ -3282,9 +3285,30 @@ def lands(
             state["calls"].append(args)
             pulls[int(args[-1])]["isDraft"] = "--undo" in args
             return ""
+        if args[:2] == ("api", "--paginate") and args[2].split("?")[0].endswith("/commits"):
+            number = int(args[2].split("/")[-2])
+            # REST lists a PR's commits oldest first, each with its author's GitHub login
+            listed = git_in(
+                origin, "rev-list", "--reverse", f"main..{pulls[number]['headRefOid']}"
+            ).split()
+            return "".join(
+                json.dumps(
+                    {
+                        "author": pulls[number]["author"],
+                        "commit": {
+                            "message": git_in(origin, "log", "-1", "--format=%B", sha),
+                            "author": {"name": "Builder", "email": "builder@example.com"},
+                        },
+                    }
+                )
+                + "\n"
+                for sha in listed
+            )
         if args[:2] == ("pr", "merge"):
             state["calls"].append(args)
-            number, head = int(args[2]), args[-1]
+            number, head = int(args[2]), args[args.index("--match-head-commit") + 1]
+            body = args[args.index("--body") + 1] if "--body" in args else "GitHub's default body"
+            state.setdefault("bodies", {})[number] = body
             assert pulls[number]["headRefOid"] == head
             tip = git_in(origin, "rev-parse", "main").strip()
             tree = git_in(origin, "merge-tree", "--write-tree", tip, head).split()[0]
@@ -3300,6 +3324,8 @@ def lands(
                 tip,
                 "-m",
                 f"PR {number} (#{number})",
+                "-m",
+                body,
             ).strip()
             git_in(origin, "update-ref", "refs/heads/main", squash, tip)
             pulls[number]["state"] = "MERGED"
@@ -3344,6 +3370,51 @@ def lands(
 def landed_note(lands: dict[str, Any], number: int) -> dict[str, str]:
     [body] = [body for n, body in lands["comments"] if n == number and body.startswith("Landed\n")]
     return dict(line.split(": ", 1) for line in body.splitlines()[1:])
+
+
+def test_land_squashes_with_the_commit_messages_less_every_claude_session_line(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """GitHub's default squash body copies each commit message, a cloud session's link included (#638)."""
+    trailers = "Co-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://example.com/session_1"
+    lands["open"](7, {"7.txt": "7\n"}, messages=(f"Add 7\n\nWhy 7.\n\n{trailers}",))
+    lands["open"](
+        8,
+        {"8.txt": "8\n"},
+        messages=(f"Add 8\n\nWhy 8.\n\n{trailers}", f"Test 8\n\nClaude-Session: x\n\n{trailers}"),
+    )
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["bodies"] == {
+        7: "Why 7.\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+        8: "* Add 8\n\nWhy 8.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
+        "* Test 8\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
+        "---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+    }
+    landed = git_in(lands["origin"], "log", "--format=%B", "main")
+    assert "Claude-Session" not in landed and "Why 8." in landed
+
+
+def test_a_commit_author_other_than_the_prs_is_a_co_author_of_the_squash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def commit(login: str, name: str, message: str) -> dict[str, Any]:
+        return {
+            "author": {"login": login},
+            "commit": {"message": message, "author": {"name": name, "email": f"{login}@example.com"}},
+        }
+
+    def gh(*args: str, data: str | None = None) -> str:
+        return "".join(json.dumps(each) + "\n" for each in listed)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    listed = [commit("app[bot]", "App", "Bump\n\nWhy.\nClaude-Session: x")]
+    assert approvals.squash_body(7, "app") == "Why."
+    assert approvals.squash_body(7, "owner") == "Why.\n\nCo-authored-by: App <app[bot]@example.com>"
+    listed.append(commit("owner", "Owner", "Fix"))
+    assert approvals.squash_body(7, "owner") == (
+        "* Bump\n\nWhy.\n\n* Fix\n\n---------\n\nCo-authored-by: App <app[bot]@example.com>"
+    )
 
 
 def test_land_gates_three_landable_prs_once_and_the_base_ends_at_the_gated_tree(
