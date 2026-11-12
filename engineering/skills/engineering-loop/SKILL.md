@@ -708,24 +708,23 @@ or the owner's private network.
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
   silently.
-- **Models.** Never pick a model: every agent runs on its harness's configured default,
-  which the owner sets, unless the owner names one for a task or loop.md's `Worker model:
+- **Models.** Every start names a model fit for the job, never the harness default. The owner's named model wins; else loop.md's `Worker model:
   <tier> for <condition>` line names a tier for a worker whose issue matches the condition
-  (on the issue's labels), so the choice sits in one file the owner can change. A `Verifier model:` line does the same for a verifier whose PR
+  (on the issue's labels), so the choice sits in one file the owner can change; else the lead
+  picks: `frontier` for hard design, root-cause work, risky reviews; `top` or `mid` for routine work by size; effort high or below. A `Verifier model:` line does the same for a verifier whose PR
   matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
   on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
   `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
   its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
   reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
-  stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
-  Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
-  and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
-  Astra) is no tier and never runs, because it costs several times `top`. Resolve the tier
+  stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
+  Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
+  and outlives a release. `frontier` costs several times `top`: use it only when the job needs it. Resolve the tier
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
-  family's current lineup (the backend's Model section) leaves the default. A launch that fails on
+  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork
