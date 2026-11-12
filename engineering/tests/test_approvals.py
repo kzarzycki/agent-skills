@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import fnmatch
+import hashlib
 import importlib.util
 import itertools
 import json
@@ -55,6 +56,8 @@ HEAD, BASE = "a" * 40, "b" * 40
 TREE = "e" * 40  # the head's tree in a faked checkout
 WRITTEN = "2026-10-01T09:00:00Z"
 AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
+# what `approve` records for the spec `issue()` holds: its text's digest
+TEXTED = "sha256 " + hashlib.sha256(b"the spec").hexdigest()
 IDS = itertools.count(1)
 PUSHED, LABELED = "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z"
 # land's wait for a check whose only run is the draft's skip
@@ -1783,7 +1786,7 @@ def test_the_owners_approval_is_recorded_labelled_and_clears_needs_owner(
     monkeypatch.setattr(approvals, "issue_node", lambda _n: specced(1, "kind:bug", "needs-owner"))
     assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
     assert github == [
-        ("comment", 1, f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"),
+        ("comment", 1, f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"),
         ("label", 1, "approved:spec", True),
         ("label", 1, "needs-owner", False),
     ]
@@ -1982,19 +1985,19 @@ def test_an_edit_after_the_owners_label_is_never_recorded_under_it(
             }
         ]
     }
-    later = {**spec, "lastEditedAt": "2026-10-01T12:00:00Z"}
+    later = {**spec, "body": "the spec, edited", "lastEditedAt": "2026-10-01T12:00:00Z"}
     sent: list[str] = []
     monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: sent.append("label"))
     monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
     monkeypatch.setattr(approvals, "issue_node", lambda _n: later)
     with pytest.raises(
-        approvals.Refused, match=r"edited \(as edited 2026-10-01 12:00:00 UTC\) after the owner"
+        approvals.Refused, match=r"#1: the spec was edited after the owner's `approved:spec`"
     ):
         approvals.adopted([spec], loop)
     assert sent == []
     monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
     approvals.adopted([spec], loop)
-    assert sent[0] == f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"
+    assert sent[0] == f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"
 
 
 def test_approve_refuses_the_coordinator(
@@ -2062,7 +2065,7 @@ def test_a_re_approval_says_why_and_minimizes_every_record_it_supersedes(
             "comment",
             1,
             (
-                "Approved: spec\nBy: owner\nSpec: as edited 2026-10-02 14:35:27 UTC\n"
+                f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"
                 "The spec changed after the last approval, so it was checked again.\n"
             ),
         ),
@@ -7808,3 +7811,455 @@ def test_a_spec_or_plan_is_never_the_delegates_to_approve(
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
     assert "approve spec is the owner's" in capsys.readouterr().out
     assert github == []
+
+
+# --- without GraphQL: a cloud session's proxy refuses it, and REST answers the same reads ---
+
+REFUSED_GRAPHQL = "gh: GitHub GraphQL is not available from Claude Code sessions (HTTP 403)"
+NAME_WITH_OWNER = "kzarzycki/scratch-gate-revert"
+
+
+@pytest.fixture(autouse=True)
+def graphql_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts as a run that has not seen GraphQL refused."""
+    monkeypatch.setattr(approvals, "_rest_only", False)
+
+
+def user(login: str, kind: str = "User") -> dict[str, Any]:
+    return {"login": login, "type": kind}
+
+
+def rest_comment(body: str, by: str = "loop", **fields: Any) -> dict[str, Any]:
+    return {
+        "node_id": f"IC_{next(IDS)}",
+        "user": user(by),
+        "body": body,
+        "created_at": WRITTEN,
+        "updated_at": WRITTEN,
+        "minimized": None,
+        **fields,
+    }
+
+
+def labeled(name: str, by: str = "octocat", at: str = LABELED) -> dict[str, Any]:
+    return {"event": "labeled", "created_at": at, "actor": user(by), "label": {"name": name}}
+
+
+def cloud_routes(spec: str = "the spec", record_of: str | None = None) -> dict[str, Any]:
+    """PR #7 and issue #1 as GitHub's REST API returns them: #7 closes #1, whose spec the owner approved by its text
+    (or by `record_of`), and #7 has a green `check`, a satisfied verifier review on its head and no open thread."""
+    approved_text = record_of or "sha256 " + hashlib.sha256(spec.encode()).hexdigest()
+    pages = {
+        "pulls/7": {
+            "node_id": "PR_7",
+            "number": 7,
+            "title": "Feature",
+            "user": user("loop"),
+            "assignees": [user("octocat")],
+            "state": "open",
+            "merged": False,
+            "draft": False,
+            "auto_merge": None,
+            "body": "Closes #1\n\n## Evidence\n\nlog line\n",
+            "base": {
+                "ref": "main",
+                "sha": "0" * 40,  # stale: the base's tip is read from its branch
+                "repo": {"full_name": NAME_WITH_OWNER, "default_branch": "main"},
+            },
+            "head": {"ref": "feature", "sha": HEAD, "repo": {"full_name": NAME_WITH_OWNER}},
+            "labels": [],
+            "changed_files": 1,
+            "commits": 1,
+        },
+        "branches/main": {"commit": {"sha": BASE}},
+        "pulls/7/reviews?per_page=100": [
+            {
+                "user": user("loop"),
+                "state": "COMMENTED",
+                "body": VERDICT["body"],
+                "commit_id": HEAD,
+            }
+        ],
+        "pulls/7/files?per_page=100": [
+            {"filename": "app.py", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b"}
+        ],
+        "issues/7/comments?per_page=100": [],
+        "pulls/7/ccr/review_threads": [{"resolved": True, "comment_ids": [1]}],
+        "pulls/7/commits?per_page=100": [
+            {
+                "author": user("loop"),
+                "committer": user("web-flow"),
+                "commit": {"message": "the change"},
+            }
+        ],
+        "issues/7/timeline?per_page=100": [],
+        f"commits/{HEAD}/check-runs?filter=all&per_page=100": {
+            "total_count": 1,
+            "check_runs": [
+                {
+                    "name": "check",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "started_at": PUSHED,
+                    "completed_at": PUSHED,
+                    "check_suite": {"id": 5},
+                }
+            ],
+        },
+        f"commits/{HEAD}/check-suites?per_page=100": {
+            "check_suites": [{"id": 5, "status": "completed"}]
+        },
+        f"actions/runs?head_sha={HEAD}&per_page=100": {
+            "workflow_runs": [{"check_suite_id": 5, "name": "CI"}]
+        },
+        f"commits/{HEAD}/status?per_page=100": {"total_count": 0, "statuses": []},
+        "issues/1": {
+            "number": 1,
+            "body": spec,
+            "created_at": WRITTEN,
+            "updated_at": LABELED,
+            "labels": [
+                {"name": name}
+                for name in ("kind:enhancement", "area:web", "size:S", "approved:spec")
+            ],
+            "user": user("loop"),
+            "assignees": [user("octocat")],
+        },
+        "issues/1/comments?per_page=100": [
+            rest_comment(record("spec", "owner", spec=approved_text))
+        ],
+        "issues/1/timeline?per_page=100": [labeled("approved:spec")],
+        "pulls?state=open&per_page=100": [
+            {
+                "number": 7,
+                "head": {"ref": "feature"},
+                "base": {"ref": "main"},
+                "draft": False,
+                "body": "Closes #1",
+            }
+        ],
+        "pulls?state=closed&base=feature&per_page=100": [],
+        f"compare/{BASE}...{HEAD}": {
+            "files": [
+                {
+                    "filename": "app.py",
+                    "patch": "@@ -1,2 +10,4 @@\n a\n+b\n+c\n d",
+                }
+            ]
+        },
+        "": {"permissions": {"push": True}},
+    }
+    return {f"repos/{{owner}}/{{repo}}/{path}".rstrip("/"): page for path, page in pages.items()}
+
+
+class Cloud:
+    """GitHub behind a cloud session's proxy: REST answers from `routes`, GraphQL (`gh api graphql`, and `gh pr` and
+    `gh repo`, which read through it) is refused with 403, as is the collaborator permission path. Every call is kept
+    in order, and every write is kept in `writes` instead of made."""
+
+    FORBIDDEN = ("/collaborators/",)
+
+    def __init__(self, routes: dict[str, Any]) -> None:
+        self.routes, self.calls, self.writes = routes, [], []
+
+    @staticmethod
+    def graphql(args: tuple[str, ...]) -> bool:
+        return "graphql" in args or args[0] in ("pr", "repo")
+
+    def __call__(self, *args: str, data: str | None = None) -> str:
+        self.calls.append(args)
+        if self.graphql(args):
+            raise subprocess.CalledProcessError(1, "gh", stderr=REFUSED_GRAPHQL)
+        assert args[0] == "api", args
+        rest = [arg for arg in args[1:] if arg != "--paginate"]
+        path = rest[0]
+        if data is not None or any(flag in rest for flag in ("-X", "-f", "-F", "--input")):
+            self.writes.append((path, data))
+            return ""
+        if any(part in path for part in self.FORBIDDEN):
+            raise subprocess.CalledProcessError(1, "gh", stderr="not permitted (HTTP 403)")
+        if path not in self.routes:
+            raise subprocess.CalledProcessError(1, "gh", stderr=f"{path}: Not Found (HTTP 404)")
+        page = self.routes[path]
+        jq = rest[rest.index("--jq") + 1] if "--jq" in rest else None
+        if jq is None:
+            return json.dumps(page)
+        if jq == ".[]":
+            items = page
+        elif jq.endswith("[]") and jq.startswith("."):
+            items = page[jq[1:-2]]
+        elif jq == ".files[] | {filename, patch}":
+            items = [{"filename": f["filename"], "patch": f["patch"]} for f in page["files"]]
+        else:
+            raise AssertionError(f"jq not faked: {jq}")
+        return "".join(json.dumps(item) + "\n" for item in items)
+
+
+@pytest.fixture
+def cloud(monkeypatch: pytest.MonkeyPatch) -> Cloud:
+    """approvals.py against Cloud, run in the fixture project, with the real REST readers the autouse fixtures fake."""
+    found = Cloud(cloud_routes())
+    monkeypatch.setattr(approvals, "gh", found)
+    monkeypatch.setattr(approvals, "merged_high", MERGED_HIGH)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    monkeypatch.setattr(approvals, "comment", COMMENT)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(PROJECT)
+    return found
+
+
+def test_in_a_cloud_session_each_command_completes_with_no_graphql_call_past_the_refused_one(
+    cloud: Cloud,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """`check build`, `check merge`, `local-ci <pr>` and `verdict` complete for a PR with an approved spec, a green
+    gate and a satisfied verifier review where GraphQL answers 403: the first GraphQL call is refused, and the run
+    reads REST alone from then on, so no command makes a second. Each command is its own run."""
+    record = {
+        "head": HEAD,
+        "tree": TREE,
+        "command": "mise run check:all",
+        "exit": 0,
+        "env": {},
+        "time": WRITTEN,
+        "published": True,
+    }
+    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(): record)
+    report = tmp_path / "report.md"
+    report.write_text(REPORT.replace("app.py:12", "app.py:11").replace("app.py:40", "app.py:12"))
+    for argv in (
+        ["check", "build", "7"],
+        ["check", "merge", "7"],
+        ["local-ci", "7"],
+        ["verdict", "7", str(report)],
+    ):
+        monkeypatch.setattr(approvals, "_rest_only", False)  # a new run
+        cloud.calls.clear()
+        assert approvals.main(argv) == 0, (argv, capsys.readouterr().out)
+        asked = [call for call in cloud.calls if Cloud.graphql(call)]
+        assert len(asked) <= 1 and (not asked or cloud.calls.index(asked[0]) == 0), argv
+    out = capsys.readouterr().out
+    assert "has no `Approved: spec`" not in out and "verifier" not in out.lower(), out
+    posted = [path for path, _data in cloud.writes]
+    assert posted == [
+        "repos/{owner}/{repo}/issues/7/comments",  # local-ci's pass
+        "repos/{owner}/{repo}/pulls/7/reviews",  # verdict's review
+    ]
+
+
+def test_without_graphql_check_merge_still_fails_a_missing_proof(
+    cloud: Cloud, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """REST reads every proof GraphQL did: an unresolved thread, a red check and a spec changed after its approval
+    each still hold the merge."""
+    pages = cloud.routes
+    pages["repos/{owner}/{repo}/pulls/7/ccr/review_threads"] = [{"resolved": False}]
+    runs = pages[f"repos/{{owner}}/{{repo}}/commits/{HEAD}/check-runs?filter=all&per_page=100"]
+    runs["check_runs"][0]["conclusion"] = "failure"
+    pages["repos/{owner}/{repo}/issues/1"]["body"] = "the spec, edited"
+    assert approvals.main(["check", "merge", "7"]) == 1
+    out = capsys.readouterr().out.splitlines()
+    assert (
+        "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)"
+        in out
+    )
+    assert "PR #7: `check` is FAILURE on the head commit" in out
+    assert (
+        "#1 has no `Approved: spec` record by the owner for its current spec: the owner approves it again"
+        in out
+    )
+
+
+def test_review_threads_a_host_cannot_read_over_rest_fail_closed(cloud: Cloud) -> None:
+    """GitHub's own REST API has no review threads: where the proxy's route is missing, the read raises rather than
+    count none unresolved."""
+    del cloud.routes["repos/{owner}/{repo}/pulls/7/ccr/review_threads"]
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        approvals.pull_request(7)
+    assert "ccr/review_threads: Not Found" in raised.value.stderr
+
+
+def test_where_graphql_answers_it_is_the_one_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On a host the PR and its issues come from one GraphQL call each, as before: REST is never asked."""
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        assert "graphql" in args, args
+        if "pullRequest(number: $n)" in " ".join(args):
+            return json.dumps({"data": {"repository": {"pullRequest": pull()}}})
+        return json.dumps({"data": {"repository": {"issue": approved(1)}}})
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    assert approvals.pull_request(7)["headRefOid"] == HEAD
+    assert approvals.issue_node(1)["number"] == 1
+    assert len(calls) == 2 and approvals._rest_only is False
+
+
+def test_another_error_from_graphql_is_no_refusal_and_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def gh(*args: str, data: str | None = None) -> str:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        approvals.pull_request(7)
+    assert "502" in raised.value.stderr
+    assert approvals._rest_only is False
+
+
+def test_rest_reads_a_pr_in_graphqls_shape(cloud: Cloud) -> None:
+    """A bot's login loses the `[bot]` REST adds, GitHub's web-flow committer is no account, a review that only
+    comments leaves a request for changes standing, a check run is named by its workflow, the base is its branch's tip,
+    and what REST can't say (the merge queue, GitHub's closing links) is left for the caller to refuse or read from
+    the body."""
+    pages = cloud.routes
+    pages["repos/{owner}/{repo}/pulls/7"]["user"] = user("renovate[bot]", "Bot")
+    pages["repos/{owner}/{repo}/pulls/7/reviews?per_page=100"] = [
+        {"user": user("ann"), "state": "CHANGES_REQUESTED", "body": "", "commit_id": HEAD},
+        {"user": user("ann"), "state": "COMMENTED", "body": "a note", "commit_id": HEAD},
+        {"user": user("bob"), "state": "CHANGES_REQUESTED", "body": "", "commit_id": HEAD},
+        {"user": user("bob"), "state": "APPROVED", "body": "", "commit_id": HEAD},
+    ]
+    found = approvals.pull_request(7)
+    assert found["author"] == {"login": "renovate", "__typename": "Bot"}
+    assert found["baseRefOid"] == BASE
+    assert found["authored"]["nodes"][0]["commit"]["committer"] == {"user": None}
+    assert [(r["author"]["login"], r["state"]) for r in found["latestReviews"]["nodes"]] == [
+        ("ann", "CHANGES_REQUESTED"),
+        ("bob", "APPROVED"),
+    ]
+    [run] = found["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+    assert (approvals.workflow(run), run["conclusion"], run["checkSuite"]["status"]) == (
+        "CI",
+        "SUCCESS",
+        "COMPLETED",
+    )
+    assert found["closingIssuesReferences"] == {"nodes": []}
+    assert [issue["number"] for issue in approvals.closing_issues(found)] == [1]
+    assert "doesn't say whether it is in a merge queue" in approvals.unsignable(
+        found, "main", Path("signers")
+    )
+
+
+def test_a_co_author_rest_cannot_name_leaves_no_bot_exemption(cloud: Cloud) -> None:
+    """GraphQL names a commit's co-authors; REST does not, so a `Co-authored-by` trailer exempts nothing."""
+    loop = add(BARE, "bot", "renovate:\n  paths:\n    - app.py\n")
+    pages = cloud.routes
+    pages["repos/{owner}/{repo}/pulls/7"]["user"] = user("renovate[bot]", "Bot")
+    commit = pages["repos/{owner}/{repo}/pulls/7/commits?per_page=100"][0]
+    commit["author"] = user("renovate[bot]", "Bot")
+    assert approvals.exempt(approvals.pull_request(7), loop)
+    approvals._rest_only = False
+    commit["commit"]["message"] = "bump\n\nCo-authored-by: Mallory <m@example.com>"
+    assert not approvals.exempt(approvals.pull_request(7), loop)
+
+
+def test_the_account_running_this_is_a_writer_by_its_own_permissions_where_the_proxy_refuses_the_lookup(
+    cloud: Cloud, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "viewer", lambda: "loop")
+    assert approvals.writer("loop")
+    assert not approvals.writer("drive-by")  # anyone else still can't be looked up, so isn't one
+    cloud.routes["repos/{owner}/{repo}"] = {"permissions": {"pull": True}}
+    assert not approvals.writer("loop")
+
+
+# --- an approval names the spec's text ---
+
+
+def rest_shaped(node: dict[str, Any]) -> dict[str, Any]:
+    """`node` as REST gives it: no edit time."""
+    return {key: value for key, value in node.items() if key != "lastEditedAt"} | {
+        "updatedAt": WRITTEN
+    }
+
+
+@pytest.mark.parametrize("shape", [lambda node: node, rest_shaped], ids=["graphql", "rest"])
+def test_an_approval_of_the_spec_text_holds_until_the_text_changes(
+    shape: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    spec = issue(
+        1, "size:S", "approved:spec", "area:web", comments=(record("spec", "owner", spec=TEXTED),)
+    )
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == []
+    spec["body"] = "the spec\nand one more line"
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == [
+        "#1 has no `Approved: spec` record by the owner for its current spec: the owner approves it again"
+    ]
+    spec["body"] = "the spec\r\n"  # line ends as a browser may send them: the text is the same
+    spec["comments"]["nodes"][0]["body"] = record(
+        "spec", "owner", spec=approvals.texted({"body": "the spec\n"})
+    )
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == []
+
+
+def test_a_record_of_the_last_edit_holds_where_graphql_dates_it_and_over_rest_says_how_to_renew_it() -> (
+    None
+):
+    """Records written before texts were named carry the edit time: GraphQL still checks them, REST can't, so it
+    refuses with the command that renews the approval."""
+    assert approvals.proofs("build", pull(), [approved(1, "area:web")], LOOP) == []
+    assert approvals.proofs("build", pull(), [rest_shaped(approved(1, "area:web"))], LOOP) == [
+        (
+            "#1 has no `Approved: spec` record by the owner for its current text: its record names the spec's last"
+            " edit, which GitHub's REST API can't date, so the owner approves it again (`approve spec 1 --by owner`)"
+            " or the check runs where GraphQL answers"
+        )
+    ]
+
+
+def test_over_rest_the_owners_label_is_recorded_only_when_nothing_changed_the_spec_after_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """REST has no edit time, so the spec's `updatedAt`, which every edit moves, dates its last change: a label the
+    owner added after it is their word; one at or before it is never taken as covering the text."""
+    loop = add(LOOP, "loop", "owner: octocat\n")
+    spec = rest_shaped(issue(1, "kind:enhancement", "area:web", "size:S", "approved:spec"))
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+    sent: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    spec["updatedAt"] = LABELED
+    approvals.adopted([spec], loop)
+    assert sent == []
+    assert capsys.readouterr().out == (
+        "#1: the owner's `approved:spec` can't be dated after the spec's last edit, since GitHub's REST API gives no"
+        f" edit time and the spec changed at {LABELED}, after it: the owner records it with `approve spec 1 --by"
+        " owner`, or the check runs where GraphQL answers\n"
+    )
+    spec["updatedAt"] = PUSHED
+    approvals.adopted([spec], loop)
+    assert sent == [f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"]
+
+
+def test_approve_over_rest_records_the_text_and_minimizes_nothing_it_cannot_tell_it_may(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    earlier = rest_shaped(
+        issue(
+            1,
+            "kind:bug",
+            comments=(note(record("spec", "owner", spec=AS_WRITTEN), viewerCanMinimize=False),),
+        )
+    )
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: earlier)
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
+    assert github[0] == (
+        "comment",
+        1,
+        f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n{approvals.CHANGED['spec']}",
+    )
+    assert not any(call[0] == "minimize" for call in github)

@@ -288,8 +288,8 @@ an approval record, since an agent approving its own work is no approval; where 
 was asked, the authority is the owner's standing policy in gatekeeper.md, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
 `uv run <this skill's folder>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
-owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
-a later edit needs approving again, plus the `approved:<point>` label. A re-approval says
+owner's word, tied to the spec's or plan's text by its sha256, so any change to the text
+needs approving again, plus the `approved:<point>` label. A re-approval says
 what changed and minimizes the records it supersedes as outdated. The verifier only gives
 the verdict, which `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
@@ -492,8 +492,8 @@ the host and only the workers run in the cloud, as sessions of `<agent>`, a regi
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line nothing
 in this section applies and every role file reads as written. The split takes coding,
 compiling and unit tests off the host. What stays there is what the VM can't do: every
-`approvals.py` call and every thread resolution, since GitHub's GraphQL API answers 403 in the
-VM; the signed land, since the VM holds no key; a verifier of the other family, since Codex
+thread resolution, since GitHub's GraphQL API answers 403 in the VM (`approvals.py` reads REST
+there, so its `check`, `local-ci` and `verdict` also run in the VM, but `land` does not); the signed land, since the VM holds no key; a verifier of the other family, since Codex
 has no cloud bridge; anything that needs a device, a simulator, an emulator, a browser login
 or the owner's private network.
 
