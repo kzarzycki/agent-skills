@@ -75,7 +75,8 @@ delegate's, a high-risk head has. Into the default branch these are the only go:
 label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
 an `owner` status an older gate wrote from the label (marked as from it). On a change that is not high risk the
 label means nothing. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
+PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, a path `risk.merge_paths` names
+(below), or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
 failure to add it and carrying on. On a PR into a feature branch (any base but the repository's default branch)
 `approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
@@ -284,7 +285,10 @@ with `false` or an empty list, the owner approves every spec, and the gates are 
 
 A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
 label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `risk` alone
-`verifier: true`. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
+`verifier: true`. `risk.merge_paths`, globs matched on the PR's files as `paths` are, is no term of the rule: a PR
+touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and only the owner's go
+on its head lets it merge, into any branch, so `check merge`, `check queue` and `land` wait for it, `approve merge
+--by delegate` and `delegate` refuse it, and the label is no go; files it can't read hold. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
 label can never read as a term. Paths it can't judge, past the one page of files it reads, hold. The `plan` rule asks
 for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `bot.<login>` section,
 such as `bot.dependabot[bot]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
@@ -526,7 +530,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     },
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
-    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool},
+    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -814,6 +818,23 @@ def ruled(
     return None
 
 
+def owners_only(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why only the owner's go on the head lets the PR merge, or None: it touches a path loop.md's `risk.merge_paths`
+    names, whatever its labels, `spec.auto` and the verifier's `Risk:` line say, since the owner keeps the last look
+    at those paths. Files the gate can't read hold, as a risk rule's `paths` do."""
+    globs = settings(loop).get("risk", {}).get("merge_paths", [])
+    if not globs:
+        return None
+    files = paths(pull)
+    if files is None:
+        return "the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner judges them"
+    for glob in globs:
+        for path in files:
+            if fnmatch.fnmatch(path, glob):
+                return f"it touches `{path}`, which `risk.merge_paths` names (`{glob}`), so only the owner approves its merge"
+    return None
+
+
 def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
     """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
     proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
@@ -842,7 +863,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
     labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
     `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
-    was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
+    was built, while its `verifier` term still holds the merge; a path `risk.merge_paths` names (owners_only), under
+    `spec.auto` too; or a review at the cap was not satisfied or left a
     blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
     issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
@@ -856,6 +878,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
     if why := pull.get("reverted"):
+        return why
+    if why := owners_only(pull, loop):
         return why
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
@@ -2038,12 +2062,24 @@ def owner_waits(
     `loop.delegate: all` the delegate's. Into the default branch only such a head-pinned go counts, since a delegate
     acting through the owner's account adds a label no differently from the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
     owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
-    activity)."""
+    activity). A path `risk.merge_paths` names (owners_only) takes the owner's own go on the head, into any branch.
+    """
     where, found = f"PR #{pull['number']}", []
     why = risk(pull, issues, loop)
-    if why is None or owned(pull, loop):
+    if why is None:
+        return found
+    by, sole = owned(pull, loop), owners_only(pull, loop)
+    if by == "owner" or by and not sole:
         return found
     command = f"`approve merge {pull['number']} --head {pull['headRefOid']} --by owner`"
+    if sole:
+        # neither the delegate's go nor the label, into any branch: the path is the owner's alone
+        return [
+            (
+                f"{where} waits for the owner's go on its head ({command}; the delegate's go and `{MERGE_LABEL}` are"
+                f" no go), since {sole}"
+            )
+        ]
     if default(pull):
         return [
             (
@@ -2125,7 +2161,8 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     naming it, whose first line says whose go it is; with `withdraw`, a newer failing status and record that take it
     back. The script writes every word, so no agent's description of the change travels with it. A head that moved is
     refused, since the approver saw the one they were asked about. The delegate's go into the default branch is
-    refused unless loop.md's `delegate` is `all`, since without it only the owner's go covers that branch."""
+    refused unless loop.md's `delegate` is `all`, since without it only the owner's go covers that branch, and on a PR
+    touching a path `risk.merge_paths` names (owners_only) into any branch, since that merge is the owner's alone."""
     pull = pull_request(number)
     if pull["state"] != "OPEN":
         raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
@@ -2135,9 +2172,13 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         )
     head = pull["headRefOid"]
     who = "the delegate" if by == DELEGATE else "the owner"
-    if by == DELEGATE and not withdraw and default(pull):
+    if by == DELEGATE and not withdraw:
         loop = project()[1]
-        if delegation(loop) != "all":
+        if sole := owners_only(pull, loop):
+            raise Refused(
+                f"PR #{number}: the delegate's go is no go here, since {sole}: it waits for the owner's"
+            )
+        if default(pull) and delegation(loop) != "all":
             raise Refused(
                 f"PR #{number} targets {pull['baseRefName']}, the default branch: the delegate's go covers it only"
                 f" with `loop.delegate: all` in {source(loop)}, so it waits for the owner's"
@@ -3532,8 +3573,13 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
 def delegate(number: int) -> int:
     """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
     label, then the record that names it the delegate's. Into the default branch, where a label is no go, it is
-    refused: there the go is pinned to a head (go)."""
+    refused: there the go is pinned to a head (go). So is a PR touching a path `risk.merge_paths` names, whose merge
+    only the owner's go on the head allows (owners_only)."""
     pull = pull_request(number)
+    if sole := owners_only(pull, project()[1]):
+        raise Refused(
+            f"PR #{number}: `{MERGE_LABEL}` is no go here, since {sole}: it waits for the owner's go on its head"
+        )
     if default(pull):
         raise Refused(
             f"PR #{number} targets {pull['baseRefName']}, the default branch, where a label is no go: the head-pinned"
