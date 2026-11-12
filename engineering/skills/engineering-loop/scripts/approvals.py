@@ -138,7 +138,7 @@ Different, because a refusal left only part of the batch on the base or someone 
 which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
 `Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
 and the tree it passed on, and `Batch:` the PRs landed together.
-6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone. A PR red alone is
+6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone (a one-PR batch's red run counts as its first run alone). A PR red alone is
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
 the bare base is gated: red, the run stops (exit 1) and evicts nobody, since every PR would fail on that base.
@@ -3926,7 +3926,8 @@ def merge_batch(
         reset(work, green)
         if not merged_onto(pull, work, base, [p["number"] for p, *_ in landed], failed):
             continue
-        tree, how = gate_batch(work, [pull])
+        # a one-PR batch's red run was this PR merged onto the same tip, the same tree: that is its first run alone
+        tree, how = (tree, "") if len(merged) == 1 else gate_batch(work, [pull])
         if not how:
             print(
                 f"PR #{pull['number']} is red alone on {green}: once more, in case it was a flake"
