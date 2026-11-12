@@ -7881,21 +7881,33 @@ def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_gate(tmp_path: Path
     assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path, "UV_RUN_RECURSION_DEPTH": None}
 
 
-@needs_uv
-def test_under_uv_run_the_gate_sees_the_callers_environment(tmp_path: Path) -> None:
-    """uv replaces the caller's VIRTUAL_ENV and puts its own bin first; the gate gets the caller's back."""
-    venv = caller_venv(tmp_path)
-    path = os.pathsep.join([str(venv / "bin"), "/usr/bin", "/bin"])
-    seen = gate_sees(tmp_path, UV, {"VIRTUAL_ENV": str(venv), "PATH": path})
-    assert seen["VIRTUAL_ENV"] == str(venv)
-    assert (seen["PATH"] or "").startswith(path)
-    assert seen["UV_RUN_RECURSION_DEPTH"] is None
+# the cases a path heuristic can't tell apart: uv replaces the caller's VIRTUAL_ENV before the script starts, so
+# neither is reconstructed, whether or not the caller activated an environment
+CALLERS = {
+    "activated, another directory in front of its bin": lambda venv: (
+        str(venv),
+        ["/usr/bin", str(venv / "bin"), "/bin"],
+    ),
+    "not activated, its bin first on PATH": lambda venv: (
+        None,
+        [str(venv / "bin"), "/usr/bin", "/bin"],
+    ),
+}
 
 
 @needs_uv
-def test_under_uv_run_with_no_caller_environment_the_gate_sees_none(tmp_path: Path) -> None:
-    seen = gate_sees(tmp_path, UV, {"PATH": "/usr/bin:/bin"})
-    assert seen["VIRTUAL_ENV"] is None and (seen["PATH"] or "").startswith("/usr/bin")
+@pytest.mark.parametrize("case", CALLERS)
+def test_under_uv_run_the_gate_gets_no_virtual_env_and_the_callers_path(
+    tmp_path: Path, case: str
+) -> None:
+    """The gate gets no VIRTUAL_ENV, never a guessed one, and the caller's PATH without the script's own bin."""
+    virtual_env, entries = CALLERS[case](caller_venv(tmp_path))
+    path = os.pathsep.join(entries)
+    seen = gate_sees(
+        tmp_path, UV, {"PATH": path} | ({"VIRTUAL_ENV": virtual_env} if virtual_env else {})
+    )
+    assert seen["VIRTUAL_ENV"] is None
+    assert seen["PATH"] == path
 
 
 def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
