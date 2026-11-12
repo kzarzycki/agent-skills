@@ -9,7 +9,7 @@ posted on the tracking issue (#809), so a workaround is dropped once the platfor
     python3 tools/platform_probe.py [--comment] [--update-baseline] [--issue 809]
 
 Exit 0 when every answer matches the baseline, 1 when one changed. The probes leave nothing
-behind: a pending status, a `claude/probe-*` branch that is deleted again, and a ref that is
+behind: a pending status, a `claude/probe-*` branch (its deletion is refused here, so one stays per run), and a ref that is
 refused or removed.
 """
 import argparse, json, os, shutil, subprocess, sys, time
@@ -28,7 +28,9 @@ def sh(cmd, timeout=60):
 
 
 def repo():
-    return sh("gh repo view --json nameWithOwner -q .nameWithOwner")[1].splitlines()[-1]
+    # Read it from the remote: `gh repo view` is GraphQL, which the cloud refuses.
+    url = sh("git remote get-url origin")[1].splitlines()[-1]
+    return url.removesuffix(".git").split("github.com", 1)[-1].lstrip(":/")
 
 
 def head():
@@ -75,7 +77,18 @@ def probe_refs():
     }
 
 
+def start_dockerd():
+    """The image ships docker without a running daemon: start one, as the setup script does."""
+    if shutil.which("dockerd") and sh("docker info")[0] != 0:
+        subprocess.Popen("exec dockerd >/tmp/dockerd.log 2>&1", shell=True, start_new_session=True)
+        for _ in range(30):
+            if sh("docker info")[0] == 0:
+                break
+            time.sleep(1)
+
+
 def probe_container():
+    start_dockerd()
     for tool in ("docker", "podman"):
         if shutil.which(tool):
             rc, out = sh(f"{tool} run --rm hello-world 2>&1 | head -5", 120)
