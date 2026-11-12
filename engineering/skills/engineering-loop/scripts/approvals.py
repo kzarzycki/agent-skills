@@ -75,7 +75,8 @@ delegate's, a high-risk head has. Into the default branch these are the only go:
 label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
 an `owner` status an older gate wrote from the label (marked as from it). On a change that is not high risk the
 label means nothing. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
+PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, a path `risk.merge_paths` names
+(below), or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
 failure to add it and carrying on. On a PR into a feature branch (any base but the repository's default branch)
 `approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
@@ -307,8 +308,13 @@ with `false` or an empty list, the owner approves every spec, and the gates are 
 
 A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
 label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `risk` alone
-`verifier: true`. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
-label can never read as a term. Paths it can't judge, past the one page of files it reads, hold. The `plan` rule asks
+`verifier: true`. `risk.merge_paths`, globs matched on the PR's files as `paths` are, is no term of the rule: a PR
+touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line say, and only the owner's go
+on its head lets it merge, into any branch, so `check merge`, `check queue` and `land` wait for it, `approve merge
+--by delegate` and `delegate` refuse it, and the label is no go; files it can't read hold. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
+label can never read as a term. A glob matches every path the PR touches on either side of the change: a
+deleted file's, and a renamed or copied file's old name as well as its new one. Paths it can't judge, past the one
+page of files it reads or an old name GitHub won't give, hold. The `plan` rule asks
 for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `bot.<login>` section,
 such as `bot.dependabot[bot]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
 review when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it changes, none renamed or copied,
@@ -551,7 +557,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     },
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
-    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool},
+    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool, "merge_paths": list},
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
@@ -798,12 +804,14 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
     renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
     file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
     or commits than the gate reads: no exemption."""
-    author, files = pull.get("author") or {}, paths(pull)
     renamed = any(
         file.get("changeType") in ("RENAMED", "COPIED") for file in pull["files"]["nodes"]
     )
     labels = {label["name"] for label in pull["labels"]["nodes"]}
-    if not files or renamed or "verify" in labels:
+    if renamed or "verify" in labels:
+        return False
+    author, files = pull.get("author") or {}, paths(pull)
+    if not files:
         return False
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}
@@ -837,7 +845,8 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
 
 
 def paths(pull: dict[str, Any]) -> list[str] | None:
-    """The files the PR changes; None past the one page of 100 the gate reads."""
+    """The files the PR changes; None past the one page of 100 the gate reads. A rule on paths reads touched(),
+    which adds a moved file's old name."""
     files = pull["files"]
     found = [file["path"] for file in files["nodes"]]
     return None if (files.get("totalCount") or 0) > len(found) else found
@@ -899,6 +908,23 @@ def ruled(
     return None
 
 
+def owners_only(pull: dict[str, Any], loop: str | None) -> str | None:
+    """Why only the owner's go on the head lets the PR merge, or None: it touches a path loop.md's `risk.merge_paths`
+    names, whatever its labels, `spec.auto` and the verifier's `Risk:` line say, since the owner keeps the last look
+    at those paths. Files the gate can't read hold, as a risk rule's `paths` do."""
+    globs = settings(loop).get("risk", {}).get("merge_paths", [])
+    if not globs:
+        return None
+    files = touched(pull)
+    if files is None:
+        return "the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner judges them"
+    for glob in globs:
+        for path in files:
+            if fnmatch.fnmatch(path, glob):
+                return f"it touches `{path}`, which `risk.merge_paths` names (`{glob}`), so only the owner approves its merge"
+    return None
+
+
 def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
     """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
     proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
@@ -927,7 +953,8 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
     labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
     `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
-    was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
+    was built, while its `verifier` term still holds the merge; a path `risk.merge_paths` names (owners_only), under
+    `spec.auto` too; or a review at the cap was not satisfied or left a
     blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
     issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
@@ -942,9 +969,11 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
     if why := pull.get("reverted"):
         return why
+    if why := owners_only(pull, loop):
+        return why
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
-        if why := ruled(labels, paths(pull), loop, judged(pull, loop)):
+        if why := ruled(labels, touched(pull), loop, judged(pull, loop)):
             return why
     elif settings(loop).get("risk", {}).get("verifier"):
         # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
@@ -1003,7 +1032,7 @@ def signoff(
     terms = settings(loop).get("signoff")
     if terms is None:
         return None
-    hit = matches(terms, names(pull) | names(issue), paths(pull))
+    hit = matches(terms, names(pull) | names(issue), touched(pull))
     if hit:
         return True, f"it matches a sign-off rule ({hit})"
     if hit is None:
@@ -1318,7 +1347,7 @@ def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> 
     on the labels of the issue and the PR and the files pushed so far, so a file the spec didn't foresee still reaches
     the owner; or an author without write access, since anyone who can open an issue would otherwise have their own
     spec approved."""
-    if why := ruled(names(issue) | names(pull), paths(pull), loop):
+    if why := ruled(names(issue) | names(pull), touched(pull), loop):
         return why
     login = (issue.get("author") or {}).get("login")
     if not (login and writer(login)):
@@ -2227,12 +2256,24 @@ def owner_waits(
     `loop.delegate: all` the delegate's. Into the default branch only such a head-pinned go counts, since a delegate
     acting through the owner's account adds a label no differently from the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
     owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
-    activity)."""
+    activity). A path `risk.merge_paths` names (owners_only) takes the owner's own go on the head, into any branch.
+    """
     where, found = f"PR #{pull['number']}", []
     why = risk(pull, issues, loop)
-    if why is None or owned(pull, loop):
+    if why is None:
+        return found
+    by, sole = owned(pull, loop), owners_only(pull, loop)
+    if by == "owner" or by and not sole:
         return found
     command = f"`approve merge {pull['number']} --head {pull['headRefOid']} --by owner`"
+    if sole:
+        # neither the delegate's go nor the label, into any branch: the path is the owner's alone
+        return [
+            (
+                f"{where} waits for the owner's go on its head ({command}; the delegate's go and `{MERGE_LABEL}` are"
+                f" no go), since {sole}"
+            )
+        ]
     if default(pull):
         return [
             (
@@ -2314,7 +2355,8 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     naming it, whose first line says whose go it is; with `withdraw`, a newer failing status and record that take it
     back. The script writes every word, so no agent's description of the change travels with it. A head that moved is
     refused, since the approver saw the one they were asked about. The delegate's go into the default branch is
-    refused unless loop.md's `delegate` is `all`, since without it only the owner's go covers that branch."""
+    refused unless loop.md's `delegate` is `all`, since without it only the owner's go covers that branch, and on a PR
+    touching a path `risk.merge_paths` names (owners_only) into any branch, since that merge is the owner's alone."""
     pull = pull_request(number)
     if pull["state"] != "OPEN":
         raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
@@ -2324,9 +2366,13 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         )
     head = pull["headRefOid"]
     who = "the delegate" if by == DELEGATE else "the owner"
-    if by == DELEGATE and not withdraw and default(pull):
+    if by == DELEGATE and not withdraw:
         loop = project()[1]
-        if delegation(loop) != "all":
+        if sole := owners_only(pull, loop):
+            raise Refused(
+                f"PR #{number}: the delegate's go is no go here, since {sole}: it waits for the owner's"
+            )
+        if default(pull) and delegation(loop) != "all":
             raise Refused(
                 f"PR #{number} targets {pull['baseRefName']}, the default branch: the delegate's go covers it only"
                 f" with `loop.delegate: all` in {source(loop)}, so it waits for the owner's"
@@ -3385,7 +3431,8 @@ def unopened() -> dict[str, Any]:
     try:
         base = git("rev-parse", "--abbrev-ref", "origin/HEAD").strip()
         # NUL-separated, since git quotes a non-ASCII name and a name may hold spaces
-        found = git("diff", "--name-only", "-z", f"{base}...HEAD").split("\0")[:-1]
+        # --no-renames: a moved file lists its old name too, since moving it out of a ruled path changes it
+        found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD").split("\0")[:-1]
     except subprocess.CalledProcessError:
         return {"labels": {"nodes": []}, "files": {"nodes": [], "totalCount": 1}}
     return {"labels": {"nodes": []}, "files": {"nodes": [{"path": path} for path in found]}}
@@ -4017,8 +4064,13 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
 def delegate(number: int) -> int:
     """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
     label, then the record that names it the delegate's. Into the default branch, where a label is no go, it is
-    refused: there the go is pinned to a head (go)."""
+    refused: there the go is pinned to a head (go). So is a PR touching a path `risk.merge_paths` names, whose merge
+    only the owner's go on the head allows (owners_only)."""
     pull = pull_request(number)
+    if sole := owners_only(pull, project()[1]):
+        raise Refused(
+            f"PR #{number}: `{MERGE_LABEL}` is no go here, since {sole}: it waits for the owner's go on its head"
+        )
     if default(pull):
         raise Refused(
             f"PR #{number} targets {pull['baseRefName']}, the default branch, where a label is no go: the head-pinned"

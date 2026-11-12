@@ -415,7 +415,7 @@ def test_check_build_before_the_pr_judges_the_issue(
 
     def git(*args: str) -> str:
         if args[0] == "diff":
-            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            assert args == ("diff", "--name-only", "--no-renames", "-z", "origin/main...HEAD")
             if changed[0] is None:
                 raise subprocess.CalledProcessError(128, ["git", *args])
             return "".join(f"{path}\0" for path in changed[0].split())
@@ -5732,7 +5732,7 @@ def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
 
     def git(*args: str) -> str:
         if args[0] == "diff":
-            assert args == ("diff", "--name-only", "-z", "origin/main...HEAD")
+            assert args == ("diff", "--name-only", "--no-renames", "-z", "origin/main...HEAD")
             if changed[0] is None:
                 raise subprocess.CalledProcessError(128, ["git", *args])
             return "".join(f"{path}\0" for path in changed[0].split())
@@ -8128,6 +8128,298 @@ def test_a_spec_or_plan_is_never_the_delegates_to_approve(
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
     assert "approve spec is the owner's" in capsys.readouterr().out
     assert github == []
+
+
+# --- risk.merge_paths: paths whose merge only the owner's go on the head allows (#791) ---
+
+ORDERS = loop_md("risk:\n  merge_paths:\n    - src/orders/**\n")
+ORDERS_AUTO = loop_md("spec:\n  auto: true\nrisk:\n  merge_paths:\n    - src/orders/**\n")
+ORDERS_HELD = (
+    f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; the delegate's go and"
+    " `approved:merge` are no go), since it touches `src/orders/place.py`, which `risk.merge_paths` names"
+    " (`src/orders/**`), so only the owner approves its merge"
+)
+# a satisfied pass that judges the change low, so neither label nor verifier holds it
+LOW = {**VERDICT, "body": VERDICT["body"] + "Risk: low\n"}
+
+
+def orders_pull(*files: str, labels: tuple[str, ...] = ()) -> dict[str, Any]:
+    return pull(reviews=(LOW,), files=files or ("src/orders/place.py",), labels=labels)
+
+
+@pytest.mark.parametrize("loop", [ORDERS, ORDERS_AUTO], ids=["spec-auto-off", "spec-auto-on"])
+def test_merge_paths_hold_a_matching_pr_for_the_owners_go_naming_the_path(
+    loop: str, hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """No `risk:high`, a verifier that says low, and still the owner's go on the head; it covers that head only."""
+    issues = [approved(1, "area:web")]
+    assert merge(orders_pull(), issues, loop) == [ORDERS_HELD]
+    owned = given_go(orders_pull(), hub)
+    assert merge(owned, issues, loop) == []
+    # a new push: the go was on the head the owner saw, not this one
+    pushed = {**owned, "headRefOid": "c" * 40}
+    assert merge(pushed, issues, loop)[-1] == ORDERS_HELD.replace(HEAD, "c" * 40)
+
+
+def test_merge_paths_hold_a_pr_whose_files_the_gate_cannot_read_all_of() -> None:
+    unread = orders_pull("README.md")
+    unread["files"]["totalCount"] = 101
+    assert approvals.owner_waits(unread, [], ORDERS) == [
+        ORDERS_HELD.split(", since ")[0]
+        + ", since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner"
+        " judges them"
+    ]
+
+
+def test_a_pr_touching_no_merge_path_behaves_as_without_the_setting(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    issues = [approved(1, "area:web")]
+    for files in (("web/app.ts",), ("src/orderly.py",), ("src/orders",)):
+        assert merge(orders_pull(*files), issues, ORDERS) == merge(
+            orders_pull(*files), issues, BARE
+        )
+        assert merge(orders_pull(*files), issues, ORDERS) == []
+    # a high-risk one still takes the delegate's go or the label where it did before
+    feature = into_feature(orders_pull("web/app.ts", labels=("risk:high", "approved:merge")))
+    assert approvals.owner_waits(feature, issues, ORDERS) == []
+    assert approvals.settings(BARE).get("risk") is None
+
+
+def test_merge_paths_take_no_label_and_no_delegate_status_as_the_go(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    labelled = into_feature(orders_pull(labels=("risk:high", "approved:merge")))
+    held = ORDERS_HELD
+    assert approvals.owner_waits(labelled, [], ORDERS) == [held]
+    # the delegate's status and record on the head, with `delegate: all`, into main and into a feature branch
+    delegated = orders_pull()
+    delegated["comments"]["nodes"].append(note(DELEGATE_RECORD))
+    hub[HEAD] = [status("owner", DELEGATE_GO)]
+    everyone = add(ORDERS, "loop", "delegate: all\n")
+    assert approvals.owned(delegated, everyone) == "delegate"
+    assert approvals.owner_waits(delegated, [], everyone) == [held]
+    assert approvals.owner_waits(into_feature(delegated), [], everyone) == [held]
+
+
+@pytest.fixture
+def ordering(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The landing checkout with `risk.merge_paths` and `delegate: all`, a low-risk PR touching a listed path; each
+    comment and label lands on the PR, as GitHub reads it back."""
+    Path("docs/agents/loop.md").write_text(
+        add(
+            add(GITHUB_RULE, "risk", "merge_paths:\n  - src/orders/**\n"), "loop", "delegate: all\n"
+        )
+    )
+    landing["pull"]["files"]["nodes"] = [{"path": "src/orders/place.py"}]
+    landing["pull"]["reviews"]["nodes"] = [LOW]
+    landing["posted"] = []
+
+    def comment(number: int, body: str) -> None:
+        landing["posted"].append((number, body))
+        landing["pull"]["comments"]["nodes"].append(note(body))
+
+    def label(number: int, name: str, add: bool) -> None:
+        landing["posted"].append((number, name, add))
+        nodes = landing["pull"]["labels"]["nodes"]
+        nodes[:] = [n for n in nodes if n["name"] != name] + [{"name": name}] * add
+
+    monkeypatch.setattr(approvals, "comment", comment)
+    monkeypatch.setattr(approvals, "label", label)
+    return landing
+
+
+def test_check_merge_refuses_a_delegates_go_on_a_merge_path_and_passes_the_owners_until_a_push(
+    ordering: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "check", "merge", "7") == (approvals.WAITING, [ORDERS_HELD])
+    assert (7, "risk:high", True) in ordering["posted"]  # the board shows why it waits
+    ordering["posted"].clear()
+    code, lines = gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")
+    assert (code, ordering["posted"], hub) == (1, [], {})
+    assert lines == [
+        (
+            "PR #7: the delegate's go is no go here, since it touches `src/orders/place.py`, which"
+            " `risk.merge_paths` names (`src/orders/**`), so only the owner approves its merge: it waits for the"
+            " owner's"
+        )
+    ]
+    into_feature(ordering["pull"])
+    code, lines = gate(capsys, "delegate", "7")
+    assert (code, ordering["posted"]) == (1, [])
+    assert lines[0].startswith(
+        "PR #7: `approved:merge` is no go here, since it touches `src/orders/place.py`"
+    )
+    ordering["pull"]["baseRefName"] = "main"
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "owner")[0] == 0
+    assert gate(capsys, "check", "merge", "7") == (0, [f"PR #7: the go on {HEAD} is the owner's"])
+    ordering["pull"]["headRefOid"] = "c" * 40
+    ordering["pull"]["reviews"]["nodes"] = [{**LOW, "commit": {"oid": "c" * 40}}]
+    assert gate(capsys, "check", "merge", "7") == (
+        approvals.WAITING,
+        [ORDERS_HELD.replace(HEAD, "c" * 40)],
+    )
+
+
+def test_check_queue_keeps_out_a_merge_path_pr_until_the_owners_go(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rule = add(
+        add(GITHUB_RULE, "loop", "ci: false\nbatch_queue: true\n"),
+        "risk",
+        "merge_paths:\n  - src/orders/**\n",
+    )
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(rule)
+    queueing["pull"]["files"]["nodes"] = [{"path": "src/orders/place.py"}]
+    queueing["pull"]["reviews"]["nodes"] = [LOW]
+    assert queue_check(capsys) == (1, [ORDERS_HELD])
+    given_go(queueing["pull"], hub)
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
+
+
+def test_land_never_merges_a_merge_path_pr_without_the_owners_go_on_its_head(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: None)
+    loop = lands["work"] / "docs" / "agents" / "loop.md"
+    loop.write_text(
+        add(
+            add(GITHUB_RULE, "risk", "merge_paths:\n  - src/orders/**\n"), "loop", "delegate: all\n"
+        )
+    )
+    head = lands["open"](7, {"src/orders/place.py": "orders\n"})
+    pr = lands["pulls"][7]
+    pr["files"] = {"nodes": [{"path": "src/orders/place.py"}]}
+    pr["reviews"]["nodes"] = [{**LOW, "commit": {"oid": head}}]
+    # the delegate's go, under `delegate: all`, is no go here
+    pr["comments"]["nodes"].append(note(DELEGATE_RECORD.replace(HEAD, head)))
+    hub[head] = [status("owner", f"The delegate's go on {head[:12]}, under the owner's delegation")]
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING
+    assert ORDERS_HELD.replace(HEAD, head) in lines
+    assert lands["merged"]() == []
+    pr["comments"]["nodes"].append(note(OWNER_RECORD.replace(HEAD, head)))
+    hub[head].insert(0, status("owner", f"The owner's go on {head[:12]}"))
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    assert lands["merged"]() == ["7"]
+
+
+@pytest.mark.parametrize(
+    ("change", "old", "new"),
+    [
+        ("RENAMED", "src/orders/place.py", "outside/place.py"),
+        ("COPIED", "src/orders/place.py", "outside/copy.py"),
+        ("RENAMED", "outside/place.py", "src/orders/place.py"),
+    ],
+    ids=["renamed-out", "copied-out", "renamed-in"],
+)
+def test_merge_paths_and_risk_paths_match_a_moved_files_old_name_as_well_as_its_new_one(
+    change: str, old: str, new: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's GraphQL names only a moved file's new path: the old one is read from the REST file list."""
+    asked: list[int] = []
+
+    def changes(number: int) -> list[dict[str, Any]]:
+        asked.append(number)
+        return [{"filename": new, "previous_filename": old, "status": change.lower()}]
+
+    monkeypatch.setattr(approvals, "pr_changes", changes)
+    moved = orders_pull(new)
+    moved["files"]["nodes"][0]["changeType"] = change
+    held = ORDERS_HELD.replace(
+        "`src/orders/place.py`", f"`{new if new.startswith('src/orders/') else old}`"
+    )
+    assert approvals.owner_waits(moved, [], ORDERS) == [held]
+    assert sorted(approvals.touched(moved)) == sorted({old, new})
+    assert asked == [7]  # read once per PR
+    rule = loop_md("risk:\n  paths:\n    - src/orders/**\n")
+    assert approvals.risk(moved, [], rule) == "it matches a risk rule (path `src/orders/**`)"
+
+
+def test_a_moved_file_whose_old_name_github_wont_give_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_number: int) -> list[dict[str, Any]]:
+        raise subprocess.CalledProcessError(1, ("gh", "api"), stderr="HTTP 502")
+
+    monkeypatch.setattr(approvals, "pr_changes", refused)
+    moved = orders_pull("outside/place.py")
+    moved["files"]["nodes"][0]["changeType"] = "RENAMED"
+    assert approvals.touched(moved) is None
+    assert approvals.owner_waits(moved, [], ORDERS) == [
+        ORDERS_HELD.split(", since ")[0]
+        + ", since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner"
+        " judges them"
+    ]
+    assert approvals.risk(moved, [], GITHUB_RULE) == (
+        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        [],
+        [{"filename": "outside/place.py", "status": "renamed"}],
+        [{"filename": "other/new.py", "previous_filename": "other/old.py", "status": "renamed"}],
+        [{"filename": "outside/b.py", "previous_filename": "b.py", "status": "renamed"}],
+    ],
+    ids=["empty", "no-old-name", "another-file", "partial"],
+)
+def test_a_file_list_that_gives_no_old_name_for_each_moved_file_holds(
+    answer: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A REST answer that succeeds but lacks a moved file's old name (an entry without it, or a list that changed
+    since the GraphQL read) proves nothing about where that file came from, so both rules hold."""
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: answer)
+    moved = orders_pull("outside/place.py", "outside/b.py")
+    for node in moved["files"]["nodes"]:
+        node["changeType"] = "RENAMED"
+    assert approvals.touched(moved) is None
+    assert approvals.owner_waits(moved, [], ORDERS)[0].endswith(
+        "since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner judges them"
+    )
+    assert approvals.risk(moved, [], GITHUB_RULE) == (
+        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    )
+
+
+def test_a_deleted_file_under_a_merge_path_holds_the_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: pytest.fail("no old name to read"))
+    gone = orders_pull()
+    gone["files"]["nodes"][0]["changeType"] = "DELETED"
+    assert approvals.owner_waits(gone, [], ORDERS) == [ORDERS_HELD]
+
+
+def test_check_build_before_the_pr_lists_a_moved_files_old_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    committed(clone)
+    git_in(clone, "branch", "-M", "main")
+    (clone / "src" / "orders").mkdir(parents=True)
+    (clone / "src" / "orders" / "place.py").write_text("orders\n" * 20)
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-qm", "orders")
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "push", "-q", "origin", "main")
+    git_in(clone, "remote", "set-head", "origin", "main")
+    git_in(clone, "checkout", "-q", "-b", "loop/1-fix")
+    (clone / "outside").mkdir()
+    git_in(clone, "mv", "src/orders/place.py", "outside/place.py")
+    git_in(clone, "commit", "-qm", "move")
+    monkeypatch.chdir(clone)
+    assert sorted(approvals.paths(approvals.unopened())) == [
+        "outside/place.py",
+        "src/orders/place.py",
+    ]
 
 
 def gate_sees(tmp_path: Path, launcher: list[str], env: dict[str, str]) -> dict[str, str | None]:
