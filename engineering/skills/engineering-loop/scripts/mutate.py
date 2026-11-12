@@ -106,6 +106,28 @@ def restore(top: Path, patch: Path) -> None:
         raise Refused(f"the tree could not be restored after {patch}:\n{left}")
 
 
+def leave_own_environment() -> None:
+    """Hand every command this script starts the caller's environment, not the script's own. uv puts the script's
+    environment in VIRTUAL_ENV, its bin first on PATH and counts the run in UV_RUN_RECURSION_DEPTH, and a tool that
+    follows VIRTUAL_ENV (a type checker) would check the project against the script's packages. A VIRTUAL_ENV equal
+    to this script's own is dropped with its bin on PATH, and one that points elsewhere (the script started by an
+    interpreter directly) is passed on unchanged; no value is reconstructed, so under `uv run`, which replaces the
+    caller's VIRTUAL_ENV before the script starts, the caller's own value does not reach the commands."""
+    own = os.path.normpath(sys.prefix)
+    if os.path.normpath(os.environ.get("VIRTUAL_ENV", "\0")) != own:
+        return
+    del os.environ["VIRTUAL_ENV"]
+    bin_dir = os.path.join(own, "bin")
+    os.environ["PATH"] = os.pathsep.join(
+        e for e in os.environ.get("PATH", "").split(os.pathsep) if os.path.normpath(e) != bin_dir
+    )
+    if (depth := os.environ.get("UV_RUN_RECURSION_DEPTH", "")).isdigit():
+        if int(depth) > 1:
+            os.environ["UV_RUN_RECURSION_DEPTH"] = str(int(depth) - 1)
+        else:
+            del os.environ["UV_RUN_RECURSION_DEPTH"]
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--test", required=True, help="the test command, run through the shell")
@@ -193,4 +215,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    leave_own_environment()  # before the test command starts
     sys.exit(main(sys.argv[1:]))
