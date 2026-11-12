@@ -404,7 +404,8 @@ LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
-SENT_UNCONFIRMED = 7  # send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
+# send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
+SENT_UNCONFIRMED = 7
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
 BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
