@@ -8236,3 +8236,52 @@ def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
         {"VIRTUAL_ENV": sys.prefix, "UV_RUN_RECURSION_DEPTH": "2", "PATH": "/usr/bin:/bin"},
     )
     assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
+
+
+def test_land_only_lands_the_named_pr_and_leaves_the_other_untouched(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    other = lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7", "--only")
+    assert code == 0, lines
+    assert lands["merged"]() == ["7"]
+    # the other PR: no ready or merge call, no comment, still open on its own head
+    assert all(args[-1] != "8" and args[2] != "8" for args in lands["calls"])
+    assert [n for n, _ in lands["comments"]] == [7]
+    assert (lands["pulls"][8]["state"], lands["pulls"][8]["headRefOid"]) == ("OPEN", other)
+    assert lands["lock"]() == ""
+    # without the flag it lands with the next
+    assert lands["land"]()[0] == 0 and lands["merged"]() == ["7", "8"]
+
+
+def test_land_only_evicts_the_named_pr_red_alone_and_leaves_the_other_untouched(
+    lands: dict[str, Any],
+) -> None:
+    red = lands["open"](7, {"red.txt": "red\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7", "--only")
+    assert code == 1, lines
+    assert lands["merged"]() == []
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+    [(number, body)] = lands["comments"]
+    assert number == 7 and body.startswith(f"{approvals.EVICTED}\nHead: {red}\n")
+    assert lands["pulls"][8]["state"] == "OPEN" and not lands["pulls"][8]["isDraft"]
+    assert all("8" not in args[2:3] for args in lands["calls"])
+
+
+def test_land_only_with_wait_lands_the_named_pr_alone(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]("7", "--only", "--wait")[0] == 0
+    assert lands["merged"]() == ["7"]
+    assert [n for n, _ in lands["comments"]] == [7]
+
+
+def test_land_only_without_a_pr_is_refused(
+    lands: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    with pytest.raises(SystemExit) as exited:
+        approvals.main(["land", "--only"])
+    assert exited.value.code == 2
+    assert "--only" in capsys.readouterr().err
+    assert lands["merged"]() == [] and lands["calls"] == []
