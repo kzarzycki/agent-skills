@@ -54,6 +54,7 @@ class FakeOmnigent:
         self.posts = 0
         self.sessions: dict[str, list[dict]] = {}
         self.archived: list[str] = []
+        self.interrupted: list[str] = []
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
@@ -233,6 +234,9 @@ class FakeOmnigent:
             raise omnigent_agent.Fail(f"POST resolve {eid}: HTTP 404 Not Found")
         self.resolved.append((sid, eid, action, content))
         self.prompts = [e for e in self.prompts if e["elicitation_id"] != eid]
+
+    def interrupt(self, sid: str) -> None:
+        self.interrupted.append(sid)
 
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
@@ -8660,3 +8664,106 @@ def test_a_worktree_s_repo_is_read_from_its_common_dir_on_any_host() -> None:
         assert omnigent_agent.origin_repo(f'[remote "origin"]\n\turl = {url}\n') == "o/r"
     upstream_only = '[remote "upstream"]\n\turl = https://github.com/x/y\n'
     assert omnigent_agent.origin_repo(upstream_only) == ""
+
+
+def running_session(age: float) -> FakeOmnigent:
+    """A fake whose only session ``k`` is running, its newest item ``age`` seconds old."""
+    og = FakeOmnigent()
+    og.create("claude", "kid")
+    og.sessions["k"] = [{"id": "i1", "type": "message", "role": "user", "created_at": time.time() - age}]
+    og.info = lambda s: {  # type: ignore[method-assign]
+        "status": "running",
+        "title": "kid",
+        "workspace": "/w/kid",
+    }
+    return og
+
+
+def test_status_and_observe_call_a_running_session_stuck_only_past_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "STUCK_SECONDS", 1800)
+    key, line = omnigent_agent.observe(running_session(2 * 3600), "k", {}, baseline=True)
+    assert key == ("stuck", "i1")
+    assert line.startswith("k kid: stuck (no activity for 120 min)")
+    assert omnigent_agent.observe(running_session(1700), "k", {})[0] == ("running",)
+    assert omnigent_agent.observe(running_session(1900), "k", {})[0] == ("stuck", "i1")
+
+
+def test_an_idle_session_with_an_old_item_is_not_stuck() -> None:
+    og = running_session(10**5)
+    og.info = lambda s: {"status": "idle", "title": "kid"}  # type: ignore[method-assign]
+    assert omnigent_agent.observe(og, "k", {}, baseline=True)[0][0] == "ended"
+
+
+def test_a_session_whose_items_carry_no_date_is_not_stuck() -> None:
+    og = running_session(0)
+    og.sessions["k"] = [{"id": "i1", "type": "message", "role": "assistant"}]
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+
+
+def test_watch_reports_a_session_that_goes_stuck_once() -> None:
+    og = running_session(60)
+    polls = []
+
+    def items(sid: str) -> list[dict]:
+        polls.append(sid)  # the first poll is the baseline; the item ages by the second
+        age = 60 if len(polls) < 2 else 10**5
+        return [{"id": "i1", "type": "message", "role": "user", "created_at": time.time() - age}]
+
+    og.items = items  # type: ignore[method-assign]
+    lines = omnigent_agent.watch(og, ["k"], timeout=5)
+    assert len(lines) == 1 and "stuck (no activity for" in lines[0]
+
+
+def test_follow_leaves_a_quiet_running_lead_to_its_progress_deadline() -> None:
+    og = running_session(10**5)
+    assert omnigent_agent.follow(og, "k", {}, {}, {}) == ("", ("running",))
+
+
+def test_reap_force_stops_and_archives_a_stuck_session_and_names_its_workspace() -> None:
+    og = running_session(10**5)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed
+    assert og.interrupted == ["k"] and og.archived == ["k"]
+    assert lines == ["k kid: archived (stuck); check git status in /w/kid"]
+
+
+def test_reap_force_keeps_a_running_session_with_recent_activity() -> None:
+    og = running_session(60)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.interrupted == [] and og.archived == []
+    assert lines == ["k kid: kept (running) (running with recent activity, not stuck)"]
+
+
+def test_reap_without_force_keeps_a_stuck_session() -> None:
+    og = running_session(10**5)
+    lines, _ = omnigent_agent.reap(og, ["k"])
+    assert og.archived == [] and lines == ["k kid: kept (running)"]
+
+
+def test_reap_force_reports_a_failed_stop_and_goes_on() -> None:
+    og = running_session(10**5)
+
+    def refuse(sid: str) -> None:
+        raise omnigent_agent.Fail("POST events: HTTP 503")
+
+    og.interrupt = refuse  # type: ignore[method-assign]
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert failed and og.archived == []
+    assert lines == ["k kid: finish failed: POST events: HTTP 503"]
+
+
+def test_the_real_interrupt_posts_the_interrupt_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple] = []
+    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
+    og.call = lambda m, p, b=None: calls.append((m, p, b)) or {}  # type: ignore[method-assign]
+    og.interrupt("s1")
+    assert calls == [("POST", "/v1/sessions/s1/events", {"type": "interrupt"})]
+
+
+def test_reap_force_is_a_flag_of_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    og = running_session(10**5)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["reap", "k", "--force"]) == 0
+    assert og.archived == ["k"]
