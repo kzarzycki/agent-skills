@@ -100,6 +100,8 @@ for a verifier, whose report then counts only with its ``SATISFIED:`` line, and 
 the same way, printing every line with the local time and, with ``--notify``, posting it into that
 session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal event drops the
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
+It also raises one ``landed`` line per repo and new default-branch head of the repos its followed
+leads work in, whatever the leads write (``gh api``; the first head seen is only stored).
 With ``--console``, the chief of staff's console, each poll it also writes ``<registry
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
@@ -164,6 +166,7 @@ import hashlib
 import http.client
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -381,6 +384,9 @@ Standing decisions:
 # A lead's unchanged status labels are written again once the last write is this old.
 # ponytail: a knob; the browser marks a line stale past 10 min, so keep it well under that.
 LABEL_SECONDS = 60.0
+# A repo's default-branch head is read from GitHub at most this often: a landing is news within a
+# minute, and a 5 s poll would spend 720 calls an hour per repo.
+HEAD_SECONDS = 60.0
 SETTLED_KEPT = 20  # the newest settled event ids kept per session, enough to cover its live ones
 LIMIT = 6  # wait-until's exit when its --limit passes with the condition unmet
 EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
@@ -2746,6 +2752,71 @@ def gh(*args: str, timeout: float = HTTP_SECONDS) -> str:
         raise Fail(f"gh {' '.join(args)}: {why}") from e
 
 
+def workspace_repo(og: Omnigent, sid: str) -> str:
+    """``owner/name`` of the origin remote of ``sid``'s workspace checkout, read through its file
+    API, so on whichever host it runs; empty when the workspace holds no checkout or its config
+    names no origin. A worktree's ``.git`` file leads to its common dir's config."""
+    try:
+        top = og.read_file(sid, ".git")
+    except Gone:
+        return ""
+    config = ".git/config"
+    if top.startswith("gitdir:"):
+        gitdir = top.split(":", 1)[1].strip().rstrip("/")
+        try:
+            common = og.read_file(sid, f"{gitdir}/commondir").strip() or "."
+        except Gone:
+            common = "."  # a submodule's or a plain separate git dir: its own config
+        config = posixpath.normpath(posixpath.join(gitdir, common)) + "/config"
+    return origin_repo(og.read_file(sid, config))
+
+
+def origin_repo(config: str) -> str:
+    """``owner/name`` from the last two path segments of a git config's ``remote "origin"`` url,
+    whatever its host or scheme (a proxy's url too), else empty."""
+    section = None
+    for line in config.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            m = re.fullmatch(r'\[\s*remote\s+"([^"]*)"\s*\]', s)
+            section = m[1] if m else None
+        elif section == "origin" and (m := re.fullmatch(r"url\s*=\s*(\S+)", s)):
+            parts = [p for p in re.split(r"[/:]", m[1]) if p]
+            if len(parts) >= 2:
+                return f"{parts[-2]}/{re.sub(r'[.]git$', '', parts[-1])}"
+    return ""
+
+
+def default_head(repo: str) -> str:
+    """The sha the default branch of GitHub repo ``repo`` points at (``commits/HEAD``)."""
+    sha = gh("api", f"repos/{repo}/commits/HEAD", "--jq", ".sha").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise Fail(f"{repo}: no default-branch head in {sha[:80]!r}")
+    return sha
+
+
+def merged_since(repo: str, old: str, new: str) -> str:
+    """The PRs merged between ``old`` and ``new``, as ``#12, #13``: the ``(#N)`` that ends each
+    commit's subject (a squash or queue merge), or a ``Merge pull request #N`` subject; else how
+    many commits came with no PR named, or why the comparison was not read."""
+    try:
+        subjects = gh(
+            "api",
+            f"repos/{repo}/compare/{old}...{new}",
+            "--jq",
+            '.commits[].commit.message | split("\\n")[0]',
+        ).splitlines()
+    except Fail as e:
+        return f"not read: {e}"
+    prs = []
+    for s in subjects:
+        m = re.search(r"\(#(\d+)\)\s*$", s) or re.match(r"Merge pull request #(\d+)", s)
+        if m and f"#{m[1]}" not in prs:
+            prs.append(f"#{m[1]}")
+    n = len(subjects)
+    return ", ".join(prs) or f"no PR named in its {n} commit{'s' * (n != 1)}"
+
+
 def reap(
     og: Omnigent, sessions: list[str], parent: str | None = None, registry: Path | None = None
 ) -> tuple[list[str], bool]:
@@ -3411,6 +3482,7 @@ def fresh_state() -> dict:
         "pending_posts": [],
         "rate": {"next_post_at": 0, "model_calls": []},
         "notify_label": {},
+        "heads": {},
     }
 
 
@@ -3530,7 +3602,8 @@ def waits(wait: str) -> str:
 
 def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, str]:
     """How the console settles one event, as the design's routing table says: who settled it
-    (``rule`` or ``model``), the action and why. ``event`` has its ``kind`` (``archived``,
+    (``rule`` or ``model``), the action and why. ``event`` has its ``kind`` (``landed``, a
+    default branch the leads work on moved; ``archived``,
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
@@ -3549,6 +3622,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     prompt is the owner's."""
     # ``wait`` is the lead's, from its report when its last message is only the path
     kind, wait = event["kind"], event.get("wait") or wait_of(event.get("last") or "")
+    if kind == "landed":  # read from the repo, never from the lead's words
+        return "rule", "act", "its default branch moved: a step owed after a landing"
     if kind == "archived":
         return "rule", "absorb", "archived: drop its row"
     if kind == "blocked":
@@ -3789,6 +3864,8 @@ def supervise_registry(
     # ponytail: in memory, so a restart loses the revive and resume lines waiting in it; a terminal
     # event keeps its registry line until posted, and the restarted supervisor finds it again.
     outbox: list[tuple[str | None, tuple[str, Path, float] | None, str, str, str]] = []
+    repos: dict[str, str] = {}  # each followed lead's repo, empty for none; read once
+    headed: dict[str, float] = {}  # when each repo's default-branch head was last read
     window = time.monotonic()
     script = script or Path(os.path.realpath(__file__))
     try:
@@ -4288,6 +4365,48 @@ def supervise_registry(
         log(("label", sid), None)
         lead["label"] = {"line": line, "at": at}
 
+    def landings() -> None:
+        """Watch the default branch of each repo a followed lead's workspace is a checkout of
+        (``workspace_repo``, read once per lead): when its head moved since the last one seen, one
+        ``landed`` event per repo and new head, raised on the repo's first lead in the registry,
+        naming the new sha and the PRs merged since (``merged_since``). The first head seen for a
+        repo is only stored (``heads`` in the state), so a start reports no old merge. The lead's
+        own words play no part, so a landing it wrote under a wait, or none at all, still comes."""
+        for sid in [s for s in repos if s not in owed]:
+            del repos[sid]
+        first: dict[str, str] = {}  # each repo's first lead
+        for sid, owes in owed.items():
+            if not owes[3]:
+                continue
+            if sid not in repos:
+                try:
+                    repos[sid] = workspace_repo(og, sid)
+                except Exception as e:  # noqa: BLE001 - read again next poll
+                    log(("repo", sid), f"{sid}: repo not read: {reason(e)}")
+                    continue
+                log(("repo", sid), None)
+            if repos[sid]:
+                first.setdefault(repos[sid], sid)
+        heads = state["heads"]
+        for repo, sid in first.items():
+            if time.monotonic() - headed.get(repo, -HEAD_SECONDS) < HEAD_SECONDS:
+                continue
+            headed[repo] = time.monotonic()
+            try:
+                sha = default_head(repo)
+            except Exception as e:  # noqa: BLE001 - read again at the next HEAD_SECONDS
+                log(("head", repo), f"{repo}: default branch not read: {reason(e)}")
+                continue
+            log(("head", repo), None)
+            old = heads.get(repo)
+            if old and old != sha:
+                merged = merged_since(repo, old, sha)
+                line = (
+                    f"{repo}: its default branch moved to {sha}; merged since {old[:12]}: {merged}"
+                )
+                say(line, sid, f"landed:{repo}:{sha}", "landed")
+            heads[repo] = sha
+
     def overdue(sid: str, lead: dict) -> None:
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
@@ -4406,6 +4525,7 @@ def supervise_registry(
                 continue
             window = time.monotonic()
             say(event, sid, eid, kind, (sid, report, since))
+        landings()
         if console:
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
