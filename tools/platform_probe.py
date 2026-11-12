@@ -9,8 +9,8 @@ posted on the tracking issue (#809), so a workaround is dropped once the platfor
     python3 tools/platform_probe.py [--comment] [--update-baseline] [--issue 809]
 
 Exit 0 when every answer matches the baseline, 1 when one changed. The probes leave nothing
-behind: a pending status, a `claude/probe-*` branch (its deletion is refused here, so one stays per run), and a ref that is
-refused or removed.
+behind: a pending status, the one branch `claude/probe-platform` (its deletion is refused in a cloud session, so it stays and
+is force-pushed again each run: delete it from a host when you like), and a ref that is refused or removed.
 """
 import argparse, json, os, shutil, subprocess, sys, time
 from pathlib import Path
@@ -60,9 +60,8 @@ def probe_checkrun_write():
 
 
 def probe_refs():
-    n = int(time.time())
-    br, ref = f"claude/probe-platform-{n}", f"refs/probe/platform-{n}"
-    rc, out = sh(f"git push origin HEAD:refs/heads/{br}")
+    br, ref = "claude/probe-platform", "refs/probe/platform"
+    rc, out = sh(f"git push --force origin HEAD:refs/heads/{br}")
     out_branch = "pushed" if rc == 0 else out[-160:]
     rc_ref, out_ref = sh(f"git push origin HEAD:{ref}")
     if rc_ref == 0:
