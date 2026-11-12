@@ -24,7 +24,8 @@ in a worktree. A variable is set when a session starts, so seed before starting 
 has to run `login` again (no seed login, or its refresh token was refused).
 
 `verify` installs the Codex CLI when the VM lacks it, writes the seeded login to `~/.codex/auth.json` when Codex is
-not logged in, and refuses a tree with uncommitted changes, since a verifier reviews a pushed head only. It checks
+not logged in, and refuses a tree whose tracked files have uncommitted changes, since a verifier reviews a pushed head only
+(untracked files pass: a fresh clone ignores `tmp/loop/` only where the project's own .gitignore does). It checks
 out the PR's head (detached) when the checkout is elsewhere, runs `codex exec` on the brief with Codex's own sandbox
 off (the VM is the sandbox, and the verifier needs Docker and the network), under an `AGENT_SIGNATURE=` line
 naming the model and effort it was given, and posts the report as one comment on
@@ -272,9 +273,9 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
     if not brief.startswith("AGENT_SIGNATURE="):
         brief = f"AGENT_SIGNATURE={signature(model, effort)}\n{brief}"
     ensure_codex()
-    if dirty := run("git", "status", "--porcelain").stdout.strip():
+    if dirty := run("git", "status", "--porcelain", "--untracked-files=no").stdout.strip():
         raise Refused(
-            f"the tree has uncommitted changes, and a verifier reviews a pushed head only:\n{dirty[:600]}"
+            f"tracked files have uncommitted changes, and a verifier reviews a pushed head only:\n{dirty[:600]}"
         )
     pull = json.loads(run("gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}").stdout)
     head, ref = pull["head"]["sha"], pull["head"]["ref"]

@@ -572,7 +572,7 @@ or the owner's private network.
   `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
   `seed` before starting the worker: it keeps a Codex login of its own fresh and stores a copy without the
   refresh token in the cloud environment, so the owner logs in once and no VM can break the login for the
-  others. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes, checks out the
+  others. In the VM, `verify --pr <n> --brief <file>` refuses tracked files with uncommitted changes, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
   the pass: the lead sends it the brief `approvals.py brief` prints, with `send --pr`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and

@@ -179,7 +179,10 @@ def test_a_pass_runs_on_the_pr_head_posts_the_report_file_and_returns_the_checko
     checkout, capsys
 ) -> None:
     work, head, brief, posted, seen = checkout
-    (work / ".git/info/exclude").write_text("tmp/\n")  # the project gitignores tmp/loop
+    (work / "tmp/loop").mkdir(parents=True)
+    (work / "tmp/loop/proof.log").write_text(
+        "untracked, as in a fresh clone\n"
+    )  # not a reason to refuse
     seen["report"] = "# Report\n\nHead: x\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n"
     assert cv.verify(7, brief, "gpt-x", "medium") == 0
     assert seen["head"] == head  # Codex ran on the PR's head, not the worker's branch
@@ -225,7 +228,6 @@ def test_a_question_is_posted_instead_of_a_report_and_an_earlier_pass_is_not_reu
     checkout,
 ) -> None:
     work, _, brief, posted, seen = checkout
-    (work / ".git/info/exclude").write_text("tmp/\n")
     (work / "tmp/loop").mkdir(parents=True)
     (work / "tmp/loop/pr7-v1.md").write_text("an earlier pass\nSATISFIED: yes\n")
     seen.update(
