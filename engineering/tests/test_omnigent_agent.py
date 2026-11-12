@@ -8696,6 +8696,13 @@ def test_an_idle_session_with_an_old_item_is_not_stuck() -> None:
     assert omnigent_agent.observe(og, "k", {}, baseline=True)[0][0] == "ended"
 
 
+def test_stuck_minutes_is_none_for_a_session_that_is_not_running() -> None:
+    old = [{"id": "i1", "created_at": time.time() - 10**5}]
+    assert omnigent_agent.stuck_minutes({"status": "idle"}, old) is None
+    assert omnigent_agent.stuck_minutes({"status": "failed"}, old) is None
+    assert omnigent_agent.stuck_minutes({"status": "running"}, old) is not None
+
+
 def test_a_session_whose_items_carry_no_date_is_not_stuck() -> None:
     og = running_session(0)
     og.sessions["k"] = [{"id": "i1", "type": "message", "role": "assistant"}]
