@@ -258,14 +258,28 @@ is no approval:
 
     Approved: spec
     By: owner
-    Spec: as edited 2026-10-02 14:35:27 UTC      (plan: Plan:)
+    Spec: sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08      (plan: Plan:)
 
-A spec or plan is named by its last edit as GitHub shows it in the edit history (`as written <time>` before any), so
-a person can open the version approved. Every approval is a new comment: a re-approval says the spec or plan
-changed, and `approve` minimizes as outdated each earlier record, which it supersedes. With `owner: <login>` under
-loop.md's `loop`, `check build`, `check merge` and `land` record an `approved:spec` (or `approved:plan`) label that
-login added after the spec's (plan's) last edit as `approve --by owner` would, removing `needs-owner`, and say so: the
-label is the owner's word. One they added before the last edit is named and changes nothing, nor does anyone else's.
+A spec or plan is named by its text, the sha256 of the issue's or comment's body as GitHub stores it (line ends read
+as `\n`), so any change to the text voids the approval, read through GraphQL or REST alike, and restoring
+exactly the approved text restores it, since the text is then the one approved. A record written before
+texts were named carries the last edit as GitHub's edit history shows it (`as edited <time>`, `as written <time>`
+before any): GraphQL still dates it, so it holds on a host until the next edit; REST has no edit time, so there it is
+refused with the command that renews it. Every approval is a new comment: a re-approval says the spec or plan
+changed, and `approve` minimizes as outdated each earlier record, which it supersedes, where GraphQL says this
+account may. With `owner: <login>` under loop.md's `loop`, `check build`, `check merge` and `land` record an
+`approved:spec` (or `approved:plan`) label that login added after the spec's (plan's) last edit as `approve --by
+owner` would, removing `needs-owner`, and say so: the label is the owner's word. One they added before the last edit
+is named and changes nothing, nor does anyone else's. Over REST the last edit is the spec's `updated_at`, which every
+edit moves (and any other change), so a label is recorded only when nothing changed the spec after it.
+
+GitHub is read through GraphQL, the fast path, and through REST where GraphQL answers 403, as a cloud session's proxy
+does: after one refused call a run reads REST alone, the same fields call by call. REST has no closing links, so a
+PR's issues are its body's `Closes`, `Part of` and `Implements` lines; its review threads come from the proxy's
+`pulls/<n>/ccr/review_threads` route, and where that route is missing the read fails rather than count none; a commit
+co-author, which only GraphQL resolves to an account, exempts no PR from review; and whether a PR is in a merge queue
+can't be read, so `land` refuses it there. The proxy refuses the collaborator lookup too, so there only the account
+running this counts as a writer, by its own permissions on the repo.
 
 The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
@@ -339,7 +353,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 try:
     import yaml
@@ -949,22 +963,31 @@ def default(pull: dict[str, Any]) -> bool:
 
 def merged_high(branch: str) -> list[int]:
     """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
-    # ponytail: one page of 100; page when a feature branch takes more high-risk PRs than that
-    found = gh(
-        "pr",
-        "list",
-        "--base",
-        branch,
-        "--state",
-        "merged",
-        "--label",
-        RISK_LABEL,
-        "--limit",
-        "100",
-        "--json",
-        "number",
-        "--jq",
-        ".[].number",
+    # ponytail: one page of 100 through GraphQL; page when a feature branch takes more high-risk PRs than that
+    found = fast(
+        lambda: gh(
+            "pr",
+            "list",
+            "--base",
+            branch,
+            "--state",
+            "merged",
+            "--label",
+            RISK_LABEL,
+            "--limit",
+            "100",
+            "--json",
+            "number",
+            "--jq",
+            ".[].number",
+        ),
+        # REST: every closed PR into the branch, the merged ones carrying the label
+        lambda: "\n".join(
+            str(pull["number"])
+            for pull in rest_pages(f"pulls?state=closed&base={branch}&per_page=100")
+            if pull.get("merged_at")
+            and RISK_LABEL in {label["name"] for label in pull.get("labels") or []}
+        ),
     )
     return [int(number) for number in found.split()]
 
@@ -1149,6 +1172,31 @@ def version(holder: dict[str, Any]) -> str:
     return f"as edited {when}" if edited else f"as written {when}"
 
 
+def texted(holder: dict[str, Any]) -> str:
+    """The spec or plan named by its text: `sha256 <digest>` of the body as GitHub stores it, line ends made `\\n`.
+    An approval names it, so any change to the text voids it wherever the text is read, GraphQL or REST."""
+    body = (holder.get("body") or "").replace("\r\n", "\n")
+    return f"sha256 {hashlib.sha256(body.encode()).hexdigest()}"
+
+
+def versions(holder: dict[str, Any]) -> set[str]:
+    """The names an approval of this spec or plan may carry: its text's (texted), and, where GraphQL gave its edit
+    time, its last edit's (version), which approvals recorded before texts were named carry. REST has no edit time,
+    so an approval of the edit alone is unproven there."""
+    found = {texted(holder)}
+    if "lastEditedAt" in holder:
+        found.add(version(holder))
+    return found
+
+
+def last_change(holder: dict[str, Any]) -> str:
+    """When the spec or plan last changed, at the latest: its last edit from GraphQL; from REST, which has no edit
+    time, its `updatedAt`, which every edit moves (and any other change, so it is never too early)."""
+    if "lastEditedAt" in holder:
+        return str(holder.get("lastEditedAt") or holder["createdAt"])
+    return str(holder.get("updatedAt") or holder["createdAt"])
+
+
 def names(node: dict[str, Any]) -> set[str]:
     return {label["name"] for label in node["labels"]["nodes"]}
 
@@ -1208,21 +1256,35 @@ def records(node: dict[str, Any], point: str) -> list[dict[str, str]]:
     return [found for body in bodies(node) if (found := parsed(body, point)) is not None]
 
 
-def current(node: dict[str, Any], point: str, key: str, value: str, by: str) -> bool:
-    """Whether `by` approved `point` for this spec or plan."""
+def current(node: dict[str, Any], point: str, key: str, value: str | set[str], by: str) -> bool:
+    """Whether `by` approved `point` for this spec or plan: a record whose `key` is `value`, or one of them."""
+    values = {value} if isinstance(value, str) else value
     return any(
-        record.get("by") == by and record.get(key) == value for record in records(node, point)
+        record.get("by") == by and record.get(key) in values for record in records(node, point)
     )
 
 
-def approvals(where: str, node: dict[str, Any], point: str, value: str) -> list[str]:
-    """One line per approval `point` lacks on `node`: the owner's record of this version, and the label."""
+def approvals(where: str, node: dict[str, Any], point: str, holder: dict[str, Any]) -> list[str]:
+    """One line per approval `point` lacks on `node`: the owner's record of this spec or plan (versions), and the
+    label. A record of its last edit where the edit time can't be read (REST) says how to renew it."""
     found = []
-    if not current(node, point, point, value, "owner"):
-        stale = any(record.get("by") == "owner" for record in records(node, point))
+    if not current(node, point, point, versions(holder), "owner"):
+        owners = [record for record in records(node, point) if record.get("by") == "owner"]
+        edited = "lastEditedAt" not in holder and any(
+            str(record.get(point, "")).startswith(("as edited ", "as written "))
+            for record in owners
+        )
         found.append(
             f"{where} has no `Approved: {point}` record by the owner"
-            + (f" for its current {point}: the owner approves it again" if stale else "")
+            + (
+                f" for its current text: its record names the {point}'s last edit, which GitHub's REST API can't"
+                f" date, so the owner approves it again (`approve {point} {node['number']} --by owner`) or the"
+                " check runs where GraphQL answers"
+                if edited
+                else f" for its current {point}: the owner approves it again"
+                if owners
+                else ""
+            )
         )
     if f"approved:{point}" not in names(node):
         found.append(f"{where} lacks the `approved:{point}` label")
@@ -1245,7 +1307,7 @@ def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
         return False
     if not parent or READY not in names(parent):
         return False
-    if not current(parent, "spec", "spec", version(spec_holder(parent)), "owner"):
+    if not current(parent, "spec", "spec", versions(spec_holder(parent)), "owner"):
         return False
     login = (issue.get("author") or {}).get("login")
     return bool(login) and writer(login)
@@ -1374,17 +1436,31 @@ OPEN_LIMIT = 1000
 def open_pulls() -> list[dict[str, Any]]:
     """The repo's open PRs, up to OPEN_LIMIT, each with its number, branch, base, whether it is a draft, body and closing references (each naming its
     issue's repo as `nameWithOwner`, as the PR query does), in one call."""
-    found = json.loads(
-        gh(
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            str(OPEN_LIMIT),
-            "--json",
-            "number,headRefName,baseRefName,isDraft,body,closingIssuesReferences",
-        )
+    found = fast(
+        lambda: json.loads(
+            gh(
+                "pr",
+                "list",
+                "--state",
+                "open",
+                "--limit",
+                str(OPEN_LIMIT),
+                "--json",
+                "number,headRefName,baseRefName,isDraft,body,closingIssuesReferences",
+            )
+        ),
+        # REST has no closing references: closed() reads each body's lines, as it does for the PR checked
+        lambda: [
+            {
+                "number": other["number"],
+                "headRefName": other["head"]["ref"],
+                "baseRefName": other["base"]["ref"],
+                "isDraft": bool(other.get("draft")),
+                "body": other.get("body") or "",
+                "closingIssuesReferences": [],
+            }
+            for other in rest_pages("pulls?state=open&per_page=100")[:OPEN_LIMIT]
+        ],
     )
     for other in found:
         nodes = other["closingIssuesReferences"]
@@ -1511,11 +1587,11 @@ def proofs(
                     f"{where}: its spec is the owner's to approve, though it carries `{SCOPED}`, since {why}"
                 )
         if not covered:
-            found += approvals(where, issue, "spec", version(spec_holder(issue)))
+            found += approvals(where, issue, "spec", spec_holder(issue))
         plan = headed(issue, "## Plan")
         if plan is not None:
             if matches(rule.get("plan", {}), labels, None):
-                found += approvals(where, issue, "plan", version(plan))
+                found += approvals(where, issue, "plan", plan)
         elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
     if (
@@ -1721,6 +1797,8 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
         return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
+    if pull["isInMergeQueue"] is None:
+        return f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's signature: land it where GraphQL answers"
     # the URL as configured, before any `insteadOf` rewrite
     origin = subprocess.run(
         ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
@@ -2582,11 +2660,270 @@ def _repository(fields: str) -> str:
     return f"query($owner: String!, $name: String!, $n: Int!) {{ repository(owner: $owner, name: $name) {{ {fields} }} }}"
 
 
-def pull_request(pr: int) -> dict[str, Any]:
-    pull: dict[str, Any] = _graphql(_repository(f"pullRequest(number: $n) {{ {PULL} }}"), n=pr)[
-        "pullRequest"
+# how GitHub, or a cloud session's proxy in front of it, refuses GraphQL: `gh` ends its error with it
+FORBIDDEN = "HTTP 403"
+# set once GraphQL was refused, so the rest of this run reads REST without asking GraphQL again
+_rest_only = False
+Answer = TypeVar("Answer")
+
+
+def fast(graphql: Callable[[], Answer], rest: Callable[[], Answer]) -> Answer:
+    """GraphQL's answer, the fast path, or REST's where GitHub refuses GraphQL with a 403, as a cloud session's proxy
+    does. REST reads the same fields call by call, in the same shape. After one refusal the run reads REST alone, so a
+    run there makes one refused GraphQL call at most. Any other error raises."""
+    global _rest_only
+    if not _rest_only:
+        try:
+            return graphql()
+        except subprocess.CalledProcessError as exc:
+            if FORBIDDEN not in (exc.stderr or ""):
+                raise
+            _rest_only = True
+    return rest()
+
+
+def rest(path: str) -> Any:
+    return json.loads(gh("api", path))
+
+
+def rest_pages(path: str, items: str = ".[]") -> list[Any]:
+    """Every item of a paged REST list, `items` picking them out of each page."""
+    out = gh("api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}", "--jq", items)
+    return [json.loads(line) for line in out.splitlines()]
+
+
+def actor(user: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A REST user as GraphQL names it: its login without the `[bot]` REST adds, and its type."""
+    if not user:
+        return None
+    return {"login": user["login"].removesuffix("[bot]"), "__typename": user.get("type") or "User"}
+
+
+def rest_notes(number: int) -> dict[str, Any]:
+    """An issue's or PR's comments from REST, every page, as GraphQL's `comments` reads them. REST has no edit time,
+    so a note has no `lastEditedAt` (versions() then reads its text alone), only `updatedAt`, which every edit moves;
+    nor can this account's right to minimize be read, so approve() minimizes nothing it read here."""
+    nodes = [
+        {
+            "id": found["node_id"],
+            "author": actor(found.get("user")),
+            "body": found.get("body") or "",
+            "createdAt": found["created_at"],
+            "updatedAt": found["updated_at"],
+            "isMinimized": bool(found.get("minimized")),
+            "viewerCanMinimize": False,
+        }
+        for found in rest_pages(f"issues/{number}/comments?per_page=100")
     ]
-    return pull
+    return {"totalCount": len(nodes), "nodes": nodes}
+
+
+# REST timeline events as GraphQL's timelineItems types them
+TIMELINE = {
+    "labeled": "LabeledEvent",
+    "assigned": "AssignedEvent",
+    "ready_for_review": "ReadyForReviewEvent",
+}
+
+
+def rest_timeline(number: int) -> dict[str, Any]:
+    """An issue's or PR's label, assign and ready events from REST's timeline, every page."""
+    nodes = []
+    for event in rest_pages(f"issues/{number}/timeline?per_page=100"):
+        if (kind := TIMELINE.get(event.get("event"))) is None:
+            continue
+        found: dict[str, Any] = {"__typename": kind, "createdAt": event.get("created_at")}
+        if kind == "LabeledEvent":
+            found |= {"actor": actor(event.get("actor")), "label": event.get("label")}
+        if kind == "AssignedEvent":
+            found["assignee"] = actor(event.get("assignee"))
+        nodes.append(found)
+    return {"nodes": nodes}
+
+
+def rest_specced(found: dict[str, Any]) -> dict[str, Any]:
+    """The SPECCED fields of a REST issue: its body and labels, and its comments read too. No `lastEditedAt`: REST has
+    no edit time, so the spec's text names its version (versions)."""
+    return {
+        "number": found["number"],
+        "body": found.get("body") or "",
+        "createdAt": found["created_at"],
+        "updatedAt": found["updated_at"],
+        "labels": {"nodes": [{"name": label["name"]} for label in found.get("labels") or []]},
+        "comments": rest_notes(found["number"]),
+    }
+
+
+def rest_issue(number: int) -> dict[str, Any] | None:
+    """Issue #number as ISSUE reads it, from REST; None for a pull request, as GraphQL's `... on Issue` gives."""
+    found = rest(f"repos/{{owner}}/{{repo}}/issues/{number}")
+    if "pull_request" in found:
+        return None
+    try:
+        parent = rest_specced(rest(f"repos/{{owner}}/{{repo}}/issues/{number}/parent"))
+    except subprocess.CalledProcessError as exc:
+        if "HTTP 404" not in (exc.stderr or ""):
+            raise
+        parent = None
+    return rest_specced(found) | {
+        "author": actor(found.get("user")),
+        "parent": parent,
+        "assignees": {"nodes": [actor(user) for user in found.get("assignees") or []]},
+        "timelineItems": rest_timeline(number),
+    }
+
+
+# REST's file status as GraphQL's changeType
+CHANGE_TYPES = {"added": "ADDED", "removed": "DELETED", "renamed": "RENAMED", "copied": "COPIED"}
+# a trailer naming a commit's co-author, which GraphQL resolves to an account and REST does not
+CO_AUTHOR = re.compile(r"^co-authored-by:", re.IGNORECASE | re.MULTILINE)
+
+
+def rest_authored(number: int, total: int) -> dict[str, Any]:
+    """A PR's commits as `authored` reads them, from REST: each commit's author and committer account. A co-author
+    trailer, which only GraphQL resolves to an account, counts as an author not read, so exempt() exempts nothing."""
+    nodes = []
+    for found in rest_pages(f"pulls/{number}/commits?per_page=100"):
+        authors = [{"user": actor(found.get("author"))}]
+        committer = actor(found.get("committer"))
+        # GitHub's web-flow commits for a bot or the API: GraphQL gives that committer no account
+        if committer and committer["login"] == "web-flow":
+            committer = None
+        co = len(CO_AUTHOR.findall((found.get("commit") or {}).get("message") or ""))
+        nodes.append(
+            {
+                "commit": {
+                    "authors": {"totalCount": 1 + co, "nodes": authors},
+                    "committer": {"user": committer},
+                }
+            }
+        )
+    return {"totalCount": total, "nodes": nodes}
+
+
+def rest_latest(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Each reviewer's newest review that approves, requests changes or was dismissed: a comment-only review
+    leaves a reviewer's request for changes standing, as GitHub's review decision reads it."""
+    latest: dict[str, dict[str, Any]] = {}
+    for review in reviews:
+        if review["state"] in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            latest[(review.get("author") or {}).get("login") or ""] = review
+    return list(latest.values())
+
+
+def rest_checks(head: str) -> dict[str, Any]:
+    """The head's checks as `statusCheckRollup` reads them, from REST: every check run (each rerun too), named by its
+    workflow, and each status context's newest state."""
+    runs = rest_pages(f"commits/{head}/check-runs?filter=all&per_page=100", ".check_runs[]")
+    suites = {
+        suite["id"]: suite
+        for suite in rest_pages(f"commits/{head}/check-suites?per_page=100", ".check_suites[]")
+    }
+    flows = {
+        run["check_suite_id"]: run["name"]
+        for run in rest_pages(f"actions/runs?head_sha={head}&per_page=100", ".workflow_runs[]")
+    }
+    nodes: list[dict[str, Any]] = []
+    for run in runs:
+        suite = (run.get("check_suite") or {}).get("id")
+        flow = flows.get(suite)
+        nodes.append(
+            {
+                "__typename": "CheckRun",
+                "name": run["name"],
+                "status": (run.get("status") or "").upper(),
+                "conclusion": (run.get("conclusion") or "").upper() or None,
+                "startedAt": run.get("started_at"),
+                "completedAt": run.get("completed_at"),
+                "checkSuite": {
+                    "status": ((suites.get(suite) or {}).get("status") or "").upper(),
+                    "workflowRun": {"workflow": {"name": flow}} if flow else None,
+                },
+            }
+        )
+    combined = rest(f"repos/{{owner}}/{{repo}}/commits/{head}/status?per_page=100")
+    for status in combined.get("statuses") or []:
+        nodes.append(
+            {
+                "__typename": "StatusContext",
+                "context": status["context"],
+                "state": status["state"].upper(),
+                "createdAt": status.get("created_at"),
+                "targetUrl": status.get("target_url"),
+            }
+        )
+    total = len(nodes) - len(combined.get("statuses") or []) + combined.get("total_count", 0)
+    return {"contexts": {"totalCount": total, "nodes": nodes}}
+
+
+def rest_threads(number: int) -> dict[str, Any]:
+    """A PR's review threads, whether each is resolved, from the review-thread route a cloud session's GitHub proxy
+    serves (GitHub's own REST has none). Where it is missing, as on a host whose GraphQL refused for another reason,
+    the error raises: unresolved threads are never read as none."""
+    threads = rest(f"repos/{{owner}}/{{repo}}/pulls/{number}/ccr/review_threads")
+    nodes = [{"isResolved": bool(thread.get("resolved"))} for thread in threads]
+    return {"totalCount": len(nodes), "nodes": nodes}
+
+
+def rest_pull(pr: int) -> dict[str, Any]:
+    """PR #pr as PULL reads it, from REST, call by call. `closingIssuesReferences` is empty, since REST has no such
+    link: the PR's issues are its body's `Closes`, `Part of` and `Implements` lines (closing_issues). Whether it is in
+    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses."""
+    found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
+    base, head = found["base"], found["head"]
+    reviews = [
+        {
+            "author": actor(review.get("user")),
+            "state": review["state"],
+            "body": review.get("body") or "",
+            "commit": {"oid": review.get("commit_id") or ""},
+        }
+        for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
+    ]
+    files = [
+        {"path": file["filename"], "changeType": CHANGE_TYPES.get(file["status"], "MODIFIED")}
+        for file in pr_changes(pr)
+    ]
+    state = "MERGED" if found.get("merged") else found["state"].upper()
+    return {
+        "id": found["node_id"],
+        "number": found["number"],
+        "title": found["title"],
+        "isCrossRepository": (head.get("repo") or {}).get("full_name") != base["repo"]["full_name"],
+        "author": actor(found.get("user")),
+        "assignees": {"nodes": [actor(user) for user in found.get("assignees") or []]},
+        "state": state,
+        "isDraft": bool(found.get("draft")),
+        "autoMergeRequest": {"enabledAt": None} if found.get("auto_merge") else None,
+        "isInMergeQueue": None,
+        "body": found.get("body") or "",
+        "baseRefName": base["ref"],
+        # the base branch's tip now, as GraphQL's baseRefOid is; REST's base.sha is the tip when the PR last synced
+        "baseRefOid": rest(f"repos/{{owner}}/{{repo}}/branches/{base['ref']}")["commit"]["sha"],
+        "headRefName": head["ref"],
+        "headRefOid": head["sha"],
+        "baseRepository": {
+            "nameWithOwner": base["repo"]["full_name"],
+            "defaultBranchRef": {"name": base["repo"]["default_branch"]},
+        },
+        "labels": {"nodes": [{"name": label["name"]} for label in found.get("labels") or []]},
+        "comments": rest_notes(pr),
+        "files": {"totalCount": found.get("changed_files") or len(files), "nodes": files},
+        "latestReviews": {"nodes": rest_latest(reviews)},
+        "reviews": {"totalCount": len(reviews), "nodes": reviews},
+        "reviewThreads": rest_threads(pr),
+        "authored": rest_authored(pr, found.get("commits") or 0),
+        "timelineItems": rest_timeline(pr),
+        "commits": {"nodes": [{"commit": {"statusCheckRollup": rest_checks(head["sha"])}}]},
+        "closingIssuesReferences": {"nodes": []},
+    }
+
+
+def pull_request(pr: int) -> dict[str, Any]:
+    return fast(
+        lambda: _graphql(_repository(f"pullRequest(number: $n) {{ {PULL} }}"), n=pr)["pullRequest"],
+        lambda: rest_pull(pr),
+    )
 
 
 def pr_changes(number: int) -> list[dict[str, Any]]:
@@ -2684,9 +3021,16 @@ def head_pushed(pull: dict[str, Any]) -> str | None:
 
 
 def issue_node(number: int) -> dict[str, Any]:
-    node: dict[str, Any] = _graphql(_repository(f"issue(number: $n) {{ {ISSUE} }}"), n=number)[
-        "issue"
-    ]
+    def rest_read() -> dict[str, Any]:
+        found = rest_issue(number)
+        if found is None:
+            raise Refused(f"#{number} is a pull request, not an issue")
+        return found
+
+    node: dict[str, Any] = fast(
+        lambda: _graphql(_repository(f"issue(number: $n) {{ {ISSUE} }}"), n=number)["issue"],
+        rest_read,
+    )
     return node
 
 
@@ -2700,10 +3044,15 @@ def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
             f"i{n}: issueOrPullRequest(number: {n}) {{ ... on Issue {{ {ISSUE} }} }}"
             for n in unlinked
         )
-        found = _graphql(
-            f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
+        found = fast(
+            lambda: list(
+                _graphql(
+                    f"query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {aliases} }} }}"
+                ).values()
+            ),
+            lambda: [rest_issue(n) for n in unlinked],
         )
-        issues = issues + [issue for issue in found.values() if issue]
+        issues = issues + [issue for issue in found if issue]
     return issues
 
 
@@ -2794,18 +3143,36 @@ def writer(login: str) -> bool:
             "--jq",
             ".permission",
         )
-    except subprocess.CalledProcessError:
-        return False
+    except subprocess.CalledProcessError as exc:
+        # a cloud session's proxy refuses this path; the repo's own permissions answer it for the account running this
+        # alone, and anyone else still can't, so a stranger never counts as a writer
+        if FORBIDDEN not in (exc.stderr or "") or login != viewer():
+            return False
+        try:
+            mine = rest("repos/{owner}/{repo}").get("permissions") or {}
+        except subprocess.CalledProcessError:
+            return False
+        return bool(mine.get("push") or mine.get("maintain") or mine.get("admin"))
     return permission.strip() in WRITE
 
 
 def current_pr() -> int | None:
-    try:
-        return int(gh("pr", "view", "--json", "number", "--jq", ".number"))
-    except subprocess.CalledProcessError as exc:
-        if "no pull requests found" in exc.stderr:
-            return None
-        raise
+    def graphql() -> int | None:
+        try:
+            return int(gh("pr", "view", "--json", "number", "--jq", ".number"))
+        except subprocess.CalledProcessError as exc:
+            if "no pull requests found" in exc.stderr:
+                return None
+            raise
+
+    def rest_read() -> int | None:
+        # the open PR whose head is this branch of origin's repo, as `gh pr view` finds it
+        branch = git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        owner = rest("repos/{owner}/{repo}")["owner"]["login"]
+        found = rest_pages(f"pulls?state=open&head={owner}:{branch}&per_page=100")
+        return int(found[0]["number"]) if found else None
+
+    return fast(graphql, rest_read)
 
 
 class Refused(Exception):
@@ -2917,8 +3284,8 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
             name = f"approved:{point}"
             if holder is None or name not in names(issue):
                 continue
-            value = version(holder)
-            if current(issue, point, point, value, "owner"):
+            value = texted(holder)
+            if current(issue, point, point, versions(holder), "owner"):
                 continue
             added = [
                 event
@@ -2931,10 +3298,14 @@ def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, An
                 or (added[-1].get("actor") or {}).get("login", "").lower() != str(owner).lower()
             ):
                 continue
-            if added[-1]["createdAt"] <= (holder.get("lastEditedAt") or holder["createdAt"]):
+            if added[-1]["createdAt"] <= last_change(holder):
                 print(
-                    f"#{number}: the owner's `{name}` was added before the {point}'s last edit ({value}): the"
+                    f"#{number}: the owner's `{name}` was added before the {point}'s last edit ({version(holder)}): the"
                     " owner adds it again"
+                    if "lastEditedAt" in holder
+                    else f"#{number}: the owner's `{name}` can't be dated after the {point}'s last edit, since GitHub's"
+                    f" REST API gives no edit time and the {point} changed at {last_change(holder)}, after it: the owner"
+                    f" records it with `approve {point} {number} --by owner`, or the check runs where GraphQL answers"
                 )
                 continue
             approve(point, number, value)
@@ -3620,16 +3991,19 @@ def approve(point: str, number: int, seen: str | None = None) -> int:
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
         raise Refused(f"#{number} has no `## Plan` comment to approve")
-    value = version(holder)
+    value = texted(holder)
     if seen is not None and value != seen:
         raise Refused(
-            f"#{number}: the {point} was edited ({value}) after the owner's `approved:{point}`: the owner adds it again"
+            f"#{number}: the {point} was edited after the owner's `approved:{point}`: the owner adds it again"
         )
     record = f"{point.capitalize()}: {value}\n"
     earlier = [
         (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
     ]
-    if any(found.get("by") == "owner" and found.get(point) != value for _, found in earlier):
+    if any(
+        found.get("by") == "owner" and found.get(point) not in versions(holder)
+        for _, found in earlier
+    ):
         record += CHANGED[point]
     comment(number, f"Approved: {point}\nBy: owner\n{record}")
     for note, _ in earlier:
