@@ -106,6 +106,23 @@ def restore(top: Path, patch: Path) -> None:
         raise Refused(f"the tree could not be restored after {patch}:\n{left}")
 
 
+def leave_own_environment() -> None:
+    """Drop this script's own uv environment from the process environment, so every command it starts sees the
+    caller's: uv puts the script's environment in VIRTUAL_ENV and its bin first on PATH, and a tool that follows
+    VIRTUAL_ENV (a type checker) would check the project against the script's packages. A VIRTUAL_ENV the caller set
+    on purpose (another path) stays."""
+    own = os.path.normpath(sys.prefix)
+    if os.path.normpath(os.environ.get("VIRTUAL_ENV", "\0")) != own:
+        return
+    del os.environ["VIRTUAL_ENV"]
+    bin_dir = os.path.join(own, "bin")
+    os.environ["PATH"] = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if os.path.normpath(entry) != bin_dir
+    )
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--test", required=True, help="the test command, run through the shell")
@@ -193,4 +210,5 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    leave_own_environment()  # before the test command starts
     sys.exit(main(sys.argv[1:]))

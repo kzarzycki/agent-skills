@@ -3,6 +3,7 @@ after every run, a killed one included."""
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -53,7 +54,12 @@ def patch(repo: Path, name: str, old: str, new: str) -> Path:
 
 
 def mutate(
-    repo: Path, *patches: Path, test: str = TESTS, cwd: Path | None = None, to: Path | None = None
+    repo: Path,
+    *patches: Path,
+    test: str = TESTS,
+    cwd: Path | None = None,
+    to: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -67,7 +73,7 @@ def mutate(
         ],
         cwd=cwd or repo,
         # a mutate.py run over these tests passes its switch down, which would hide this one lacking it
-        env={k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"},
+        env={k: v for k, v in os.environ.items() if k != "PYTHONDONTWRITEBYTECODE"} | (env or {}),
         capture_output=True,
         text=True,
         check=False,
@@ -254,3 +260,37 @@ def test_a_failure_while_a_patch_is_applied_still_restores_the_tree(repo: Path) 
     result = mutate(repo, killed, test=f"rm -rf {gone}; {TESTS}", to=gone / "m.log")
     assert result.returncode == 1 and "FileNotFoundError" in result.stderr
     assert clean(repo) and (repo / "calc.py").read_text() == MODULE
+
+
+def seen_env(repo: Path, tmp_path: Path, **env: str) -> dict[str, str]:
+    """The VIRTUAL_ENV and PATH the test command sees when mutate.py starts with `env` over its own."""
+    seen = tmp_path / "seen.json"
+    script = tmp_path / "dump.py"
+    script.write_text(
+        "import json, os, sys\n"
+        "json.dump({k: os.environ.get(k) for k in ('VIRTUAL_ENV', 'PATH')}, open(sys.argv[1], 'w'))\n"
+    )
+    killed = patch(repo, "add.patch", "a + b", "a - b")
+    result = mutate(repo, killed, test=f"{sys.executable} {script} {seen}; false", env=env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(seen.read_text())
+
+
+def test_the_test_command_does_not_see_the_scripts_own_environment(
+    repo: Path, tmp_path: Path
+) -> None:
+    own_bin = str(Path(sys.prefix) / "bin")
+    seen = seen_env(
+        repo, tmp_path, VIRTUAL_ENV=sys.prefix, PATH=os.pathsep.join([own_bin, "/usr/bin", "/bin"])
+    )
+    assert seen["VIRTUAL_ENV"] is None
+    assert own_bin not in seen["PATH"].split(os.pathsep) and "/usr/bin" in seen["PATH"]
+
+
+def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_test_command(
+    repo: Path, tmp_path: Path
+) -> None:
+    elsewhere = str(tmp_path / "project-venv")
+    path = os.pathsep.join([str(Path(sys.prefix) / "bin"), "/usr/bin", "/bin"])
+    seen = seen_env(repo, tmp_path, VIRTUAL_ENV=elsewhere, PATH=path)
+    assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path}

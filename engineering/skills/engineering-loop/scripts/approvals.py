@@ -4343,6 +4343,23 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
     return 0
 
 
+def leave_own_environment() -> None:
+    """Drop this script's own uv environment from the process environment, so every command it starts sees the
+    caller's: uv puts the script's environment in VIRTUAL_ENV and its bin first on PATH, and a tool that follows
+    VIRTUAL_ENV (a type checker) would check the project against the script's packages. A VIRTUAL_ENV the caller set
+    on purpose (another path) stays."""
+    own = os.path.normpath(sys.prefix)
+    if os.path.normpath(os.environ.get("VIRTUAL_ENV", "\0")) != own:
+        return
+    del os.environ["VIRTUAL_ENV"]
+    bin_dir = os.path.join(own, "bin")
+    os.environ["PATH"] = os.pathsep.join(
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if os.path.normpath(entry) != bin_dir
+    )
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -4457,6 +4474,7 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    leave_own_environment()  # before any command it starts
     detached = os.environ.pop(
         DETACHED, None
     )  # set by detach() for the run it starts, and for no process under it

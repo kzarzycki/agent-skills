@@ -7808,3 +7808,32 @@ def test_a_spec_or_plan_is_never_the_delegates_to_approve(
     assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
     assert "approve spec is the owner's" in capsys.readouterr().out
     assert github == []
+
+
+def test_the_gate_does_not_see_the_scripts_own_environment(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uv puts the script's environment in VIRTUAL_ENV and its bin first on PATH; a tool in the gate that follows
+    them would check the project against the script's packages."""
+    own_bin = os.path.join(sys.prefix, "bin")
+    monkeypatch.setenv("VIRTUAL_ENV", sys.prefix)
+    monkeypatch.setenv("PATH", os.pathsep.join([own_bin, "/usr/bin"]))
+    approvals.leave_own_environment()
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert "VIRTUAL_ENV" not in checkout["env"]
+    assert checkout["env"]["PATH"].split(os.pathsep) == ["/usr/bin"]
+
+
+def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_gate(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = os.pathsep.join([os.path.join(sys.prefix, "bin"), "/usr/bin"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "project-venv"))
+    monkeypatch.setenv("PATH", path)
+    approvals.leave_own_environment()
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["env"]["VIRTUAL_ENV"] == str(tmp_path / "project-venv")
+    assert checkout["env"]["PATH"] == path
