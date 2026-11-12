@@ -111,6 +111,8 @@ risk:
   paths:
     - .github/**
     - CODEOWNERS
+  merge_paths:   # the owner's own go on the head, whatever the labels and the verifier say
+    - src/orders/**
 
 plan:
   labels:
@@ -157,6 +159,7 @@ carry_over_main:
 | | `head_proof` | `status`, a commit status `land` requires on each head, and `env`, the variables `local-ci --record --head-proof` takes from the caller for that run, both required (Approvals and proof) | the batch gate is the only proof |
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
+| `risk` | `merge_paths` | globs matched on the PR's files, as `paths` are: a PR touching one merges only on the owner's go on its head (Approvals and proof) | the rule above decides |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof) | every PR needs one |
 | `land` | `signed_squash_to`, `allowed_signers`, both | for a repo that trusts only commits its maintainers sign, the branch and the allowed signers file: `land` then squashes and signs the PR in the checkout instead of merging it on GitHub (`approvals.py`'s docstring says how) | GitHub merges |
 | `carry_over_main` | `except`, a list of globs, required | deprecated, goes in the next release (Approvals and proof); the project's merge-check configuration (lint, type, test and gate config, lockfiles): clean merges of main whose changes touch none of the PR's files, where neither the PR's changes nor main's touch one of these, keeps the head's verdict, never its `local-ci` record (Approvals and proof). A glob matches the full path, as `paths` does: a nested copy needs `**/<name>` beside `<name>` | every merge of main needs its own verifier pass |
@@ -294,8 +297,8 @@ an approval record, since an agent approving its own work is no approval; where 
 was asked, the authority is the owner's standing policy in gatekeeper.md, which
 `approvals.py` evaluates from the evidence on GitHub. A spec or plan approval is a comment
 `uv run <this skill's folder>/scripts/approvals.py approve <spec|plan> <issue> --by owner` writes on the
-owner's word, tied to the spec's or plan's last edit as GitHub's edit history shows it, so
-a later edit needs approving again, plus the `approved:<point>` label. A re-approval says
+owner's word, tied to the spec's or plan's text by its sha256, so any change to the text
+needs approving again, plus the `approved:<point>` label. A re-approval says
 what changed and minimizes the records it supersedes as outdated. The verifier only gives
 the verdict, which `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>` posts as a PR
 review on the commit it reviewed.
@@ -336,8 +339,10 @@ gatekeeper.md's policy (Settings) holds:
   matched exactly on the PR and its issues as GitHub names them (`size:L` and `size:XL`
   for large or larger, `area:billing`, `kind:bug`); `paths`, globs matched on the PR's
   files; `always: true`; and `verifier: true`. `approvals.py` reads the keys, never the
-  words, so a path such as `docs/verifier.md` is only a path. Paths it can't judge, past
-  the one page of files it reads, hold, since nothing else would enforce them.
+  words, so a path such as `docs/verifier.md` is only a path. A glob matches every path
+  the PR touches on either side of the change, a renamed or copied file's old name too, since
+  moving a file out of a listed directory changes it as much as editing it. Paths it can't
+  judge, past the one page of files it reads, hold, since nothing else would enforce them.
   The `verifier` term holds when the verifier judges the change high: the newest
   pass on the head, by a trusted account, says `Risk: high`, any word but `low`, or has no
   `Risk:` line (verifier.md). Paths beside it hold whatever the verifier says, so
@@ -347,6 +352,15 @@ gatekeeper.md's policy (Settings) holds:
   for that term comes off when a later pass says `Risk: low`; one added again after it
   stays. loop.md § Risk criteria adds the project's own criteria in words, which the
   verifier reads.
+- `risk.merge_paths`, globs matched on the PR's files as `paths` are, names the paths whose
+  merge the owner always approves, such as the code that places orders or moves money. A PR
+  touching one is high risk whatever its labels, `spec.auto` and the verifier's `Risk:` line
+  say, and only the owner's go on its head (`approve merge <pr> --head <sha> --by owner`)
+  lets it merge, into any branch: `check merge`, `check queue` and `land` wait for it, a new
+  push needs a new go, `approve merge --by delegate` and `delegate` refuse it, and
+  `approved:merge` is no go, since a rule that depends on someone remembering a label is no
+  rule. It is a list of its own beside `paths`, so a project keeps a wide list holding the
+  spec under `auto: true` and a short one holding every merge. Paths it can't judge hold.
 - `plan` asks for the owner's approval of a matching plan.
 - `bot.<login>`, such as `bot.dependabot[bot]` with `paths` `uv.lock` and
   `pyproject.toml`: a PR that bot opens needs no verifier review when every commit is the
@@ -510,8 +524,8 @@ the host and only the workers run in the cloud, as sessions of `<agent>`, a regi
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line nothing
 in this section applies and every role file reads as written. The split takes coding,
 compiling and unit tests off the host. What stays there is what the VM can't do: every
-`approvals.py` call and every thread resolution, since GitHub's GraphQL API answers 403 in the
-VM; the signed land, since the VM holds no key; a verifier of the other family, since Codex
+thread resolution, since GitHub's GraphQL API answers 403 in the VM (`approvals.py` reads REST
+there, so its `check`, `local-ci` and `verdict` also run in the VM, but `land` does not); the signed land, since the VM holds no key; a verifier of the other family, since Codex
 has no cloud bridge; anything that needs a device, a simulator, an emulator, a browser login
 or the owner's private network.
 
