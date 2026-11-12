@@ -34,7 +34,7 @@ question for the owner, not a guess:
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` on each pushed head, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), which agents read. | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker) and `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -432,8 +432,10 @@ is missing. An agent merges only with `uv run <this skill's folder>/scripts/appr
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
-- It takes a lock any host sees, the ref `refs/loop/landing` on `origin`, so two lands never
-  run at once; a lock older than 2 hours was left by a land that died and is broken.
+- It takes a lock any host sees, the branch `loop-landing/<base>` on `origin`, so two lands never
+  run at once; it only moves forward, so a host that may only create and fast-forward branches
+  (a cloud session) takes and releases it too. A lock older than 2 hours was left by a land
+  that died and is broken.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
@@ -540,7 +542,7 @@ or the owner's private network.
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
   peer's brief is not that; no brief names another push target. Its brief names the role
-  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, as lead.md step 7 says.
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, or on another host loop.md's `Verifier hosts:` line lists, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
