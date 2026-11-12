@@ -12,7 +12,14 @@ Exit 0 when every answer matches the baseline, 1 when one changed. The probes le
 behind: a pending status, the one branch `claude/probe-platform` (its deletion is refused in a cloud session, so it stays and
 is force-pushed again each run: delete it from a host when you like), and a ref that is refused or removed.
 """
-import argparse, json, os, shutil, subprocess, sys, time
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,7 +28,9 @@ BASELINE = Path(__file__).with_name("platform-limits.json")
 
 def sh(cmd, timeout=60):
     try:
-        p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=ROOT)
+        p = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=ROOT, check=False
+        )
         return p.returncode, (p.stdout + p.stderr).strip()
     except subprocess.TimeoutExpired:
         return 124, f"timeout after {timeout}s"
@@ -39,8 +48,11 @@ def head():
 
 def api(method, path, *fields):
     f = " ".join(f"-f {k}={v}" for k, v in fields)
-    rc, out = sh(f"gh api -X {method} {path} {f} -i 2>&1 | head -20")
-    status = next((l for l in out.splitlines() if l.startswith("HTTP/")), out.splitlines()[0] if out else "no output")
+    _rc, out = sh(f"gh api -X {method} {path} {f} -i 2>&1 | head -20")
+    status = next(
+        (l for l in out.splitlines() if l.startswith("HTTP/")),
+        out.splitlines()[0] if out else "no output",
+    )
     return status.strip(), out
 
 
@@ -50,12 +62,24 @@ def probe_graphql():
 
 
 def probe_status_write():
-    st, out = api("POST", f"repos/{repo()}/statuses/{head()}", ("state", "pending"), ("context", "platform-probe"))
+    st, out = api(
+        "POST",
+        f"repos/{repo()}/statuses/{head()}",
+        ("state", "pending"),
+        ("context", "platform-probe"),
+    )
     return ("allowed" if " 201" in st else "refused"), st + " " + out[-160:].replace("\n", " ")
 
 
 def probe_checkrun_write():
-    st, out = api("POST", f"repos/{repo()}/check-runs", ("name", "platform-probe"), ("head_sha", head()), ("status", "completed"), ("conclusion", "neutral"))
+    st, out = api(
+        "POST",
+        f"repos/{repo()}/check-runs",
+        ("name", "platform-probe"),
+        ("head_sha", head()),
+        ("status", "completed"),
+        ("conclusion", "neutral"),
+    )
     return ("allowed" if " 201" in st else "refused"), st + " " + out[-160:].replace("\n", " ")
 
 
@@ -90,8 +114,10 @@ def probe_container():
     start_dockerd()
     for tool in ("docker", "podman"):
         if shutil.which(tool):
-            for _ in range(3):  # a registry pull can fail on its own; only three failures in a row count
-                rc, out = sh(f"{tool} run --rm hello-world 2>&1 | head -5", 120)
+            for _ in range(
+                3
+            ):  # a registry pull can fail on its own; only three failures in a row count
+                _rc, out = sh(f"{tool} run --rm hello-world 2>&1 | head -5", 120)
                 if "Hello" in out:
                     break
                 time.sleep(5)
@@ -104,11 +130,17 @@ def probe_container():
 def probe_nested_virt():
     kvm = os.path.exists("/dev/kvm")
     vmx = sh("grep -cE 'vmx|svm' /proc/cpuinfo")[1]
-    return ("allowed" if kvm else "absent"), f"/dev/kvm {'present' if kvm else 'missing'}, vmx/svm cpu flags: {vmx}"
+    return (
+        "allowed" if kvm else "absent"
+    ), f"/dev/kvm {'present' if kvm else 'missing'}, vmx/svm cpu flags: {vmx}"
 
 
 def run():
-    res = {"graphql": probe_graphql(), "status_write": probe_status_write(), "check_run_write": probe_checkrun_write()}
+    res = {
+        "graphql": probe_graphql(),
+        "status_write": probe_status_write(),
+        "check_run_write": probe_checkrun_write(),
+    }
     res.update(probe_refs())
     res["container_runtime"] = probe_container()
     res["nested_virtualisation"] = probe_nested_virt()
@@ -128,9 +160,17 @@ def main():
     if a.update_baseline:
         BASELINE.write_text(json.dumps({k: v["answer"] for k, v in res.items()}, indent=2) + "\n")
     if changed and a.comment:
-        lines = [f"- `{k}`: {o} → {n} (`{res[k]['detail'][:120]}`)" for k, (o, n) in changed.items()]
+        lines = [
+            f"- `{k}`: {o} → {n} (`{res[k]['detail'][:120]}`)" for k, (o, n) in changed.items()
+        ]
         body = "> 🤖 AI\n\nWeekly platform-limit probe: a changed answer.\n\n" + "\n".join(lines)
-        p = subprocess.run(["gh", "issue", "comment", a.issue, "--body", body], capture_output=True, text=True, cwd=ROOT)
+        p = subprocess.run(
+            ["gh", "issue", "comment", a.issue, "--body", body],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            check=False,
+        )
         print(p.stdout + p.stderr)
     return 1 if changed else 0
 
