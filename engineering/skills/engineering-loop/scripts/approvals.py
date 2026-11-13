@@ -4850,6 +4850,9 @@ def run_local_ci(
 
 
 DETACHED = "APPROVALS_LOCAL_CI_HEAD"
+RAN: dict[
+    str, str
+] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
 
 
 def leads_its_session() -> bool:
@@ -4947,11 +4950,19 @@ def follow(
         return 1
 
 
-def finished(head: str, code: int) -> None:
-    """The detached run's last step: its exit code, written whole, after all its output."""
+def ran_command_file(head: str) -> Path:
+    """Where the detached run on `head` records the gate command it ran, beside its exit code."""
+    return run_files(head)[2].with_suffix(".command")
+
+
+def finished(head: str, code: int, command: str | None = None) -> None:
+    """The detached run's last step: the gate command it ran (with a head proof, under the caller's tier), then its
+    exit code, written whole, after all its output."""
     sys.stdout.flush()
     sys.stderr.flush()
     _, _, exit_file = run_files(head)
+    if command:
+        ran_command_file(head).write_text(command + "\n")
     partial = exit_file.with_suffix(".exit-partial")
     partial.write_text(f"{code}\n")
     os.replace(partial, exit_file)
@@ -4966,12 +4977,20 @@ def local_ci_status(head: str) -> int:
         code = int(exit_file.read_text())
     except (OSError, ValueError):
         code = None
-    if code == 0 and not recorded(str(tree_of(head)), gate()[0]).exists():
+    plain = gate()[0]
+    try:
+        command = (
+            ran_command_file(head).read_text().strip() or plain
+        )  # what the run ran, else the plain gate
+    except OSError:
+        command = plain
+    if code == 0 and not recorded(str(tree_of(head)), command).exists():
         # a run on a checkout with changes, or on another PR's head, exits 0 with no pass on this one
         print(f"exited 0 without recording a pass on {head} under the gate's command: log {log}")
         return 1
     if code is not None:
-        print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}: log {log}")
+        under = f" under `{command}`" if command != plain else ""
+        print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}{under}: log {log}")
         return 0 if code == 0 else 1
     started = going(pid.read_text() if pid.exists() else "", exit_file)
     if started:
@@ -5360,6 +5379,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
     published as the head proof instead."""
     if pr is None:
         passed = proof["env"] if proof else ()
+        RAN["command"] = gate(passed)[0]
         head, changes = checkout_state()
         if changes:
             deepened(None)
@@ -5620,5 +5640,5 @@ if __name__ == "__main__":
     )  # set by detach() for the run it starts, and for no process under it
     code = main(sys.argv[1:])
     if detached:
-        finished(detached, code)
+        finished(detached, code, RAN.get("command"))
     sys.exit(code)
