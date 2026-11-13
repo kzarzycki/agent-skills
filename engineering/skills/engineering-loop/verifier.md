@@ -56,8 +56,9 @@ yourself, keeping standards and spec as separate axes.
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
   after a fix for a CI check red on a ready PR is the same: only the change since that
   report's head.
-- **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
-  or a queue, or outlast one tool call, starts detached with its pid, output and exit code
+- **A long or locked run is detached.** This is every role's rule for a long run, worker's
+  and lead's too. A gate, repro or e2e run that may wait on a lock
+  or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code
   in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; flock <lock> <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
   (Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
   run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
@@ -65,10 +66,16 @@ yourself, keeping standards and spec as separate axes.
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
-  loop of your own, since every call re-reads the whole context. A blocker that is only your own call timing out
-  spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
-  background shells. A gate the machine allows
-  by rule is the exception: run it as the bare command (Gates and repros). A queued run or
+  loop of your own, since every call re-reads the whole context. Where that script is not at hand,
+  each call blocks close to the tool's limit (the longest yield the harness allows on a running
+  command, or a sleep loop that checks the log for its exit line), never short polls. Where a
+  foreground command stops at 10 minutes (a session in a hosted VM), the run is waited on within
+  the same turn, since that is less than a cold gate can take. A blocker that is only your own call timing out
+  spends the pass on nothing, a held lock can outlast a foreground call, and Claude Code's low-memory reaper stops in-session
+  background shells. Never end a turn saying you wait, since a background command's completion
+  never wakes you. A gate the machine allows
+  by rule (a gate your role file says to run bare) is the exception: run it as the bare command
+  (Gates and repros), since an allow rule matches only a plain command. A queued run or
   any other pending condition is waited on the same way, in the foreground (orchestrating-agents'
   `scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <check>`, each call under
   the tool timeout), and past the limit you state the pass ends with a report naming it, never
