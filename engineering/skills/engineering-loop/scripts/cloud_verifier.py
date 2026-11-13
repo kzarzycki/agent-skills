@@ -441,7 +441,9 @@ def text(path: Path) -> str:
 
 def linked_files(final: str) -> list[str]:
     """What the final message names as a file: markdown link targets, then bare paths ending in .md, each once."""
-    found = re.findall(r"\]\(([^)\s]+)\)", final) + re.findall(r"(?<![\w/.:-])([\w./-]+\.md)\b", final)
+    found = re.findall(r"\]\(([^)\s]+)\)", final) + re.findall(
+        r"(?<![\w/.:-])([\w./-]+\.md)\b", final
+    )
     return [f for i, f in enumerate(found) if "://" not in f and f not in found[:i]]
 
 
@@ -525,12 +527,14 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             p: text(p) for p in (report, question) if p and written(p) not in (None, before[p])
         }
         wrote[final] = text(final)
-        if not re.search(r"^SATISFIED:", wrote.get(report, "").strip() and wrote[report] or wrote[final], re.M):
-            # Codex wrote the report elsewhere and ended on a link to it: read it before the checkout goes back
-            if linked := linked_report(wrote[final], Path.cwd()):
-                print(f"the report is read from {linked[0]}, which the final message names")
-                wrote[final] = linked[1]
-                wrote.pop(report, None)
+        named = wrote.get(report, "").strip() and wrote[report] or wrote[final]
+        # Codex may have written the report elsewhere and ended on a link to it: read it before the checkout goes back
+        if not re.search(r"^SATISFIED:", named, re.MULTILINE) and (
+            linked := linked_report(wrote[final], Path.cwd())
+        ):
+            print(f"the report is read from {linked[0]}, which the final message names")
+            wrote[final] = linked[1]
+            wrote.pop(report, None)
     finally:
         # The script never deletes or restores a file: git can't say which leftover hides something older (an
         # ignored file, a folder with its own repository), so a tree the verifier changed stays as it is,
