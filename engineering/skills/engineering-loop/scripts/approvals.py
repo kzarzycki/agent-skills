@@ -4496,6 +4496,21 @@ def land_body(pull: dict[str, Any]) -> str | None:
     return unlinked(text)
 
 
+def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) -> str:
+    """The merge commit of PR #number when `gh pr merge` failed with exc but GitHub merged it at head all the same,
+    since a transport error (a response cut off mid-stream) can come after the merge. Anything else is Refused with
+    exc's error, and with the re-read's as well when re-reading the PR failed too."""
+    why = " ".join(str(exc.stderr or exc).split())
+    try:
+        found = merged_pull(number)
+    except (subprocess.CalledProcessError, ValueError) as again:
+        reread = " ".join(str(getattr(again, "stderr", None) or again).split())
+        raise Refused(f"{why}; re-reading the PR failed too: {reread}") from exc
+    if found is None or (found.get("head") or {}).get("sha") != head:
+        raise Refused(why) from exc
+    return str(found.get("merge_commit_sha"))
+
+
 def merges(
     landed: list[tuple[dict[str, Any], str, str, str]],
     base: str,
@@ -4519,19 +4534,26 @@ def merges(
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
                 body = land_body(pull)
-                gh(
-                    "pr",
-                    "merge",
-                    str(pull["number"]),
-                    "--squash",
-                    *(("--body", body) if body is not None else ()),
-                    "--match-head-commit",
-                    head,
-                )
-                # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
-                if (state := pull_request(pull["number"])["state"]) != "MERGED":
-                    raise Refused(f"GitHub left it {state}, not merged")
-                print(f"{where} merged at {head}")
+                try:
+                    gh(
+                        "pr",
+                        "merge",
+                        str(pull["number"]),
+                        "--squash",
+                        *(("--body", body) if body is not None else ()),
+                        "--match-head-commit",
+                        head,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    merge = merged_anyway(pull["number"], head, exc)
+                    print(
+                        f"{where}: the merge call failed, but the PR is merged at {head} as {merge}"
+                    )
+                else:
+                    # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
+                    if (state := pull_request(pull["number"])["state"]) != "MERGED":
+                        raise Refused(f"GitHub left it {state}, not merged")
+                    print(f"{where} merged at {head}")
         except (subprocess.CalledProcessError, Refused) as exc:
             why = " ".join(str(getattr(exc, "stderr", None) or exc).split())
             print(
