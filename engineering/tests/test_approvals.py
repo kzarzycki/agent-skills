@@ -131,7 +131,9 @@ def refs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
         pushed[name] = {**record, "env": record.get("env", approvals.gate()[2])}
         return approvals.RECORD_BRANCH.format(name)
 
-    def read(held: str, command: str, env: dict[str, str]) -> dict[str, Any] | None:
+    def read(
+        held: str, command: str, env: dict[str, str], _why: list[str] | None = None
+    ) -> dict[str, Any] | None:
         found = pushed.get(approvals.record_name(held, command))
         if found is None or (found["tree"], found["command"], found["env"]) != (held, command, env):
             return None
@@ -489,6 +491,64 @@ def test_check_build_before_the_pr_judges_the_issue(
     branch[0] = "spike"
     assert build()[0] == 1
     assert build("7", "--issue", "2") == (1, ["--issue goes with check build and no PR number"])
+
+    # a positional number no PR has is the issue, printing what --issue prints; a PR's number is unchanged
+    def pull_request(n: int) -> dict[str, Any]:
+        if n != 5:
+            raise subprocess.CalledProcessError(
+                1, ["gh"], stderr=f"Could not resolve to a PullRequest with the number of {n}"
+            )
+        return {"number": 5, "labels": {"nodes": []}}
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request)
+    monkeypatch.setattr(approvals, "gated", lambda *a: (["gated"], []))
+    assert build("2") == build("--issue", "2") == (1, unapproved)
+    assert build("3") == build("--issue", "3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert build("5") == (1, ["gated"])
+
+    # where GraphQL answers 403, the REST fallback says a number no PR has is "Not Found": still the issue's
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("api", "graphql"):
+            raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: HTTP 403: Forbidden")
+        assert args in {
+            ("api", "repos/{owner}/{repo}/pulls/2"),
+            ("api", "repos/{owner}/{repo}/pulls/3"),
+        }
+        raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request_of_record)
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "_rest_only", False)
+    assert build("2") == build("--issue", "2") == (1, unapproved)
+    assert build("3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert approvals._rest_only
+
+
+pull_request_of_record = approvals.pull_request
+
+
+@pytest.mark.parametrize(
+    "missing", ["Could not resolve to a PullRequest with the number of 3", "Not Found"]
+)
+@pytest.mark.parametrize("point", [["merge", "3"], ["queue", "3", "--head", "abc"]])
+def test_check_merge_and_queue_of_a_number_no_pr_has_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    point: list[str],
+    missing: str,
+) -> None:
+    """Only `check build` reads a number no PR has as the issue: `check merge` and `check queue` fail on the lookup,
+    since there is no PR to merge or queue, though #3's spec is approved."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    monkeypatch.setattr(approvals, "issue_node", lambda n: approved(n, "kind:chore", "area:agents"))
+    monkeypatch.setattr(approvals, "unbuilt", lambda *a: pytest.fail("judged the issue"))
+
+    def pull_request(n: int) -> dict[str, Any]:
+        raise subprocess.CalledProcessError(1, ["gh"], stderr=f"gh: {missing}")
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request)
+    assert approvals.main(["check", *point]) == 1
+    assert capsys.readouterr().out.splitlines() == [f"gh: {missing}"]
 
 
 def test_every_closing_issue_specced_lands() -> None:
@@ -5598,7 +5658,7 @@ def checkout(
 def test_a_passing_check_on_the_clean_head_is_recorded(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert github == [
         (
             "comment",
@@ -5638,7 +5698,7 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     said: str,
 ) -> None:
     checkout.update(change)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert github == []
     assert said in capsys.readouterr().out
     assert not (checkout["common"] / "approvals").exists()
@@ -5706,7 +5766,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
     assert approvals.main(["local-ci", "--record"]) == 0
     record = json.loads(record_at().read_text())
     checkout["head"] = "c" * 40  # the checkout moved on: the record still proves the PR's head
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -5731,7 +5791,7 @@ def test_a_local_ci_comment_names_no_host(
     assert approvals.main(["local-ci", "--record"]) == 0
     record = json.loads(record_at().read_text())
     assert record["host"] == "owner-MacBook.local"  # the local record keeps it
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     [body] = sent
     assert "owner-MacBook" not in body and "/Users/owner" not in body
     merged = pull(reviews=(VERDICT,), comments=(body,), labels=OWNED, checks=())
@@ -5754,7 +5814,7 @@ def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
     where = approvals.recorded(file, "mise run check:all")
     where.parent.mkdir(parents=True)
     where.write_text(json.dumps({**record, "head": HEAD, "env": {}, "time": "t", "host": "h"}))
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -5763,6 +5823,45 @@ def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
             f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
         )
     ]
+
+
+def test_local_ci_with_no_record_refuses_without_running_the_gate(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["local-ci", "7"]) == 1
+    out = capsys.readouterr().out
+    name = approvals.RECORD_BRANCH.format(approvals.record_name(TREE, "mise run check:all"))
+    assert (checkout["runs"], github) == (0, [])
+    assert HEAD in out and TREE in out and name in out and "--run" in out
+
+
+def test_local_ci_with_a_record_missing_its_time_refuses_and_names_the_field(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    where = approvals.recorded(TREE, "mise run check:all")
+    where.parent.mkdir(parents=True)
+    where.write_text(
+        json.dumps(
+            {
+                "head": HEAD,
+                "tree": TREE,
+                "command": "mise run check:all",
+                "exit": 0,
+                "env": {},
+                "host": "h",
+            }
+        )
+    )
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (checkout["runs"], github) == (0, [])
+    assert "lacks its `time` field" in capsys.readouterr().out
+
+
+def test_local_ci_run_alone_is_refused_without_a_pr(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["local-ci", "--record", "--run"]) == 1
+    assert checkout["runs"] == 0
 
 
 ENV_LOOP = add(LOOP, "loop", "local_ci_env:\n  - GATE_UI_TESTS\n  - GATE_SCOPE\n")
@@ -5789,7 +5888,7 @@ def test_the_gate_runs_with_the_names_local_ci_env_lists_cleared_so_an_ambient_t
     assert "GATE_UI_TESTS" not in checkout["env"] and checkout["env"]["UNLISTED"] == "kept"
     assert recorded_pass(checkout)["env"] == {}
     monkeypatch.setenv("GATE_UI_TESTS", "full")
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     [(_, _, body)] = github
     assert "Env: default\nReused by tree" in body
@@ -5801,7 +5900,7 @@ def test_a_gate_that_sets_a_name_runs_with_it_and_names_it(
     checkout["loop"] = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
     monkeypatch.setenv("GATE_UI_TESTS", "full")
     monkeypatch.setenv("GATE_SCOPE", "changed")
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["env"]["GATE_UI_TESTS"] == "0" and "GATE_SCOPE" not in checkout["env"]
     assert github == [
         (
@@ -5923,7 +6022,7 @@ def test_a_name_added_to_local_ci_env_keeps_every_pass(
     assert approvals.main(["local-ci", "--record"]) == 0
     checkout["loop"] = ENV_LOOP
     assert approvals.reusable(HEAD) is not None
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
 
 
@@ -5946,7 +6045,7 @@ def test_a_gate_that_runs_nothing_or_sets_no_variable_is_refused(
     gate: str,
 ) -> None:
     checkout["loop"] = add(LOOP, "loop", f"gate: {gate}\n")
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (checkout["runs"], github) == (0, [])
     assert "loop.md's `gate`" in capsys.readouterr().out
 
@@ -6028,7 +6127,7 @@ def test_a_record_without_env_runs_the_check_again(
         "host": "h",
     }
     where.write_text(json.dumps(old))  # as 0.23.1 wrote it, but for the tree
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert recorded_pass(checkout)["env"] == {}
 
@@ -6054,7 +6153,7 @@ def test_an_incomplete_record_runs_the_check_again(
     }
     record = {k: v for k, v in {**full, **drop}.items() if v is not None}
     where.write_text(json.dumps(record))
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -6073,7 +6172,7 @@ def test_a_local_ci_env_that_is_no_list_of_variable_names_is_refused(
     names: str,
 ) -> None:
     checkout["loop"] = add(LOOP, "loop", f"local_ci_env:{names}\n")
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (checkout["runs"], github) == (0, [])
     assert "`local_ci_env`" in capsys.readouterr().out
 
@@ -6089,7 +6188,7 @@ def test_local_ci_takes_a_pr_or_record(
 def test_a_local_ci_record_is_the_merge_proof_without_ci(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
@@ -6150,7 +6249,7 @@ def test_a_change_the_status_config_hides_still_records_nothing(
     head = git_in(repo, "rev-parse", "HEAD").strip()
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
     monkeypatch.chdir(repo)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert github == []
     assert "the tree has changes" in capsys.readouterr().out
 
@@ -6340,7 +6439,7 @@ def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_
 
     monkeypatch.setattr(approvals, "run_local_ci", never)
     assert approvals.reusable(head)["head"] == head  # check queue, batch and check merge read this
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     [(_, _, body)] = github
     assert f"Reused by tree from the pass recorded on {head} at 2026-" in body
     assert {s["description"] for s in hub[head]} == {line}  # B shows the same pass
@@ -6374,7 +6473,7 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
     assert merge(merged, [approved(1, "area:web")], no_ci) == [
         f"{NO_LOCAL_CHECK}; its tree passed under `true`, and the gate is now `true --another-tier`"
     ]
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (ran, github) == ([head], [])
 
 
@@ -6389,7 +6488,7 @@ def test_a_green_gate_status_with_no_record_branch_is_no_pass(
     monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
     hub[HEAD] = [status("gate", f"Tree {TREE} on {HEAD[:12]}: mise run check:all", by="maintainer")]
     assert approvals.reusable(HEAD) is None
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
 
 
@@ -8482,7 +8581,7 @@ def test_a_clean_merge_of_main_carries_the_verdict_but_never_the_local_ci_record
     head, merge_sha = case["head"], case["merge"]
     gated_head(head)
     posting["pull"] = carried_pull(case)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (posting["ran"], posting["posted"]) == ([merge_sha], [])
     capsys.readouterr()
     on_head = f"{approvals.CHECKED}\nHead: {head}\nCommand: mise run check:all\nEnv: default\n"
@@ -9118,7 +9217,7 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
 
     monkeypatch.setattr(approvals, "run_local_ci", never)
     assert approvals.reusable(head)["ref"] == branch
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     [(_, _, body)] = github
     assert f"Reused by tree from the pass recorded on {head} at 2026-" in body
     assert f"and pushed as {branch}, not run again." in body
@@ -9146,7 +9245,7 @@ def test_check_merge_and_land_reuse_a_record_branch_with_no_status_at_every_risk
         **pull(reviews=(verdict_on(head),), labels=(*OWNED, *risk), checks=()),
         "headRefOid": head,
     }
-    monkeypatch.setattr(approvals, "record_ref", lambda _held, _command, _env: None)
+    monkeypatch.setattr(approvals, "record_ref", lambda *_args: None)
     assert NO_LOCAL_CHECK in merge(pr, [approved(1, "area:web")], no_ci)  # without the record
     real_refs(monkeypatch)
     lines = merge(pr, [approved(1, "area:web")], no_ci)
@@ -9174,10 +9273,21 @@ def test_a_green_gate_status_naming_the_tree_with_no_record_branch_is_not_reused
     assert approvals.reusable(head) is None
 
 
-def forged(tmp_path: Path, head: str, name: str, *, tree: str, line: str, env: str) -> None:
-    """Push to origin, under `name`, a record whose content is what the test says, as anyone who can push may."""
+def forged(
+    tmp_path: Path,
+    head: str,
+    name: str,
+    *,
+    tree: str,
+    line: str,
+    env: str,
+    more: tuple[str, ...] = (),
+) -> None:
+    """Push to origin, under `name`, a record whose content is what the test says, as anyone who can push may;
+    `more` are parents beside `head`."""
     a = tmp_path / "a"
-    commit = git_in(a, "commit-tree", tree, "-p", head, "-m", f"{line}\n\nEnv: {env}\n").strip()
+    parents = [arg for parent in (head, *more) for arg in ("-p", parent)]
+    commit = git_in(a, "commit-tree", tree, *parents, "-m", f"{line}\n\nEnv: {env}\n").strip()
     git_in(a, "push", "-q", "-f", "origin", f"{commit}:refs/heads/loop-gate/{name}")
 
 
@@ -9208,6 +9318,90 @@ def test_a_ref_whose_content_is_not_the_pass_asked_for_is_not_reused(
     forged(tmp_path, head, name_of(head), **fields)
     git_in(tmp_path / "b", "fetch", "-q", "origin")
     assert (approvals.reusable(head) is None) == (wrong != "none")
+
+
+@pytest.mark.parametrize(
+    ("wrong", "said"),
+    [
+        ("another tree", "its commit holds the tree {other}, not {held}"),
+        ("another env", """its message lacks the line 'Env: {{}}'"""),
+        ("another command", "its description reads '{line} --tier', not '{line}'"),
+        ("two parents", "its commit has 2 parents, not the one commit the pass ran on"),
+    ],
+)
+def test_local_ci_refusing_a_found_record_branch_says_it_was_found_and_why_it_was_rejected(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wrong: str,
+    said: str,
+) -> None:
+    """#862 user story 2: a record branch origin holds under the expected name but whose content is not the pass
+    asked for is named in the refusal with what was wrong, so the lead can tell the worker what to push, and the
+    gate does not run."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    held = approvals.tree_of(head)
+    other = git_in(tmp_path / "a", "rev-parse", "HEAD~1^{tree}").strip()
+    line = f"Tree {held} on {head[:12]}: true"
+    forged(
+        tmp_path,
+        head,
+        name_of(head),
+        tree=other if wrong == "another tree" else held,
+        line=f"{line} --tier" if wrong == "another command" else line,
+        env='{"TIER": "light"}' if wrong == "another env" else "{}",
+        more=(git_in(tmp_path / "a", "rev-parse", "HEAD~1").strip(),)
+        if wrong == "two parents"
+        else (),
+    )
+    monkeypatch.setattr(approvals, "run_local_ci", lambda *_a: pytest.fail("the gate ran"))
+    assert approvals.main(["local-ci", "7"]) == 1
+    out = capsys.readouterr().out
+    assert (
+        f"origin holds the record branch {branch_of(head)}, but it is not this pass: "
+        + said.format(other=other, held=held, line=line)
+    ) in out
+    assert github == []
+
+
+def test_a_record_branch_with_no_committer_or_unreadable_says_why_it_was_rejected(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The rest of record_ref()'s rejections reach `why`: a commit naming no committer, whose time is unknown, and a
+    branch origin lists but that can't be fetched."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    a, held = tmp_path / "a", approvals.tree_of(head)
+    body = f"tree {held}\nparent {head}\n\nTree {held} on {head[:12]}: true\n\nEnv: {{}}\n"
+    loose = tmp_path / "commit"
+    loose.write_text(body)
+    commit = git_in(a, "hash-object", "-t", "commit", "-w", "--literally", str(loose)).strip()
+    git_in(a, "push", "-q", "-f", "origin", f"{commit}:{branch_of(head)}")
+    why: list[str] = []
+    assert approvals.reusable(head, why=why) is None
+    assert why == [
+        (
+            f"origin holds the record branch {branch_of(head)}, but it is not this pass: its commit names no"
+            " committer, so its time is unknown"
+        )
+    ]
+    real = approvals.git
+
+    def no_fetch(*args: str) -> str:
+        if args[0] == "fetch":
+            raise subprocess.CalledProcessError(128, "git", stderr="fatal: the remote hung up\n")
+        return real(*args)
+
+    monkeypatch.setattr(approvals, "git", no_fetch)
+    why.clear()
+    assert approvals.reusable(head, why=why) is None
+    assert why == [
+        f"origin's record branch {branch_of(head)} could not be read: fatal: the remote hung up"
+    ]
 
 
 def test_a_ref_for_another_tree_or_command_is_not_reused_and_the_refusal_names_its_command(
@@ -10166,7 +10360,7 @@ def test_in_a_cloud_session_each_command_completes_with_no_graphql_call_past_the
         "time": WRITTEN,
         "published": True,
     }
-    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(): record)
+    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(), why=None: record)
     report = tmp_path / "report.md"
     report.write_text(REPORT.replace("app.py:12", "app.py:11").replace("app.py:40", "app.py:12"))
     for argv in (
