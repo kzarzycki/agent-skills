@@ -91,9 +91,7 @@ design, wireframes included for a UI, and delegate the rest.
    with one message: the spec, the item, the PR, worktree, branch, notes path, gates, and "Your
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
-   both are yours (worker.md, Gates and push). Its model is the default, or, where the
-   issue matches loop.md's `Worker model:` line, the newest-generation model of the tier it
-   names (SKILL.md, Models).
+   both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
    With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
@@ -133,9 +131,7 @@ design, wireframes included for a UI, and delegate the rest.
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
    appended; it refuses a proof log whose first line isn't the head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
-   prompted for a read (denied in auto mode), which nobody answers. Its model is the default, or, where the PR matches loop.md's
-   `Verifier model:` line, the newest-generation model of that tier in the verifier's family
-   (SKILL.md, Models), and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
+   prompted for a read (denied in auto mode), which nobody answers. Its model: SKILL.md, Models, in the verifier's family, and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
    verdict that says `Risk: high`, even a satisfied one, calls for a default-tier pass on the head before landing,
    and `check merge` refuses the change until one is posted. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
@@ -149,7 +145,14 @@ design, wireframes included for a UI, and delegate the rest.
    report's `Head:` line names (github.md, Review trail), one inline comment per finding,
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
-   verifier, running at the same time, gets its own detached worktree the same way. Triage every finding (SKILL.md) and hand the fixes to a worker,
+   verifier, running at the same time, gets its own detached worktree the same way. A verifier
+   may instead run on another host loop.md's `Verifier hosts:` line lists, so its tests and
+   mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
+   backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
+   `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
+   worktree; the proof logs and the previous report go there with `start --file`, you make no
+   worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
+   host can't run comes back as a proof-run question as above. Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
    covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like
@@ -220,7 +223,8 @@ design, wireframes included for a UI, and delegate the rest.
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what
      refuses a PR whose proof is missing. A push after it needs `gh pr ready --undo` first; the
-     owner's go stays on the old head, and after the verdict on the new head `land` runs again.
+     owner's go carries over only merges of the base whose verdict says `Logic change: none`
+     (SKILL.md, Approvals and proof), and after the verdict on the new head `land` runs again.
    - Land every approved PR at once: start `land --wait` on each as soon as its proofs hold,
      never after another PR's merge. Whichever runs first takes the lock and lands every
      landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)

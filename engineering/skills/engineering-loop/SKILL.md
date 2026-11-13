@@ -34,7 +34,7 @@ question for the owner, not a guess:
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, `check` on each pushed head, `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, which agents read. | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate base: <variable>` (the one its `check` reads as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` for a project whose workers run in cloud sessions (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, and `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -242,11 +242,14 @@ Merge-queue (`merge_group`) and push runs have no draft and run as before. While
 draft, `mise run check` on each pushed head is its check. With `ci: false` in gatekeeper.md, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `gate`
-(default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and publishes it as a
-commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing posts
-that pass rather than running the check again: on this host for any commit with the same
-tree and gate command (a rebase or reworded commit keeps its tree), on another for the
-commit whose `gate` status names them. `gate` is one command with no shell operator, so a
+(default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
+to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
+posts that pass rather than running the check again: in this clone for any commit with the same tree and gate
+command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
+risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
+reader write on the head, where the token allows, only shows the pass on the PR, and no decision reads it, since
+anyone who can write a status may type one. `land` deletes a record branch once its tree has landed, or once it is a
+day old and its tree is no open PR's head. `gate` is one command with no shell operator, so a
 chain of checks is one task. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
@@ -395,7 +398,8 @@ that name it the delegate's, so the PR shows whose go landed it, and `check merg
 print whose go they used. Into the default branch it is refused unless the policy sets
 `delegate: all` under `loop`, and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
-it never covers code the approver did not see. Into the default branch these are the only go:
+it never covers code the approver did not see; it carries to a head whose commits since are
+only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
 anyone with triage rights can add a label, so `approved:merge` there is no go. On a change that is not high risk
 `approved:merge` means nothing. On a PR into a feature branch (any base but the default
 branch) the label added after the head's push is a go too, and it may be the delegated
@@ -428,8 +432,10 @@ is missing. An agent merges only with `uv run <this skill's folder>/scripts/appr
 project's `loop:land` task). It lands every landable PR into the base as one batch, so a base
 that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR lands on a base
 it was never gated on:
-- It takes a lock any host sees, the ref `refs/loop/landing` on `origin`, so two lands never
-  run at once; a lock older than 2 hours was left by a land that died and is broken.
+- It takes a lock any host sees, the branch `loop-landing/<base>` on `origin`, so two lands never
+  run at once; it only moves forward, so a host that may only create and fast-forward branches
+  (a cloud session) takes and releases it too. A lock older than 2 hours was left by a land
+  that died and is broken.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
@@ -451,6 +457,7 @@ it was never gated on:
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
+`land <pr> --only` lands that PR alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the batch landed or needs someone
 (exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
@@ -535,8 +542,10 @@ or the owner's private network.
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
-  peer's brief is not that; no brief names another push target. Its brief names the role
-  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, as lead.md step 7 says, or in the worker's VM where loop.md says so.
+  peer's brief is not that; no brief names another push target. A worker's `local-ci --record`
+  pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
+  `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, or on another host loop.md's `Verifier hosts:` line lists, as lead.md step 7 says, or in the worker's VM where loop.md says so.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
@@ -728,24 +737,23 @@ or the owner's private network.
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
   silently.
-- **Models.** Never pick a model: every agent runs on its harness's configured default,
-  which the owner sets, unless the owner names one for a task or loop.md's `Worker model:
+- **Models.** Every start names a model fit for the job, never the harness default. The owner's named model wins; else loop.md's `Worker model:
   <tier> for <condition>` line names a tier for a worker whose issue matches the condition
-  (on the issue's labels), so the choice sits in one file the owner can change. A `Verifier model:` line does the same for a verifier whose PR
+  (on the issue's labels), so the choice sits in one file the owner can change; else the lead
+  picks: `frontier` for hard design, root-cause work, risky reviews; `top` or `mid` for routine work by size; effort high or below. A `Verifier model:` line does the same for a verifier whose PR
   matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
   on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
   verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
   `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
   its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
   reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
-  stays the other one from the author's (Independent verification). The tier is `top`, `mid` or `small` (Claude's Opus, Sonnet, Haiku;
-  Codex's Sol, Terra, Luna; each family names its own), so one line holds for every family
-  and outlives a release. A family's frontier model above `top` (Claude's Fable, Codex's
-  Astra) is no tier and never runs, because it costs several times `top`. Resolve the tier
+  stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
+  Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
+  and outlives a release. `frontier` costs several times `top`: use it only when the job needs it. Resolve the tier
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
-  family's current lineup (the backend's Model section) leaves the default. A launch that fails on
+  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
   capacity is retried later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork
