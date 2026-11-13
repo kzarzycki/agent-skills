@@ -1418,6 +1418,41 @@ def ended_on_monitor(info: dict, items: list[dict]) -> bool:
     )
 
 
+def live_tasks(info: dict) -> list[dict]:
+    """The background tasks of a session still running, a ``monitor`` (the live updates a
+    published Artifact arms) apart: work whose result goes to the session when it ends."""
+    return [
+        t
+        for t in info.get("background_tasks") or []
+        if t.get("type") != "monitor" and t.get("status", "running") == "running"
+    ]
+
+
+def archived_note(og: Omnigent, sid: str, info: dict) -> str:
+    """Why a relay to archived session ``sid`` goes nowhere: its state and where its work
+    continues, the live sub-agents it left (Omnigent records no successor session)."""
+    try:
+        kids = og.children(sid)
+    except Fail:
+        kids = []
+    where = (
+        f"its work continues in sub-agents {', '.join(kids)}: relay there"
+        if kids
+        else "no sub-agent or successor session is recorded for it: start a fresh run, or"
+        " relay to the session that started it"
+    )
+    tasks = live_tasks(info)
+    work = (
+        f"; {len(tasks)} background task(s) were still running when it was archived"
+        if tasks
+        else ""
+    )
+    return (
+        f"session {sid} is archived (title {info.get('title') or '?'!r}, status"
+        f" {info.get('status') or '?'}{work}); {where}"
+    )
+
+
 def last_message(items: list[dict]) -> dict | None:
     return next((i for i in reversed(items) if i.get("type") == "message"), None)
 
@@ -1537,7 +1572,7 @@ def send(
     old = frozenset(str(i.get("id")) for i in items)
     info = og.info(sid)
     if info.get("archived"):
-        raise Gone(f"session {sid} is archived")
+        raise Gone(archived_note(og, sid, info))
     if not info.get("runner_online", True):
         revive(og, sid)
 
