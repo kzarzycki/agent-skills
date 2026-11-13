@@ -160,7 +160,8 @@ works in a worktree of its own), and runs on another host only when the project'
 file (a proof log, the previous report) beside its report there before its brief, and
 ``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
 saying it left the far worktree's tracked changes unchecked, since the file API runs no git.
-A session on another host waits on no capacity here. ``AGENT`` is a registered
+``start`` waits for room on the host the new session's load lands on: ``--host``'s, else this one,
+for a cloud start too, whose bridge runs there; another host is read through a live session on it. ``AGENT`` is a registered
 agent's name or id; a name several agents hold starts the newest when their records and configs match
 apart from identity and bookkeeping (copies of one spec), else fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
@@ -252,6 +253,9 @@ TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right no
 # them without `owner=True`, so an agent whose call waits on the owner can't make it over REST.
 APPROVAL_GATED = re.compile(r"/v1/(scheduled-tasks|policies|sessions/[^/]+/policies)(/|\?|$)")
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
+# An RST literal (``-``): text with no space after the opening pair or before the closing one,
+# so it is not the empty pair a heredoc leaves, which is followed by the sentence's own spaces.
+RST_LITERAL = re.compile(r"(?<!`)``(?=[^\s`])[^`\n]*(?<=[^\s`])``(?!`)")
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
 NO_REPORT = "Your turn ended without the report."
@@ -433,6 +437,15 @@ CAPACITY_WAIT_SECONDS = float(os.environ.get("OMNIGENT_CAPACITY_WAIT_SECONDS") o
 STUCK_SECONDS = float(os.environ.get("OMNIGENT_STUCK_SECONDS") or 1800)
 MEMINFO = Path("/proc/meminfo")
 PROC_STAT = Path("/proc/stat")
+# Each host's limits where its hardware or its job sets its own line, keyed by Omnigent host name:
+# ``min_mb`` available memory and ``max_load`` the 1-minute load average, absolute, not per core.
+# A missing field takes the default above; OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
+# OMNIGENT_MAX_LOAD_<HOST> (the name upper-cased, ``-`` as ``_``) override one row.
+HOST_LIMITS: dict[str, dict[str, float]] = {
+    "cc-experiments": {"min_mb": 2500, "max_load": 40},  # it serves Omnigent and the managers
+    "oz": {"max_load": 10},  # its 8 threads
+}
+FAR_READS = 3  # live sessions on another host tried for its load and memory, newest first
 
 # The detach the preambles prescribe: Perl's setsid, since macOS has no setsid command.
 DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
@@ -453,6 +466,8 @@ Your checkout is a clone of the branch checked out in the workspace this session
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
+Demo: for a user-visible change, state in the report the command you ran and its output (or the demo skill's recording); otherwise say `Demo: none`, since a reviewer judges a visible change without checking out the branch.
+Gate record: when the passing gate was not pushed as a `loop-gate/` ref, end the report with the `local-ci --record` JSON (head, tree, exit, command, env) as its last lines, since the lead has no other proof which head the pass covers.
 Never address the owner, and never call an interactive question tool, since its prompt waits on someone who never sees it: if you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 Never publish a page or artifact, since it waits on a permission nobody can give here: put its content in the report.
 End each commit message with the co-author line only, with no session link, since the commit reaches a public repository.
@@ -482,6 +497,97 @@ Write your final report to {report}. End every turn with one line that opens wit
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
 
 """
+# Every acp:claude-cloud session's preamble, lead or worker, with or without --pr (#706): a fresh
+# clone lacks the host's .git/info/exclude, and a write under .git/ asks the cloud permission
+# policy, which nobody answers.
+CLOUD_NOTE = (
+    "This session runs in a cloud VM: never write under `.git/` (not even `.git/info/exclude`),"
+    " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
+    " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
+)
+# A cloud session without --pr reports in its last message, since its report file stays in the VM,
+# which the host's file API can't read: wait and report write that message to the report path. A
+# turn can end on a progress line or a question, so only a marked message counts (``cloud_reply``):
+# a child's first line is ``CLOUD_REPORT_LINE`` or ``CLOUD_QUESTION_LINE``, a lead's its ending line.
+CLOUD_REPORT_LINE, CLOUD_QUESTION_LINE = "REPORT", "QUESTION"
+CLOUD_REPLIES = {
+    # (PREAMBLE's sentence, its cloud form)
+    "Write your final report to {report}, once, when done: keep any progress notes in another"
+    " file, since the report path is read as your answer.": (
+        "Your files stay in this cloud VM, which the host never reads, so your final report is your"
+        f" last message, once, when done: a first line `{CLOUD_REPORT_LINE}`, then the full report,"
+        " which the host writes to {report}. Any other last message is read as unfinished and"
+        " nudged, so keep progress notes out of it."
+    ),
+    "write the question to {report}.question, reply with only that path, and stop: the answer"
+    " comes as your next message.": (
+        f"reply with a first line `{CLOUD_QUESTION_LINE}`, then the question, and stop: the answer"
+        " comes as your next message."
+    ),
+    "When done, reply with only the report path.\n": "",
+    # LEAD_PREAMBLE's
+    "Write your final report to {report}. End every turn with one line": (
+        "Your files stay in this cloud VM, which the host never reads, so your final report is"
+        " your last message: when done, reply with the full report, opening with its ending line"
+        " (below) rather than ending on it, and the host writes it to {report}; a last message that"
+        " opens with no ending line is read as unfinished and nudged. End every other turn with"
+        " one line"
+    ),
+}
+CLOUD_NUDGE = (
+    NO_REPORT + " Poll any long run you started detached, then reply with the full report as your"
+    f" brief says, its first line `{CLOUD_REPORT_LINE}` (a lead's: its ending line), or with a first"
+    f" line `{CLOUD_QUESTION_LINE}` and your question: your files stay in the cloud VM, which the"
+    " host never reads."
+)
+# A lead's cloud report opens with the ending line LEAD_PREAMBLE names.
+CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
+
+
+def cloud_preamble(preamble: str, pr: int | None) -> str:
+    """``preamble`` for an ``acp:claude-cloud`` session: ``CLOUD_NOTE`` before its closing blank
+    line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    if not pr:
+        for old, new in CLOUD_REPLIES.items():
+            preamble = preamble.replace(old, new)
+    return preamble.removesuffix("\n") + CLOUD_NOTE + "\n"
+
+
+def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | None:
+    """What a cloud session without ``--pr`` gives as its last message, when that is the history's
+    last and an assistant's and is marked (``CLOUD_REPLIES``): ``("report", <body>)`` for a lead's
+    that opens with its ending line (the whole message) or a child's whose first line is
+    ``CLOUD_REPORT_LINE`` (what follows it), ``("question", <body>)`` for one whose first line is
+    ``CLOUD_QUESTION_LINE``; else None, since a turn can end on a progress line ("Committing the
+    fix...") or an unmarked question. With ``verdict`` a report without a ``VERDICT:`` line is
+    None too, as a host report file without one doesn't count."""
+    last = last_message(items)
+    if not last or last.get("role") != "assistant":
+        return None
+    text = text_of(last).strip()
+    first, _, rest = text.partition("\n")
+    if CLOUD_LEAD_ENDING.match(first):
+        return None if verdict and not VERDICT.search(text) else ("report", text + "\n")
+    mark = first.strip().strip("*_#` ").rstrip(":").strip()
+    rest = rest.strip()
+    if mark == CLOUD_REPORT_LINE and rest:
+        return None if verdict and not VERDICT.search(rest) else ("report", rest + "\n")
+    if mark == CLOUD_QUESTION_LINE and rest:
+        return "question", rest + "\n"
+    return None
+
+
+def cloud_session(og: Omnigent, info: dict) -> bool:
+    """Whether the session ``info`` describes runs on ``acp:claude-cloud``. Its record's own
+    ``harness`` is the transport (``acp``): the cloud harness is its agent's, looked up by the
+    record's ``agent_name`` (else ``agent_id``); an agent that can't be looked up is no cloud one."""
+    agent = info.get("agent_name") or info.get("agent_id")
+    if not agent:
+        return False
+    try:
+        return og.harness(str(agent)) == CLOUD_HARNESS
+    except Fail:
+        return False
 
 
 def repo_name() -> str:
@@ -587,8 +693,11 @@ def briefs_for(report: Path, listed: list[Path], far: bool = False) -> list[Path
     return listed or [b for b in [brief_of(report)] if not far and b.exists()]
 
 
-def revive_line(report: Path, briefs: list[Path]) -> str:
+def revive_line(report: Path, briefs: list[Path], cloud: bool = False) -> str:
+    """The revive line; a ``cloud`` session's names no report file, which stays in its VM."""
     read = f" Read your brief: {', '.join(map(str, briefs))}." if briefs else ""
+    if cloud:
+        return f"{REVIVED}{read} Reply with the full report as your brief says, once done."
     return f"{REVIVED}{read} Write your report to {report}."
 
 
@@ -734,7 +843,11 @@ class Omnigent:
         return str(self.agent(name)["id"])
 
     def harness(self, name: str) -> str:
-        return str(self.agent(name).get("harness") or "")
+        """Agent ``name``'s harness, looked up once per name: a poll asks it at every look."""
+        cache = self.__dict__.setdefault("_harnesses", {})
+        if name not in cache:
+            cache[name] = str(self.agent(name).get("harness") or "")
+        return cache[name]
 
     def models(self, name: str, host_id: str | None = None) -> list[str]:
         """The model ids agent ``name``'s harness lists on the host it would run on: each picker
@@ -1112,20 +1225,7 @@ class Omnigent:
             norm = os.path.realpath if here else os.path.normpath
             return norm(str(path)) == norm(workspace)
 
-        path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
-        while True:
-            page = self.call("GET", path + (f"&after={after}" if after else ""))
-            found += [
-                s
-                for s in page.get("data", [])
-                if str(s.get("host_id") or "") == host_id
-                and not s.get("archived")
-                and s.get("status") != "failed"
-                and same(s.get("workspace"))
-            ]
-            if not (page.get("has_more") and page.get("last_id")):
-                return found
-            after = str(page["last_id"])
+        return [s for s in live_sessions(self, host_id) if same(s.get("workspace"))]
 
     def children(self, sid: str) -> list[str]:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
@@ -1810,24 +1910,126 @@ def cpu_idle() -> float | None:
         return None
 
 
-def capacity() -> tuple[bool, str]:
+def capacity(min_mb: float | None = None, max_load: float | None = None) -> tuple[bool, str]:
     """Whether this host has room for another session, and a line saying what it carries. CPU is
     judged by idle share, not the load average, which on macOS also counts threads waiting on I/O
-    and memory and so overstates CPU use several times over; load decides only when idle cannot
-    be measured."""
-    # ponytail: this host only, the one start's config names.
+    and memory and so overstates CPU use several times over; load per core decides only when idle
+    cannot be measured. A host row's ``max_load`` (absolute) also refuses, and ``min_mb`` replaces
+    the default memory line (``host_limits``)."""
+    min_mb = MIN_AVAILABLE_MB if min_mb is None else min_mb
     idle, mb = cpu_idle(), available_mb()
-    if idle is None:
+    parts, room = [], True
+    if idle is not None:
+        parts.append(f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})")
+        room = idle >= MIN_CPU_IDLE
+    if max_load is not None:
+        load = os.getloadavg()[0]
+        parts.append(f"load {load:.1f} (max {max_load:g})")
+        room = room and load < max_load
+    elif idle is None:
         load = os.getloadavg()[0] / (os.cpu_count() or 1)
-        cpu, room = (
-            f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g})",
-            load <= MAX_LOAD_PER_CORE,
-        )
-    else:
-        cpu, room = f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})", idle >= MIN_CPU_IDLE
+        parts.append(f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g})")
+        room = load <= MAX_LOAD_PER_CORE
     memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
-    line = f"{cpu}, {memory} (min {MIN_AVAILABLE_MB:g})"
-    return room and (mb is None or mb >= MIN_AVAILABLE_MB), line
+    line = f"{', '.join(parts)}, {memory} (min {min_mb:g})"
+    return room and (mb is None or mb >= min_mb), line
+
+
+def host_limits(name: str) -> tuple[float, float | None]:
+    """Host ``name``'s ``min_mb`` and ``max_load`` (None: judged per core, or by idle CPU here):
+    its ``HOST_LIMITS`` row over the defaults, under its OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
+    OMNIGENT_MAX_LOAD_<HOST> overrides."""
+    row, key = HOST_LIMITS.get(name, {}), re.sub(r"\W", "_", name.upper())
+    min_mb = os.environ.get(f"OMNIGENT_MIN_AVAILABLE_MB_{key}") or row.get("min_mb")
+    max_load = os.environ.get(f"OMNIGENT_MAX_LOAD_{key}") or row.get("max_load")
+    return (
+        MIN_AVAILABLE_MB if min_mb is None else float(min_mb),
+        None if max_load is None else float(max_load),
+    )
+
+
+def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
+    """The live sessions (not archived, not failed) on host ``host_id``, sub-agents included."""
+    path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
+    while True:
+        page = og.call("GET", path + (f"&after={after}" if after else ""))
+        found += [
+            s
+            for s in page.get("data", [])
+            if str(s.get("host_id") or "") == host_id
+            and not s.get("archived")
+            and s.get("status") != "failed"
+        ]
+        if not (page.get("has_more") and page.get("last_id")):
+            return found
+        after = str(page["last_id"])
+
+
+def far_capacity(
+    og: Omnigent, host_id: str, min_mb: float, max_load: float | None
+) -> tuple[bool | None, str]:
+    """``capacity`` for another host, read through a live session there: its ``/proc/meminfo``
+    (``MemAvailable``) and ``/proc/loadavg`` (the 1-minute load), judged by ``max_load`` when its
+    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines. None and why when it
+    can't be read: no live session, every read failing, or no ``/proc`` (a Mac)."""
+    # ponytail: a host's load and memory read through one of its sessions, since the server reads
+    # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
+    # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
+    # also give a Mac's load.
+    sessions = sorted(
+        live_sessions(og, host_id),
+        key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
+        reverse=True,
+    )
+    why = "no live session there"
+    for s in sessions[:FAR_READS]:
+        sid = str(s["id"])
+        try:
+            meminfo = og.read_file(sid, "/proc/meminfo")
+            loadavg = og.read_file(sid, "/proc/loadavg")
+            stat = "" if max_load is not None else og.read_file(sid, "/proc/stat")
+        except Gone as e:
+            return None, f"no {str(e).split(':', 1)[0]}"
+        except Fail as e:
+            why = f"read failed: {e}"
+            continue
+        found = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.MULTILINE)
+        try:
+            load = float(loadavg.split()[0])
+        except (IndexError, ValueError):
+            return None, "/proc/loadavg unreadable"
+        if max_load is not None:
+            cpu, room = f"load {load:.1f} (max {max_load:g})", load < max_load
+        else:
+            cores = len(re.findall(r"^cpu\d+\s", stat, re.MULTILINE)) or 1
+            per = load / cores
+            cpu = f"load {per:.1f} per core (max {MAX_LOAD_PER_CORE:g})"
+            room = per <= MAX_LOAD_PER_CORE
+        mb = int(found.group(1)) / 1024 if found else None
+        memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
+        return room and (mb is None or mb >= min_mb), f"{cpu}, {memory} (min {min_mb:g})"
+    return None, why
+
+
+def host_name(og: Omnigent, host_id: str) -> str:
+    """Host ``host_id``'s name, which ``HOST_LIMITS`` is keyed by; its id when unknown."""
+    try:
+        return og.hosts().get(host_id, host_id)
+    except Fail:
+        return host_id
+
+
+def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, str]:
+    """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
+    through a session on another (``far_capacity``, None when unreadable)."""
+    min_mb, max_load = host_limits(name)
+    if host_id == og.host_id:
+        return capacity(min_mb=min_mb, max_load=max_load)
+    return far_capacity(og, host_id, min_mb, max_load)
+
+
+def unchecked(name: str, why: str) -> str:
+    return f"{name}: load and memory not readable ({why}); starting unchecked"
 
 
 def taken(e: Fail) -> bool:
@@ -1844,6 +2046,7 @@ CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EFFORTS = {
     "claude": CLAUDE_EFFORTS,
     "claude-native": CLAUDE_EFFORTS,
+    CLOUD_HARNESS: CLAUDE_EFFORTS,  # passed to the server as reasoning_effort, Claude's levels
     "codex": None,
     "codex-native": None,
 }
@@ -2026,7 +2229,8 @@ def start(
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
-    session on another host or in the cloud is not held back by this host's load. ``files`` (local
+    session on another host or in the cloud is held to the capacity of the host it lands on
+    (``host_id``, else this one) since #849, not to this host's load. ``files`` (local
     paths, for a session on another host) are written beside ``report`` on that host through the
     session's file API before its brief is sent, so it finds them when it starts."""
     harness = agent if agent in AGENTS else og.harness(agent)
@@ -2091,15 +2295,19 @@ def start(
                     " so its signature would name an effort it doesn't run"
                 )
     effort = picked
-    # its load lands there, not here: on another host, or in a cloud VM bridged from this one
-    elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
-    deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
-    while not elsewhere and not (room := capacity())[0]:
+    # its load lands on the host --host names, else this one: a cloud start's bridge runs there too
+    target = host_id or og.host_id
+    name, deadline = host_name(og, target), time.monotonic() + CAPACITY_WAIT_SECONDS
+    while not (room := host_capacity(og, target, name))[0]:
+        if room[0] is None:
+            print(unchecked(name, room[1]), file=sys.stderr)
+            break
         if time.monotonic() >= deadline:
-            raise Fail(f"host over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
-        print(f"host over capacity, waiting: {room[1]}", file=sys.stderr)
+            raise Fail(f"{name} over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
+        print(f"{name} over capacity, waiting: {room[1]}", file=sys.stderr)
         time.sleep(POLL_SECONDS * 6)
-    if span := EMPTY_SPAN.search(brief):
+    # a literal holds no newline, so blanking it leaves the line number below right
+    if span := EMPTY_SPAN.search(RST_LITERAL.sub(" ", brief)):
         line = brief[: span.start()].count("\n") + 1
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
@@ -2109,9 +2317,12 @@ def start(
     lock = heavy_lock() if by_file and not top_level else ""
     # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
     # server took for it, never the id asked for.
+    preamble = pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE
+    if harness == CLOUD_HARNESS:
+        preamble = cloud_preamble(preamble, pr)
     body = (
         (f"LOOP_HEAVY_LOCK={lock}\n" if lock else "")
-        + (pr_preamble() if pr else LEAD_PREAMBLE if top_level else PREAMBLE).format(
+        + preamble.format(
             report=report,
             pr=pr,
             unposted=UNPOSTED,
@@ -2318,10 +2529,15 @@ def wait(
     one on another host is not checked here, since its tree is not this one. A cloud child
     recovers once from each failure that is no fault of its own (``recovery``): one that failed in setup goes to ``relaunch``, which briefs a fresh
     session the same way (``run``'s; without it, it fails), and one that stalled gets one continue
-    message; a second of either fails, naming the first.
+    message; a second of either fails, naming the first. An ``acp:claude-cloud`` child without
+    ``pr`` reports in its last message (``CLOUD_REPLIES``), since its files stay in its VM: a turn
+    ending on a marked report (``cloud_reply``) has it written to ``report`` (on the session's
+    host), one ending on a marked question has it written to ``<report>.question`` and raises
+    ``Asked``, and any other gets the nudge; a file already there never counts, as with ``pr``.
     """
     deadline = time.monotonic() + timeout
     far = False  # on another host (no ``pr``): its files are read through its file API, not here
+    cloud = False  # an acp:claude-cloud child without ``pr``: its last message is the report
     idle_since, nudged = None, False
     recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
     continued: float | None = None  # when the stalled session was told to continue
@@ -2339,7 +2555,7 @@ def wait(
         return file_mtime(og, sid, path, far)
 
     def counts() -> bool:
-        if pr or (mtime := stamp(report)) is None:
+        if pr or cloud or (mtime := stamp(report)) is None:
             return False
         text = file_text(og, sid, report, far)
         return (
@@ -2351,6 +2567,7 @@ def wait(
     while True:
         info = og.info(sid)
         far = not pr and elsewhere(og, info)
+        cloud = not pr and cloud_session(og, info)
         if stamp(question) is not None:
             raise Asked(str(question))
         status = str(info.get("status"))
@@ -2420,6 +2637,15 @@ def wait(
             report.write_text(body)
             carry_files(body, report)
             break  # the turn has ended on the comment's URL: nothing rewrites it now
+        if turn_ended and cloud and status != "failed" and (reply := cloud_reply(items, verdict)):
+            kind, body = reply
+            path = question if kind == "question" else report
+            if not far:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            file_write(og, sid, path, body, far)
+            if kind == "question":
+                raise Asked(str(question))
+            break  # the turn has ended on it: a later turn is a follow-up's
         # a report that counts is final once settled, at a later look, within the deadline
         if turn_ended and not counts():
             if stamp(question) is not None:
@@ -2456,6 +2682,8 @@ def wait(
                         pr=pr, unposted=UNPOSTED
                     )
                     if pr
+                    else CLOUD_NUDGE
+                    if cloud
                     else NUDGE.format(report=report)
                 )
                 print(
@@ -2479,7 +2707,7 @@ def wait(
             f"session {sid} runs on another host: its worktree's tracked changes are not checked here",
             file=sys.stderr,
         )
-    if workspace and not elsewhere(og, info) and not pr:
+    if workspace and not elsewhere(og, info) and not pr and not cloud:
         before = set(baseline or [])
         if left := [line for line in tracked_changes(Path(workspace)) if line not in before]:
             raise Fail(
@@ -3262,7 +3490,9 @@ def check(
     # skewed server clock shifts the silence and the report's baseline by the skew.
     info, items = og.info(sid), og.items(sid)
     head = f"{sid} {info.get('title') or ''}".rstrip()
-    resume = NUDGE.format(report=report)
+    # a cloud child's files stay in its VM: its marked last message is its report or question
+    cloud = cloud_session(og, info)
+    resume = CLOUD_NUDGE if cloud else NUDGE.format(report=report)
     since, resent = instructed(items, resume)
     if resumed.get(sid, since) < since:  # sent before a newer instruction
         del resumed[sid]
@@ -3278,7 +3508,21 @@ def check(
         text = file_text(og, sid, report, far)
         return not FAILED_LINE.fullmatch(text) and (not verdict or bool(VERDICT.search(text)))
 
-    if counts():
+    if cloud:
+        if str(info.get("status")) not in RUNNING | {"failed"} and (
+            reply := cloud_reply(items, verdict)
+        ):
+            kind, body = reply
+            path = question_of(report) if kind == "question" else report
+            if not far:
+                path.parent.mkdir(parents=True, exist_ok=True)
+            file_write(og, sid, path, body, far)
+            return (
+                f"{head}: asked: {path}"
+                if kind == "question"
+                else f"{head}: report written: {path}"
+            ), since
+    elif counts():
         stamp = file_mtime(og, sid, report, far)
         if settled(stamp, info, items, {} if ended is None else ended, sid) and counts():
             return f"{head}: report written: {report}", since
@@ -3301,7 +3545,7 @@ def check(
         say(f"{head}: revived (no live runner)")
         unsent.add(sid)
     if sid in unsent:  # once online, the revived runner never comes this way again: retry here
-        og.send(sid, revive_line(report, briefs_for(report, briefs or [], far)))
+        og.send(sid, revive_line(report, briefs_for(report, briefs or [], far), cloud))
         unsent.discard(sid)
         return "", since
     stuck = f"stuck:{sid}"  # told once per stuck stretch; a new history item ends it
@@ -4280,6 +4524,14 @@ def supervise_registry(
             if "state" not in lead:
                 continue  # gone from the registry, or never read
             lines += ["", f"{sid} {lead['title']}: {status_line(lead)}"]
+            if lead.get("cloud"):  # its file stays in the VM: the head its last message gave
+                read = lead.get("report_read") or {}
+                if read.get("head"):
+                    lines += [
+                        "report (its last message):",
+                        *read["head"].splitlines()[:REPORT_HEAD],
+                    ]
+                continue
             try:
                 head = og.read_file(sid, lead["report"]).splitlines()[:REPORT_HEAD]
             except Exception as e:  # noqa: BLE001 - never fatal: the post goes without it
@@ -4432,6 +4684,7 @@ def supervise_registry(
             direct=direct,
             waits_on=[after] if after else [],
             leads=leads,
+            cloud=cloud_session(og, info),
             **lead_status(info, items),
         )
         if console:
@@ -4466,9 +4719,22 @@ def supervise_registry(
         """A lead whose last message is only a report's path takes its ``ending`` and ``wait`` from
         the report's ``report_head``, read once per last message (kept in ``report_read``, with a failed
         read, logged once, so a poll never reads it again); an unread report leaves them as the
-        message gave them."""
+        message gave them. A cloud lead (``acp:claude-cloud``) is never read: its last message is
+        the report, whose ``report_head`` gives them, and one that is only a path stays unread."""
         said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
         text = text_of(said[-1]).strip() if said else ""
+        if lead.get("cloud"):
+            # its report file stays in the cloud VM, which no file API reaches: its last message is
+            # the report, so the ending and wait come from that, with no read
+            mid = str(said[-1].get("id")) if said else ""
+            if not text or REPORT_PATH.fullmatch(text):
+                why = "a cloud session's report file stays in its VM, and its last message is no report"
+                lead["report_read"] = {"id": mid, "head": None, "error": why}
+                return
+            head = report_head(text)
+            lead["report_read"] = {"id": mid, "head": head, "error": None}
+            lead.update(ending=ending_of(head), wait=wait_of(head, said[-1].get("created_at")))
+            return
         if not REPORT_PATH.fullmatch(text):
             lead.pop("report_read", None)
             return
@@ -4500,7 +4766,7 @@ def supervise_registry(
     def written(sid: str, lead: dict) -> float:
         """When the lead's report was last written, else 0 (the error logged): a report it writes
         as it goes (a merge queue, a gate log) is progress while its messages are quiet."""
-        if not lead["report"]:
+        if not lead["report"] or lead.get("cloud"):  # a cloud lead's file stays in its VM
             return 0.0
         try:
             at = og.modified(sid, lead["report"])
@@ -4931,7 +5197,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
-    sub.add_parser("capacity", description="exit 0 when this host has room for another session")
+    p = sub.add_parser(
+        "capacity", description="exit 0 when this host, or --host, has room for another session"
+    )
+    p.add_argument(
+        "--host", metavar="NAME|ID", help="judge that host, read through a session there"
+    )
     sub.add_parser(
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
@@ -5134,11 +5405,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.notify:
                 notify(outcome)
             return code
-        if args.cmd == "capacity":
+        if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
         og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd == "capacity":
+            target = og.host(args.host)
+            name = host_name(og, target)
+            ok, line = host_capacity(og, target, name)
+            print(unchecked(name, line) if ok is None else f"{name}: {line}")
+            return 1 if ok is False else 0
         if args.cmd in ("relay", "send", "report"):
             sid = args.session = og.session_id(args.session)
         if args.cmd == "status":
@@ -5153,6 +5430,27 @@ def main(argv: list[str] | None = None) -> int:
                 raise usage
             args.path = str(line[0])
         if args.cmd == "report":
+            try:
+                info = og.info(sid)
+            except Fail:  # no record names its harness: the file read, as before, says what fails
+                info = {}
+            # a cloud session's report stays in its VM: its marked last message is the report,
+            # written here; an unmarked one (a progress line, a question) is none
+            if (
+                cloud_session(og, info)
+                and (reply := cloud_reply(og.items(sid)))
+                and reply[0] == "report"
+            ):
+                body = reply[1]
+                far = elsewhere(og, info)
+                path = Path(args.path)
+                if not path.is_absolute() and not far:  # as read_file takes it: the workspace's
+                    path = Path(info.get("workspace") or ".") / path
+                if not far:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                file_write(og, sid, path, body, far)
+                print(body, end="")
+                return 0
             print(og.read_file(sid, args.path))
             return 0
         if args.cmd == "relay":

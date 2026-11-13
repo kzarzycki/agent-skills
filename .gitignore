@@ -1,6 +1,8 @@
 .work/
+# The loop's scratch (reports, briefs, repros): never committed, and a fresh clone (a cloud
+# session's) has no .git/info/exclude to keep it out of git status (#706)
+tmp/loop/
 .worktrees/
-.claude/settings.json
 .claude/settings.local.json
 .claude/hooks/
 .pi/

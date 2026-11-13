@@ -1,3 +1,4 @@
+# New tests go in a module of their own, test_approvals_<topic>.py, importing approvals_harness.
 """scripts/approvals.py: each loop step leaves proof on GitHub; the gate checks it, and `approve`/`verdict` write it."""
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from collections.abc import Callable, Iterator
@@ -638,6 +640,10 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
         ),
         ("bot:\n  dependabot[bot]:\n", "loop.md's `bot.dependabot[bot]` lacks `paths`"),
         ("land:\n  signed_squash_to: main\n", "loop.md's `land` lacks `allowed_signers`"),
+        (
+            "land:\n  signed_squash_to: main\n  allowed_signers: s\n  where: everywhere\n",
+            "loop.md's `land.where` must be one of host, cloud, both, not 'everywhere'",
+        ),
         (
             'land:\n  signed_squash_to: ""\n  allowed_signers: s\n',
             "loop.md's `land.signed_squash_to` is empty",
@@ -3358,16 +3364,20 @@ def lands(
         "pulls": {},
         "calls": [],
         "comments": [],
+        "squash": "COMMIT_MESSAGES",
     }
     pulls = state["pulls"]
 
-    def open_pr(number: int, files: dict[str, str], **fields: Any) -> str:
+    def open_pr(
+        number: int, files: dict[str, str], messages: tuple[str, ...] = (), **fields: Any
+    ) -> str:
         git_in(work, "switch", "-q", "--detach", "origin/main")
         for name, text in files.items():
             (work / name).parent.mkdir(parents=True, exist_ok=True)
             (work / name).write_text(text)
         git_in(work, "add", *files)
-        git_in(work, "commit", "-qm", f"PR {number}")
+        for message in messages or (f"PR {number}",):
+            git_in(work, "commit", "-q", "--allow-empty", "-m", message)
         head = git_in(work, "rev-parse", "HEAD").strip()
         git_in(
             work,
@@ -3390,9 +3400,33 @@ def lands(
             state["calls"].append(args)
             pulls[int(args[-1])]["isDraft"] = "--undo" in args
             return ""
+        if args[:2] == ("api", "--paginate") and args[2].split("?")[0].endswith("/commits"):
+            number = int(args[2].split("/")[-2])
+            # REST lists a PR's commits oldest first, each with its author's GitHub login
+            listed = git_in(
+                origin, "rev-list", "--reverse", f"main..{pulls[number]['headRefOid']}"
+            ).split()
+            return "".join(
+                json.dumps(
+                    {
+                        "author": pulls[number]["author"],
+                        "parents": [{"sha": "p"}],
+                        "commit": {
+                            "message": git_in(origin, "log", "-1", "--format=%B", sha).strip(),
+                            "author": {"name": "Builder", "email": "builder@example.com"},
+                        },
+                    }
+                )
+                + "\n"
+                for sha in listed
+            )
+        if args == ("api", "repos/{owner}/{repo}"):
+            return json.dumps({"squash_merge_commit_message": state["squash"]})
         if args[:2] == ("pr", "merge"):
             state["calls"].append(args)
-            number, head = int(args[2]), args[-1]
+            number, head = int(args[2]), args[args.index("--match-head-commit") + 1]
+            body = args[args.index("--body") + 1] if "--body" in args else "GitHub's default body"
+            state.setdefault("bodies", {})[number] = body
             assert pulls[number]["headRefOid"] == head
             tip = git_in(origin, "rev-parse", "main").strip()
             tree = git_in(origin, "merge-tree", "--write-tree", tip, head).split()[0]
@@ -3408,6 +3442,8 @@ def lands(
                 tip,
                 "-m",
                 f"PR {number} (#{number})",
+                "-m",
+                body,
             ).strip()
             git_in(origin, "update-ref", "refs/heads/main", squash, tip)
             pulls[number]["state"] = "MERGED"
@@ -3477,6 +3513,154 @@ def held_tip(origin: Path) -> str:
 def landed_note(lands: dict[str, Any], number: int) -> dict[str, str]:
     [body] = [body for n, body in lands["comments"] if n == number and body.startswith("Landed\n")]
     return dict(line.split(": ", 1) for line in body.splitlines()[1:])
+
+
+def test_land_squashes_with_the_commit_messages_less_every_claude_session_line(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """GitHub's default squash body copies each commit message, a cloud session's link included (#638)."""
+    trailers = "Co-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://example.com/session_1"
+    lands["open"](7, {"7.txt": "7\n"}, messages=(f"Add 7\n\nWhy 7.\n\n{trailers}",))
+    lands["open"](
+        8,
+        {"8.txt": "8\n"},
+        messages=(f"Add 8\n\nWhy 8.\n\n{trailers}", f"Test 8\n\nClaude-Session: x\n\n{trailers}"),
+    )
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["bodies"] == {
+        7: "Why 7.\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+        8: "* Add 8\n\nWhy 8.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
+        "* Test 8\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
+        "---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+    }
+    landed = git_in(lands["origin"], "log", "--format=%B", "main")
+    assert "Claude-Session" not in landed and "Why 8." in landed
+
+
+def rest_commit(
+    message: str, login: str, name: str, email: str, parents: int = 1
+) -> dict[str, Any]:
+    """One commit as REST's `pulls/<n>/commits` lists it, with the fields squash_body reads."""
+    return {
+        "author": {"login": login},
+        "parents": [{"sha": f"p{each}"} for each in range(parents)],
+        "commit": {"message": message, "author": {"name": name, "email": email}},
+    }
+
+
+CLAUDE = ("claude", "Claude", "noreply@anthropic.com")
+OPUS = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+
+
+def test_squash_body_reproduces_a_real_squash_of_several_commits() -> None:
+    """The two commits of this repo's PR #805 as REST lists them, each less its `Claude-Session:` line, and the body
+    GitHub wrote for their squash (fe20c11), less the same lines: the trailers stay in their items and the footer
+    names the commits' author once, since the trailer shares its email (#638)."""
+    first = (
+        "engineering-loop: spec.auto takes a paths term, a spec approved by policy while its PR stays"
+        " inside them (#803)\n\nA spec labelled spec:paths is approved by the policy's `- paths: [...]` term"
+        " at check build and check merge\nwhile every path the PR touches, a renamed or copied file's old"
+        " name included, matches a glob. A file\noutside, a rename across the boundary either way, a file"
+        " list GitHub can't give in full, risk:high, the\nrisk rule (its verifier term too), an author"
+        " without write access, or the label without the term each\nleave the spec to the owner, naming"
+        " why. Renames are read in one function, touched(), the same code\n#791's merge-path hold uses, so"
+        f" the two merge into one.\n\n{OPUS}"
+    )
+    second = (
+        "engineering-loop: check merge and land refuse a spec:paths PR crossing the paths (#803)\n\n"
+        "Entry-point tests drive `check merge`, `check build` then `check merge`, and `land` through main()"
+        " for a\nrename into and out of the paths, a copy into and out of them, a deleted file outside them"
+        " and a diff\nthat left them after check build; a copy into the paths had no test before.\n\n"
+        f"{OPUS}"
+    )
+    commits = [rest_commit(first, *CLAUDE), rest_commit(second, *CLAUDE)]
+    assert approvals.squash_body(commits, "owner") == (
+        f"* {first}\n\n* {second}\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    )
+
+
+def test_squash_body_of_one_commit_moves_its_co_authors_to_the_end() -> None:
+    """One commit, shaped as this repo's PR #799 (4065939), its link replaced: GitHub empties each trailer line in
+    place and names the co-authors after the message; land then drops the link and the blank lines it leaves."""
+    message = (
+        "Make the test independent\n\nFake the check instead.\n\n"
+        "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nClaude-Session: https://example.com/s"
+    )
+    body = approvals.squash_body([rest_commit(message, *CLAUDE)], "owner")
+    assert body == (
+        "Fake the check instead.\n\n\nClaude-Session: https://example.com/s\n\n"
+        "Co-authored-by: Claude <noreply@anthropic.com>"
+    )
+    assert approvals.unlinked(body) == (
+        "Fake the check instead.\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    )
+    # a body of trailers alone leaves only the co-authors, and a commit of the PR's author none
+    trailers = rest_commit(f"Fix\n\n{OPUS}", "owner", "Owner", "owner@example.com")
+    assert approvals.squash_body([trailers], "owner") == f"Co-authored-by: {OPUS[16:]}"
+    assert approvals.squash_body([rest_commit("Fix", "owner", "Owner", "o@x")], "owner") == ""
+
+
+def test_squash_body_names_each_co_author_once_by_email_the_first_seen_keeping_its_name() -> None:
+    """As squashes on this repo's main show: in commit order, a commit's author other than the PR's, then the
+    trailers its message names; one line per email (#754 and #759); a merge commit is no item but its author is a
+    co-author (#711)."""
+    commits = [
+        rest_commit(f"One\n\n{OPUS}", "owner", "Owner", "owner@example.com"),
+        rest_commit("Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>", *CLAUDE),
+        rest_commit("Three\n\nCo-authored-by: Pat <pat@example.com>", "owner", "Owner", "o@x"),
+    ]
+    assert approvals.squash_body(commits, "owner") == (
+        "* One\n\n" + OPUS + "\n\n* Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>\n\n"
+        "* Three\n\nCo-authored-by: Pat <pat@example.com>\n\n---------\n\n"
+        f"Co-authored-by: {OPUS[16:]}\nCo-authored-by: Pat <pat@example.com>"
+    )
+    # with no co-author, no separator either, as this repo's ae30f7e shows
+    alone = [rest_commit(each, "owner", "Owner", "o@x") for each in ("One", "Two")]
+    assert approvals.squash_body(alone, "owner") == "* One\n\n* Two"
+    bump = rest_commit(
+        "chore: adopt v1", "actions[bot]", "actions[bot]", "1+actions[bot]@example.com"
+    )
+    merge = rest_commit("Merge branch 'main'", "owner", "Owner", "owner@example.com", parents=2)
+    assert approvals.squash_body([bump, merge], "updater[bot]") == (
+        "Co-authored-by: actions[bot] <1+actions[bot]@example.com>\n"
+        "Co-authored-by: Owner <owner@example.com>"
+    )
+
+
+def test_land_passes_the_prs_body_under_the_pr_description_default(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """The repo's squash default is the PR's description: land passes that, less its link (#638)."""
+    lands["squash"] = "PR_BODY"
+    lands["open"](
+        7,
+        {"7.txt": "7\n"},
+        messages=("Add 7\n\nWhy 7.",),
+        body="## Evidence\n\nlog line\n\nClaude-Session: https://example.com/s\n\nThanks.\n",
+    )
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["bodies"] == {7: "## Evidence\n\nlog line\n\nThanks."}
+
+
+def test_land_passes_no_body_where_github_writes_none(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """A blank default, or a commit-messages default with nothing to write, leaves GitHub's own body; one whose body
+    is only a link goes as an empty one (#638)."""
+    lands["squash"] = "BLANK"
+    lands["open"](7, {"7.txt": "7\n"}, messages=("Add 7\n\nClaude-Session: x",))
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    lands["squash"] = "COMMIT_MESSAGES"
+    lands["open"](8, {"8.txt": "8\n"}, messages=("Add 8",))
+    lands["open"](9, {"9.txt": "9\n"}, messages=("Add 9\n\nClaude-Session: x",))
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    merges = {int(args[2]): args for args in lands["calls"] if args[:2] == ("pr", "merge")}
+    assert "--body" not in merges[7] and "--body" not in merges[8]
+    assert lands["bodies"][9] == ""
 
 
 def test_land_gates_three_landable_prs_once_and_the_base_ends_at_the_gated_tree(
@@ -3624,6 +3808,19 @@ def test_a_pr_red_alone_once_is_a_flake_and_lands(lands: dict[str, Any]) -> None
     assert (lands["runs"](), lands["merged"]()) == (4, ["7", "8"])
 
 
+def test_a_one_pr_batch_red_runs_its_gate_twice_then_evicts(lands: dict[str, Any]) -> None:
+    red = lands["open"](7, {"red.txt": "red\n"})
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    # the batch is its first run alone, then once more: two runs of the PR's tree, then the bare base's own
+    assert (lands["runs"](), lands["merged"]()) == (3, [])
+    assert sum("exited 1 (log" in line for line in lines) == 2
+    assert sum("once more, in case it was a flake" in line for line in lines) == 1
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+    [(number, body)] = lands["comments"]
+    assert number == 7 and body.startswith(f"{approvals.EVICTED}\nHead: {red}\n")
+
+
 def test_a_red_bare_base_evicts_nobody(lands: dict[str, Any]) -> None:
     work = lands["work"]
     (work / "red.txt").write_text("red\n")
@@ -3686,8 +3883,8 @@ def test_without_machine_exit_a_gate_exiting_78_is_red(lands: dict[str, Any]) ->
     lands["open"](7, {"machine.txt": "9"})
     code, _ = lands["land"]("7")
     assert code == 1
-    # the batch, #7 alone twice, then the bare base, which is green: #7 is evicted
-    assert (lands["runs"](), lands["merged"]()) == (4, [])
+    # the batch is #7's first run alone, then once more, then the bare base, which is green: #7 is evicted
+    assert (lands["runs"](), lands["merged"]()) == (3, [])
     assert ("pr", "ready", "--undo", "7") in lands["calls"]
 
 
@@ -4798,6 +4995,367 @@ def test_a_green_signed_batch_gives_each_pr_a_commit_of_its_own_change(
     assert git_in(work, "log", "-2", "--name-only", "--format=%s", lands["main"]()).split() == [
         "PR", "8", "(#8)", "8.txt", "PR", "7", "(#7)", "7.txt",
     ]  # fmt: skip
+
+
+# --- land in a cloud session: the landing key from the environment, never the VM's ---
+
+CLOUD_LAND = SIGNED_LAND + "where: cloud\nsigning_key_env: LAND_KEY\n"
+# a cloud VM's signing program, which signs with the session's key: here it fails, so a land through it fails
+VM_SIGNER = "#!/bin/sh\necho 'the session signer was used' >&2\nexit 1\n"
+
+
+@pytest.fixture
+def cloud_land(
+    lands: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    """`lands` as a cloud session runs it: the cloud marker set, PR 7 open, loop.md's `land` section with `where:
+    cloud` and `signing_key_env: LAND_KEY`, the variable holding a landing key listed in `signers`, and the VM's own
+    config (`commit.gpgsign`, a session key, a signing program that fails). The temporary directory is a fresh one,
+    `tmp`, so a key folder left behind shows. `out(code, lines)` checks the key's text was printed nowhere."""
+    work = lands["work"]
+    git_in(work, "remote", "set-url", "origin", REPO)
+    git_in(work, "config", f"url.{lands['origin'].as_uri()}.insteadOf", REPO)
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    for name in ("landing", "session", "stranger"):
+        sh(
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            name,
+            "-f",
+            str(keys / name),
+            cwd=keys,
+        )
+    (work / "signers").write_text(f"loop@example.com {(keys / 'landing.pub').read_text()}")
+    loop = work / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", CLOUD_LAND))
+    head = lands["open"](7, {"7.txt": "7\n"})
+    signer = tmp_path / "code-sign"
+    signer.write_text(VM_SIGNER)
+    signer.chmod(0o755)
+    for key, value in (
+        ("gpg.format", "ssh"),
+        ("commit.gpgsign", "true"),
+        ("user.signingkey", str(keys / "session")),
+        ("gpg.ssh.program", str(signer)),
+    ):
+        git_in(work, "config", key, value)
+    landing_key = (keys / "landing").read_text()
+    monkeypatch.setenv(approvals.CLOUD, "true")
+    monkeypatch.setenv("LAND_KEY", landing_key)
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp))
+    faked = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        """`lands`' gh, also listing the open PRs as drop_records reads them over REST once a land merged."""
+        if args[:2] == ("api", "--paginate") and "pulls?state=open" in args[2]:
+            assert args[3:] == ("--jq", ".[]"), args
+            return "".join(
+                json.dumps({"number": pr["number"], "head": {"sha": pr["headRefOid"]}}) + "\n"
+                for pr in lands["pulls"].values()
+                if pr["state"] == "OPEN"
+            )
+        return faked(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+
+    def out(capsys: pytest.CaptureFixture[str], code_lines: tuple[int, list[str]]) -> list[str]:
+        """land's lines, once the key's text is in neither them nor stderr, and no key folder is left."""
+        err = capsys.readouterr().err
+        for secret in (landing_key, *landing_key.splitlines()[1:-1]):
+            assert secret not in "\n".join(code_lines[1]) and secret not in err
+        assert list(tmp.iterdir()) == []
+        return code_lines[1]
+
+    lands.update(keys=keys, head=head, loop=loop, out=out, tmp=tmp, base=lands["main"]())
+    return lands
+
+
+def unmoved(cloud_land: dict[str, Any]) -> None:
+    """No ref the land would move moved: main, the PR's branch, and no landing lock taken."""
+    assert (cloud_land["main"](), git_in(cloud_land["origin"], "rev-parse", "pr7").strip()) == (
+        cloud_land["base"],
+        cloud_land["head"],
+    )
+    assert cloud_land["tips"]() == []
+
+
+def test_a_cloud_land_signs_the_squash_with_the_environments_key_not_the_vms(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The VM's signing program fails, yet the PR lands, as a squash a host verifies against `signers` with the
+    landing key; GitHub refusing the `gate` status, as a cloud session's proxy does, the pass goes to origin as its record
+    branch, which the land drops once that tree landed."""
+
+    def refused(*_args: Any, **_kw: Any) -> None:
+        raise subprocess.CalledProcessError(1, "gh", stderr="gh: Forbidden (HTTP 403)")
+
+    monkeypatch.setattr(approvals, "post_status", refused)
+    for name, real in (
+        ("record_ref", RECORD_REF),
+        ("push_record", PUSH_RECORD),
+        ("drop_records", DROP_RECORDS),
+    ):
+        monkeypatch.setattr(approvals, name, real)
+    lines = cloud_land["out"](capsys, cloud_land["land"]("7"))
+    tip = cloud_land["main"]()
+    assert f"PR #7 landed in main as {tip}, signed by a key in signers" in lines
+    assert cloud_land["merged"]() == []  # never GitHub's merge
+    assert git_in(cloud_land["origin"], "rev-parse", "pr7").strip() == tip
+    verified = subprocess.run(
+        # as a host checks it, with ssh-keygen rather than the VM's program
+        [
+            "git",
+            *("-c", "gpg.ssh.program=ssh-keygen"),
+            *("-c", "gpg.ssh.allowedSignersFile=signers"),
+            *("verify-commit", tip),
+        ],
+        cwd=cloud_land["work"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert 'Good "git" signature for loop@example.com with ED25519 key' in verified.stderr
+    assert cloud_land["tips"]() and cloud_land["lock"]() == ""  # the lock was taken and released
+    ref = approvals.RECORD_BRANCH.format(
+        approvals.record_name(cloud_land["main"]("^{tree}"), approvals.gate()[0])
+    )
+    assert any(line.startswith(f"published in origin as the record branch {ref}") for line in lines)
+    # and gone once the tree it holds landed (drop_records)
+    assert git_in(cloud_land["origin"], "for-each-ref", "--format=%(refname)", ref).strip() == ""
+
+
+@pytest.mark.parametrize(
+    ("key", "why"),
+    [
+        (None, "the variable LAND_KEY (loop.md's `land.signing_key_env`) is not set"),
+        ("", "the variable LAND_KEY (loop.md's `land.signing_key_env`) is empty"),
+        (" \n", "the variable LAND_KEY (loop.md's `land.signing_key_env`) is empty"),
+        (
+            "stranger",
+            (
+                "the key in the variable LAND_KEY (loop.md's `land.signing_key_env`) is not in signers: add its"
+                " public key there"
+            ),
+        ),
+        (
+            "garbage",
+            "the variable LAND_KEY (loop.md's `land.signing_key_env`) holds no SSH private key without a passphrase",
+        ),
+    ],
+)
+def test_a_cloud_land_refuses_a_missing_empty_or_unlisted_key_and_prints_no_key(
+    cloud_land: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    key: str | None,
+    why: str,
+) -> None:
+    if key is None:
+        monkeypatch.delenv("LAND_KEY")
+    elif key == "stranger":
+        monkeypatch.setenv("LAND_KEY", (cloud_land["keys"] / "stranger").read_text())
+    elif key == "garbage":
+        monkeypatch.setenv("LAND_KEY", (cloud_land["keys"] / "landing").read_text()[:-40] + "\n")
+    else:
+        monkeypatch.setenv("LAND_KEY", key)
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["out"](capsys, (code, lines))) == (1, [why])
+    unmoved(cloud_land)
+    if key in ("stranger", "garbage"):
+        text = os.environ["LAND_KEY"]
+        assert all(part not in "\n".join(lines) for part in text.splitlines()[1:-1])
+
+
+def test_a_cloud_land_refuses_a_section_naming_no_key_variable(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cloud_land["loop"].write_text(
+        cloud_land["loop"].read_text().replace("  signing_key_env: LAND_KEY\n", "")
+    )
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        (
+            "land in a cloud session signs with the key in the variable loop.md's `land.signing_key_env` names,"
+            " and it names none"
+        )
+    ]
+    unmoved(cloud_land)
+
+
+@pytest.mark.parametrize(
+    ("where", "marker", "place"),
+    [("host", True, "a cloud session"), ("cloud", False, "a host")],
+)
+def test_land_refuses_where_loop_md_excludes_the_place_it_runs(
+    cloud_land: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    marker: bool,
+    place: str,
+) -> None:
+    cloud_land["loop"].write_text(
+        cloud_land["loop"].read_text().replace("where: cloud", f"where: {where}")
+    )
+    if not marker:
+        monkeypatch.delenv(approvals.CLOUD)
+    # never a PR read: the refusal comes first
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pytest.fail(f"PR #{n} read"))
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        f"loop.md's `land.where` is `{where}`, so land does not run in {place}"
+    ]
+    unmoved(cloud_land)
+
+
+def test_a_cloud_land_defaults_to_host_and_lands_with_both(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`where` unset is `host`, which a cloud session refuses; `both` lands there."""
+    text = cloud_land["loop"].read_text()
+    cloud_land["loop"].write_text(text.replace("  where: cloud\n", ""))
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        "loop.md's `land.where` is `host`, so land does not run in a cloud session"
+    ]
+    unmoved(cloud_land)
+    cloud_land["loop"].write_text(text.replace("where: cloud", "where: both"))
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["main"]()) == (
+        0,
+        git_in(cloud_land["origin"], "rev-parse", "pr7").strip(),
+    )
+    cloud_land["out"](capsys, (code, lines))
+
+
+def test_a_cloud_land_without_the_land_section_names_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cloud_land["loop"].write_text(GITHUB_RULE)
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        (
+            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
+            " the session's proxy refuses, and signs with GitHub's key"
+        )
+    ]
+    unmoved(cloud_land)
+
+
+def test_the_cloud_key_folder_is_removed_when_the_land_fails_after_taking_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A land that raises once the key is on disk still removes its folder, and signs nothing after it."""
+    seen: list[list[str]] = []
+
+    def broken(*_args: Any) -> tuple[int, bool]:
+        seen.append(list(approvals.SIGNING))
+        raise approvals.Refused("broken")
+
+    monkeypatch.setattr(approvals, "landing_here", broken)
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == ["broken"]
+    assert seen[0][1::2] == [
+        "gpg.format=ssh",
+        f"user.signingkey={seen[0][3].split('=', 1)[1]}",
+        "gpg.ssh.program=ssh-keygen",
+    ]
+    assert Path(seen[0][3].split("=", 1)[1]).parent.parent == cloud_land["tmp"]
+    assert approvals.SIGNING == []
+
+
+def test_the_cloud_key_file_is_the_owners_alone(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    modes: list[int] = []
+    monkeypatch.setattr(
+        approvals,
+        "landing_here",
+        lambda *_a: (
+            modes.append(Path(approvals.SIGNING[3].split("=", 1)[1]).stat().st_mode & 0o777)
+            or (0, False)
+        ),
+    )
+    assert approvals.landing(7) == (0, False)
+    assert modes == [0o600]
+
+
+def test_a_cloud_land_refuses_a_draft_it_cannot_mark_ready(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses."""
+    cloud_land["pulls"][7]["isDraft"] = True
+    assert cloud_land["out"](capsys, cloud_land["land"]("7"))[-1] == (
+        "PR #7 is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+    )
+    assert cloud_land["calls"] == []
+    assert cloud_land["main"]() == cloud_land["base"]
+
+
+def test_a_cloud_land_reads_the_default_branch_over_rest(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "_rest_only", True)
+    monkeypatch.setattr(approvals, "rest", lambda path: {"default_branch": "main"})
+    named: list[str] = []
+    monkeypatch.setattr(approvals, "locked", lambda base, _held: named.append(base) or False)
+    assert approvals.landing(None) == (approvals.WAITING, True)
+    assert named == ["main"]
+
+
+def test_a_cloud_land_takes_a_pr_rest_cannot_say_is_queued_only_on_the_projects_word(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REST says neither whether a PR is in a merge queue nor whether classic branch protection requires one: a cloud
+    session refuses such a PR unless loop.md's `land` section says `merge_queue: false`. A host still refuses it."""
+    pull = cloud_land["pulls"][7] | {"isInMergeQueue": None}
+    with approvals.placed(approvals.project()[1]):
+        assert "`merge_queue: false`" in approvals.unsignable(pull, "main", Path("signers"))
+    cloud_land["loop"].write_text(
+        cloud_land["loop"]
+        .read_text()
+        .replace(
+            "  signing_key_env: LAND_KEY\n", "  signing_key_env: LAND_KEY\n  merge_queue: false\n"
+        )
+    )
+    with approvals.placed(approvals.project()[1]):
+        assert approvals.unsignable(pull, "main", Path("signers")) is None
+    monkeypatch.delenv(approvals.CLOUD)
+    git_in(cloud_land["work"], "config", "gpg.ssh.program", "ssh-keygen")
+    assert approvals.unsignable(pull, "main", Path("signers")).startswith(
+        "PR #7: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
+        " signature: land it where GraphQL answers"
+    )
+
+
+def test_a_key_is_listed_only_as_its_type_and_body_together_on_a_live_line(tmp_path: Path) -> None:
+    signers = tmp_path / "signers"
+    signers.write_text(
+        "# a@example.com ssh-ed25519 BODY\nb@example.com ssh-rsa BODY\nc@example.com ssh-ed25519 OTHER\n"
+    )
+    assert not approvals.listed("ssh-ed25519 BODY landing", signers)
+    signers.write_text(signers.read_text() + 'd@example.com namespaces="git" ssh-ed25519 BODY d\n')
+    assert approvals.listed("ssh-ed25519 BODY landing", signers)
+
+
+def test_a_cloud_eviction_leaves_the_pr_ready_and_says_so(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub turns a PR back to draft only over GraphQL: a cloud session says it stays ready; a host makes it one."""
+    pull = cloud_land["pulls"][7]
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert (
+        "PR #7 stays ready, since a cloud session can't make it a draft: make it one on GitHub"
+        in (capsys.readouterr().out.splitlines())
+    )
+    assert cloud_land["calls"] == []
+    monkeypatch.delenv(approvals.CLOUD)
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert cloud_land["calls"] == [("pr", "ready", "--undo", "7")]
 
 
 def test_required_checks_never_stand_in_for_the_gate(
@@ -5952,6 +6510,48 @@ def test_a_killed_caller_leaves_the_detached_check_to_finish_and_record(tmp_path
     assert (status.returncode, status.stdout.split(":")[0]) == (0, f"passed on {head}")
 
 
+def test_status_of_a_detached_head_proof_run_reads_the_command_it_ran(tmp_path: Path) -> None:
+    """Through the real detached entry point: the run records its command beside its exit code, so --status finds a
+    head proof under the caller's tier, and a plain --record run still reads under the plain gate."""
+    repo, head, env = gate_faked(tmp_path)
+    loop = add(
+        add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n"), "loop", HEAD_PROOF
+    )
+    (repo / "docs" / "agents").mkdir(parents=True)
+    (repo / "docs" / "agents" / "loop.md").write_text(loop)
+    git_in(repo, "add", "-A")
+    git_in(repo, "commit", "-qm", "loop")
+    head = git_in(repo, "rev-parse", "HEAD").strip()
+    common = repo / ".git" / "approvals" / "local-ci"
+
+    def status() -> str:
+        run = subprocess.run(
+            [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+        return run.stdout
+
+    proof = {**env, "GATE_UI_TESTS": "smoke"}
+    first = caller(repo, proof, "--record", "--head-proof")
+    out, err = first.communicate(timeout=60)
+    assert first.returncode == 0, out + err
+    polled(lambda: (common / f"{head}.exit").exists())
+    assert status().startswith(
+        f"passed on {head} under `GATE_UI_TESTS=smoke mise run check:all`: log"
+    )
+    # a plain run, as before: the plain gate's command and record
+    plain = {k: v for k, v in env.items() if k != "GATE_UI_TESTS"}
+    assert caller(repo, plain, "--record").wait(timeout=60) == 0
+    runs = tmp_path / "runs"
+    polled(lambda: runs.read_text().count("run") == 2 and (common / f"{head}.exit").exists())
+    assert status().startswith(f"passed on {head}: log")
+
+
 def test_status_never_says_passed_for_a_run_that_recorded_nothing(tmp_path: Path) -> None:
     """A --record on a checkout with changes exits 0 without a pass on HEAD: --status must not call HEAD passed."""
     repo, head, env = gate_faked(tmp_path)
@@ -6365,322 +6965,6 @@ def test_under_spec_auto_a_risk_rule_holds_no_merge_but_risk_high_and_the_cap_do
     assert approvals.risk(marked, [owned], AUTO) == "`risk:high` is on PR #7"
     # the same PR beside `spec.auto` as a list waits for the owner's merge label
     assert approvals.risk(done, [owned], POLICY) == "it matches a risk rule (path `billing/**`)"
-
-
-# --- spec.auto's `paths` term: a spec labelled spec:paths is approved by policy while its PR stays inside them ---
-
-SCOPED = loop_md(
-    "spec:\n  auto:\n    - bug\n    - paths:\n        - mise.toml\n        - docs/agents/**\n"
-    "risk:\n  verifier: true\n  paths:\n    - billing/**\n"
-)
-LOW = {**VERDICT, "body": VERDICT["body"] + "Risk: low\n"}
-OWNER_SPEC = [
-    "#1 has no `Approved: spec` record by the owner",
-    "#1 lacks the `approved:spec` label",
-]
-
-
-def tooling(*labels: str, author: str = "worker") -> dict[str, Any]:
-    """A writer's chore spec the lead declared path-scoped, with no approval of the owner's."""
-    return by(author, specced(1, "kind:chore", "spec:paths", *labels))
-
-
-def owners(why: str) -> list[str]:
-    """check's lines for #1 when the paths term does not approve its spec."""
-    return [
-        f"#1: its spec is the owner's to approve, though it carries `spec:paths`, since {why}",
-        *OWNER_SPEC,
-    ]
-
-
-def moved(*files: tuple[str, str | None]) -> dict[str, Any]:
-    """A PR with the head's verdict changing `files`, each a (path, old name) pair: a pair with an old name is a
-    rename, as GraphQL gives it (the new path only); approvals.py reads the old name from the REST list."""
-    pr = pull(reviews=(LOW,))
-    pr["files"] = {
-        "totalCount": len(files),
-        "nodes": [
-            {"path": path, "changeType": "RENAMED" if old else "MODIFIED"} for path, old in files
-        ],
-    }
-    return pr
-
-
-@pytest.fixture
-def renames(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """The PR's REST file list (pr_changes), each renamed file's `previous_filename` by its new name; `fail` makes
-    GitHub refuse the list."""
-    found: dict[str, Any] = {"old": {}, "fail": False}
-
-    def changes(number: int) -> list[dict[str, Any]]:
-        if found["fail"]:
-            raise subprocess.CalledProcessError(1, ["gh", "api"])
-        return [{"filename": new, "previous_filename": old} for new, old in found["old"].items()]
-
-    monkeypatch.setattr(approvals, "pr_changes", changes)
-    return found
-
-
-def test_check_build_passes_a_spec_paths_issue_with_no_owner_record(
-    writers: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Before the PR, the setting and the label approve the spec: the branch's files so far stay inside the paths."""
-    spec = {1: tooling(), 2: by("worker", specced(2, "kind:chore"))}
-    changed = ["docs/agents/loop.md\n"]
-
-    def git(*args: str) -> str:
-        if args[0] == "diff":
-            return "".join(f"{path}\0" for path in changed[0].split())
-        return "origin/main\n" if args[-1] == "origin/HEAD" else "loop/1-fix\n"
-
-    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, SCOPED))
-    monkeypatch.setattr(approvals, "one_repo", lambda: None)
-    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
-    monkeypatch.setattr(approvals, "current_pr", lambda: None)
-    monkeypatch.setattr(approvals, "git", git)
-
-    def build(number: int) -> tuple[int, list[str]]:
-        code = approvals.main(["check", "build", "--issue", str(number)])
-        return code, capsys.readouterr().out.splitlines()
-
-    assert build(1) == (0, ["#1: every build proof holds; no PR yet"])
-    # no label, no policy: the owner approves it
-    assert build(2) == (
-        1,
-        ["#2 has no `Approved: spec` record by the owner", "#2 lacks the `approved:spec` label"],
-    )
-    changed[0] = "docs/agents/loop.md app.py\n"
-    assert build(1) == (1, owners("the PR changes `app.py`, outside `spec.auto`'s `paths`"))
-
-
-def test_check_merge_passes_a_spec_paths_pr_inside_the_paths_and_names_each_file_outside(
-    writers: list[str],
-) -> None:
-    inside = pull(reviews=(LOW,), files=("mise.toml", "docs/agents/loop.md"))
-    assert merge(inside, [tooling()], SCOPED) == []
-    outside = pull(reviews=(LOW,), files=("mise.toml", "src/app.py", "README.md"))
-    assert approvals.proofs("merge", outside, [tooling()], SCOPED) == owners(
-        "the PR changes `src/app.py`, `README.md`, outside `spec.auto`'s `paths`"
-    )
-
-
-@pytest.mark.parametrize(
-    ("new", "old"),
-    [("src/loop.md", "docs/agents/loop.md"), ("docs/agents/app.py", "src/app.py")],
-    ids=["out-of-the-paths", "into-the-paths"],
-)
-def test_a_rename_across_the_paths_either_way_voids_the_policy(
-    writers: list[str], renames: dict[str, Any], new: str, old: str
-) -> None:
-    renames["old"] = {new: old}
-    outside = new if old.startswith("docs/agents/") else old
-    assert approvals.proofs("merge", moved((new, old)), [tooling()], SCOPED) == owners(
-        f"the PR changes `{outside}`, outside `spec.auto`'s `paths`"
-    )
-    # a rename that stays inside them is approved
-    renames["old"] = {"docs/agents/new.md": "docs/agents/loop.md"}
-    within = moved(("docs/agents/new.md", "docs/agents/loop.md"))
-    assert approvals.proofs("merge", within, [tooling()], SCOPED) == []
-
-
-def test_a_file_list_github_cannot_give_in_full_voids_the_policy(
-    writers: list[str], renames: dict[str, Any]
-) -> None:
-    unreadable = "GitHub can't give every file the PR changes, an old name of a moved file included"
-    crowded = pull(reviews=(LOW,), files=("mise.toml",))
-    crowded["files"]["totalCount"] = 101
-    assert approvals.proofs("merge", crowded, [tooling()], SCOPED) == owners(
-        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
-    )
-    unruled = loop_md("spec:\n  auto:\n    - paths:\n        - mise.toml\n")
-    assert approvals.proofs("merge", crowded, [tooling()], unruled) == owners(unreadable)
-    # a rename whose old name GitHub won't give, or gives for another file only
-    renames["fail"] = True
-    rename = moved(("docs/agents/new.md", "docs/agents/loop.md"))
-    assert approvals.proofs("merge", rename, [tooling()], unruled) == owners(unreadable)
-    renames["fail"], renames["old"] = False, {"docs/agents/other.md": "docs/agents/loop.md"}
-    rename = moved(("docs/agents/new.md", "docs/agents/loop.md"))
-    assert approvals.proofs("merge", rename, [tooling()], unruled) == owners(unreadable)
-
-
-def test_a_spec_paths_pr_the_risk_rule_holds_still_needs_the_owners_approval(
-    writers: list[str],
-) -> None:
-    inside = ("docs/agents/loop.md",)
-    marked = pull(reviews=(LOW,), files=inside, labels=("risk:high",))
-    assert approvals.proofs("merge", marked, [tooling()], SCOPED)[:3] == owners(
-        "`risk:high` is on PR #7"
-    )
-    assert approvals.proofs("build", pull(files=inside), [tooling("risk:high")], SCOPED) == owners(
-        "`risk:high` is on #1"
-    )
-    ruled = loop_md(
-        "spec:\n  auto:\n    - paths:\n        - docs/agents/**\nrisk:\n  paths:\n    - docs/agents/gatekeeper.md\n"
-    )
-    held = pull(reviews=(LOW,), files=("docs/agents/gatekeeper.md",))
-    assert approvals.proofs("merge", held, [tooling()], ruled) == owners(
-        "it matches a risk rule (path `docs/agents/gatekeeper.md`)"
-    )
-    # the verifier's `Risk: high` holds it too, once a review is read
-    high = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
-    high["body"] += "Risk: high\n"
-    judged = pull(reviews=(high,), files=inside)
-    assert approvals.proofs("merge", judged, [tooling()], SCOPED)[:3] == owners(
-        "it matches a risk rule (verifier): the verifier's pass 1 on aaaaaaa says `Risk: high`"
-    )
-    # so does an author who can't write to the repo
-    assert approvals.proofs(
-        "build", pull(files=inside), [tooling(author="drive-by")], SCOPED
-    ) == owners("its author @drive-by can't write to the repo")
-
-
-def test_without_the_paths_term_the_label_approves_nothing_and_the_kinds_work_as_before(
-    writers: list[str],
-) -> None:
-    inside = pull(files=("docs/agents/loop.md",))
-    for policy in (POLICY, AUTO.replace("area:api", "area:none"), BARE):
-        assert approvals.spec_paths(policy) == []
-    assert approvals.proofs("build", inside, [tooling()], POLICY) == owners(
-        "`spec.auto` names no `paths`, so `spec:paths` approves nothing"
-    )
-    # `spec.auto: true` approves it as it did, label or not, and the kind list its kinds
-    assert approvals.proofs("build", inside, [tooling()], AUTO) == []
-    assert approvals.proofs("build", inside, [by("worker", specced(1, "kind:bug"))], SCOPED) == []
-    assert approvals.spec_kinds(SCOPED) == {"bug"}
-    assert approvals.spec_paths(SCOPED) == ["mise.toml", "docs/agents/**"]
-    assert approvals.settings(SCOPED)["spec"]["auto"] == [
-        "bug",
-        {"paths": ["mise.toml", "docs/agents/**"]},
-    ]
-
-
-def changes(pr: dict[str, Any], *files: tuple[str, str, str | None]) -> dict[str, Any]:
-    """`pr` changing `files`, each (path, GraphQL changeType, old name): a RENAMED or COPIED file's old name is in
-    the REST list (renames), a DELETED file's path its old one, as GitHub gives them."""
-    pr["files"] = {
-        "totalCount": len(files),
-        "nodes": [{"path": path, "changeType": kind} for path, kind, _ in files],
-    }
-    return pr
-
-
-INSIDE = ("docs/agents/loop.md", "MODIFIED", None)
-CROSSINGS = [
-    (("src/loop.md", "RENAMED", "docs/agents/loop.md"), "src/loop.md"),
-    (("docs/agents/app.py", "RENAMED", "src/app.py"), "src/app.py"),
-    (("src/copy.md", "COPIED", "docs/agents/loop.md"), "src/copy.md"),
-    (("docs/agents/app.py", "COPIED", "src/app.py"), "src/app.py"),
-    (("src/old.py", "DELETED", None), "src/old.py"),
-]
-CROSSING_IDS = ["rename-out", "rename-in", "copy-out", "copy-in", "deleted-outside"]
-
-
-@pytest.fixture
-def merges(
-    writers: list[str],
-    renames: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> Callable[..., tuple[int, list[str]]]:
-    """`check merge 7` and `check build 7` through main() under SCOPED, on a PR closing a writer's `spec:paths`
-    issue with a `Risk: low` verdict on its head; `run(point, *files)` gives (exit, lines)."""
-    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, SCOPED))
-    monkeypatch.setattr(approvals, "one_repo", lambda: None)
-
-    def run(point: str, *files: tuple[str, str, str | None]) -> tuple[int, list[str]]:
-        renames["old"] = {path: old for path, kind, old in files if kind in ("RENAMED", "COPIED")}
-        pr = changes(pull(reviews=(LOW,)), *files)
-        pr["closingIssuesReferences"]["nodes"] = [tooling()]
-        monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
-        code = approvals.main(["check", point, "7"])
-        return code, capsys.readouterr().out.splitlines()
-
-    return run
-
-
-def test_check_merge_lands_a_spec_paths_pr_inside_the_paths(
-    merges: Callable[..., tuple[int, list[str]]],
-) -> None:
-    code, lines = merges("merge", INSIDE, ("docs/agents/new.md", "RENAMED", "docs/agents/old.md"))
-    assert code == 0 and not any("owner's to approve" in line for line in lines), lines
-
-
-@pytest.mark.parametrize(("crossing", "outside"), CROSSINGS, ids=CROSSING_IDS)
-def test_check_merge_refuses_a_spec_paths_pr_crossing_the_paths(
-    merges: Callable[..., tuple[int, list[str]]],
-    crossing: tuple[str, str, str | None],
-    outside: str,
-) -> None:
-    code, lines = merges("merge", INSIDE, crossing)
-    assert code == 1
-    assert lines[:3] == owners(f"the PR changes `{outside}`, outside `spec.auto`'s `paths`")
-
-
-def test_check_merge_refuses_a_spec_paths_pr_whose_diff_left_the_paths_after_check_build(
-    merges: Callable[..., tuple[int, list[str]]],
-) -> None:
-    code, lines = merges("build", INSIDE)
-    assert code == 0 and not any("owner's to approve" in line for line in lines), lines
-    code, lines = merges("merge", INSIDE, ("src/app.py", "ADDED", None))
-    assert code == 1
-    assert lines[:3] == owners("the PR changes `src/app.py`, outside `spec.auto`'s `paths`")
-
-
-@pytest.mark.parametrize(("crossing", "outside"), CROSSINGS, ids=CROSSING_IDS)
-def test_land_lands_a_spec_paths_pr_inside_the_paths_and_refuses_one_crossing_them(
-    lands: dict[str, Any],
-    writers: list[str],
-    renames: dict[str, Any],
-    crossing: tuple[str, str, str | None],
-    outside: str,
-) -> None:
-    (lands["work"] / "docs" / "agents" / "loop.md").write_text(SCOPED)
-    git_in(lands["work"], "add", "-A")
-    git_in(lands["work"], "commit", "-qm", "the paths policy")
-    git_in(lands["work"], "push", "-q", "origin", "HEAD:refs/heads/main")
-    git_in(lands["work"], "fetch", "-q", "origin")
-    for number in (7, 8):
-        lands["open"](number, {f"docs/agents/{number}.md": f"{number}\n"}, reviews=())
-        pr = lands["pulls"][number]
-        pr["reviews"]["nodes"] = [
-            {
-                **verdict_on(pr["headRefOid"]),
-                "body": verdict_on(pr["headRefOid"])["body"] + "Risk: low\n",
-            }
-        ]
-        pr["closingIssuesReferences"]["nodes"] = [
-            by("worker", specced(100 + number, "kind:chore", "spec:paths"))
-        ]
-    changes(lands["pulls"][7], INSIDE)
-    changes(lands["pulls"][8], INSIDE, crossing)
-    renames["old"] = {crossing[0]: crossing[2]} if crossing[2] else {}
-    code, lines = lands["land"]("8")
-    assert code == 1
-    assert (
-        "#108: its spec is the owner's to approve, though it carries `spec:paths`, since the PR changes"
-        f" `{outside}`, outside `spec.auto`'s `paths`"
-    ) in "\n".join(lines), lines
-    # land names #8 and refuses it, and lands every landable PR into that base: #7, inside the paths
-    assert lands["merged"]() == ["7"]
-    assert lands["pulls"][8]["state"] == "OPEN"
-
-
-@pytest.mark.parametrize(
-    "term",
-    [
-        "    - path:\n        - a/**\n",
-        "    - paths: a/**\n",
-        "    - paths: []\n",
-        "    - paths:\n        - a/**\n      labels:\n        - b\n",
-    ],
-    ids=["misspelt", "a-string", "empty", "a-second-key"],
-)
-def test_a_paths_term_off_its_shape_is_refused_naming_the_key(term: str) -> None:
-    with pytest.raises(approvals.Refused) as raised:
-        approvals.settings(loop_md(f"spec:\n  auto:\n{term}"))
-    assert str(raised.value).startswith(
-        "loop.md's `spec.auto` term must be `paths`, a list of globs"
-    )
 
 
 def test_a_policy_line_is_no_condition_so_a_low_risk_pr_waits_for_nothing() -> None:
@@ -9178,6 +9462,8 @@ def test_a_landing_on_the_gated_tree_leaves_no_record_of_it_and_shows_the_pass_o
         return listing(*args)
 
     monkeypatch.setattr(approvals, "gh", gh)
+    # the squash body is tested on its own
+    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "comment", lambda *_a: None)
     hub.clear()
@@ -9195,6 +9481,8 @@ def test_land_deletes_the_record_branches_of_the_prs_it_merged(
     dropped: list[list[str]] = []
     monkeypatch.setattr(approvals, "drop_records", dropped.append)
     monkeypatch.setattr(approvals, "gh", lambda *_a, **_k: "")
+    # the squash body is tested on its own
+    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
     monkeypatch.setattr(approvals, "git", lambda *args: TREE if args[0] == "rev-parse" else "")
     monkeypatch.setattr(approvals, "publish", lambda *_a, **_k: None)
@@ -9606,6 +9894,63 @@ def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
         {"VIRTUAL_ENV": sys.prefix, "UV_RUN_RECURSION_DEPTH": "2", "PATH": "/usr/bin:/bin"},
     )
     assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
+
+
+def test_unlinked_keeps_the_blank_lines_no_session_line_left() -> None:
+    """A PR body's own blank lines stay; only those a removed line left beside another fold."""
+    body = "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nClaude-Session: https://x\n\nend"
+    assert approvals.unlinked(body) == "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nend"
+    assert approvals.unlinked("a\nClaude-Session: x\nb") == "a\nb"
+    assert approvals.unlinked("a\n\nClaude-Session: x") == "a"
+
+
+def test_land_only_lands_the_named_pr_and_leaves_the_other_untouched(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    other = lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7", "--only")
+    assert code == 0, lines
+    assert lands["merged"]() == ["7"]
+    # the other PR: no ready or merge call, no comment, still open on its own head
+    assert all(args[-1] != "8" and args[2] != "8" for args in lands["calls"])
+    assert [n for n, _ in lands["comments"]] == [7]
+    assert (lands["pulls"][8]["state"], lands["pulls"][8]["headRefOid"]) == ("OPEN", other)
+    assert lands["lock"]() == ""
+    # without the flag it lands with the next
+    assert lands["land"]()[0] == 0 and lands["merged"]() == ["7", "8"]
+
+
+def test_land_only_evicts_the_named_pr_red_alone_and_leaves_the_other_untouched(
+    lands: dict[str, Any],
+) -> None:
+    red = lands["open"](7, {"red.txt": "red\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7", "--only")
+    assert code == 1, lines
+    assert lands["merged"]() == []
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+    [(number, body)] = lands["comments"]
+    assert number == 7 and body.startswith(f"{approvals.EVICTED}\nHead: {red}\n")
+    assert lands["pulls"][8]["state"] == "OPEN" and not lands["pulls"][8]["isDraft"]
+    assert all("8" not in args[2:3] for args in lands["calls"])
+
+
+def test_land_only_with_wait_lands_the_named_pr_alone(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]("7", "--only", "--wait")[0] == 0
+    assert lands["merged"]() == ["7"]
+    assert [n for n, _ in lands["comments"]] == [7]
+
+
+def test_land_only_without_a_pr_is_refused(
+    lands: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    with pytest.raises(SystemExit) as exited:
+        approvals.main(["land", "--only"])
+    assert exited.value.code == 2
+    assert "--only" in capsys.readouterr().err
+    assert lands["merged"]() == [] and lands["calls"] == []
 
 
 # --- without GraphQL: a cloud session's proxy refuses it, and REST answers the same reads ---

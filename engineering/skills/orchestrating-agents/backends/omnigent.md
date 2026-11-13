@@ -82,13 +82,13 @@ none: codex-native hands the flag to the `codex` CLI, whose terminal then never 
 `start` refuses the flag for Codex and ignores the variable.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
-(Claude: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
+(Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
 (`OMNIGENT_EFFORT_CLAUDE`, `OMNIGENT_EFFORT_CODEX`), else the harness default runs. Omnigent records
 it as the session's `reasoning_effort` and turns it into the harness's own setting at launch, and the
 brief's `AGENT_SIGNATURE` names the level the server recorded. A harness drops an effort it can't
 apply, with no error, so `start` refuses one rather than sign an effort the child doesn't run: any
-effort for a harness other than claude-native and codex-native (antigravity, claude-cloud), and a
-Claude level outside `low` to `max`, and a Codex level the chosen model's row in the host's model
+effort for a harness other than claude-native, claude-cloud and codex-native (antigravity), and a
+Claude level (claude-native or claude-cloud) outside `low` to `max`, and a Codex level the chosen model's row in the host's model
 list doesn't name (Codex launches that one as another level). A Codex model whose row names no
 levels passes unchecked.
 
@@ -190,6 +190,11 @@ and ends each commit message with the co-author line and no session link, since 
 reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
+Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, also says
+never to write under `.git/`, since a write there waits on a permission prompt nobody in the
+cloud answers, and that `tmp/loop/` is scratch, never committed: a fresh clone lacks the host's
+`.git/info/exclude`, so the project's own `.gitignore` names `tmp/loop/`, and a session that
+sees its report untracked has nothing to "fix".
 
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
@@ -235,12 +240,23 @@ than being cut off, and call it again while the budget lasts.
 share over about a second and its available memory, and exits 0 when it has room for another
 session, 1 when not. It reads idle CPU, not the load average, which on macOS also counts threads
 waiting on I/O and memory and reads several times too high; load per core decides only when idle
-cannot be measured. `start` and `run` wait while it has none, except for a session `--host` puts
-on another host, whose load lands there, printing a line, and fail after
+cannot be measured. `start` and `run` wait while the host the new session's load lands on has
+none: the host `--host` names, else this one, for a `claude-cloud` start too, since its bridge
+session runs on that host. They print `<host> over capacity, waiting: …` and fail after
 `OMNIGENT_CAPACITY_WAIT_SECONDS` (default 600), since sessions on an overloaded host time out and
-fail; a queue that would rather wait sets it longer. The limits are knobs set for the hardware:
-`OMNIGENT_MIN_CPU_IDLE` (percent, default 10), `OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the
-fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default 1536). A
+fail; a queue that would rather wait sets it longer. Another host's `/proc/meminfo`
+(`MemAvailable`) and `/proc/loadavg` are read through a live session on it (not archived, not
+failed), newest first, up to 3; a host that can't be read (no live session, failed reads, or no
+`/proc`, as on a Mac) starts unchecked with the line `<host>: load and memory not readable
+(<why>); starting unchecked`. `capacity --host NAME|ID` judges another host the same way.
+The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, default 10),
+`OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default
+1536), and per host the `HOST_LIMITS` table in the script, keyed by Omnigent host name, whose row
+gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
+field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. A row's
+`max_load` decides another host's load in place of load per core, and on this host refuses on
+top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
+(the name upper-cased, `-` as `_`) override one row. A
 message `start`, `send` or `relay` posts is not failed when its POST times out on a slow
 server: the history decides whether it landed, within `--confirm-seconds`. The supervisor's
 own posts, which read no history, still count a timeout as a failure and try again.
@@ -330,6 +346,23 @@ than in a question file, and it writes its final report to the path. How it asks
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
+
+A cloud session started without `--pr` (`claude-cloud`, a lead or not) keeps its report file
+in its VM, which no file API here reaches, so its preamble has it reply with the full report as
+its last message, marked: a lead's opens with its ending line (`DONE:`, `USER NEEDED:`,
+`STILL WORKING:`, `PARKED:`), a child's with a first line `REPORT`, and a child's question with a
+first line `QUESTION`. A turn can end on a progress line ("Committing the fix...") or an unmarked
+question, so only a marked last message counts. `wait` writes a marked report to the report path
+(on the session's host), a file already there never counting, and a marked question to
+`<report>.question`, exiting 3 as for a host child's question; any other turn end gets a nudge to
+reply with the marked report. `report <session> [<path>]` prints a marked report and writes it to
+the path, else reads the file as for a host session. The supervisor's per-child look takes a
+cloud child's report or question from its marked last message by the same rule, reads no file
+for it, and sends it a resume and revive line that names no file path. It takes a followed cloud
+lead's ending and wait from the `report_head` of its last message and reads no file, and its post
+shows that head as the report's. A session is a cloud one when its agent's harness is
+`acp:claude-cloud` (its record's `agent_name`, else `agent_id`; looked up once per agent), since
+the record's own `harness` is the transport, `acp`. A host session keeps the file.
 
 `--host <name|id>` starts the lead on another Omnigent host (`GET /v1/hosts` lists them).
 It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a host other

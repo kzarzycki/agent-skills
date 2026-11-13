@@ -9,7 +9,7 @@
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
-    uv run scripts/approvals.py land [<pr>] [--wait]       # land every landable PR as one gated batch; exit 0, 1 or 3
+    uv run scripts/approvals.py land [<pr> [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
@@ -94,7 +94,7 @@ left no loop trail (no verifier review, no `Approved: spec` record or `approved:
 workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
 prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
-`land [<pr>]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
+`land [<pr> [--only]]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
 repository's default branch, as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
@@ -116,7 +116,9 @@ risk, and has the checks the base requires on GitHub (`required_checks`, but `lo
 own output) green on its head. Under `ci: false` the head needs no `local-ci` pass of its own: the gate on the batch is
 the proof. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
 names the command that records it. `land <pr>` on a draft marks it ready first, never on a missing proof, since ready starts CI; while the
-checks that starts are required, it waits (exit 3). A named PR that is no candidate says why: a missing proof exits 1,
+checks that starts are required, it waits (exit 3). `land <pr> --only` (with or without `--wait`) makes the named PR the only candidate: every other PR is left untouched (not
+marked ready, commented on, evicted or merged), and the rest is as without the flag; `--only` without a PR exits 2.
+A named PR that is no candidate says why: a missing proof exits 1,
 a wait for the owner or a pending required check 3, a red required check 1.
 3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
 `pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
@@ -131,17 +133,21 @@ date with the base runs no gate. GitHub's required checks never stand in for it,
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`). A merge GitHub refuses, or leaves unmerged (a base requiring a merge queue only queues it, to
-merge later on a tree no gate saw), stops there: that PR and those after it wait for the next land. Then it fetches
-and compares the base's tree with the gated tree. Equal: the pass is published (below) on the new tip. It then deletes
-the record branches no head needs: those of the trees it landed, and those over a day old whose tree is no open PR's
-head (a head replaced or never landed; the day spares a record pushed before its PR opened). A refused delete is said
-and never fails the landing.
+--match-head-commit`), with the body the repo's squash default would write less every `Claude-Session:` line, since a
+cloud session's harness adds its link to each commit and the PR may be public: under the commit-messages default the
+body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
+several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
+PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
+(a base requiring a merge queue only queues it, to merge later on a tree no gate saw), stops there: that PR and those
+after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
+published (below) on the new tip. It then deletes the record branches no head needs: those of the trees it landed, and
+those over a day old whose tree is no open PR's head (a head replaced or never landed; the day spares a record pushed
+before its PR opened). A refused delete is said and never fails the landing.
 Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
 which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
 `Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
 and the tree it passed on, and `Batch:` the PRs landed together.
-6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone. A PR red alone is
+6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone (a one-PR batch's red run counts as its first run alone). A PR red alone is
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
 the bare base is gated: red, the run stops (exit 1) and evicts nobody, since every PR would fail on that base.
@@ -163,6 +169,19 @@ meanwhile; a base push refused puts the PR's branch back on its head. It is no c
 repository (its branch isn't ours to push), targets a base other than the section's, has auto-merge or the merge queue
 on (GitHub would sign that squash), or when `origin` isn't the PR's repo, the checkout signs nothing or the signers file
 is missing. Without the section nothing changes.
+`where: host | cloud | both` (default `host`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
+PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
+key, shared across that service's users, so there `land` refuses without the section (GitHub's merge is GraphQL, which
+the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
+is unset, empty, no unencrypted SSH private key, or a key whose public half is no line of the allowed signers file, each
+refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
+removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
+user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key and signing program), so each squash is
+signed and verified with it. The batch's pass is published as below: GitHub refusing the status
+there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
+whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
+section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
+ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -569,13 +588,19 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 class Table(dict):
-    """A settings section whose every key is required, such as `land`."""
+    """A settings section whose every key is required but those `optional` names, such as `land`."""
+
+    def __init__(self, *args: Any, optional: tuple[str, ...] = (), **kinds: Any) -> None:
+        super().__init__(*args, **kinds)
+        self.optional = frozenset(optional)
 
 
 class Choice(tuple):
     """A setting that is one of these names, such as `loop.delegate`."""
 
 
+# where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
+PLACES = ("host", "cloud", "both")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
@@ -601,7 +626,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
-    "land": Table(signed_squash_to=str, allowed_signers=str),
+    "land": Table(
+        signed_squash_to=str,
+        allowed_signers=str,
+        where=Choice(PLACES),
+        signing_key_env=str,
+        merge_queue=bool,
+        optional=("where", "signing_key_env", "merge_queue"),
+    ),
     "carry_over_main": Table({"except": list}),
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
@@ -720,7 +752,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             raise Refused(
                 f"{file}'s {where} is empty"
             )  # a name's description may be empty, a path may not
-    if isinstance(schema, Table) and (missing := [key for key in schema if key not in section]):
+    if isinstance(schema, Table) and (
+        missing := [key for key in schema if key not in section and key not in schema.optional]
+    ):
         raise Refused(f"{file}'s `{name}` lacks `{'`, `'.join(missing)}`")
     return section
 
@@ -1851,6 +1885,101 @@ def opted_out(loop: str | None) -> bool:
     return settings(loop).get("opt_out", False)
 
 
+# the variable Claude Code sets to `true` in a cloud session's VM, where the checkout's signing key is the session's own
+CLOUD = "CLAUDE_CODE_REMOTE"
+# the config every git command takes during a cloud land (placed): sign and verify a squash with the landing key, through
+# ssh-keygen itself rather than the VM's signing program, which signs with the session's key
+SIGNING: list[str] = []
+
+
+def in_cloud() -> bool:
+    return os.environ.get(CLOUD) == "true"
+
+
+def listed(public: str, signers: Path) -> bool:
+    """Whether the public key `public` (`<type> <base64> [comment]`) is a line of the allowed signers file."""
+    key = public.split()[:2]
+    lines = signers.read_text().splitlines()
+    return len(key) == 2 and any(
+        fields[i : i + 2] == key
+        for line in lines
+        if not line.lstrip().startswith("#")
+        for fields in [line.split()]
+        for i in range(len(fields) - 1)
+    )
+
+
+@contextlib.contextmanager
+def placed(loop: str | None) -> Any:
+    """Refuse a land where loop.md's `land.where` (default `host`) excludes the place it runs, before any PR is read.
+    In a cloud session (CLOUD) also refuse one without the `land` section, since GitHub's own merge is GraphQL there
+    and signs with GitHub's key, and one whose `signing_key_env` variable is unset, empty or holds a key the allowed
+    signers lack; else hold that key in a mode-0600 file in a fresh temporary directory, removed whatever happens, and
+    sign each squash with it (SIGNING). The key and the variable's value are never printed."""
+    global SIGNING
+    land, cloud = settings(loop).get("land"), in_cloud()
+    place = "a cloud session" if cloud else "a host"
+    if cloud and land is None:
+        raise Refused(
+            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
+            " the session's proxy refuses, and signs with GitHub's key"
+        )
+    where = (land or {}).get("where", "host")
+    if where not in ("both", "cloud" if cloud else "host"):
+        raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
+    if not cloud:
+        yield
+        return
+    name = land.get("signing_key_env")
+    if not name:
+        raise Refused(
+            "land in a cloud session signs with the key in the variable loop.md's `land.signing_key_env` names,"
+            " and it names none"
+        )
+    key = os.environ.get(name)
+    if key is None:
+        raise Refused(f"the variable {name} (loop.md's `land.signing_key_env`) is not set")
+    if not key.strip():
+        raise Refused(f"the variable {name} (loop.md's `land.signing_key_env`) is empty")
+    signers = Path(land["allowed_signers"]).expanduser()
+    if not signers.is_file():
+        raise Refused(f"no allowed signers file at {signers}")
+    folder = Path(tempfile.mkdtemp(prefix="land-key-"))
+    try:
+        file = folder / "key"
+        with os.fdopen(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as out:
+            out.write(key if key.endswith("\n") else key + "\n")
+        public = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", str(file)],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        # ssh-keygen's error is not repeated: it is about the key, which stays unprinted
+        if public.returncode:
+            raise Refused(
+                f"the variable {name} (loop.md's `land.signing_key_env`) holds no SSH private key without a"
+                " passphrase"
+            )
+        if not listed(public.stdout, signers):
+            raise Refused(
+                f"the key in the variable {name} (loop.md's `land.signing_key_env`) is not in {signers}: add its"
+                " public key there"
+            )
+        SIGNING = [
+            *("-c", "gpg.format=ssh"),
+            *("-c", f"user.signingkey={file}"),
+            *("-c", "gpg.ssh.program=ssh-keygen"),
+        ]
+        try:
+            yield
+        finally:
+            SIGNING = []
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def signed(loop: str | None) -> tuple[str, Path] | None:
     """loop.md's `land` section as (branch, signers), None without one."""
     land = settings(loop).get("land")
@@ -1866,19 +1995,34 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
         return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
-    if pull["isInMergeQueue"] is None:
-        return f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's signature: land it where GraphQL answers"
+    # REST can't say whether a PR is queued, nor whether classic branch protection requires a queue (required_checks()
+    # refuses only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
+    if pull["isInMergeQueue"] is None and not (
+        in_cloud() and settings(project()[1]).get("land", {}).get("merge_queue") is False
+    ):
+        return (
+            f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
+            " signature: land it where GraphQL answers, or, where the base requires no merge queue, say so with"
+            " `merge_queue: false` in loop.md's `land` section"
+        )
     # the URL as configured, before any `insteadOf` rewrite
     origin = subprocess.run(
         ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
     )
     if github_repo(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
         return f"this checkout's `origin` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
+    # with SIGNING, as the land signs: a cloud land's own key over the VM's
     config = subprocess.run(
-        ["git", "config", "--get", "user.signingkey"], capture_output=True, text=True, check=False
+        ["git", *SIGNING, "config", "--get", "user.signingkey"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     gpg = subprocess.run(
-        ["git", "config", "--get", "gpg.format"], capture_output=True, text=True, check=False
+        ["git", *SIGNING, "config", "--get", "gpg.format"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if not config.stdout.strip() or gpg.stdout.strip() != "ssh":
         return "this checkout signs no commits with an SSH key: set `gpg.format ssh` and `user.signingkey`"
@@ -3038,7 +3182,8 @@ def rest_threads(number: int) -> dict[str, Any]:
 def rest_pull(pr: int) -> dict[str, Any]:
     """PR #pr as PULL reads it, from REST, call by call. `closingIssuesReferences` is empty, since REST has no such
     link: the PR's issues are its body's `Closes`, `Part of` and `Implements` lines (closing_issues). Whether it is in
-    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses."""
+    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses unless a cloud session's loop.md
+    says `merge_queue: false`."""
     found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
     base, head = found["base"], found["head"]
     reviews = [
@@ -3582,17 +3727,17 @@ def branch_issue() -> int | None:
     return int(found[1]) if found else None
 
 
-def land(pr: int | None, wait: bool = False) -> int:
+def land(pr: int | None, wait: bool = False, only: bool = False) -> int:
     """landing() once, or with `wait` again every POLL seconds while it waits on something time clears, printing each
     new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
-        return landing(pr)[0]
+        return landing(pr, only)[0]
     deadline, said = time.monotonic() + CEILING, ""
     while True:
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
-                code, again = landing(pr)
+                code, again = landing(pr, only)
         finally:
             # a background command's log: each state once, not every 30 seconds; a held lock's age is no new state
             if (state := re.sub(r"\d+ minutes? ago", "", out.getvalue())) != said:
@@ -3606,10 +3751,18 @@ def land(pr: int | None, wait: bool = False) -> int:
         time.sleep(POLL)
 
 
-def landing(pr: int | None) -> tuple[int, bool]:
+def landing(pr: int | None, only: bool = False) -> tuple[int, bool]:
     """Land every landable PR into the base (PR `pr`'s, else the default branch) as one gated batch, under the landing
-    lock; the exit, and whether a wait would end it (lock, CI on a head), so land --wait runs it again."""
+    lock, where loop.md lets land run (placed) (`only`: the named PR alone); the exit, and whether a wait would end it
+    (lock, CI on a head), so land --wait runs it again."""
     tracker, loop = project()
+    with placed(loop):
+        return landing_here(pr, tracker, loop, only)
+
+
+def landing_here(
+    pr: int | None, tracker: str | None, loop: str | None, only: bool = False
+) -> tuple[int, bool]:
     named = None if pr is None else pull_request(pr)
     if named is not None:
         if named["state"] == "MERGED":
@@ -3620,9 +3773,12 @@ def landing(pr: int | None) -> tuple[int, bool]:
     base = (
         named["baseRefName"]
         if named
-        else gh(
-            "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
-        ).strip()
+        else fast(
+            lambda: gh(
+                "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
+            ).strip(),
+            lambda: rest("repos/{owner}/{repo}")["default_branch"],
+        )
     )
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
@@ -3637,7 +3793,7 @@ def landing(pr: int | None) -> tuple[int, bool]:
             return WAITING, True
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-        return batched(named, base, tracker, loop)
+        return batched(named, base, tracker, loop, only)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -3816,6 +3972,12 @@ def landable(
     for line in flag(pull, issues, loop):
         print(line)
     if pull["isDraft"]:
+        # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
+        if in_cloud():
+            print(
+                f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+            )
+            return 1, False
         # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
         gh("pr", "ready", str(pull["number"]))
         print(f"{where} is ready now")
@@ -3839,7 +4001,11 @@ def landable(
 
 
 def batched(
-    named: dict[str, Any] | None, base: str, tracker: str | None, loop: str | None
+    named: dict[str, Any] | None,
+    base: str,
+    tracker: str | None,
+    loop: str | None,
+    only: bool = False,
 ) -> tuple[int, bool]:
     """Under the lock: merge every candidate's head onto `base` locally, oldest PR first, gate the result's tree once
     (or reuse a pass on it), and merge each through GitHub in that order; a red batch lands one PR at a time."""
@@ -3849,7 +4015,9 @@ def batched(
     candidates = []
     listed = {
         other["number"]
-        for other in open_pulls()
+        for other in (
+            [] if only else open_pulls()
+        )  # `only`: no other PR is read, let alone touched
         if other["baseRefName"] == base and not other["isDraft"]
     } | ({named["number"]} if named else set())
     for number in sorted(listed):
@@ -3930,7 +4098,8 @@ def merge_batch(
         reset(work, green)
         if not merged_onto(pull, work, base, [p["number"] for p, *_ in landed], failed):
             continue
-        tree, how = gate_batch(work, [pull])
+        # a one-PR batch's red run was this PR merged onto the same tip, the same tree: that is its first run alone
+        tree, how = (tree, "") if len(merged) == 1 else gate_batch(work, [pull])
         if not how:
             print(
                 f"PR #{pull['number']} is red alone on {green}: once more, in case it was a flake"
@@ -4122,7 +4291,13 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
-    gh("pr", "ready", "--undo", str(number))
+    # GitHub turns a PR back to draft only over GraphQL, which a cloud session's proxy refuses
+    if in_cloud():
+        print(
+            f"{where} stays ready, since a cloud session can't make it a draft: make it one on GitHub"
+        )
+    else:
+        gh("pr", "ready", "--undo", str(number))
     comment(
         number,
         f"{EVICTED}\nHead: {head}\n\n`{gate()[0]}` failed twice on it merged alone onto {base} at {green}: fix it,"
@@ -4130,6 +4305,79 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
         + "\n".join(tail)
         + "\n````\n</details>\n",
     )
+
+
+# a cloud session's link, which its harness adds to every commit message; land drops it from the squash body
+SESSION_LINE = re.compile(r"^Claude-Session:.*(?:\n|$)", re.MULTILINE)
+CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+
+
+def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
+    """The body GitHub's squash writes under the repo's commit-messages default, from the PR's commits as REST lists
+    them (oldest first) and the PR author's login, as 250 squashes on this repo's main show it. Its co-authors are, in
+    commit order, each commit's author other than the PR's (a merge commit's too), then each `Co-authored-by:` its
+    message names, one per email, the first seen keeping its name. The commits less merge commits: one is its message
+    after the subject with those trailer lines emptied, then the co-authors; several are each whole message as a `* `
+    item, then `---------` and the co-authors."""
+    named: dict[str, str] = {}
+    for commit in commits:
+        if (commit.get("author") or {}).get("login") != author:
+            who = commit["commit"]["author"]
+            named.setdefault(who["email"].casefold(), f"{who['name']} <{who['email']}>")
+        for line in CO_AUTHOR.findall(commit["commit"]["message"]):
+            email = re.search(r"<([^>]*)>", line)
+            named.setdefault((email[1] if email else line).casefold(), line)
+    footer = "\n".join(f"Co-authored-by: {who}" for who in named.values())
+    messages = [commit["commit"]["message"] for commit in commits if len(commit["parents"]) < 2]
+    if len(messages) == 1:
+        text = CO_AUTHOR.sub("", messages[0].partition("\n")[2]).strip()
+        return "\n\n".join(part for part in (text, footer) if part)
+    items = "\n\n".join(f"* {message}" for message in messages)
+    return f"{items}\n\n---------\n\n{footer}" if footer else items
+
+
+def unlinked(text: str) -> str:
+    """text less every `Claude-Session:` line, the blank lines around each removed one folded into one (none when
+    it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
+    marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
+
+    def fold(run: re.Match[str]) -> str:  # each removed line held one of the run's line breaks
+        return "\n\n" if run[0].count("\n") - run[0].count("\0") >= 2 else "\n"
+
+    return re.sub(r"\n*(?:\0(?:\n|$))+\n*", fold, marked).strip()
+
+
+def land_body(pull: dict[str, Any]) -> str | None:
+    """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
+    `Claude-Session:` line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
+    COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
+    writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
+    squash on this repo shows that setting."""
+    setting = json.loads(gh("api", "repos/{owner}/{repo}"))["squash_merge_commit_message"]
+    if setting == "BLANK":
+        return None
+    if setting == "PR_BODY":
+        text = pull.get("body") or ""
+    else:
+        number = pull["number"]
+        commits = [
+            json.loads(line)
+            for line in gh(
+                "api",
+                "--paginate",
+                f"repos/{{owner}}/{{repo}}/pulls/{number}/commits?per_page=100",
+                "--jq",
+                ".[]",
+            ).splitlines()
+        ]
+        # ponytail: REST lists a PR's first 250 commits
+        text = squash_body(commits, (pull.get("author") or {}).get("login"))
+    # GitHub writes no body for this PR either, so there is nothing to override
+    if not text.strip():
+        return None
+    # ponytail: a body that was only `Claude-Session:` lines goes as an empty `--body`; whether GitHub then writes
+    # its default instead is unproven
+    return unlinked(text)
 
 
 def merges(
@@ -4154,7 +4402,16 @@ def merges(
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                gh("pr", "merge", str(pull["number"]), "--squash", "--match-head-commit", head)
+                body = land_body(pull)
+                gh(
+                    "pr",
+                    "merge",
+                    str(pull["number"]),
+                    "--squash",
+                    *(("--body", body) if body is not None else ()),
+                    "--match-head-commit",
+                    head,
+                )
                 # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
                 if (state := pull_request(pull["number"])["state"]) != "MERGED":
                     raise Refused(f"GitHub left it {state}, not merged")
@@ -4440,7 +4697,9 @@ def verdict(pr: int, report: Path) -> int:
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(
+        ["git", *SIGNING, *args], check=True, capture_output=True, text=True
+    ).stdout
 
 
 LOCAL_CI = ["mise", "run", "check:all"]
@@ -4677,6 +4936,9 @@ def run_local_ci(
 
 
 DETACHED = "APPROVALS_LOCAL_CI_HEAD"
+RAN: dict[
+    str, str
+] = {}  # the gate command this process's local-ci ran, for the detached run to record (finished)
 
 
 def leads_its_session() -> bool:
@@ -4774,11 +5036,19 @@ def follow(
         return 1
 
 
-def finished(head: str, code: int) -> None:
-    """The detached run's last step: its exit code, written whole, after all its output."""
+def ran_command_file(head: str) -> Path:
+    """Where the detached run on `head` records the gate command it ran, beside its exit code."""
+    return run_files(head)[2].with_suffix(".command")
+
+
+def finished(head: str, code: int, command: str | None = None) -> None:
+    """The detached run's last step: the gate command it ran (with a head proof, under the caller's tier), then its
+    exit code, written whole, after all its output."""
     sys.stdout.flush()
     sys.stderr.flush()
     _, _, exit_file = run_files(head)
+    if command:
+        ran_command_file(head).write_text(command + "\n")
     partial = exit_file.with_suffix(".exit-partial")
     partial.write_text(f"{code}\n")
     os.replace(partial, exit_file)
@@ -4793,12 +5063,20 @@ def local_ci_status(head: str) -> int:
         code = int(exit_file.read_text())
     except (OSError, ValueError):
         code = None
-    if code == 0 and not recorded(str(tree_of(head)), gate()[0]).exists():
+    plain = gate()[0]
+    try:
+        command = (
+            ran_command_file(head).read_text().strip() or plain
+        )  # what the run ran, else the plain gate
+    except OSError:
+        command = plain
+    if code == 0 and not recorded(str(tree_of(head)), command).exists():
         # a run on a checkout with changes, or on another PR's head, exits 0 with no pass on this one
         print(f"exited 0 without recording a pass on {head} under the gate's command: log {log}")
         return 1
     if code is not None:
-        print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}: log {log}")
+        under = f" under `{command}`" if command != plain else ""
+        print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}{under}: log {log}")
         return 0 if code == 0 else 1
     started = going(pid.read_text() if pid.exists() else "", exit_file)
     if started:
@@ -4928,7 +5206,15 @@ def push_record(record: dict[str, Any]) -> str:
     committer and dates are fixed, so pushing a pass again pushes the same commit. Refused: CalledProcessError."""
     when = {"GIT_COMMITTER_DATE": record["time"], "GIT_AUTHOR_DATE": record["time"]}
     commit = subprocess.run(
-        ["git", "commit-tree", record["tree"], "-p", record["head"], "-m", record_message(record)],
+        [
+            "git",
+            "commit-tree",
+            record["tree"],
+            "-p",
+            record["head"],
+            "-m",
+            record_message(record),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -5179,6 +5465,7 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
     published as the head proof instead."""
     if pr is None:
         passed = proof["env"] if proof else ()
+        RAN["command"] = gate(passed)[0]
         head, changes = checkout_state()
         if changes:
             deepened(None)
@@ -5354,6 +5641,7 @@ def main(argv: list[str]) -> int:
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="?")
     merging.add_argument("--wait", action="store_true")
+    merging.add_argument("--only", action="store_true")
     briefing = commands.add_parser("brief")
     briefing.add_argument("pr", type=int)
     # a verifier on another host: the absolute path there holding a clone of the repo
@@ -5414,7 +5702,9 @@ def main(argv: list[str]) -> int:
                 raise Refused("--head-proof goes with --record: the head proof is the checkout's")
             return local_ci(args.pr, proof) if leads_its_session() else detach(argv)
         if args.command == "land":
-            return land(args.pr, args.wait)
+            if args.only and args.pr is None:
+                parser.error("land --only needs a PR: there is nothing to restrict to")
+            return land(args.pr, args.wait, args.only)
         if args.command == "brief":
             return brief(args.pr, args.priorities, args.proof, args.far)
         if args.command == "release":
@@ -5436,5 +5726,5 @@ if __name__ == "__main__":
     )  # set by detach() for the run it starts, and for no process under it
     code = main(sys.argv[1:])
     if detached:
-        finished(detached, code)
+        finished(detached, code, RAN.get("command"))
     sys.exit(code)
