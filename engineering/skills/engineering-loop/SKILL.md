@@ -530,7 +530,7 @@ One rule, for every project and every machine. Heavy steps (implementation, the 
 2. Else to a host that offers the harness the step needs.
 3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
 
-When a launch is refused, by the server or by the host, take the next option on this list. Never fall back to running the step locally on the host that refused: whether a host accepts local work is that host's own configuration, enforced at launch, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
+When a launch fails, take the next option on this list. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
 
 ## Cloud worker
 

@@ -35,9 +35,6 @@ message to many sessions at once (`broadcast`). A `scripts/` path is relative to
   process it stops by the pid or process group it saved at launch, or by a pattern holding its
   own worktree path once each match's working directory is checked, never by a `pkill -f` or
   `killall` pattern other agents share, since that kills their runs too.
-- **A refused launch is an answer.** When the server refuses a harness the target host does not
-  offer, `start` exits 8 and names the next option. Take it as engineering-loop's "Where heavy
-  steps run" orders: never retry on that host or run the step locally there.
 - **Questions are files.** A child never asks the owner, who is not watching it: it
   writes its question to `<report>.question`, replies with that path and stops. Whoever
   started it answers from the brief, the spec and the owner's stated intent, asks the owner
