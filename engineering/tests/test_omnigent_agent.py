@@ -1817,6 +1817,7 @@ def test_the_model_is_the_flag_else_the_agents_environment_variable_else_the_har
         ("claude-cloud", "from-flag", "from-env", "from-flag"),
         ("claude", None, None, None),
         ("codex", None, None, None),
+        ("antigravity", None, "from-env", None),  # only the aliases and claude-cloud read one
     ],
 )
 def test_a_cloud_session_always_names_a_model_and_the_others_only_when_given_one(
@@ -1833,7 +1834,9 @@ def test_a_cloud_session_always_names_a_model_and_the_others_only_when_given_one
             bodies.append(body)
         return {
             "/v1/agents": [{"name": n, "id": n} for n in ("claude-native-ui", "codex-native-ui")],
-            "/v1/agents?scope=user": [{"name": "claude-cloud", "id": "c1"}],
+            "/v1/agents?scope=user": [
+                {"name": n, "id": n} for n in ("claude-cloud", "antigravity")
+            ],
             "/v1/projects": [],
         }.get(path, {"id": "s1"})
 
@@ -1844,7 +1847,7 @@ def test_a_cloud_session_always_names_a_model_and_the_others_only_when_given_one
     for name in ("CLAUDE", "CODEX", "CLAUDE_CLOUD"):
         monkeypatch.delenv(f"OMNIGENT_MODEL_{name}", raising=False)
     if env:
-        monkeypatch.setenv("OMNIGENT_MODEL_CLAUDE_CLOUD", env)
+        monkeypatch.setenv(f"OMNIGENT_MODEL_{agent.upper().replace('-', '_')}", env)
     omnigent_agent.Omnigent().create(agent, "t", flag)
     assert bodies[-1].get("model_override") == expected
 
