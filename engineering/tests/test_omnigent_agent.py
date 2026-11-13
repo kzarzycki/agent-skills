@@ -9687,6 +9687,10 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     rule = long_run_rule()
     assert f"`{omnigent_agent.DETACH} sh -c" in rule
     assert "never short polls" in rule and "up to a total budget you state" in rule
+    flat = " ".join(rule.split())  # the relocated clauses, each the only copy now
+    assert "starts detached (in its own session)" in flat
+    assert "Where that script is not at hand, each call blocks close to the tool's limit" in flat
+    assert "a gate your role file says to run bare" in flat
     pid, log = tmp_path / "pid", tmp_path / "log"
     script = f'echo $$ > {pid}; sleep 1; (exit 3); echo "exit $?" > {log}'
     began = time.monotonic()
