@@ -18,6 +18,7 @@ from collections.abc import Callable
 from datetime import datetime
 from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -7933,24 +7934,33 @@ WEEKLY = "You've hit your weekly limit · resets Nov 16, 6am (UTC)"
 
 
 def limited_leads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, polls: int, lifts: int | None
-) -> tuple[Leads, Path, list[str], float]:
-    """Leads a, b and c, all failing on the weekly limit, on a clock one minute a poll. A revived
-    lead runs one poll, then fails on the limit again, or, from revive number ``lifts`` on (the
-    limit lifted), ends its turn. Returns the fleet, the registry, the leads in the order they
-    were revived, and the clock's start."""
-    clock = [time.time()]
-    start = clock[0]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    polls: int,
+    lifts: int | None,
+    error: str | Callable[[float], str] = WEEKLY,
+    end: str = "idle",
+) -> SimpleNamespace:
+    """Leads a, b and c, all failing on ``error`` (or ``error(start)``), on a clock one minute a
+    poll from a whole minute. A revived lead runs one poll, then fails on the limit again; revive
+    number ``lifts`` (the limit lifted) ends as ``end`` says: ``idle``, ``failed`` (another
+    error), ``question`` (blocked on one) or ``hold`` (still running), and every revive after
+    it ends idle. Returns the fleet ``og``, the ``registry``, the leads ``revived`` in order with
+    the clock each revive was sent at (``sent``), the clock's ``start``, and each post with the
+    clock it was seen at (``timeline``)."""
+    start = time.time() // 60 * 60
+    clock = [start]
     monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    text = error(start) if callable(error) else error
     registry = follows(tmp_path, "a", "b", "c")
     og = Leads(**{s: [told("brief", 60), ending("STILL WORKING: building", 50)] for s in "abc"})
     for s in "abc":
-        og.snaps[s] = {"status": "failed", "last_task_error": {"message": WEEKLY}}
-    revived: list[str] = []
-    seen = {s: 0 for s in "abc"}
+        og.snaps[s] = {"status": "failed", "last_task_error": {"message": text}}
+    run = SimpleNamespace(og=og, registry=registry, revived=[], sent=[], start=start, timeline=[])
+    seen, ends = {s: 0 for s in "abc"}, {}
 
     def between(poll: int) -> None:
-        clock[0] += 60
+        run.timeline += [(clock[0], p) for p in posted(og)[len(run.timeline) :]]
         for s in "abc":
             snap = og.snaps[s]
             sent = sum(
@@ -7958,57 +7968,141 @@ def limited_leads(
             )
             if sent > seen[s]:  # revived this poll: it runs one poll
                 seen[s] = sent
-                revived.append(s)
+                run.revived.append(s)
+                run.sent.append(clock[0])
+                if lifts is not None and len(run.revived) >= lifts:
+                    ends[s] = end if len(run.revived) == lifts else "idle"
                 snap["status"] = "running"
                 og.histories[s].append(ending(f"working {poll}", 0))
             elif snap["status"] == "running":
-                if lifts is not None and len(revived) >= lifts:
+                how = ends.pop(s, "limit")
+                if how == "idle":
                     snap["status"] = "idle"
                     og.histories[s].append(ending("STILL WORKING: on CI", 0))
+                elif how == "failed":
+                    snap.update(status="failed", last_task_error={"message": "a failing test"})
+                elif how == "question":
+                    snap.update(ASKING, status="idle")
+                elif how == "hold":
+                    ends[s] = "hold"
                 else:
-                    snap["status"] = "failed"
+                    snap.update(status="failed", last_task_error={"message": text})
+        clock[0] += 60
 
     supervised(og, registry, monkeypatch, polls, between, notify="cos", console=True)
-    return og, registry, revived, start
+    run.timeline += [(clock[0], p) for p in posted(og)[len(run.timeline) :]]
+    return run
+
+
+def acts(post: str) -> list[str]:
+    return re.findall(r"^\[act\] .*", post, re.MULTILINE)
+
+
+def resets_text(template: str, after: float) -> Callable[[float], str]:
+    """``template`` with ``{time}`` a reset ``after`` seconds past the start, as 6:05am (UTC)."""
+
+    def text(start: float) -> str:
+        at = time.gmtime(start + after)
+        half = "am" if at.tm_hour < 12 else "pm"
+        return template.format(time=f"{at.tm_hour % 12 or 12}:{at.tm_min:02d}{half} (UTC)")
+
+    return text
 
 
 def test_sessions_failing_on_a_usage_limit_are_reported_once_and_kept_parked_by_a_failed_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    og, registry, revived, start = limited_leads(tmp_path, monkeypatch, 12, None)
-    resets = omnigent_agent.reset_time(WEEKLY, start)
+    run = limited_leads(tmp_path, monkeypatch, 12, None)
+    resets = omnigent_agent.reset_time(WEEKLY, run.start)
     assert resets is not None
     when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(resets))
-    post = "\n".join(posted(og))
-    assert post.count("usage limit:") == 1
-    assert f"[act] usage limit: 3 sessions parked, resets {when}" in post
-    assert re.findall(r"^\[act\] .*", post, re.MULTILINE) == [  # no session reported on its own
+    post = "\n".join(posted(run.og))
+    assert acts(post) == [  # no session reported on its own
         f"[act] usage limit: 3 sessions parked, resets {when} (one probe revives them)"
     ]
     # one probe at a time: the first after 2 minutes, the next 5 minutes after the first
-    assert revived == ["a", "b"]
-    leads = state_of(registry)["leads"]
+    assert run.revived == ["a", "b"]
+    leads = state_of(run.registry)["leads"]
     assert all(leads[s]["retrying"]["limit"] for s in "abc")
-    assert [e["action"] for e in events_of(registry)] == ["park"] * 5  # 3, then 2 probes
+    assert [e["action"] for e in events_of(run.registry)] == ["park"] * 5  # 3, then 2 probes
+
+
+LIFTED = "[act] usage limit lifted: 3 sessions resumed (a probe got past the limit)"
 
 
 def test_a_usage_limit_probe_that_passes_revives_every_parked_session_and_reports_it_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    og, registry, revived, _ = limited_leads(tmp_path, monkeypatch, 14, 2)
-    assert revived == ["a", "b", "a", "c"]  # a probe failed, the next passed: the rest revived
-    post = "\n".join(posted(og))
-    assert post.count("usage limit:") == 1 and post.count("usage limit lifted:") == 1
-    assert [
-        line for line in re.findall(r"^\[act\] .*", post, re.MULTILINE) if "lifted" in line
-    ] == [
-        "[act] usage limit lifted: 3 sessions resumed (a probe's turn ended: the limit is lifted)"
-    ]
-    assert all(
-        line.startswith("[act] usage limit")
-        for line in re.findall(r"^\[act\] .*", post, re.MULTILINE)
-    )
-    assert not any("retrying" in lead for lead in state_of(registry)["leads"].values())
+    run = limited_leads(tmp_path, monkeypatch, 14, 2)
+    assert run.revived == ["a", "b", "a", "c"]  # a probe failed, the next passed: the rest revived
+    post = "\n".join(posted(run.og))
+    assert [line for line in acts(post) if "lifted" in line] == [LIFTED]
+    assert all(line.startswith("[act] usage limit") for line in acts(post))
+    assert not any("retrying" in lead for lead in state_of(run.registry)["leads"].values())
+
+
+@pytest.mark.parametrize(
+    ("end", "own"),
+    [
+        ("failed", ("failed", "revive", "failed the first time: revive once")),
+        ("question", None),  # its question routes as any other once held past the turn end
+    ],
+)
+def test_a_probe_past_the_limit_that_then_fails_or_asks_still_lifts_it_for_the_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, end: str, own: tuple[str, str, str] | None
+) -> None:
+    run = limited_leads(tmp_path, monkeypatch, 14, 2, end=end)
+    assert run.revived[:2] == ["a", "b"]  # a's probe failed on the limit; b's got past it
+    assert {"a", "c"} <= set(run.revived[2:])  # the other two revived
+    post = "\n".join(posted(run.og))
+    assert [line for line in acts(post) if "lifted" in line] == [LIFTED]
+    lead = state_of(run.registry)["leads"]["b"]
+    assert "retrying" not in lead  # out of the parked set: its own ending routes as any other
+    if own is None:
+        assert lead["state"] == "blocked"
+    else:  # a failure past the limit: revived once, as any first failure is
+        [last] = [e for e in events_of(run.registry) if e["session"] == "b"][-1:]
+        assert (last["kind"], last["action"]) == own[:2] and last["why"].startswith(own[2])
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "You've hit your session limit · resets {time}",
+        "API error (rate_limit) · resets {time}",  # a rate limit naming its reset parks too
+    ],
+)
+def test_a_limit_still_failing_past_its_reset_is_reported_once_the_reset_and_margin_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, template: str
+) -> None:
+    # the reset 20 minutes in: probes keep failing past it, and the stored reset still caps them
+    run = limited_leads(tmp_path, monkeypatch, 120, None, resets_text(template, 20 * 60))
+    cap = run.start + 20 * 60 + omnigent_agent.LIMIT_MARGIN_SECONDS
+    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(run.start + 20 * 60))
+    timed = [(at, line) for at, post in run.timeline for line in acts(post)]
+    assert timed[0][1].startswith(f"[act] usage limit: 3 sessions parked, resets {when} (")
+    own = [(at, line) for at, line in timed if not line.startswith("[act] usage limit")]
+    assert own and all(at > cap for at, _ in own)  # none per session before the reset + margin
+    assert len(own) == 1 and "still failing past its reset" in own[0][1]
+    assert run.start + 20 * 60 in run.sent  # one probe at the reset itself
+
+
+def test_a_reset_before_the_first_backoff_is_probed_at_the_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = resets_text("You've hit your session limit · resets {time}", 60)
+    run = limited_leads(tmp_path, monkeypatch, 4, None, error)
+    assert run.sent[0] == run.start + 60  # at the reset, not the backoff's 2 minutes
+
+
+def test_a_parked_lead_coming_due_while_a_probe_still_runs_starts_no_second_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = limited_leads(tmp_path, monkeypatch, 18, 1, end="hold")
+    # the others come due 5 minutes after the probe; it runs on: no second probe within 20 min
+    assert run.revived == ["a"]
+    leads = state_of(run.registry)["leads"]
+    assert all(leads[s]["retrying"]["at"] < run.start + 17 * 60 for s in "bc")
 
 
 @pytest.mark.parametrize(

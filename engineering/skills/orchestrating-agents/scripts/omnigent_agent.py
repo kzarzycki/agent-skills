@@ -336,6 +336,8 @@ TRANSIENT_ERRORS = (
 )
 TRANSIENT_FAILURE = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
 USAGE_LIMIT = re.compile("|".join(USAGE_LIMIT_ERRORS), re.IGNORECASE)
+# a rate limit that prints its reset time is account-wide too, parked as a usage limit is
+LIMITED = re.compile("|".join((*USAGE_LIMIT_ERRORS, r"\brate_limit")), re.IGNORECASE)
 BACKOFF_MINUTES = (2, 5, 10, 20)
 RETRY_CAP_SECONDS = 2 * 3600.0
 LIMIT_MARGIN_SECONDS = 3600.0  # past a usage limit's printed reset, how long its probes go on
@@ -4247,7 +4249,11 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         if event.get("transient"):
             if event.get("capped"):
                 if event.get("limit"):
-                    return "rule", "act", "a usage limit, still failing past its reset or 2h"
+                    return (
+                        "rule",
+                        "act",
+                        "a usage limit, still failing past its reset or 2h: all left",
+                    )
                 return (
                     "rule",
                     "act",
@@ -4667,9 +4673,13 @@ def supervise_registry(
         found = standing(decisions) if decisions else ""
         retrying, now = lead.get("retrying") or {}, time.time()
         error = lead.get("error") or line
-        resets = reset_time(error, now) if USAGE_LIMIT.search(error) else None
-        # a usage limit with a printed reset goes on until that reset plus a margin, not 2h
-        cap = resets + LIMIT_MARGIN_SECONDS - now if resets else RETRY_CAP_SECONDS
+        # the reset is read once, when first parked: read again once passed, the same text
+        # names next year's (or tomorrow's) and the cap would never come
+        resets = (retrying.get("resets") if retrying.get("limit") else None) or (
+            reset_time(error, now) if LIMITED.search(error) else None
+        )
+        limit = bool(USAGE_LIMIT.search(error) or (resets and LIMITED.search(error)))
+        resets = resets if limit else None
         event = {
             "kind": kind,
             "line": line,
@@ -4681,11 +4691,13 @@ def supervise_registry(
             and lead.get("nudged_at") == lead.get("progress_at"),
             "revived": bool(lead.get("revives")),
             "transient": bool(TRANSIENT_FAILURE.search(error)),
-            "limit": bool(USAGE_LIMIT.search(error)),
-            # the next revive would fall past the cap: 2h from the chain's start, or the reset
-            "capped": backoff(retrying.get("count", 0))
-            + (0.0 if resets else now - retrying.get("since", now))
-            > cap,
+            "limit": limit,
+            # a limit with a printed reset: past that reset plus a margin, not 2h; else the
+            # next revive would fall more than 2h after the chain's start
+            "capped": now > resets + LIMIT_MARGIN_SECONDS
+            if resets
+            else backoff(retrying.get("count", 0)) + now - retrying.get("since", now)
+            > RETRY_CAP_SECONDS,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
             "parked": parked_before(og, sid, items, said[-1] if said else None),
@@ -4745,7 +4757,7 @@ def supervise_registry(
             lead["retrying"] = {
                 "count": count + 1,
                 "since": retrying.get("since", now),
-                "at": min(at, resets) if resets else at,  # at the printed reset, probe at once
+                "at": min(at, resets) if resets and resets > now else at,  # at the reset, at once
                 "event": eid,
                 "limit": True,
                 "resets": resets,
@@ -4753,6 +4765,10 @@ def supervise_registry(
             }
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
+        if action == "act" and event["limit"] and event["capped"]:  # past the cap: no more probes
+            for parked in state["leads"].values():
+                if (parked.get("retrying") or {}).get("limit"):
+                    parked.pop("retrying")
         if action == "done":
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             act_on(
@@ -4965,9 +4981,13 @@ def supervise_registry(
         )
         if console:
             from_report(sid, lead, items)
+        limited = lead["state"] == "failed" and LIMITED.search(lead.get("error") or "")
+        if (lead.get("retrying") or {}).get("told") and lead["state"] != "running" and not limited:
+            # a parked lead past the limit, however its turn then ended (idle, a prompt, another
+            # failure): the limit lifted (``limits``); its own ending routes as any other
+            lead["lifted"] = True
+            lead.pop("retrying")
         if lead["state"] == "idle":  # a turn ended without failing: the provider is back
-            if (lead.get("retrying") or {}).get("told"):  # a usage limit lifted: ``limits``
-                lead["lifted"] = True
             lead.pop("retrying", None)
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
             # a new failure or prompt, also with the same error: its own event, kept on restart
@@ -5255,9 +5275,9 @@ def supervise_registry(
         """The usage-limit sessions as one: the leads parked on a usage limit (``retrying.limit``)
         are reported in one line once, and a lead parked after it joins them unreported. When the
         earliest parked ``at`` passes (a backoff, or the printed reset) one of them is revived as a
-        probe; a probe failing on the limit again parks once more. Once a told lead's turn ends
-        (``lifted``: the probe passed, or someone revived it), every parked lead is revived and
-        that is reported in one line."""
+        probe; a probe failing on the limit again parks once more. Once a told lead ends any other
+        way (``lifted``: the probe got past the limit, or someone revived it), every parked lead
+        is revived and that is reported in one line."""
         now, leads = time.time(), state["leads"]
         parked = {s: lead for s, lead in leads.items() if (lead.get("retrying") or {}).get("limit")}
         lifted = [s for s, lead in leads.items() if lead.pop("lifted", False)]
@@ -5267,7 +5287,7 @@ def supervise_registry(
             n = len(lifted) + len(parked)
             eid = f"limit:resumed:{now:.0f}"
             line = f"usage limit lifted: {n} session{'s' * (n > 1)} resumed"
-            queue(eid, lifted[0], "act", line, "a probe's turn ended: the limit is lifted")
+            queue(eid, lifted[0], "act", line, "a probe got past the limit")
             print(stamp(f"{eid}: rule: revive ({line})"), flush=True)
             act_on(
                 eid,
