@@ -10642,6 +10642,18 @@ VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", "roles/verifier.md"]
 VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
 
 
+def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    argv = ["start", "claude-cloud", "w", "do X", str(tmp_path / "tmp" / "r.md"), "--top-level"]
+    argv += ["--host", "mac", "--pr", "7", "--workspace", "/there/repo", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    err = capsys.readouterr().err
+    assert "launch dir is on another host" in err and "HEAD is not moved" in err
+
+
 def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_reports_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
