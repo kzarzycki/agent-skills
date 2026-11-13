@@ -17,7 +17,7 @@ child is prompted for a read (denied in auto mode), which nobody answers, so the
 such a path. Titles look like `s120-parser-worker`,
 `pr182-verifier-p1`: the issue or PR, then the role. The brief (a file, or the text itself, as
 every brief and message argument here takes) holds only the task specifics; the script writes it, under a fixed preamble (owner-authorized imperative, the
-role file, long runs started detached and polled, write the report to the path; a lead replies with its ending line carrying the path, any other child with only
+role file, a pointer to its long-run rule, write the report to the path; a lead replies with its ending line carrying the path, any other child with only
 the path), to `<report>.brief` and sends the child one line naming the title and that file.
 Omnigent labels a child in the UI by a summary of that line, not by its title, so a title
 that names the issue or PR is what makes the label say what the child works on. Build the brief with a quoted heredoc
@@ -183,9 +183,9 @@ none, gets the nudge and then fails. `--pr` arms no supervisor registry, since t
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
 with `wait <session> <report> --pr <n>`. A `--role` path names the role file by its path in
 the repo, since the VM has the checkout but not this host's paths. The preamble also tells the
-worker two facts about the VM: its checkout is the branch checked out in the workspace the
-session started from, not necessarily the PR's, and a foreground command stops at 10 minutes,
-so a long one runs detached and is polled within the same turn. It forbids an interactive
+worker that its checkout is the branch checked out in the workspace the session started from,
+not necessarily the PR's; that a foreground command there stops at 10 minutes, so a long one
+runs detached and is polled within the same turn, is the role file's long-run rule. It forbids an interactive
 question tool and a published page, since each waits on a prompt nobody in the cloud answers,
 and ends each commit message with the co-author line and no session link, since the commit
 reaches a public repository. A host without the cloud
