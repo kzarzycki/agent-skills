@@ -73,7 +73,8 @@ yourself, keeping standards and spec as separate axes.
   the same turn, since that is less than a cold gate can take. A blocker that is only your own call timing out
   spends the pass on nothing, a held lock can outlast a foreground call, and Claude Code's low-memory reaper stops in-session
   background shells. Never end a turn saying you wait, since a background command's completion
-  never wakes you. A gate the machine allows
+  never wakes you, unless it is a `run`, `send` or `wait` started with `--notify` and `LOOP_NOTIFY`
+  set (or your harness's own background-run support), which tells you when it ends. A gate the machine allows
   by rule (a gate your role file says to run bare) is the exception: run it as the bare command
   (Gates and repros), since an allow rule matches only a plain command. A queued run or
   any other pending condition is waited on the same way, in the foreground (orchestrating-agents'

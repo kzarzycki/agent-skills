@@ -539,6 +539,106 @@ def test_run_fails_only_on_a_tracked_change_the_child_made(
     assert omnigent_agent.main(argv) == 1
 
 
+def notify_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A ``$LOOP_NOTIFY`` that appends one line of its arguments per call to the returned file."""
+    calls = tmp_path / "calls"
+    tell = tmp_path / "tell.sh"
+    tell.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n')
+    tell.chmod(0o755)
+    monkeypatch.setenv("LOOP_NOTIFY", str(tell))
+    return calls
+
+
+def notify_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, og: FakeOmnigent
+) -> tuple[str, Path]:
+    repo = git_checkout(tmp_path / "w")
+    (repo / "f.md").write_text("fix Y")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    return og.create("claude", "t"), repo
+
+
+def test_send_notify_tells_loop_notify_once_the_exit_and_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent(reply="done")
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]
+    assert omnigent_agent.main([*argv, "--notify"]) == 0
+    assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_send_notify_names_the_exit_and_the_first_line_of_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent(deaf={0})
+    sid, _ = notify_session(tmp_path, monkeypatch, og)
+    argv = ["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]
+    code = omnigent_agent.main([*argv, "--notify"])
+    assert code != 0
+    (line,) = calls.read_text().splitlines()
+    assert line.startswith(f"exit {code}: ") and "neither pending nor in history" in line
+
+
+def test_wait_notify_tells_loop_notify_once_the_report_is_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    (repo / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md", "--notify"]) == 0
+    assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_run_notify_tells_loop_notify_once_the_report_is_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    repo = git_checkout(tmp_path / "w")
+    (repo / "b.md").write_text("do X")
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0", "--notify"]
+    assert omnigent_agent.main(argv) == 0
+    assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_notify_tells_loop_notify_of_an_unexpected_exception_and_reraises_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent()
+    sid, _ = notify_session(tmp_path, monkeypatch, og)
+
+    def boom(*a: object, **k: object) -> None:
+        raise RuntimeError("client broke\nsecond line")
+
+    og.info = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        omnigent_agent.main(["wait", sid, "r.md", "--notify"])
+    assert calls.read_text().splitlines() == ["exit 1: client broke"]
+
+
+def test_without_notify_loop_notify_is_never_called(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent()
+    sid, repo = notify_session(tmp_path, monkeypatch, og)
+    (repo / "r.md").write_text("ok")
+    assert omnigent_agent.main(["wait", sid, "r.md"]) == 0
+    assert not calls.exists()
+
+
 def test_wait_until_exits_0_once_the_command_does_and_its_own_code_at_the_limit(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
