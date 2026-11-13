@@ -315,7 +315,7 @@ TRANSIENT_ERRORS = (
     r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
     r"overloaded",
 )
-TRANSIENT = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
+TRANSIENT_FAILURE = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
 BACKOFF_MINUTES = (2, 5, 10, 20)
 RETRY_CAP_SECONDS = 2 * 3600.0
 
@@ -4597,7 +4597,7 @@ def supervise_registry(
             "nudged": lead.get("nudged_at") is not None
             and lead.get("nudged_at") == lead.get("progress_at"),
             "revived": bool(lead.get("revives")),
-            "transient": bool(TRANSIENT.search(lead.get("error") or line)),
+            "transient": bool(TRANSIENT_FAILURE.search(lead.get("error") or line)),
             "capped": now + backoff(retrying.get("count", 0)) - retrying.get("since", now)
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),
