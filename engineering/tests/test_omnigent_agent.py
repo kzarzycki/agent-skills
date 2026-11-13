@@ -591,6 +591,13 @@ def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_
     log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")  # holds it: out of budget
     assert omnigent_agent.main(argv) == 6
     assert capsys.readouterr().out == "still running\n"
+    # the lock arrives mid-wait: the full budget runs from `locked`, not from entry
+    log.write_text(f"run 1\nlock {lock}\n")
+    threading.Timer(0.2, lambda: log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")).start()
+    began = time.monotonic()
+    assert omnigent_agent.main(["wait-for", "--log", str(log), "--budget", "0.3"]) == 6
+    assert time.monotonic() - began >= 0.45
+    assert capsys.readouterr().out == "still running\n"
     log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
     os.utime(log, (time.time() - 7300, time.time() - 7300))
     assert omnigent_agent.main(argv) == 6

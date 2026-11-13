@@ -3122,9 +3122,14 @@ def wait_for(
             )
         return None
 
+    queued = False
     while True:
         if outcome := ended() or gave_up():
             return outcome
+        waiting = bool(log) and lock_wait(log, run_of(pid) if pid else None) is not None
+        if queued and not waiting:  # the lock came during this wait: the budget starts here
+            deadline = time.monotonic() + budget
+        queued = waiting
         if pr is not None:
             if (left := deadline - time.monotonic()) <= 0:
                 return None
