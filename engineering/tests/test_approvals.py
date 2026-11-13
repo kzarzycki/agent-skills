@@ -8932,7 +8932,14 @@ def test_a_green_gate_status_naming_the_tree_with_no_record_branch_is_not_reused
 
 
 def forged(
-    tmp_path: Path, head: str, name: str, *, tree: str, line: str, env: str, more: tuple[str, ...] = ()
+    tmp_path: Path,
+    head: str,
+    name: str,
+    *,
+    tree: str,
+    line: str,
+    env: str,
+    more: tuple[str, ...] = (),
 ) -> None:
     """Push to origin, under `name`, a record whose content is what the test says, as anyone who can push may;
     `more` are parents beside `head`."""
@@ -9003,7 +9010,9 @@ def test_local_ci_refusing_a_found_record_branch_says_it_was_found_and_why_it_wa
         tree=other if wrong == "another tree" else held,
         line=f"{line} --tier" if wrong == "another command" else line,
         env='{"TIER": "light"}' if wrong == "another env" else "{}",
-        more=(git_in(tmp_path / "a", "rev-parse", "HEAD~1").strip(),) if wrong == "two parents" else (),
+        more=(git_in(tmp_path / "a", "rev-parse", "HEAD~1").strip(),)
+        if wrong == "two parents"
+        else (),
     )
     monkeypatch.setattr(approvals, "run_local_ci", lambda *_a: pytest.fail("the gate ran"))
     assert approvals.main(["local-ci", "7"]) == 1
@@ -9033,8 +9042,10 @@ def test_a_record_branch_with_no_committer_or_unreadable_says_why_it_was_rejecte
     why: list[str] = []
     assert approvals.reusable(head, why=why) is None
     assert why == [
-        f"origin holds the record branch {branch_of(head)}, but it is not this pass: its commit names no"
-        " committer, so its time is unknown"
+        (
+            f"origin holds the record branch {branch_of(head)}, but it is not this pass: its commit names no"
+            " committer, so its time is unknown"
+        )
     ]
     real = approvals.git
 
