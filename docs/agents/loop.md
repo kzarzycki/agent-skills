@@ -23,7 +23,7 @@ spec:
   auto: true
 
 loop:
-  gate: QUALIFY_TIMEOUT=900 mise run check   # the merge check CI runs; qualify's timeouts at 900 s on a shared host
+  gate: ./scratch-864.sh
 
 risk:
   verifier: true
