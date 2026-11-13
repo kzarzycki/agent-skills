@@ -3459,9 +3459,12 @@ def apply_route(args: argparse.Namespace) -> None:
         return
     args.agent = "claude"
     args.same_family = True
-    if not args.model:
-        raise Fail("--verifier-route claude names its model: pass --model, other than the author's")
-    if args.author_model and args.model == args.author_model:
+    if not args.model or not args.author_model:
+        raise Fail(
+            "--verifier-route claude names its model and the author's: pass --model and"
+            " --author-model, which differ"
+        )
+    if args.model == args.author_model:
         raise Fail(
             f"--verifier-route claude would verify {args.author_model}'s diff with the same model:"
             " pass a different --model"

@@ -36,8 +36,10 @@ def test_claude_route_is_same_family_on_another_model_than_the_author_s() -> Non
     args = route("claude", model="claude-opus-5-5", author_model="claude-sonnet-5-5")
     omnigent_agent.apply_route(args)
     assert (args.agent, args.same_family) == ("claude", True)
-    with pytest.raises(omnigent_agent.Fail, match="pass --model"):
+    with pytest.raises(omnigent_agent.Fail, match="pass --model and --author-model"):
         omnigent_agent.apply_route(route("claude"))
+    with pytest.raises(omnigent_agent.Fail, match="--author-model"):
+        omnigent_agent.apply_route(route("claude", model="claude-opus-5-5"))
     with pytest.raises(omnigent_agent.Fail, match="different --model"):
         omnigent_agent.apply_route(route("claude", model="x", author_model="x"))
 
