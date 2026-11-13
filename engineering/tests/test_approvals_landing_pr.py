@@ -56,7 +56,14 @@ def test_a_held_lock_naming_a_pr_merged_into_the_base_is_taken_at_once(
 ) -> None:
     """The #831 case: its land merged it and died before it freed the lock, minutes ago."""
     lands["open"](7, {"7.txt": "7\n"})
-    done = lands["main"]()
+    # PR #5's merge, made on origin after this checkout last fetched main: the land fetches before it looks
+    origin, tip = lands["origin"], lands["main"]()
+    done = git_in(
+        origin,
+        *("-c", "user.name=GitHub", "-c", "user.email=gh@example.com", "commit-tree"),
+        *(f"{tip}^{{tree}}", "-p", tip, "-m", "PR 5 (#5)"),
+    ).strip()
+    git_in(origin, "update-ref", "refs/heads/main", done, tip)
     monkeypatch.setattr(
         approvals,
         "merged_pull",
