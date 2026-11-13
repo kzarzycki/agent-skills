@@ -2625,7 +2625,9 @@ def test_a_top_level_lookup_reads_the_projects_top_level_sessions(
 
 
 # The one line a brief keeps of the long-run rule, which lives in a role file (#902).
-LONG_RUN_POINTER = "A long run follows engineering-loop's verifier.md, A long or locked run is detached"
+LONG_RUN_POINTER = (
+    "A long run follows engineering-loop's verifier.md, A long or locked run is detached"
+)
 LONG_RUN_RULE_START = "A long run starts detached"  # the paragraph briefs carried before #902
 VERIFIER_MD = Path(omnigent_agent.__file__).parents[2] / "engineering-loop" / "verifier.md"
 
@@ -2777,7 +2779,11 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     )
     assert "owner's own words" in text and "ask them here" in text
     assert "needs-owner" not in text
-    assert LONG_RUN_POINTER in text and "setsid" not in text and f"final report to {tmp_path / 'r.md'}" in text
+    assert (
+        LONG_RUN_POINTER in text
+        and "setsid" not in text
+        and f"final report to {tmp_path / 'r.md'}" in text
+    )
     assert "authorized" not in text and "Never address" not in text and ".question" not in text
     assert omnigent_agent.text_of(og.sessions[sid][1]).startswith("Work on t: read ")
 
@@ -9173,7 +9179,11 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
         og, agent, "t", "do X", report, "roles/worker.md", 0, top_level=top_level, pr=pr
     )
     brief_file = omnigent_agent.brief_of(report)
-    brief = brief_file.read_text() if brief_file.is_file() else omnigent_agent.text_of(og.sessions[sid][1])
+    brief = (
+        brief_file.read_text()
+        if brief_file.is_file()
+        else omnigent_agent.text_of(og.sessions[sid][1])
+    )
     assert brief.count(LONG_RUN_POINTER) == 1
     assert LONG_RUN_RULE_START not in brief and "setsid" not in brief
     assert "10 minutes" not in brief and "never short polls" not in brief
@@ -9185,7 +9195,10 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     assert "Where a foreground command stops at 10 minutes" in rule
     assert "the run is waited on within the same turn" in rule
     assert "stops at 10 minutes" in rule
-    assert "Never end a turn saying you wait, since a background command's completion never wakes you" in rule
+    assert (
+        "Never end a turn saying you wait, since a background command's completion never wakes you"
+        in rule
+    )
 
 
 def test_wait_writes_a_cloud_session_s_last_message_to_the_report_path(tmp_path: Path) -> None:
