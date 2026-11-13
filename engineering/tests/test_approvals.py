@@ -9015,6 +9015,42 @@ def test_local_ci_refusing_a_found_record_branch_says_it_was_found_and_why_it_wa
     assert github == []
 
 
+def test_a_record_branch_with_no_committer_or_unreadable_says_why_it_was_rejected(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The rest of record_ref()'s rejections reach `why`: a commit naming no committer, whose time is unknown, and a
+    branch origin lists but that can't be fetched."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    a, held = tmp_path / "a", approvals.tree_of(head)
+    body = f"tree {held}\nparent {head}\n\nTree {held} on {head[:12]}: true\n\nEnv: {{}}\n"
+    loose = tmp_path / "commit"
+    loose.write_text(body)
+    commit = git_in(a, "hash-object", "-t", "commit", "-w", "--literally", str(loose)).strip()
+    git_in(a, "push", "-q", "-f", "origin", f"{commit}:{branch_of(head)}")
+    why: list[str] = []
+    assert approvals.reusable(head, why=why) is None
+    assert why == [
+        f"origin holds the record branch {branch_of(head)}, but it is not this pass: its commit names no"
+        " committer, so its time is unknown"
+    ]
+    real = approvals.git
+
+    def no_fetch(*args: str) -> str:
+        if args[0] == "fetch":
+            raise subprocess.CalledProcessError(128, "git", stderr="fatal: the remote hung up\n")
+        return real(*args)
+
+    monkeypatch.setattr(approvals, "git", no_fetch)
+    why.clear()
+    assert approvals.reusable(head, why=why) is None
+    assert why == [
+        f"origin's record branch {branch_of(head)} could not be read: fatal: the remote hung up"
+    ]
+
+
 def test_a_ref_for_another_tree_or_command_is_not_reused_and_the_refusal_names_its_command(
     hub: dict[str, list[dict[str, Any]]],
     tmp_path: Path,
