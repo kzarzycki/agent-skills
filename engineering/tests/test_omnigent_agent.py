@@ -10708,6 +10708,10 @@ def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_
     assert states[:3] == ["running"] * 3  # the card alone blocks nothing
     routed = [(e["kind"], e["action"], e["line"]) for e in events_of(registry)]
     assert routed[0] == ("asked", "record", "a: asked its user: Which base?")
+    assert (events_of(registry)[0]["settled"], "Inbox" in events_of(registry)[0]["why"]) == (
+        "rule",
+        True,
+    )  # the card's own rule records it, not a guess about the lead's turn
     assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
     assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
     assert not any("Which base?" in p for p in posted(og))
