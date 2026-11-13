@@ -20,7 +20,7 @@ inside the repository: it infers the repo from the remote.
   `gh api graphql -f p=<parent id> -f s=<sub-issue id> -f query='mutation($p:ID!,$s:ID!){addSubIssue(input:{issueId:$p,subIssueId:$s}){subIssue{parent{number}}}}'`.
   Already that parent: done. Another parent: it belongs to that epic; `replaceParent:true`
   moves it only when that one is wrong.
-- Write access, which `spec: auto unless risk` asks of a sub-issue's author: GitHub's
+- Write access, which `spec.auto`'s `sub-issue` asks of a sub-issue's author: GitHub's
   collaborator permission, `gh api 'repos/{owner}/{repo}/collaborators/<login>/permission' --jq .permission`,
   is `admin`, `maintain` or `write`. It covers access through a team, which an issue's
   `author_association` does not.
@@ -34,9 +34,11 @@ Pull requests are not a triage request surface.
 
 ## Posting under a person's account
 
-Anything an agent writes under a person's GitHub account (an issue, a comment, a PR body,
-a reply) opens with the line `> 🤖 AI`, so readers can tell the agent's words from the
-person's own; words the person dictated verbatim go after the block, outside it. The records
+Anything an agent writes under a person's GitHub account on a project that is not the
+owner's own (an issue, a comment, a PR body, a reply) opens with the line `> 🤖 AI`, so
+readers can tell the agent's words from the person's own; words the person dictated
+verbatim go after the block, outside it. On the owner's own repo every word is an agent's,
+so the line is dropped; `approvals.py` still skips it in old comments. The records
 `approvals.py` posts (`Approved:`, `Assigned:`, `Local check passed`, the verifier's review)
 keep their format, since their first lines already say who wrote them and the gate parses
 them. A `## Spec` or `## Plan` comment may open with the marker: `approvals.py` skips that
@@ -44,9 +46,9 @@ leading line when it reads the heading.
 
 ## Labels
 
-`python3 scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
-prints the same plan and writes nothing. Run it by hand, `--dry-run` first: the project's
-`mise run setup:github` runs it only once project-templates wires it in. Its docstring says what it does, in order. The calls it makes:
+`uv run <this skill's folder>/scripts/labels.py` syncs the repo's labels with issues.md, Labels; `--dry-run`
+prints the same plan and writes nothing. The project's `mise run setup:github` runs it; run
+it by hand, `--dry-run` first, only to resync between setups. Its docstring says what it does, in order. The calls it makes:
 
 - Rename in place, so every open and closed issue and PR keeps the label and its timeline
   shows no remove and add: `gh api -X PATCH 'repos/{owner}/{repo}/labels/<old>' -f new_name=<new>`
@@ -58,13 +60,13 @@ prints the same plan and writes nothing. Run it by hand, `--dry-run` first: the 
 
 ## Assignee
 
-The calls behind issues.md, Assignee. `python3 scripts/approvals.py check build <pr>` reads
+The calls behind issues.md, Assignee. `uv run <this skill's folder>/scripts/approvals.py check build <pr>` reads
 who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
 assigned to anyone else, and, once every build proof holds, assigns the approver where no
 one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
 on the issue as the record that the loop made the assignment; when that comment is refused
 it says so and leaves the issue unassigned. When you park an issue (`needs-owner`) or drop
-it, run `python3 scripts/approvals.py release <issue>`: it removes an assignee that record
+it, run `uv run <this skill's folder>/scripts/approvals.py release <issue>`: it removes an assignee that record
 names, unless someone assigned them again after the loop did, and keeps any other. Assign by hand
 only a person: `gh issue edit <number> --add-assignee <login>`.
 
@@ -73,7 +75,7 @@ only a person: `gh issue edit <number> --add-assignee <login>`.
 The calls behind SKILL.md, Review trail on the PR. `gh api` fills `{owner}` and `{repo}`
 from the remote.
 
-- Post a pass: `python3 scripts/approvals.py verdict <pr> <report>`. It posts one review
+- Post a pass: `uv run <this skill's folder>/scripts/approvals.py verdict <pr> <report>`. It posts one review
   on the report's `Head:` commit, event `COMMENT`, because GitHub refuses
   `REQUEST_CHANGES` and `APPROVE` on your own PR. One comment whose path or line is outside
   the PR's diff at that commit refuses the whole review (422, `Path could not be resolved`
@@ -94,23 +96,29 @@ from the remote.
 
 A GitHub Projects board linked to the repo (the `github-project-board-setup` skill of the
 `utilities` plugin creates one, with an Epics view and the Parent issue and Sub-issues
-progress fields shown). `python3 scripts/board.py <issue> <column>` adds the
-issue when it is missing and sets its column; it is the only thing that moves a ticket, so
-the board's own "Item closed" and "Auto-add" workflows stay off, as they are on a board
-created through the API. Its views show the Assignees field next to Status, so the board
-shows whose each ticket is. `python3 scripts/board.py column <issue>` prints the later of the
+progress fields shown). `uv run <this skill's folder>/scripts/board.py <issue> <column>` adds the
+issue when it is missing and sets its column, so the board's built-in workflows stay off, as
+they are on a board created through the API, except "Item closed", which sets the column
+`Done` shows in: GitHub closes an issue on a PR's `Closes` without the loop moving it, and a
+closed issue is in no other loop column (one waiting for sign-off stays open). The
+`github-project-board-setup` skill's `scripts/project_workflows.py` switches it on. That
+column is named `Closed`, mapped from `Done` (below), since a closed issue may be completed,
+not planned or a duplicate, and the card's icon says which. Its views show the Assignees field next to Status, so the board
+shows whose each ticket is. Where the project ranks work, the board's `Priority` single-select
+field holds it, since it takes one value per item, in its options' order, where an item can carry
+several labels; the gate never reads it. `uv run <this skill's folder>/scripts/board.py column <issue>` prints the later of the
 loop column the issue's board column shows and the one its labels give, so an issue with `approved:spec` reads
 `Ready` even when its move failed or the repo has no board. Both take and print the loop's names.
 
 A board with other column names, or one column for several loop columns, maps them in the
-project's `docs/agents/issue-tracker.md` under an optional `## Board`, one list item per
-mapping, the loop column first and the board's second, both in backticks:
+project's `docs/agents/issue-tracker.md` settings under an optional `board`, one
+`loop column: board column` line per mapping:
 
-```markdown
-## Board
-
-- `Build` is `In progress`
-- `Verify` is `In progress`
+```yaml
+board:
+  Build: In progress
+  Verify: In progress
+  Done: Closed
 ```
 
 A loop column the section does not name keeps its own name. `board.py <issue> <column>` sets
@@ -133,7 +141,7 @@ issue.
   one with the smallest exact UTF-8 title bytes; number them from 1 as `order`.
 - Sort and deduplicate each issue's labels by exact UTF-8 bytes and its blockers by
   their `order`. Preserve titles and bodies byte-for-byte.
-- Serialize the array of issues, in `order`, as UTF-8 JSON with only `title`, `body`,
+- Serialize the list of issues, in `order`, as UTF-8 JSON with only `title`, `body`,
   `labels`, `blockers` and `order`: object keys sorted, Unicode characters emitted
   directly, comma and colon separators without surrounding whitespace. The lowercase
   hexadecimal SHA-256 of those bytes is `batch_sha256`.
@@ -144,8 +152,8 @@ issue.
 
 Store the approved batch at
 `.scratch/agent-skills/github-issue-batches/{batch_sha256}.json` with `version`,
-`batch_sha256`, `approved`, the complete canonical issue array (each issue also holding
-its marker, marked body, and resolved URL or `null`), and a `relationships` array
+`batch_sha256`, `approved`, the complete canonical issue list (each issue also holding
+its marker, marked body, and resolved URL or `null`), and a `relationships` list
 recording each edge's blocked order, blocker order, and `pending` or `confirmed` status.
 
 Write state atomically after every transition: sibling temporary file, flush and

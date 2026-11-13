@@ -1,16 +1,25 @@
+# New tests go in a module of their own, test_approvals_<topic>.py, importing approvals_harness.
 """scripts/approvals.py: each loop step leaves proof on GitHub; the gate checks it, and `approve`/`verdict` write it."""
 
 from __future__ import annotations
 
+import fcntl
 import fnmatch
+import hashlib
 import importlib.util
 import itertools
 import json
+import os
 import re
+import shlex
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -47,8 +56,11 @@ def add(loop: str, section: str, settings: str) -> str:
 
 
 HEAD, BASE = "a" * 40, "b" * 40
+TREE = "e" * 40  # the head's tree in a faked checkout
 WRITTEN = "2026-10-01T09:00:00Z"
 AS_WRITTEN = "as written 2026-10-01 09:00:00 UTC"
+# what `approve` records for the spec `issue()` holds: its text's digest
+TEXTED = "sha256 " + hashlib.sha256(b"the spec").hexdigest()
 IDS = itertools.count(1)
 PUSHED, LABELED = "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z"
 # land's wait for a check whose only run is the draft's skip
@@ -61,6 +73,13 @@ VIEWER = approvals.viewer
 REQUIRED = approvals.required_checks
 MERGED_HIGH = approvals.merged_high
 COMMENT = approvals.comment
+OPEN_PULLS = getattr(approvals, "open_pulls", list)
+
+
+@pytest.fixture(autouse=True)
+def attached(monkeypatch: pytest.MonkeyPatch) -> None:
+    """local-ci runs in the test's process, as in a session of its own; the detached tests run the script."""
+    monkeypatch.setattr(approvals, "leads_its_session", lambda: True)
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +90,89 @@ def pushed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "toplevel", Path.cwd)
     monkeypatch.setattr(approvals, "viewer", lambda: "loop")
     monkeypatch.setattr(approvals, "merged_high", lambda _branch: [])
+
+
+@pytest.fixture(autouse=True)
+def others_open(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """The repo's open PRs `check build` compares a PR with: none, unless a test adds one."""
+    found: list[dict[str, Any]] = []
+    monkeypatch.setattr(approvals, "open_pulls", lambda: found, raising=False)
+    return found
+
+
+@pytest.fixture(autouse=True)
+def hub(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[dict[str, Any]]]:
+    """GitHub's commit statuses by commit, newest first: what statuses() reads and post_status() writes as `loop`."""
+    found: dict[str, list[dict[str, Any]]] = {}
+
+    def post(head: str, context: str, description: str, state: str = "success") -> None:
+        found.setdefault(head, []).insert(0, status(context, description, state=state))
+
+    monkeypatch.setattr(approvals, "statuses", lambda head: found.get(head, []))
+    monkeypatch.setattr(approvals, "post_status", post)
+    return found
+
+
+RECORD_REF = approvals.record_ref
+PUSH_RECORD = approvals.push_record
+PUSHED_COMMANDS = approvals.pushed_commands
+DROP_RECORDS = approvals.drop_records
+
+
+@pytest.fixture(autouse=True)
+def refs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
+    """origin's record branches as publish() pushes a pass to them, by name, and record_ref() reads them: a record
+    counts for the tree, command and env it was pushed with. The ref tests put the real functions back on real
+    repos."""
+    pushed: dict[str, dict[str, Any]] = {}
+
+    def push(record: dict[str, Any]) -> str:
+        name = approvals.record_name(record["tree"], record["command"])
+        pushed[name] = {**record, "env": record.get("env", approvals.gate()[2])}
+        return approvals.RECORD_BRANCH.format(name)
+
+    def read(
+        held: str, command: str, env: dict[str, str], _why: list[str] | None = None
+    ) -> dict[str, Any] | None:
+        found = pushed.get(approvals.record_name(held, command))
+        if found is None or (found["tree"], found["command"], found["env"]) != (held, command, env):
+            return None
+        ref = approvals.RECORD_BRANCH.format(approvals.record_name(held, command))
+        return {**found, "exit": 0, "published": True, "ref": ref}
+
+    monkeypatch.setattr(approvals, "record_ref", read)
+    monkeypatch.setattr(approvals, "push_record", push)
+    monkeypatch.setattr(
+        approvals,
+        "pushed_commands",
+        lambda held: {found["command"] for found in pushed.values() if found["tree"] == held},
+    )
+    monkeypatch.setattr(approvals, "drop_records", lambda _heads: None)
+    return pushed
+
+
+def pushed_pass(
+    refs: dict[str, dict[str, Any]],
+    head: str,
+    tree: str,
+    command: str,
+    env: dict[str, str] | None = None,
+) -> None:
+    """A pass of `command` on `tree`, run on `head`, as another clone pushed it to origin's record branch."""
+    record = {"head": head, "tree": tree, "command": command, "time": "2026-01-01T00:00:00Z"}
+    refs[approvals.record_name(tree, command)] = record | {"env": env or {}}
+
+
+def status(
+    context: str, description: str, by: str = "loop", state: str = "success"
+) -> dict[str, Any]:
+    return {
+        "context": context,
+        "state": state,
+        "description": description,
+        "creator": {"login": by},
+        "created_at": "2026-01-01T00:00:00Z",
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -143,7 +245,15 @@ def node(
 def issue(
     number: int, *labels: str, body: str = "the spec", comments: tuple[str, ...] = ()
 ) -> dict[str, Any]:
-    return node(labels, comments, number=number, body=body, createdAt=WRITTEN, lastEditedAt=None)
+    return node(
+        labels,
+        comments,
+        number=number,
+        body=body,
+        createdAt=WRITTEN,
+        lastEditedAt=None,
+        repository={"nameWithOwner": "kzarzycki/scratch-gate-revert"},
+    )
 
 
 def specced(number: int, *labels: str) -> dict[str, Any]:
@@ -170,7 +280,7 @@ def pull(
     *,
     body: str = "## Evidence\n\nlog line\n",
     files: tuple[str, ...] = (),
-    comments: tuple[str, ...] = (),
+    comments: tuple[str | dict[str, Any], ...] = (),
     labels: tuple[str, ...] = (),
     checks: tuple[tuple[str, str], ...] = (("check", "SUCCESS"),),
     labeled: str = LABELED,
@@ -235,7 +345,23 @@ def verdict_on(
 
 VERDICT = verdict_on(HEAD, "0 blocker, 0 major, 2 minor")
 OWNED = ("approved:merge",)
-HELD = "PR #7 waits for the owner's `approved:merge` label, since it is high risk: "
+HELD = f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: "
+
+
+def given_go(pr: dict[str, Any], hub: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """`pr` with the owner's go on its head as `approve merge` leaves it: the record on the PR, the status in `hub`."""
+    head = pr["headRefOid"]
+    pr["comments"]["nodes"].append(note(record("merge", "owner", head=head)))
+    hub.setdefault(head, []).insert(0, status("owner", f"The owner's go on {head[:12]}"))
+    return pr
+
+
+def into_feature(pr: dict[str, Any]) -> dict[str, Any]:
+    """`pr` into a feature branch, where `approved:merge` added after the head's push is a go too."""
+    pr["baseRefName"] = "stream"
+    return pr
+
+
 BILLING = HELD + "it matches a risk rule (path `billing/**`)"
 GITHUB = HELD + "it matches a risk rule (path `.github/**`)"
 
@@ -322,6 +448,107 @@ def test_an_issue_without_approved_spec_is_not_ready() -> None:
         "#2 has no `Approved: spec` record by the owner",
         "#2 lacks the `approved:spec` label",
     ]
+
+
+def test_check_build_before_the_pr_judges_the_issue(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no PR yet, `check build --issue <n>` (or the issue the branch is named for) applies the PR's build proofs
+    to the issue alone, so an unapproved spec is not built."""
+    spec: dict[int, dict[str, Any]] = {
+        2: issue(2, "kind:chore", "area:agents", "size:XS", "risk:high"),
+        3: approved(3, "kind:chore", "area:agents"),
+    }
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    branch, changed = ["loop/3-fix"], [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "--no-renames", "-z", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "".join(f"{path}\0" for path in changed[0].split())
+        return ("origin/main" if args[-1] == "origin/HEAD" else branch[0]) + "\n"
+
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(*args: str) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", *args])
+        return code, capsys.readouterr().out.splitlines()
+
+    unapproved = [
+        "#2 has no `Approved: spec` record by the owner",
+        "#2 lacks the `approved:spec` label",
+    ]
+    assert build("--issue", "2") == (1, unapproved)
+    assert build("--issue", "3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert build() == (0, ["#3: every build proof holds; no PR yet"])
+    branch[0] = "loop/2-fix"
+    assert build() == (1, unapproved)
+    branch[0] = "spike"
+    assert build()[0] == 1
+    assert build("7", "--issue", "2") == (1, ["--issue goes with check build and no PR number"])
+
+    # a positional number no PR has is the issue, printing what --issue prints; a PR's number is unchanged
+    def pull_request(n: int) -> dict[str, Any]:
+        if n != 5:
+            raise subprocess.CalledProcessError(
+                1, ["gh"], stderr=f"Could not resolve to a PullRequest with the number of {n}"
+            )
+        return {"number": 5, "labels": {"nodes": []}}
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request)
+    monkeypatch.setattr(approvals, "gated", lambda *a: (["gated"], []))
+    assert build("2") == build("--issue", "2") == (1, unapproved)
+    assert build("3") == build("--issue", "3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert build("5") == (1, ["gated"])
+
+    # where GraphQL answers 403, the REST fallback says a number no PR has is "Not Found": still the issue's
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("api", "graphql"):
+            raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: HTTP 403: Forbidden")
+        assert args in {
+            ("api", "repos/{owner}/{repo}/pulls/2"),
+            ("api", "repos/{owner}/{repo}/pulls/3"),
+        }
+        raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request_of_record)
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "_rest_only", False)
+    assert build("2") == build("--issue", "2") == (1, unapproved)
+    assert build("3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert approvals._rest_only
+
+
+pull_request_of_record = approvals.pull_request
+
+
+@pytest.mark.parametrize(
+    "missing", ["Could not resolve to a PullRequest with the number of 3", "Not Found"]
+)
+@pytest.mark.parametrize("point", [["merge", "3"], ["queue", "3", "--head", "abc"]])
+def test_check_merge_and_queue_of_a_number_no_pr_has_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    point: list[str],
+    missing: str,
+) -> None:
+    """Only `check build` reads a number no PR has as the issue: `check merge` and `check queue` fail on the lookup,
+    since there is no PR to merge or queue, though #3's spec is approved."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    monkeypatch.setattr(approvals, "issue_node", lambda n: approved(n, "kind:chore", "area:agents"))
+    monkeypatch.setattr(approvals, "unbuilt", lambda *a: pytest.fail("judged the issue"))
+
+    def pull_request(n: int) -> dict[str, Any]:
+        raise subprocess.CalledProcessError(1, ["gh"], stderr=f"gh: {missing}")
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request)
+    assert approvals.main(["check", *point]) == 1
+    assert capsys.readouterr().out.splitlines() == [f"gh: {missing}"]
 
 
 def test_every_closing_issue_specced_lands() -> None:
@@ -474,8 +701,21 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
         ("bot:\n  dependabot[bot]:\n", "loop.md's `bot.dependabot[bot]` lacks `paths`"),
         ("land:\n  signed_squash_to: main\n", "loop.md's `land` lacks `allowed_signers`"),
         (
+            "land:\n  signed_squash_to: main\n  allowed_signers: s\n  where: everywhere\n",
+            "loop.md's `land.where` must be one of host, cloud, both, not 'everywhere'",
+        ),
+        (
             'land:\n  signed_squash_to: ""\n  allowed_signers: s\n',
             "loop.md's `land.signed_squash_to` is empty",
+        ),
+        (
+            "loop:\n  head_proof: gate-ui\n",
+            "loop.md's `loop.head_proof` must be a section holding `status`, `env`",
+        ),
+        ("loop:\n  head_proof:\n    status: gate-ui\n", "loop.md's `loop.head_proof` lacks `env`"),
+        (
+            "loop:\n  head_proof:\n    status: gate-ui\n    env: GATE_UI_TESTS\n",
+            "loop.md's `loop.head_proof.env` must be a list of strings, not 'GATE_UI_TESTS'",
         ),
     ],
 )
@@ -589,6 +829,65 @@ def test_a_yaml_example_outside_settings_is_never_read_as_the_settings() -> None
     assert approvals.label_names(tracker)["component"] == {"area:billing"}
     with pytest.raises(approvals.Refused, match="issue-tracker.md has no ```yaml settings block"):
         approvals.label_names("## Components\n\n- `billing`: invoices.\n\n" + EXAMPLE)
+
+
+def gatekeeper_md(settings: str = "") -> str:
+    """A gatekeeper.md whose policy block holds `settings`, YAML."""
+    return f"# Gatekeeper\n\n## Policy\n\n```yaml\n{settings}```\n"
+
+
+@pytest.fixture
+def agents(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A checkout's docs/agents/ under tmp_path, empty, and no deprecation line of either kind printed yet this run,
+    so a test's stderr doesn't depend on which tests ran before it."""
+    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    monkeypatch.setattr(approvals, "DEPRECATED", set())
+    approvals.moved.cache_clear()
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    return tmp_path / "docs" / "agents"
+
+
+def test_the_policy_is_read_from_gatekeeper_md_under_its_policy_heading(
+    agents: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """loop.md keeps its prose: a gatekeeper.md beside it is the one source of the bar, and its messages name it."""
+    (agents / "loop.md").write_text("# Loop facts\n\nWorker model: mid\n")
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  gate: mise run check\n"))
+    _, policy = approvals.project()
+    assert approvals.settings(policy)["gate"] == "mise run check"
+    assert capsys.readouterr().err == ""
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: no-ish\n"))
+    with pytest.raises(approvals.Refused, match="gatekeeper.md's `loop.ci` must be true or false"):
+        approvals.project()
+    (agents / "gatekeeper.md").write_text(loop_md("loop:\n  ci: false\n"))
+    with pytest.raises(
+        approvals.Refused, match="gatekeeper.md has no ```yaml settings block under ## Policy"
+    ):
+        approvals.project()
+
+
+def test_loop_md_settings_without_gatekeeper_md_are_read_with_one_deprecation_line(
+    agents: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (agents / "loop.md").write_text(loop_md("loop:\n  gate: mise run check\n"))
+    for _ in range(2):
+        assert approvals.settings(approvals.project()[1])["gate"] == "mise run check"
+    assert capsys.readouterr().err == (
+        "docs/agents/loop.md's ## Settings is deprecated: move the block to docs/agents/gatekeeper.md under"
+        " ## Policy (SKILL.md § Settings)\n"
+    )
+
+
+def test_a_policy_in_both_gatekeeper_md_and_loop_md_is_refused_naming_both(agents: Path) -> None:
+    """Two sources of the bar would drift."""
+    (agents / "loop.md").write_text(loop_md("loop:\n  ci: false\n"))
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: false\n"))
+    with pytest.raises(approvals.Refused) as raised:
+        approvals.project()
+    assert str(raised.value) == (
+        "both docs/agents/gatekeeper.md and docs/agents/loop.md's ## Settings hold a policy:"
+        " keep it in docs/agents/gatekeeper.md alone"
+    )
 
 
 @pytest.mark.parametrize(
@@ -733,8 +1032,41 @@ def test_a_pr_with_every_proof_passes_merge() -> None:
     assert merge(done, [approved(1, "area:web")]) == []
 
 
-def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_a_demo_linked_instead_of_embedded_fails_check_merge_naming_demo_sh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "loop")
+    embedded = (
+        "## Demo\n\nthe preview, on aaaaaaa.\nhttps://github.com/user-attachments/assets/0b1c-2d\n"
+    )
+    asset = "https://github.com/kzarzycki/omnigent/releases/download/demo-190/check-1.mp4"
+    linked = f"## Demo\n\n- [check 1]({asset})\n"
+    issues = [approved(1, "area:web")]
+    done = {"reviews": (VERDICT,), "labels": OWNED}
+    assert merge(pull(comments=(embedded,), **done), issues) == []
+    shot = "## Demo\n\nthe card, on aaaaaaa.\nhttps://github.com/user-attachments/assets/9f8e-7d\n"
+    assert merge(pull(comments=(shot,), **done), issues) == []
+    failed = merge(pull(comments=(embedded, linked), **done), issues)
+    assert len(failed) == 1 and asset in failed[0] and "`scripts/demo.sh`" in failed[0]
+    assert (
+        "embeds no video or screenshot"
+        in merge(pull(comments=("## Demo\n\nsee the PR",), **done), issues)[0]
+    )
+    # at build too, once a demo is posted; a stranger's demo comment holds nothing
+    assert approvals.proofs("build", pull(comments=(linked,)), issues, LOOP) == failed
+    stranger = note(linked, author={"login": "drive-by"})
+    assert merge(pull(comments=(embedded, stranger), **done), issues) == []
+    # nor does a stranger's later demo clear a linked one; a demo minimized as outdated is skipped
+    cleared = note(embedded, author={"login": "drive-by"})
+    assert merge(pull(comments=(linked, cleared), **done), issues) == failed
+    outdated = note(linked, isMinimized=True)
+    assert merge(pull(comments=(embedded, outdated), **done), issues) == []
+
+
+def test_a_merge_waits_for_check_and_the_owners_go_and_fails_a_missing_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     def gated(pr: dict[str, Any]) -> tuple[int, list[str]]:
         pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
@@ -748,7 +1080,9 @@ def test_a_merge_waits_for_check_and_the_owners_label_and_fails_a_missing_proof(
         approvals.WAITING,
         ["PR #7: `check` is IN_PROGRESS on the head commit", BILLING],
     )
-    assert gated(pull(reviews=(VERDICT,), labels=OWNED, files=("billing/a.py",))) == (0, [])
+    labelled = pull(reviews=(VERDICT,), labels=OWNED, files=("billing/a.py",))
+    assert gated(labelled) == (approvals.WAITING, [BILLING])  # into main the label is no go
+    assert gated(given_go(labelled, hub)) == (0, [f"PR #7: the go on {HEAD} is the owner's"])
     assert gated(pull(labels=OWNED, checks=(("check", "IN_PROGRESS"),))) == (
         1,
         [
@@ -763,16 +1097,17 @@ def test_a_label_added_before_the_heads_push_is_no_approval(
 ) -> None:
     billing = ("billing/a.py",)
     stale = pull(reviews=(VERDICT,), labels=OWNED, labeled="2026-10-01T09:59:59Z", files=billing)
-    assert merge(stale, [approved(1, "area:web")]) == [
+    assert merge(into_feature(stale), [approved(1, "area:web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
     same_second = pull(reviews=(VERDICT,), labels=OWNED, labeled=PUSHED, files=billing)
-    assert merge(same_second, [approved(1, "area:web")]) == [
+    assert merge(into_feature(same_second), [approved(1, "area:web")]) == [
         "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
     ]
     monkeypatch.setattr(approvals, "head_pushed", lambda _pull: None)
     assert merge(
-        pull(reviews=(VERDICT,), labels=OWNED, files=billing), [approved(1, "area:web")]
+        into_feature(pull(reviews=(VERDICT,), labels=OWNED, files=billing)),
+        [approved(1, "area:web")],
     ) == [
         f"PR #7: GitHub lists no push of the head {HEAD}, so `approved:merge` can't be dated after it"
     ]
@@ -790,24 +1125,25 @@ def test_a_label_added_again_after_the_push_is_the_approval() -> None:
 DELEGATED = note(record("merge", "delegate"), createdAt="2026-10-01T11:00:01Z")
 
 
-def test_a_delegated_label_approves_a_merge_into_a_feature_branch_only() -> None:
-    """The delegate's record is newer than the label it names; the owner's label added after it is the owner's."""
+def test_a_label_approves_a_high_risk_merge_into_a_feature_branch_only(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """A delegate acting through the owner's account labels no differently from the owner, so into the default branch
+    no label is the go, with a delegate record or without; only the owner's `approve merge` is."""
     high = ("risk:high", "approved:merge")
-    into_main = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
-    assert merge(into_main, [approved(1, "area:web")]) == [
-        (
-            "PR #7: `approved:merge` is the delegated approval, which covers a PR into a feature branch, not into"
-            " main: the owner removes it and adds it again"
-        )
+    held = [HELD + "`risk:high` is on PR #7"]
+    delegated = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
+    assert merge(delegated, [approved(1, "area:web")]) == held
+    by_hand = pull(reviews=(VERDICT,), labels=high)  # no delegate record
+    assert merge(by_hand, [approved(1, "area:web")]) == held
+    assert hub == {}  # and it never becomes a go on the head
+    assert merge(into_feature(delegated), [approved(1, "area:web")]) == []
+    assert merge(given_go(by_hand, hub), [approved(1, "area:web")]) == []
+    feature = into_feature(pull(reviews=(VERDICT,), labels=("risk:high",)))
+    assert merge(feature, [approved(1, "area:web")]) == [
+        HELD.replace("; into main `approved:merge` is no go", ", or `approved:merge`")
+        + "`risk:high` is on PR #7"
     ]
-    into_feature = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
-    into_feature["baseRefName"] = "stream"
-    assert merge(into_feature, [approved(1, "area:web")]) == []
-    owners = pull(reviews=(VERDICT,), labels=high, comments=(DELEGATED,))
-    owners["timelineItems"]["nodes"].append(
-        {"createdAt": "2026-10-01T12:00:00Z", "label": {"name": "approved:merge"}}
-    )
-    assert merge(owners, [approved(1, "area:web")]) == []
 
 
 def test_a_branchs_merge_to_the_default_branch_carries_its_high_risk_prs(
@@ -954,7 +1290,51 @@ def test_one_job_name_in_two_workflows_is_two_checks() -> None:
     assert approvals.ci("PR #7", pr) == ["PR #7: `check` is FAILURE on the head commit"]
 
 
-def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> None:
+def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A satisfied lower-tier verdict saying `Risk: high` blocks the merge; a default-tier verdict on the same head
+    clears it, and a heading naming no tier reads as the default."""
+    monkeypatch.setattr(approvals, "writer", lambda _login: False)
+    judged = add(loop_md("spec:\n  auto: true\n"), "risk", "verifier: true\n")
+
+    def said(family: str, number: int, risk: str) -> dict[str, Any]:
+        heading = f"Verifier ({family}), pass {number}"
+        return verdict_on(HEAD, "0 blocker, 0 major, 0 minor", heading=heading) | {
+            "body": f"{heading} on {HEAD[:7]}.\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: {risk}\n"
+        }
+
+    def gate(*reviews: dict[str, Any]) -> list[str]:
+        return approvals.proofs(
+            "merge",
+            pull(reviews=reviews, labels=OWNED),
+            [approved(1, "kind:bug", "area:web")],
+            judged,
+        )
+
+    assert gate(said("codex/terra-6.1/med mid", 1, "high — CI permissions")) == [
+        (
+            "PR #7 is high risk (it matches a risk rule's `verifier` term: the verifier's pass 1 on aaaaaaa says"
+            " `Risk: high — CI permissions`), and its newest verdict came from a lower tier (mid): a default-tier"
+            " verifier pass on the head first"
+        )
+    ]
+    assert (
+        gate(said("codex/terra-6.1/med mid", 1, "high"), said("codex/sol-6.1/med", 2, "high")) == []
+    )
+    assert gate(said("codex/terra-6.1/med mid", 1, "low — a fixture")) == []
+    assert gate(said("codex", 1, "high")) == []
+    # a tier word inside the model id is no tier: only a word of its own after the signature is
+    assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
+    assert gate(
+        said("claude/small-model/?, same-family", 1, "high")
+    )  # a same-family pass is a fallback (#890)
+    assert gate(said("claude, same-family, small", 1, "high"))
+
+
+def test_without_ci_the_merge_proof_is_the_heads_pass_never_a_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anyone who can comment can write `Local check passed`, the PR's author from a fork included, and an old comment
+    says nothing about today's command and env: only a pass reusable() finds on the head's tree proves it."""
     no_ci = add(LOOP, "loop", "ci: false\n")
     missing = [
         (
@@ -962,19 +1342,23 @@ def test_without_ci_the_merge_proof_is_a_local_check_recorded_on_the_head() -> N
             " the head (approvals.py local-ci)"
         )
     ]
+    passes: dict[str, dict[str, Any]] = {}
+    monkeypatch.setattr(approvals, "reusable", passes.get)
+    monkeypatch.setattr(approvals, "writer", lambda login: False)
 
-    def proofs(*comments: str) -> list[str]:
+    def proofs(*comments: dict[str, Any]) -> list[str]:
         merged = pull(reviews=(VERDICT,), comments=comments, labels=OWNED, checks=())
+        merged["isCrossRepository"] = True
         return merge(merged, [approved(1, "area:web")], no_ci)
 
-    assert (
-        proofs(),
-        proofs(f"{approvals.CHECKED}\nHead: {'b' * 40}\nCommand: mise run check\n"),
-        proofs("## Evidence\n\n- `mise run check`: exit 0\n"),
-        proofs(f"{approvals.CHECKED}: no, not run\nHead: {HEAD}\n"),
-        proofs(f"> {approvals.CHECKED}\n> Head: {HEAD}\n"),
-        proofs(f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check\n"),
-    ) == (missing, missing, missing, missing, missing, [])
+    forged = note(f"{approvals.CHECKED}\nHead: {HEAD}\n", author={"login": "worker"})
+    obsolete = note(
+        f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: obsolete-gate\nEnv: GATE_SCOPE=smoke\n",
+        author={"login": "loop"},
+    )
+    assert proofs() == proofs(forged) == proofs(obsolete) == missing
+    passes[HEAD] = {"head": HEAD}
+    assert proofs() == []
 
 
 def test_more_checks_than_one_page_is_refused() -> None:
@@ -991,7 +1375,7 @@ def test_more_comments_than_one_page_is_refused() -> None:
     with pytest.raises(
         approvals.Refused, match="#7 has more than 2 comments: the gate reads one page"
     ):
-        approvals.ran(crowded, loop_md("loop:\n  ci: false\n"))
+        approvals.ran(crowded, loop_md("loop:\n  batch_queue: true\n"))
 
 
 def test_a_pr_without_its_proof_names_each_missing_one() -> None:
@@ -1007,7 +1391,9 @@ def test_a_pr_without_its_proof_names_each_missing_one() -> None:
     assert "PR #7: no `check` on the head commit yet" in merge(pull(checks=()), [], BARE)
 
 
-def test_a_risk_path_rule_holds_only_a_pr_touching_its_path() -> None:
+def test_a_risk_path_rule_holds_only_a_pr_touching_its_path(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
     rule = loop_md("risk:\n  paths:\n    - billing/**\n")
     billing = pull(files=("billing/invoice.py",), reviews=(VERDICT,))
     assert merge(billing, [approved(1, "area:web")], rule) == [BILLING]
@@ -1015,11 +1401,7 @@ def test_a_risk_path_rule_holds_only_a_pr_touching_its_path() -> None:
         merge(pull(files=("web/app.ts",), reviews=(VERDICT,)), [approved(1, "area:web")], rule)
         == []
     )
-    billing["labels"]["nodes"] = [{"name": "approved:merge"}]
-    billing["timelineItems"]["nodes"] = [
-        {"createdAt": LABELED, "label": {"name": "approved:merge"}}
-    ]
-    assert merge(billing, [approved(1, "area:web")], rule) == []
+    assert merge(given_go(billing, hub), [approved(1, "area:web")], rule) == []
 
 
 # --- sign-off: the owner checks a landed change in use ---
@@ -1194,11 +1576,17 @@ def gated(
 
 
 def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
-    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    recorded: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    done = revert_pr(labels=OWNED)
+    done = given_go(revert_pr(), hub)
     assert gated(monkeypatch, capsys, "build", done) == (0, [])
-    assert gated(monkeypatch, capsys, "merge", done) == (0, [])
+    assert gated(monkeypatch, capsys, "merge", done) == (
+        0,
+        [f"PR #2: the go on {REVERT_HEAD} is the owner's"],
+    )
     # the inverse comes from GitHub's own diff of #1, not from anything approvals.py writes
     assert "repos/{owner}/{repo}/pulls/1/files?per_page=100" in recorded
     # the modes come from the trees of #1's base and merge commit and of the revert's merge base and head
@@ -1212,21 +1600,25 @@ def test_an_exact_revert_lands_without_a_spec_or_a_verdict(
 
 
 def test_an_exact_revert_still_needs_check_and_the_merge_approval(
-    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    recorded: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    red = revert_pr(labels=OWNED, checks=(("check", "FAILURE"),))
+    red = given_go(revert_pr(checks=(("check", "FAILURE"),)), hub)
     assert gated(monkeypatch, capsys, "merge", red) == (
         approvals.WAITING,
         ["PR #2: `check` is FAILURE on the head commit"],
     )
+    hub.clear()
     unapproved = revert_pr(body="Reverts #1\n\n## Evidence\n\n#1 set the wrong rate.\n")
     assert gated(monkeypatch, capsys, "merge", unapproved) == (
         approvals.WAITING,
         [
-            "PR #2 waits for the owner's `approved:merge` label, since it is high risk: it matches a risk rule (path `billing/**`)"
+            f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: it matches a risk rule (path `billing/**`)"
         ],
     )
-    bare = revert_pr(body="Reverts #1\n", labels=OWNED)
+    bare = given_go(revert_pr(body="Reverts #1\n"), hub)
     assert gated(monkeypatch, capsys, "merge", bare) == (
         1,
         ["PR #2: its body has no `## Evidence` section with content"],
@@ -1234,9 +1626,12 @@ def test_an_exact_revert_still_needs_check_and_the_merge_approval(
 
 
 def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
-    recorded: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    recorded: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
-    plus = revert_pr(3, labels=OWNED)
+    plus = given_go(revert_pr(3), hub)
     assert gated(monkeypatch, capsys, "merge", plus) == (
         1,
         [
@@ -1251,6 +1646,67 @@ def test_a_revert_with_one_extra_line_gets_every_proof_of_any_pr(
             "PR #3: no verifier review posted (approvals.py verdict)",
         ],
     )
+
+
+def held_revert(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    revert: dict[str, Any],
+    original: dict[str, Any],
+    loop: str = BARE,
+) -> tuple[int, list[str]]:
+    """check merge on an exact revert of `original` (#1), by default under a loop.md with no risk rule, so only the
+    risk of what it reverts can hold it."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    monkeypatch.setattr(approvals, "pull_request", lambda n: original if n == 1 else revert)
+    code = approvals.main(["check", "merge", str(revert["number"])])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_an_exact_revert_of_a_high_risk_change_waits_for_the_owners_go(
+    recorded: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """The risk of the change a revert undoes (or re-lands) carries over: `risk:high` on an issue the revert closes,
+    on the PR it reverts, or that PR's last verdict saying `Risk: high`."""
+    low = {**pull(), "number": 1}
+    held = f"PR #2 waits for the owner's go on its head (`approve merge 2 --head {REVERT_HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: "
+    closing = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    closing["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug", "risk:high")]}
+    assert held_revert(monkeypatch, capsys, closing, low) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #71"],
+    )
+    high = {**pull(labels=("risk:high",)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), high) == (
+        approvals.WAITING,
+        [held + "`risk:high` is on #1, which it reverts"],
+    )
+    said = "Verifier (codex), pass 2\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — CI permissions\n"
+    judged = {**pull(reviews=(verdict_on(HEAD) | {"body": said},)), "number": 1}
+    assert held_revert(monkeypatch, capsys, revert_pr(), judged) == (
+        approvals.WAITING,
+        [
+            held
+            + "it reverts #1, and the verifier's pass 2 on aaaaaaa says `Risk: high — CI permissions`"
+        ],
+    )
+    # a risk rule reads the labels of the issues a revert names, as for any PR
+    ruled = revert_pr(body=REVERT_BODY + "\nCloses #71\n")
+    ruled["closingIssuesReferences"] = {"nodes": [specced(71, "kind:bug")]}
+    web = add(BARE, "risk", "labels: [area:web]\n")
+    assert held_revert(monkeypatch, capsys, ruled, low, web) == (
+        approvals.WAITING,
+        [held + "it matches a risk rule (label `area:web`)"],
+    )
+    # the owner's go clears each, and a revert of a low-risk PR lands without it
+    assert held_revert(monkeypatch, capsys, given_go(revert_pr(), hub), high) == (
+        0,
+        [f"PR #2: the go on {REVERT_HEAD} is the owner's"],
+    )
+    assert held_revert(monkeypatch, capsys, revert_pr(), low) == (0, [])
 
 
 @pytest.mark.parametrize(
@@ -1447,10 +1903,218 @@ def test_the_owners_approval_is_recorded_labelled_and_clears_needs_owner(
     monkeypatch.setattr(approvals, "issue_node", lambda _n: specced(1, "kind:bug", "needs-owner"))
     assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
     assert github == [
-        ("comment", 1, f"Approved: spec\nBy: owner\nSpec: {AS_WRITTEN}\n"),
+        ("comment", 1, f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"),
         ("label", 1, "approved:spec", True),
         ("label", 1, "needs-owner", False),
     ]
+
+
+def test_a_post_naming_a_term_of_the_local_deny_list_is_refused_before_any_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The list names private terms; a body that names one, in any case and as a whole word, is refused naming the
+    term and the line, and nothing reaches gh. Without the variable, nothing changes."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        approvals.subprocess,
+        "run",
+        lambda command, **_kw: calls.append(command) or subprocess.CompletedProcess(command, 0, ""),
+    )
+    deny = tmp_path / "deny.txt"
+    deny.write_text(
+        "# private names\nAcme-Widgets\nacme/secret-repo  # its repo\nbuild-host.local\n"
+    )
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    for body, term, line in [
+        ("Fixed.\nSeen in ACME-WIDGETS's run.\n", "Acme-Widgets", 2),
+        ("See acme/secret-repo#12.\n", "acme/secret-repo", 1),
+        ("Ran on build-host.local\n", "build-host.local", 1),
+    ]:
+        with pytest.raises(approvals.Refused) as refused:
+            approvals.comment(7, body)
+        assert str(refused.value) == (
+            f"refused to post: line {line} names `{term}` from the deny list (LOOP_DENY_LIST); nothing posted"
+        )
+    with pytest.raises(approvals.Refused, match="names `Acme-Widgets`"):
+        approvals.post_review(7, {"body": "pass 1 on acme-widgets"})
+    # a review is JSON: the text GitHub publishes is checked, not its escaped form (`\nAcme`, `Caf\u00e9`)
+    deny.write_text("Acme-Widgets\nCafé\n")
+    for review, term, line in [
+        ({"body": "Safe heading\nAcme-Widgets is listed"}, "Acme-Widgets", 2),
+        (
+            {
+                "body": "Safe",
+                "comments": [{"path": "x.py", "line": 1, "body": "Safe\n\nSeen in café"}],
+            },
+            "Café",
+            3,
+        ),
+    ]:
+        with pytest.raises(approvals.Refused) as refused:
+            approvals.post_review(7, review)
+        assert f"line {line} names `{term}`" in str(refused.value)
+    assert calls == []
+    # a term inside a longer word is no match
+    approvals.comment(7, "Acme-Widgetsmith and xacme/secret-repo are fine.\n")
+    assert len(calls) == 1
+    monkeypatch.delenv("LOOP_DENY_LIST")
+    approvals.comment(7, "Seen in Acme-Widgets's run.\n")
+    assert len(calls) == 2
+    monkeypatch.setenv("LOOP_DENY_LIST", str(tmp_path / "missing.txt"))
+    with pytest.raises(approvals.Refused, match="can't be read"):
+        approvals.comment(7, "anything")
+    assert len(calls) == 2
+
+
+def test_verdict_refuses_a_report_naming_a_listed_term_before_reading_github(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deny, report = tmp_path / "deny.txt", tmp_path / "report.md"
+    deny.write_text("Acme-Widgets\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    report.write_text(REPORT.replace("The doc.", "Seen in Acme-Widgets."))
+    read: list[str] = []
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: read.append("pull") or pull())
+    monkeypatch.setattr(approvals, "diff_lines", lambda *_a: read.append("diff") or {})
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert "names `Acme-Widgets` from the deny list" in capsys.readouterr().out
+    assert read == []
+
+
+@pytest.mark.parametrize(
+    ("actor", "at", "said"),
+    [
+        (
+            "octocat",
+            LABELED,
+            "#1: recorded the owner's `approved:spec`, added after the spec's last edit, as their approval",
+        ),
+        (
+            "octocat",
+            "2026-10-01T08:00:00Z",
+            (
+                f"#1: the owner's `approved:spec` was added before the spec's last edit ({AS_WRITTEN}): the owner"
+                " adds it again"
+            ),
+        ),
+        ("someone", LABELED, None),
+    ],
+    ids=["the owner after the edit", "the owner before it", "another account"],
+)
+def test_the_owners_own_label_after_the_last_edit_is_their_approval(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    actor: str,
+    at: str,
+    said: str | None,
+) -> None:
+    """With loop.md's `owner`, the owner's `approved:spec` added after the spec's last edit is recorded as their word
+    and `needs-owner` comes off, so the gate proceeds; an older label or anyone else's leaves the refusal."""
+    loop = add(LOOP, "loop", "owner: octocat\n")
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": at,
+                "actor": {"__typename": "User", "login": actor},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+
+    def label(number: int, name: str, add: bool) -> None:
+        held = [node for node in spec["labels"]["nodes"] if node["name"] != name]
+        spec["labels"]["nodes"] = held + [{"name": name}] * add
+
+    monkeypatch.setattr(approvals, "label", label)
+    monkeypatch.setattr(
+        approvals, "comment", lambda _n, body: spec["comments"]["nodes"].append(note(body))
+    )
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    pr = pull()
+    pr["closingIssuesReferences"] = {"nodes": [spec]}
+    found, _issues = approvals.gated("merge", pr, TRACKER, loop)
+    if actor == "octocat" and at == LABELED:
+        assert found == ["PR #7: no verifier review posted (approvals.py verdict)"]
+        assert "needs-owner" not in approvals.names(spec)
+    else:
+        assert found[:2] == [
+            "#1 waits for the owner (needs-owner)",
+            "#1 has no `Approved: spec` record by the owner",
+        ]
+    assert capsys.readouterr().out.splitlines() == ([said] if said else [])
+
+
+def test_check_build_before_the_pr_records_the_owners_own_label(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`check build --issue <n>`, before a PR exists, adopts the owner's own label as the PR path does."""
+    loop = add(LOOP, "loop", "owner: octocat\n")
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+
+    def label(number: int, name: str, add: bool) -> None:
+        held = [node for node in spec["labels"]["nodes"] if node["name"] != name]
+        spec["labels"]["nodes"] = held + [{"name": name}] * add
+
+    monkeypatch.setattr(approvals, "label", label)
+    monkeypatch.setattr(
+        approvals, "comment", lambda _n, body: spec["comments"]["nodes"].append(note(body))
+    )
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(
+        approvals, "git", lambda *args: "" if args[0] == "diff" else "origin/main\n"
+    )
+    assert approvals.main(["check", "build", "--issue", "1"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "#1: recorded the owner's `approved:spec`, added after the spec's last edit, as their approval",
+        "#1: every build proof holds; no PR yet",
+    ]
+
+
+def test_an_edit_after_the_owners_label_is_never_recorded_under_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spec is read again to record it: an edit between the check and the record is refused, not approved, and
+    loop.md's owner matches the label's actor whatever its casing, as GitHub's logins do."""
+    loop = add(LOOP, "loop", "owner: Octocat\n")
+    spec = issue(1, "kind:enhancement", "area:web", "size:S", "needs-owner", "approved:spec")
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+    later = {**spec, "body": "the spec, edited", "lastEditedAt": "2026-10-01T12:00:00Z"}
+    sent: list[str] = []
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: sent.append("label"))
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: later)
+    with pytest.raises(
+        approvals.Refused, match=r"#1: the spec was edited after the owner's `approved:spec`"
+    ):
+        approvals.adopted([spec], loop)
+    assert sent == []
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    approvals.adopted([spec], loop)
+    assert sent[0] == f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"
 
 
 def test_approve_refuses_the_coordinator(
@@ -1472,7 +2136,8 @@ def test_delegate_labels_then_records_a_feature_branch_pr_and_refuses_the_defaul
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
     assert approvals.main(["delegate", "7"]) == 1
     assert capsys.readouterr().out == (
-        "PR #7 targets main, the default branch: only the owner approves its merge\n"
+        "PR #7 targets main, the default branch, where a label is no go: the head-pinned `approve merge 7 --head <sha>"
+        " --by delegate` gives the delegate's go there with `loop.delegate: all`, and the owner's go always covers it\n"
     )
     assert github == []
     pr["baseRefName"] = "stream"
@@ -1517,7 +2182,7 @@ def test_a_re_approval_says_why_and_minimizes_every_record_it_supersedes(
             "comment",
             1,
             (
-                "Approved: spec\nBy: owner\nSpec: as edited 2026-10-02 14:35:27 UTC\n"
+                f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"
                 "The spec changed after the last approval, so it was checked again.\n"
             ),
         ),
@@ -1543,11 +2208,130 @@ def test_a_comment_gate_py_cannot_or_need_not_minimize_is_left_alone(
     assert [call for call in github if call[0] == "minimize"] == []
 
 
-def test_merge_is_no_approve_point(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exited:
-        approvals.main(["approve", "merge", "7", "--by", "owner"])
-    assert exited.value.code == 2
-    assert "invalid choice: 'merge'" in capsys.readouterr().err
+def test_approve_merge_posts_the_owners_go_on_the_head_and_a_record_it_writes_whole(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
+    assert approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner"]) == 0
+    assert [(s["context"], s["description"]) for s in hub[HEAD]] == [
+        ("owner", f"The owner's go on {HEAD[:12]}")
+    ]
+    assert github == [
+        ("comment", 7, f"Approved by the owner.\nApproved: merge\nBy: owner\nHead: {HEAD}\n")
+    ]
+
+
+def test_approve_merge_refuses_a_closed_pr(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "state": "MERGED"})
+    assert approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner"]) == 1
+    assert (github, hub) == ([], {})
+
+
+def test_the_owners_go_covers_its_head_only(
+    hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A status belongs to one commit: a push moves the head off it, with no label to remove. The status needs the
+    owner's record naming the head beside it, so a status alone is no go."""
+    high = pull(labels=("risk:high",))
+    assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
+    assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+    high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
+    assert approvals.owner_waits(high, [], LOOP) == []
+    assert approvals.owner_waits({**high, "headRefOid": "c" * 40}, [], LOOP) == [
+        HELD.replace(HEAD, "c" * 40) + "`risk:high` is on PR #7",
+        f"PR #7: the go on {HEAD} carries nothing to {'c' * 40}: no verifier review is on {'c' * 40}",
+    ]
+    monkeypatch.setattr(approvals, "writer", lambda login: False)
+    hub[HEAD] = [status("owner", "The owner's go", by="contributor")]  # anyone can't give it
+    assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+
+
+def test_approve_merge_refuses_a_head_other_than_the_one_the_owner_was_shown(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull())
+    assert approvals.main(["approve", "merge", "7", "--head", "c" * 40, "--by", "owner"]) == 1
+    assert approvals.main(["approve", "merge", "7", "--by", "owner"]) == 1
+    assert approvals.main(["approve", "spec", "7", "--head", HEAD, "--by", "owner"]) == 1
+    assert (github, hub) == ([], {})
+    out = capsys.readouterr().out
+    assert f"PR #7's head is {HEAD}, not {'c' * 40}" in out and "needs --head <sha>" in out
+    assert "belong to `approve merge`" in out
+
+
+def test_withdrawing_a_go_removes_the_label_so_it_stays_withdrawn_into_a_feature_branch(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    labelled = into_feature(pull(labels=("risk:high", "approved:merge")))
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: labelled)
+    assert approvals.owner_waits(labelled, [], LOOP) == []
+    assert (
+        approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner", "--withdraw"])
+        == 0
+    )
+    assert ("label", 7, "approved:merge", False) in github
+    unlabelled = into_feature(pull(labels=("risk:high",)))  # what GitHub reads back
+    assert approvals.owner_waits(unlabelled, [], LOOP)
+
+
+def test_a_newer_failing_owner_status_withdraws_the_go(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    high = pull(labels=("risk:high",))
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: high)
+    assert approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner"]) == 0
+    # what GitHub reads back
+    high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
+    assert approvals.owner_waits(high, [], LOOP) == []
+    assert (
+        approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "owner", "--withdraw"])
+        == 0
+    )
+    assert [s["state"] for s in hub[HEAD]] == ["failure", "success"]
+    assert github[-1] == ("comment", 7, f"Withdrawn: merge\nBy: owner\nHead: {HEAD}\n")
+    assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+
+
+def test_a_go_once_turned_from_the_label_is_no_go(hub: dict[str, list[dict[str, Any]]]) -> None:
+    """An owner status the gate wrote from the label stays on old heads; the label can be a delegate's, so it is no go."""
+    high = pull(labels=("risk:high",))
+    high["comments"]["nodes"].append(note(record("merge", "owner", head=HEAD)))
+    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]} {approvals.LABELLED}")]
+    assert approvals.owner_waits(high, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+
+
+def test_the_label_into_the_default_branch_is_no_go_and_writes_nothing(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    labelled = pull(labels=("risk:high", "approved:merge"))
+    assert approvals.owner_waits(labelled, [], LOOP) == [HELD + "`risk:high` is on PR #7"]
+    assert approvals.owner_waits(into_feature(labelled), [], LOOP) == []
+    assert hub == {}  # the gate writes no status from a label
+
+
+def test_approved_merge_on_a_change_that_is_not_high_risk_changes_nothing(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    low = pull(reviews=(VERDICT,))
+    assert merge(pull(reviews=(VERDICT,), labels=OWNED), [approved(1, "area:web")]) == merge(
+        low, [approved(1, "area:web")]
+    )
+    assert approvals.owner_waits(pull(labels=OWNED), [], LOOP) == []
+    assert hub == {}
 
 
 REPORT = f"""# Verifier report: PR #7, pass 2
@@ -1723,6 +2507,68 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
     out = capsys.readouterr().out.splitlines()
     assert "- Report: tmp/loop/pr7-v1.md" in out
     assert not [line for line in out if line.startswith("- Previous report")]
+    # a policy in gatekeeper.md leaves the Verifier brief in loop.md, the loop's prose
+    agents = tmp_path / "docs" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "loop.md").write_text("## Verifier brief\n\n- Read the loop file's brief.\n")
+    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(gatekeeper_md())))
+    assert approvals.main(["brief", "7"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "- Read the loop file's brief."
+
+
+def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A verifier on another host makes its own detached worktree at the head there: the brief gives the fetch and the
+    worktree line, the role in that worktree, and the report, previous report and proof logs in its clone's tmp/loop/,
+    where start --file writes them. A relative --far is no path there."""
+    earlier = "c" * 40
+    pr = pull(
+        body="Closes #12.\n", reviews=(verdict_on(earlier, heading="Verifier (codex), pass 1"),)
+    )
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(approvals, "merge_base", lambda base, head: BASE)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    root = Path(approvals.__file__).resolve().parents[4]
+    monkeypatch.setattr(approvals, "toplevel", lambda: root)
+    proof = tmp_path / "gate.log"
+    proof.write_text(f"{HEAD}\nok\n")
+    assert approvals.main(["brief", "7", "--far", "/there/repo", "--proof", str(proof)]) == 0
+    tree = "/there/repo/tmp/loop/pr7-v2-tree"
+    assert capsys.readouterr().out.splitlines() == [
+        f"Review PR #7 as the verifier, pass 2, following {tree}/engineering/skills/engineering-loop/verifier.md.",
+        f"- Base: {BASE}",
+        f"- Reviewed head: {HEAD}",
+        "- Spec: #12",
+        (
+            f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
+            f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
+        ),
+        "- Report: /there/repo/tmp/loop/pr7-v2.md",
+        (
+            f"- Previous report: /there/repo/tmp/loop/pr7-v1.md, on {earlier}: review the diff since that head and"
+            " rerun its repros"
+        ),
+        "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
+    ]
+    # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tmp" / "loop").mkdir(parents=True)
+    (tmp_path / "tmp/loop/pr7-v1.md").write_text(
+        "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
+        " tmp/loop/pr7-v1.md and tmp/loop/pr7-v1-tree/x.py\n"
+    )
+    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert [line for line in out if line.startswith("- Repro")] == [
+        "- Repro: /there/repo/tmp/loop/pr7-v1-repro.py"
+    ]
+    # a verifier here works where the lead copied its repros: the brief lists none
+    assert approvals.main(["brief", "7"]) == 0
+    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("- Repro")]
+    assert approvals.main(["brief", "7", "--far", "there/repo"]) == 1
+    assert capsys.readouterr().out == "--far there/repo: an absolute path on the verifier's host\n"
 
 
 def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
@@ -1988,6 +2834,50 @@ def test_a_verdict_line_without_all_three_counts_posts_nothing(
     assert [call for call in reviewing if call[0] == "review"] == []
 
 
+@pytest.mark.parametrize(
+    ("extra", "refused"),
+    [
+        ("", True),
+        ("Not run: gate\n", True),
+        ("Not run: login, owner action: sign in to the app\n", False),
+    ],
+)
+def test_an_unsatisfied_report_with_no_finding_is_refused_unless_it_names_what_was_not_run(
+    reviewing: list[tuple[Any, ...]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: str,
+    refused: bool,
+) -> None:
+    report = tmp_path / "report.md"
+    empty = (
+        REPORT.split("### C1")[0] + f"{extra}\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+    )
+    report.write_text(empty + "SATISFIED: no\nRisk: low — a test fixture\n")
+    assert approvals.main(["verdict", "7", str(report)]) == int(refused)
+    assert ("<report>.question" in capsys.readouterr().out) == refused
+    assert bool([call for call in reviewing if call[0] == "review"]) != refused
+
+
+@pytest.mark.parametrize(
+    "extra", ["Not run: acceptance 1, owner action: sign in to the app\n", "Not run: gate\n"]
+)
+def test_a_satisfied_report_listing_a_run_not_made_is_refused(
+    reviewing: list[tuple[Any, ...]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extra: str,
+) -> None:
+    report = tmp_path / "report.md"
+    empty = (
+        REPORT.split("### C1")[0] + f"{extra}\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+    )
+    report.write_text(empty + "SATISFIED: yes\nRisk: low — a test fixture\n")
+    assert approvals.main(["verdict", "7", str(report)]) == 1
+    assert "<report>.question" in capsys.readouterr().out
+    assert not [call for call in reviewing if call[0] == "review"]
+
+
 def test_the_diffs_commentable_lines_are_the_new_side_of_each_hunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2102,12 +2992,14 @@ def test_a_review_on_an_older_commit_never_covers_the_head() -> None:
 
 
 def capped(*reviews: dict[str, Any], loop: str = BARE, **fields: Any) -> list[str]:
-    """owner_waits on a project whose loop.md has no risk rule: only the cap asks for the owner's label."""
+    """owner_waits on a project whose loop.md has no risk rule: only the cap asks for the owner's go."""
     return approvals.owner_waits(pull(reviews=reviews, files=("app.py",), **fields), [], loop)
 
 
-def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass() -> None:
-    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their label."""
+def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfied_pass(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Pass 5 left a major open: only the owner decides the fix, so the scoped pass 6 lands on their go."""
     open_at_cap = verdict_on(
         OLD, "0 blocker, 1 major, 0 minor", satisfied="no", heading="Verifier (claude), pass 5"
     )
@@ -2119,11 +3011,8 @@ def test_a_core_finding_open_at_the_cap_waits_for_the_owner_even_after_a_satisfi
             " was not satisfied or left a blocker or major open, so the owner decides"
         )
     ]
-    assert capped(open_at_cap, pass6, labels=OWNED) == []
-    stale = capped(open_at_cap, pass6, labels=OWNED, labeled="2026-10-01T09:00:00Z")
-    assert stale == [
-        "PR #7: `approved:merge` was added before the head was pushed: the owner adds it again"
-    ]
+    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
+    assert capped(open_at_cap, pass6, comments=(record("merge", "owner", head=HEAD),)) == []
 
 
 @pytest.mark.parametrize(
@@ -2391,14 +3280,14 @@ def test_a_risk_path_rule_asks_for_the_label_only_on_a_pr_touching_its_path() ->
     assert waits(loop_md("risk:\n  labels:\n    - kind:ops\n"), "README.md") == []
 
 
-# --- land ---
+# --- a checkout against a stubbed GitHub ---
 
 
 @pytest.fixture
 def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """`land` in a checkout with the fixture's tracker and a `merge: path .github/**` rule, against a stubbed GitHub:
-    the PR (one approved issue, a verdict on the head, `check` green, a draft), the checks the base's rulesets and
-    branch protection require, whether the repo allows auto-merge; `calls` holds each `gh pr` command."""
+    """A checkout with the fixture's tracker and a `risk: paths .github/**` rule, against a stubbed GitHub: the PR (one
+    approved issue, a verdict on the head, `check` green), the checks the base's rulesets and branch protection
+    require; `calls` holds each `gh pr` command."""
     agents = tmp_path / "docs" / "agents"
     agents.mkdir(parents=True)
     (agents / "issue-tracker.md").write_text(TRACKER)
@@ -2409,33 +3298,19 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "pull": pr,
         "rulesets": ["check"],
         "protection": [],
-        "auto": True,
         "calls": [],
-        "run": {"status": "completed", "url": "https://github.com/o/r/actions/runs/12345"},
     }
 
     def gh(*args: str, data: str | None = None) -> str:
-        if args[:2] == ("run", "view"):
-            state["calls"].append(args[:3])
-            if state["run"] is None:
-                raise subprocess.CalledProcessError(
-                    1, args, stderr="failed to get run: HTTP 404: Not Found"
-                )
-            return json.dumps(state["run"])
-        if args[0] in ("pr", "run"):
+        if args[0] == "pr":
             state["calls"].append(args)
             return ""
-        if args[:2] == ("api", "graphql"):
-            state["calls"].append(args[:2] + args[-1:])
-            return "{}"
         if args[:2] == ("api", "--paginate") and args[2].endswith("/rules/branches/main"):
             if isinstance(state["rulesets"], Exception):
                 raise state["rulesets"]
             return "".join(f"{name}\n" for name in state["rulesets"])
         if args[1] == "repos/{owner}/{repo}/branches/main":
             return "".join(f"{name}\n" for name in state["protection"])
-        if args[1:] == ("repos/{owner}/{repo}", "--jq", ".allow_auto_merge"):
-            return f"{str(state['auto']).lower()}\n"
         raise AssertionError(args)
 
     monkeypatch.setattr(approvals, "gh", gh)
@@ -2443,218 +3318,6 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
     monkeypatch.chdir(tmp_path)
     return state
-
-
-def landed(
-    capsys: pytest.CaptureFixture[str], landing: dict[str, Any]
-) -> tuple[int, list[str], list[tuple[str, ...]]]:
-    code = approvals.main(["land", "7"])
-    return code, capsys.readouterr().out.splitlines(), landing["calls"]
-
-
-READY = ("pr", "ready", "7")
-MERGE = ("pr", "merge", "7", "--squash", "--match-head-commit", HEAD)
-
-
-def test_land_merges_a_proven_ready_pr_at_its_head(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
-
-
-def test_land_merges_a_high_risk_pr_on_a_delegated_label_into_a_feature_branch_only(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
-    pr = landing["pull"]
-    pr["labels"]["nodes"] += [{"name": "risk:high"}, {"name": "approved:merge"}]
-    pr["timelineItems"]["nodes"].append({"createdAt": LABELED, "label": {"name": "approved:merge"}})
-    pr["comments"]["nodes"].append(DELEGATED)
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (approvals.WAITING, [])
-    assert "`approved:merge` is the delegated approval" in lines[-1]
-    pr["baseRefName"] = "stream"
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
-
-
-def test_land_marks_a_proven_draft_ready_and_waits_for_the_ci_that_starts(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A draft's checks are skipped (CI skips drafts) and say nothing about the ready PR: no merge, no auto-merge."""
-    landing["pull"]["isDraft"] = True
-    landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"] = [
-        {"__typename": "CheckRun", "name": "check", "status": "COMPLETED", "conclusion": "SKIPPED"}
-    ]
-    for rulesets in (["check"], []):
-        landing["calls"].clear()
-        landing["rulesets"] = rulesets
-        assert landed(capsys, landing) == (
-            approvals.WAITING,
-            ["PR #7 is ready now: CI starts on ready, run land again"],
-            [READY],
-        )
-
-
-def test_land_run_again_before_the_ready_prs_ci_registers_waits_for_it(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The head still holds only the draft's skipped run, which GitHub counts as passing: a skipped run completed
-    before the newest ready-for-review is the draft's, and says nothing about the ready PR."""
-    ready = "2026-10-01T12:00:00Z"
-    landing["pull"]["timelineItems"]["nodes"].append(
-        {"__typename": "ReadyForReviewEvent", "createdAt": ready}
-    )
-    rollup = landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
-    draft = {
-        "__typename": "CheckRun",
-        "name": "check",
-        "status": "COMPLETED",
-        "conclusion": "SKIPPED",
-        "completedAt": "2026-10-01T11:30:00Z",
-    }
-    for rulesets in (["check"], []):
-        landing["calls"].clear()
-        landing["rulesets"] = rulesets
-        rollup["nodes"] = [draft]
-        code, lines, calls = landed(capsys, landing)
-        assert (code, calls) == (approvals.WAITING, [])
-        assert lines == [WAITED]
-        # a run that completed on the draft is the head's result: a workflow need not run again on ready
-        rollup["nodes"] = [{**draft, "conclusion": "SUCCESS"}]
-        landing["calls"].clear()
-        assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
-        rollup["nodes"] = [
-            draft,
-            {**draft, "conclusion": "SKIPPED", "completedAt": "2026-10-01T12:00:01Z"},
-        ]
-        landing["calls"].clear()
-        assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
-    # a base requiring none: another check that ran on the draft doesn't stand in for the skipped one
-    landing["calls"].clear()
-    rollup["nodes"] = [draft, {**draft, "name": "lint", "conclusion": "SUCCESS"}]
-    code, lines, calls = landed(capsys, landing)
-    assert (code, lines, calls) == (
-        approvals.WAITING,
-        [WAITED],
-        [],
-    )
-
-
-def test_land_merges_past_a_draft_only_check_its_workflows_finished_run_never_produced(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A matrix job skipped on the draft before its matrix expanded leaves a check named literally `matrix.part`,
-    which the ready PR's run, expanding it to `check:lint`, never produces. On a base requiring no check, `land`
-    waits for every check; that one is gone once its workflow's run since ready has finished, and not before, since
-    a job that needs another has no check run until it starts."""
-    ready = "2026-10-01T12:00:00Z"
-    landing["pull"]["timelineItems"]["nodes"].append(
-        {"__typename": "ReadyForReviewEvent", "createdAt": ready}
-    )
-    landing["rulesets"] = []
-
-    def run(
-        name: str, conclusion: str | None, at: str, suite: str, flow: str = "CI"
-    ) -> dict[str, Any]:
-        return {
-            "__typename": "CheckRun",
-            "name": name,
-            "status": "COMPLETED" if conclusion else "IN_PROGRESS",
-            "conclusion": conclusion,
-            "startedAt": at,
-            "completedAt": at if conclusion else None,
-            "checkSuite": {"status": suite, "workflowRun": {"workflow": {"name": flow}}},
-        }
-
-    draft = run("matrix.part", "SKIPPED", "2026-10-01T11:30:00Z", "COMPLETED")
-    after = "2026-10-01T12:01:00Z"
-    waited = WAITED.replace("`check`", "`matrix.part`")
-    rollup = landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
-    # the run since ready is still going: `check`, which needs the parts, has no check run yet
-    rollup["nodes"] = [draft, run("check:lint", "SUCCESS", after, "IN_PROGRESS")]
-    assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
-    rollup["nodes"] = [
-        draft,
-        run("check:lint", "SUCCESS", after, "COMPLETED"),
-        run("check", "SUCCESS", after, "COMPLETED"),
-    ]
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
-    # another workflow's finished run says nothing about whether CI still produces the name
-    landing["calls"].clear()
-    rollup["nodes"] = [draft, run("lint", "SUCCESS", after, "COMPLETED", "Lint")]
-    assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
-    # GitHub may start a skipped run after it completed, so after a ready right behind it: still the draft's run
-    rollup["nodes"] = [
-        {**draft, "startedAt": "2026-10-01T12:00:10Z"},
-        run("lint", "SUCCESS", after, "COMPLETED", "Lint"),
-    ]
-    assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
-    # one name in two workflows waits until each has finished a run since ready, in either order
-    other = {
-        **draft,
-        "checkSuite": {"status": "COMPLETED", "workflowRun": {"workflow": {"name": "Lint"}}},
-    }
-    for nodes in ([draft, other], [other, draft]):
-        rollup["nodes"] = [*nodes, run("lint", "SUCCESS", after, "COMPLETED", "Lint")]
-        assert landed(capsys, landing) == (approvals.WAITING, [waited], [])
-        # nor does the other workflow's ready run of that very name stand in for this one's
-        rollup["nodes"] = [
-            *({**node, "name": "check"} for node in nodes),
-            run("check", "SUCCESS", after, "COMPLETED", "Lint"),
-        ]
-        assert landed(capsys, landing) == (approvals.WAITING, [WAITED], [])
-
-
-def test_land_waits_on_a_head_with_no_checks_at_all(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """GitHub gives a head no check ran on (a path filter skipped CI) a null rollup."""
-    landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
-    for rulesets, wanted in ((["check"], "`check`"), ([], "check")):
-        landing["rulesets"] = rulesets
-        assert landed(capsys, landing) == (
-            approvals.WAITING,
-            [f"PR #7: no {wanted} on the head commit yet"],
-            [],
-        )
-
-
-def test_land_turns_on_auto_merge_while_required_checks_are_pending(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"] = {
-        **landing["pull"],
-        **pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),)),
-    }
-    landing["pull"]["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    assert landed(capsys, landing) == (
-        0,
-        [f"PR #7: auto-merge on at {HEAD}, once check pass"],
-        [(*MERGE, "--auto")],
-    )
-
-
-@pytest.mark.parametrize(
-    ("change", "line"),
-    [
-        ({"auto": False}, "PR #7: `check` is IN_PROGRESS on the head commit"),
-        ({"rulesets": []}, "PR #7: `check` is IN_PROGRESS on the head commit"),
-        ({"state": "FAILURE"}, "PR #7: `check` is FAILURE on the head commit"),
-        ({"files": (".github/ci.yml",)}, GITHUB),
-    ],
-)
-def test_land_waits_without_auto_merge_where_github_would_not_hold_the_merge(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], change: dict[str, Any], line: str
-) -> None:
-    """Auto-merge only while the base's required checks are pending: not where the repo forbids it, the base
-    requires none, a required check is red, or the owner's label is asked for, which GitHub would not wait for."""
-    checks = (("check", change.pop("state", "IN_PROGRESS")), ("lint", "FAILURE"))
-    pr = pull(reviews=(VERDICT,), checks=checks, files=change.pop("files", ("app.py",)))
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    landing.update(change, pull=pr)
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (approvals.WAITING, [])
-    assert line in lines
 
 
 def rules_error(status: int, message: str) -> subprocess.CalledProcessError:
@@ -2666,710 +3329,1468 @@ def rules_error(status: int, message: str) -> subprocess.CalledProcessError:
 FREE_PLAN = "Upgrade to GitHub Pro or make this repository public to enable this feature."
 
 
-def test_land_on_a_free_plan_private_repo_merges_at_the_head_and_says_github_enforces_nothing(
+def test_a_free_plan_private_repo_requires_no_checks_and_says_github_enforces_nothing(
     landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """GitHub's free plan has no rulesets on a private repo, nor auto-merge: its 403 reads as no required checks."""
+    """GitHub's free plan has no rulesets on a private repo: its 403 reads as no required checks."""
     landing["rulesets"] = rules_error(403, FREE_PLAN)
-    enforces = (
+    assert approvals.required_checks("main") == set()
+    assert capsys.readouterr().out.splitlines() == [
         "GitHub enforces no rules on main here (its plan has none): land's proofs are the only gate"
-    )
-    assert landed(capsys, landing) == (0, [enforces, f"PR #7 merges at {HEAD}"], [MERGE])
-    # a check still pending waits for the next run, never for auto-merge
-    landing["pull"] = {
-        **landing["pull"],
-        **pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),)),
-    }
-    landing["pull"]["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    landing["calls"].clear()
-    code, lines, calls = landed(capsys, landing)
-    assert (code, lines[0], calls) == (approvals.WAITING, enforces, [])
+    ]
 
 
 @pytest.mark.parametrize(
     "error",
     [rules_error(403, "Resource not accessible by integration"), rules_error(404, "Not Found")],
 )
-def test_land_fails_on_any_other_rules_error(
-    landing: dict[str, Any],
-    capsys: pytest.CaptureFixture[str],
-    error: subprocess.CalledProcessError,
+def test_any_other_rules_error_fails(
+    landing: dict[str, Any], error: subprocess.CalledProcessError
 ) -> None:
     landing["rulesets"] = error
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (1, [])
-    assert not any("enforces" in line for line in lines)
+    with pytest.raises(subprocess.CalledProcessError):
+        approvals.required_checks("main")
 
 
-def test_a_base_with_no_required_checks_gets_no_auto_merge_while_a_check_is_pending(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+def test_a_base_whose_rules_require_a_merge_queue_is_refused(landing: dict[str, Any]) -> None:
+    """GitHub's queue would merge a PR later, on a merge-group tree land never gated."""
+    landing.update(rulesets=["check", ":merge_queue"])
+    with pytest.raises(approvals.Refused, match="require GitHub's merge queue"):
+        approvals.required_checks("main")
+
+
+def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
+    landing: dict[str, Any],
 ) -> None:
-    """GitHub would merge an auto-merge request at once on a base that requires nothing, pending checks or not."""
-    landing["rulesets"] = []
-    pr = pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),))
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    landing["pull"] = pr
-    assert landed(capsys, landing) == (
-        approvals.WAITING,
-        ["PR #7: `check` is IN_PROGRESS on the head commit"],
-        [],
-    )
-
-
-def test_a_base_with_no_required_checks_needs_every_check_green(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["rulesets"] = []
-    pr = pull(reviews=(VERDICT,), checks=(("check", "SUCCESS"), ("pr-board / sync", "FAILURE")))
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    landing["pull"] = pr
-    assert landed(capsys, landing) == (
-        approvals.WAITING,
-        ["PR #7: `pr-board / sync` is FAILURE on the head commit"],
-        [],
-    )
+    landing.update(rulesets=["check", "loop:approvals"], protection=["qualify"])
+    assert approvals.required_checks("main") == {"check", "loop:approvals", "qualify"}
     assert approvals.ci("PR #7", pull(checks=()), set()) == [
         "PR #7: no check on the head commit yet"
     ]
     assert approvals.ci("PR #7", pull(checks=(("lint", "SUCCESS"),)), set()) == []
 
 
-def test_the_required_checks_are_the_rulesets_and_the_branch_protections(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing.update(rulesets=["check", "loop:approvals"], protection=["qualify"])
-    assert approvals.required_checks("main") == {"check", "loop:approvals", "qualify"}
-    landing["rulesets"] = []
-    pr = pull(reviews=(VERDICT,), checks=(("check", "SUCCESS"), ("qualify", "QUEUED")))
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    landing["pull"] = pr
-    assert landed(capsys, landing)[2] == [(*MERGE, "--auto")]
+# --- land: every landable PR in one gated batch, against a bare origin and a GitHub that squashes like GitHub ---
 
-
-RUN_URL = "https://github.com/kzarzycki/scratch-gate-revert/actions/runs/12345/job/678"
-
-
-def approvals_red(
-    landing: dict[str, Any], url: str | None = RUN_URL, state: str = "FAILURE", **change: Any
-) -> dict[str, Any]:
-    """A proven ready PR whose required `loop:approvals` status is the FAILURE the approvals workflow posted while a
-    review thread was open; resolving the thread fired no workflow."""
-    landing["rulesets"] = ["check", "loop:approvals"]
-    pr = pull(**{"reviews": (VERDICT,), "files": ("app.py",), **change})
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"].append(
-        {
-            "__typename": "StatusContext",
-            "context": "loop:approvals",
-            "state": state,
-            "createdAt": "2026-10-03T13:00:00Z",
-            "targetUrl": url,
-        }
-    )
-    landing["pull"] = pr
-    return pr
-
-
-def test_land_reruns_the_approvals_run_left_red_when_only_it_blocks_a_proven_pr(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    approvals_red(landing)
-    assert landed(capsys, landing) == (
-        approvals.WAITING,
-        [
-            (
-                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit: reran run 12345,"
-                " since resolving a review thread starts no workflow; run land again"
-            )
-        ],
-        [("run", "view", "12345"), ("run", "rerun", "12345")],
-    )
-
-
-def test_land_waits_without_a_rerun_while_the_approvals_run_still_runs(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    approvals_red(landing)
-    landing["run"]["status"] = "in_progress"
-    assert landed(capsys, landing) == (
-        approvals.WAITING,
-        [
-            (
-                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit: its run 12345 is"
-                " in_progress, so the status is not posted yet; run land again"
-            )
-        ],
-        [("run", "view", "12345")],
-    )
-
-
-def test_land_never_reruns_a_run_this_repo_does_not_have(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    approvals_red(landing, "https://github.com/someone/else/actions/runs/1")
-    landing["run"] = None
-    assert landed(capsys, landing) == (
-        approvals.WAITING,
-        [
-            (
-                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit, and its target names"
-                " no Actions run of this repo: rerun the workflow that posts it, then run land again"
-            )
-        ],
-        [("run", "view", "1")],
-    )
-
-
-def test_land_never_reruns_a_check_run_named_like_the_approvals_status(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["rulesets"] = ["check", "loop:approvals"]
-    pr = pull(
-        reviews=(VERDICT,),
-        files=("app.py",),
-        checks=(("check", "SUCCESS"), ("loop:approvals", "FAILURE")),
-    )
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    landing["pull"] = pr
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (approvals.WAITING, [])
-    assert "PR #7: `loop:approvals` is FAILURE on the head commit" in lines
-
-
-def test_land_never_reruns_the_approvals_run_on_a_failed_proof(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    approvals_red(landing, threads=(False,))
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (1, [])
-    assert any("review thread(s) unresolved" in line for line in lines)
-
-
-@pytest.mark.parametrize(
-    ("change", "line"),
-    [
-        ({"checks": (("check", "FAILURE"),)}, "PR #7: `check` is FAILURE on the head commit"),
-        (
-            {"checks": (("check", "IN_PROGRESS"),)},
-            "PR #7: `check` is IN_PROGRESS on the head commit",
-        ),
-        ({"checks": ()}, "PR #7: no `check` on the head commit yet"),
-        ({"files": (".github/ci.yml",)}, GITHUB),
-        (
-            {"state": "PENDING", "auto": False},
-            "PR #7: `loop:approvals` is PENDING on the head commit",
-        ),
-        (
-            {"loop": "ci: false\n"},
-            (
-                "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head"
-                " (approvals.py local-ci)"
-            ),
-        ),
-    ],
-)
-def test_land_never_reruns_the_approvals_run_while_anything_else_waits(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], change: dict[str, Any], line: str
-) -> None:
-    """Another required check red, pending or missing, the owner's label asked for, `loop:approvals` itself still
-    pending where the repo allows no auto-merge, or a project without CI waiting on its local check: a rerun would not let the PR land, so land waits."""
-    landing["auto"] = change.pop("auto", True)
-    if "loop" in change:
-        Path("docs/agents/loop.md").write_text(add(GITHUB_RULE, "loop", change.pop("loop")))
-    approvals_red(landing, **change)
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (approvals.WAITING, [])
-    assert line in lines
-
-
-@pytest.mark.parametrize("url", [None, "", "https://example.com/approvals"])
-def test_land_says_so_when_the_approvals_status_names_no_run(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], url: str | None
-) -> None:
-    approvals_red(landing, url)
-    assert landed(capsys, landing) == (
-        approvals.WAITING,
-        [
-            (
-                "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit, and the status names no"
-                " Actions run to rerun: rerun the workflow that posts it, then run land again"
-            )
-        ],
-        [],
-    )
-
-
-@pytest.mark.parametrize(
-    ("change", "line"),
-    [
-        (
-            {"reviews": (verdict_on(HEAD, satisfied="no"),)},
-            f"PR #7: a verifier review on {HEAD} is not satisfied: fix and verify again",
-        ),
-        (
-            {"reviews": (verdict_on(HEAD, "1 blocker, 0 major, 0 minor"),)},
-            f"PR #7: the verifier reviews on {HEAD} have 1 blocker and 0 major open: fix and verify again",
-        ),
-        (
-            {"reviews": (verdict_on(HEAD, "0 blocker, 1 major, 0 minor"),)},
-            f"PR #7: the verifier reviews on {HEAD} have 0 blocker and 1 major open: fix and verify again",
-        ),
-        (
-            {"reviews": (verdict_on(OLD),)},
-            (
-                f"PR #7: the newest verifier review is on {OLD}, not on the head {HEAD}:"
-                " every commit after a verdict needs a verdict of its own"
-            ),
-        ),
-        (
-            {"latest": ("CHANGES_REQUESTED",)},
-            "PR #7: reviewer requested changes: answer the review",
-        ),
-        (
-            {"issue": issue(1, "area:web", "kind:bug", "size:S")},
-            "#1 lacks the `approved:spec` label",
-        ),
-        ({"reviews": ()}, "PR #7: no verifier review posted (approvals.py verdict)"),
-        (
-            {"threads": (True, False)},
-            "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)",
-        ),
-    ],
-)
-def test_land_refuses_a_missing_proof_and_never_marks_the_pr_ready(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], change: dict[str, Any], line: str
-) -> None:
-    found = change.pop("issue", approved(1, "area:web", "kind:bug"))
-    pr = pull(**{"reviews": (VERDICT,), "files": ("app.py",), **change})
-    pr["closingIssuesReferences"]["nodes"] = [found]
-    landing["pull"] = pr
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (1, [])
-    assert line in lines
-
-
-def test_settings_off_the_schema_are_refused_before_any_proof_and_before_ready(
-    landing: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A PR the risk rule already holds never reached the cap, so `check merge` printed its proofs and passed or
-    waited, and `land` marked the draft ready. The bad `cap` setting now comes first, alone, and nothing reaches GitHub.
-    """
-    (tmp_path / "docs" / "agents" / "loop.md").write_text(
-        add(GITHUB_RULE, "loop", "cap: 3 passes\n")
-    )
-    refused = ["loop.md's `loop.cap` must be a whole number, not '3 passes'"]
-    risky = pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high", *OWNED))
-    risky["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    risky["isDraft"] = True
-    landing["pull"] = risky
-    assert landed(capsys, landing) == (1, refused, [])
-    unverified = pull(files=(".github/ci.yml",), labels=("risk:high",))
-    unverified["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    landing["pull"] = unverified
-    assert approvals.main(["check", "merge", "7"]) == 1
-    assert (capsys.readouterr().out.splitlines(), landing["calls"]) == (refused, [])
-
-
-def test_land_says_a_merged_pr_is_merged_and_refuses_a_closed_one(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"]["state"] = "MERGED"
-    assert landed(capsys, landing) == (0, ["PR #7 is merged"], [])
-    landing["pull"]["state"] = "CLOSED"
-    assert landed(capsys, landing) == (1, ["PR #7 is closed: nothing to land"], [])
-
-
-# --- land --wait: one background command that ends at merged, refused, the owner or the ceiling ---
+GATE_SCRIPT = """import pathlib, sys
+runs = pathlib.Path(sys.argv[1])
+runs.open("a").write(pathlib.Path.cwd().name + "\\n")
+flaky = runs.with_suffix(".flaky")
+if pathlib.Path("flaky.txt").exists() and len(flaky.read_text() if flaky.exists() else "") < 2:
+    flaky.open("a").write("x")
+    sys.exit(1)
+if pathlib.Path("dirty.txt").exists():
+    pathlib.Path("app.py").write_text("changed\\n")
+faults = runs.with_suffix(".faults")
+if pathlib.Path("machine.txt").exists() and len(faults.read_text() if faults.exists() else "") < int(
+    pathlib.Path("machine.txt").read_text()
+):
+    faults.open("a").write("x")
+    pathlib.Path("leftover.txt").write_text("")
+    print("the screen is locked")
+    sys.exit(78)
+sys.exit(1 if pathlib.Path("red.txt").exists() else 0)
+"""
 
 
 @pytest.fixture
-def later(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """`land --wait` against `landing`: each sleep moves the clock POLL seconds on, and GitHub's PR to the next one
-    in this list (the last stays)."""
-    states: list[dict[str, Any]] = []
-    clock = [0.0]
-
-    def sleep(seconds: float) -> None:
-        clock[0] += seconds
-        if states:
-            landing["pull"] = states.pop(0)
-
-    monkeypatch.setattr(approvals.time, "sleep", sleep)
-    monkeypatch.setattr(approvals.time, "monotonic", lambda: clock[0])
-    return states
-
-
-def proven(check: str | None = "SUCCESS", **fields: Any) -> dict[str, Any]:
-    """A proven PR whose `check` is in state `check` on the head (None: not there yet), with GitHub's fields changed."""
-    files = fields.pop("files", ("app.py",))
-    pr = pull(reviews=(VERDICT,), files=files, checks=(("check", check),) if check else ())
-    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
-    return {**pr, **fields}
-
-
-def waited(
-    capsys: pytest.CaptureFixture[str], landing: dict[str, Any]
-) -> tuple[int, list[str], list[tuple[str, ...]]]:
-    code = approvals.main(["land", "7", "--wait"])
-    return code, capsys.readouterr().out.splitlines(), landing["calls"]
-
-
-def test_land_wait_marks_a_draft_ready_and_merges_it_once_its_ci_is_green(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"] = proven("SKIPPED", isDraft=True)
-    later += [proven(None), proven(None), proven("SUCCESS"), proven(state="MERGED")]
-    assert waited(capsys, landing) == (
-        0,
-        [
-            "PR #7 is ready now: CI starts on ready, run land again",
-            "PR #7: no `check` on the head commit yet",  # printed once for its two reads
-            f"PR #7 merges at {HEAD}",
-            "PR #7 is merged",
-        ],
-        [READY, MERGE],
-    )
-
-
-def test_land_wait_follows_a_merge_github_queues_until_it_merges(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """On a base that requires a merge queue, `gh pr merge` with green checks queues the PR: still OPEN."""
-    later += [proven(isInMergeQueue=True), proven(isInMergeQueue=True), proven(state="MERGED")]
-    assert waited(capsys, landing) == (
-        0,
-        [f"PR #7 merges at {HEAD}", f"PR #7: in the merge queue at {HEAD}", "PR #7 is merged"],
-        [MERGE],
-    )
-
-
-def test_land_wait_ends_with_exit_1_when_the_pr_leaves_the_merge_queue_unmerged(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    later += [proven(isInMergeQueue=True), proven()]
-    assert waited(capsys, landing) == (
-        1,
-        [f"PR #7 merges at {HEAD}", f"PR #7: in the merge queue at {HEAD}", OFF],
-        [MERGE],
-    )
-
-
-def test_land_wait_ends_with_exit_3_when_a_pending_check_turns_red(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing.update(auto=False, pull=proven("IN_PROGRESS"))
-    later += [proven("FAILURE")]
-    assert waited(capsys, landing) == (
-        approvals.WAITING,
-        [
-            "PR #7: `check` is IN_PROGRESS on the head commit",
-            "PR #7: `check` is FAILURE on the head commit",
-        ],
-        [],
-    )
-
-
-def test_land_wait_asks_for_the_owners_label_only_once_ci_has_passed_the_head(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"] = proven("IN_PROGRESS", files=(".github/ci.yml",))
-    later += [proven("SUCCESS", files=(".github/ci.yml",))]
-    assert waited(capsys, landing) == (
-        approvals.WAITING,
-        ["PR #7: `check` is IN_PROGRESS on the head commit", GITHUB, GITHUB],
-        [],
-    )
-
-
-def test_land_wait_reads_a_branchs_high_risk_prs_again_on_every_poll(
-    landing: dict[str, Any],
-    later: list[dict[str, Any]],
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A high-risk PR merged into the feature branch while its merge to main waits holds that merge for the owner."""
-    landing["pull"] = proven(mergeStateStatus="UNKNOWN")
-    ready = proven()
-    later += [ready]
+def lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> dict[str, Any]:
+    """`land` in a clone of a bare `origin` holding `main`, with the fixture's tracker and a `.github/**` risk rule,
+    against a fake GitHub. `open(number, files)` pushes a PR off main writing those files (its branch and
+    `refs/pull/<n>/head`), with one approved issue and a satisfied verdict on its head; `gh pr merge` squashes the head
+    onto origin's main as GitHub does. The gate fails on a tree holding `red.txt`, and twice on one holding
+    `flaky.txt`, and changes `app.py` on one holding `dirty.txt`; on one holding `machine.txt`, it exits 78 the number of
+    times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
+    origin, work = tmp_path / "origin.git", tmp_path / "work"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)
+    (origin / "hooks" / "pre-receive").chmod(0o755)
+    committed(work)
+    git_in(work, "remote", "add", "origin", str(origin))
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(work, "fetch", "-q", "origin")
+    agents = work / "docs" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "issue-tracker.md").write_text(TRACKER)
+    (agents / "loop.md").write_text(GITHUB_RULE)
+    (tmp_path / "gate.py").write_text(GATE_SCRIPT)
+    runs = tmp_path / "runs.log"
     monkeypatch.setattr(
-        approvals, "merged_high", MERGED_HIGH
-    )  # the real one, asking GitHub each time
-    github = approvals.gh
+        approvals, "LOCAL_CI", [sys.executable, str(tmp_path / "gate.py"), str(runs)]
+    )
+    state: dict[str, Any] = {
+        "origin": origin,
+        "work": work,
+        "pulls": {},
+        "calls": [],
+        "comments": [],
+        "squash": "COMMIT_MESSAGES",
+    }
+    pulls = state["pulls"]
+
+    def open_pr(
+        number: int, files: dict[str, str], messages: tuple[str, ...] = (), **fields: Any
+    ) -> str:
+        git_in(work, "switch", "-q", "--detach", "origin/main")
+        for name, text in files.items():
+            (work / name).parent.mkdir(parents=True, exist_ok=True)
+            (work / name).write_text(text)
+        git_in(work, "add", *files)
+        for message in messages or (f"PR {number}",):
+            git_in(work, "commit", "-q", "--allow-empty", "-m", message)
+        head = git_in(work, "rev-parse", "HEAD").strip()
+        git_in(
+            work,
+            "push",
+            "-q",
+            "origin",
+            f"{head}:refs/heads/pr{number}",
+            f"{head}:refs/pull/{number}/head",
+        )
+        pr = pull(**{"reviews": (verdict_on(head),), **fields})
+        pr.update(number=number, title=f"PR {number}", headRefOid=head, headRefName=f"pr{number}")
+        pr["closingIssuesReferences"]["nodes"] = [approved(100 + number, "area:web", "kind:bug")]
+        pulls[number] = pr
+        return head
 
     def gh(*args: str, data: str | None = None) -> str:
-        if args[:2] == ("pr", "list"):
-            return "12\n" if landing["pull"] is ready else ""
-        return github(*args, data=data)
+        if args[:2] == ("repo", "view"):
+            return "main\n"
+        if args[:2] == ("pr", "ready"):
+            state["calls"].append(args)
+            pulls[int(args[-1])]["isDraft"] = "--undo" in args
+            return ""
+        if args[:2] == ("api", "--paginate") and args[2].split("?")[0].endswith("/commits"):
+            number = int(args[2].split("/")[-2])
+            # REST lists a PR's commits oldest first, each with its author's GitHub login
+            listed = git_in(
+                origin, "rev-list", "--reverse", f"main..{pulls[number]['headRefOid']}"
+            ).split()
+            return "".join(
+                json.dumps(
+                    {
+                        "author": pulls[number]["author"],
+                        "parents": [{"sha": "p"}],
+                        "commit": {
+                            "message": git_in(origin, "log", "-1", "--format=%B", sha).strip(),
+                            "author": {"name": "Builder", "email": "builder@example.com"},
+                        },
+                    }
+                )
+                + "\n"
+                for sha in listed
+            )
+        if args == ("api", "repos/{owner}/{repo}"):
+            return json.dumps({"squash_merge_commit_message": state["squash"]})
+        if args[:2] == ("pr", "merge"):
+            state["calls"].append(args)
+            number, head = int(args[2]), args[args.index("--match-head-commit") + 1]
+            body = args[args.index("--body") + 1] if "--body" in args else "GitHub's default body"
+            state.setdefault("bodies", {})[number] = body
+            assert pulls[number]["headRefOid"] == head
+            tip = git_in(origin, "rev-parse", "main").strip()
+            tree = git_in(origin, "merge-tree", "--write-tree", tip, head).split()[0]
+            squash = git_in(
+                origin,
+                "-c",
+                "user.name=GitHub",
+                "-c",
+                "user.email=gh@example.com",
+                "commit-tree",
+                tree,
+                "-p",
+                tip,
+                "-m",
+                f"PR {number} (#{number})",
+                "-m",
+                body,
+            ).strip()
+            git_in(origin, "update-ref", "refs/heads/main", squash, tip)
+            pulls[number]["state"] = "MERGED"
+            return ""
+        raise AssertionError(args)
+
+    def comment(number: int, body: str) -> None:
+        state["comments"].append((number, body))
+        pulls[number]["comments"]["nodes"].append(note(body))
+
+    def listed() -> list[dict[str, Any]]:
+        return [
+            {"number": n, "baseRefName": pr["baseRefName"], "isDraft": pr["isDraft"]}
+            for n, pr in pulls.items()
+            if pr["state"] == "OPEN"
+        ]
 
     monkeypatch.setattr(approvals, "gh", gh)
-    code, lines, calls = waited(capsys, landing)
-    assert (code, calls) == (approvals.WAITING, [])
-    assert lines[-1] == HELD + "`risk:high` is on #12, merged into feature"
+    monkeypatch.setattr(approvals, "comment", comment)
+    monkeypatch.setattr(approvals, "open_pulls", listed)
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pulls[n])
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(work)
 
+    def land(*argv: str) -> tuple[int, list[str]]:
+        code = approvals.main(["land", *argv])
+        return code, capsys.readouterr().out.splitlines()
 
-def test_land_wait_turns_on_auto_merge_and_ends_once_github_merges(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"] = proven("IN_PROGRESS")
-    on = {"enabledAt": "2026-10-01T12:00:00Z"}
-    later += [
-        proven("IN_PROGRESS", autoMergeRequest=on),
-        proven("SUCCESS", isInMergeQueue=True),  # a merge queue takes it over from auto-merge
-        proven("SUCCESS", state="MERGED"),
-    ]
-    assert waited(capsys, landing) == (
-        0,
-        [
-            f"PR #7: auto-merge on at {HEAD}, once check pass",
-            f"PR #7: auto-merge is on at {HEAD}",
-            f"PR #7: in the merge queue at {HEAD}",
-            "PR #7 is merged",
-        ],
-        [(*MERGE, "--auto")],
+    state.update(
+        open=open_pr,
+        land=land,
+        runs=lambda: len(runs.read_text().splitlines()) if runs.exists() else 0,
+        merged=lambda: [args[2] for args in state["calls"] if args[:2] == ("pr", "merge")],
+        main=lambda what="": git_in(origin, "rev-parse", f"main{what}").strip(),
+        lock=lambda: held_tip(origin),
+        tips=lambda: (
+            git_in(origin, "log", "--format=%H %P%x00%s", REF).splitlines()
+            if git_in(origin, "for-each-ref", REF)
+            else []
+        ),
     )
+    return state
 
 
-OFF = "PR #7: auto-merge was turned off, or the PR left the merge queue, without a merge"
+# the landing lock's branch on main, and what land's messages call it
+REF, NAME = approvals.LOCK.format("main"), "loop-landing/main"
+# origin's pre-receive hook: it refuses a push to a landing lock ref that deletes it or is no fast-forward, so a land
+# that ever pushed either fails, as a cloud session's proxy refuses it
+NO_REWRITE = """#!/bin/sh
+zero=0000000000000000000000000000000000000000
+while read old new ref; do
+  case "$ref" in refs/heads/loop-landing/*|refs/loop/*) ;; *) continue ;; esac
+  if [ "$new" = "$zero" ]; then echo "refused: delete of $ref" >&2; exit 1; fi
+  if [ "$old" != "$zero" ] && ! git merge-base --is-ancestor "$old" "$new"; then
+    echo "refused: non-fast-forward of $ref" >&2; exit 1
+  fi
+done
+"""
 
 
-def test_land_wait_says_auto_merge_was_turned_off_without_a_merge(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+def held_tip(origin: Path) -> str:
+    """The lock branch's tip while it is held, else "" (missing, or its tip `free`)."""
+    tip = git_in(origin, "for-each-ref", "--format=%(objectname) %(subject)", REF).strip()
+    return tip.split()[0] if f" {approvals.HELD}" in tip else ""
+
+
+def landed_note(lands: dict[str, Any], number: int) -> dict[str, str]:
+    [body] = [body for n, body in lands["comments"] if n == number and body.startswith("Landed\n")]
+    return dict(line.split(": ", 1) for line in body.splitlines()[1:])
+
+
+def test_land_squashes_with_the_commit_messages_less_every_claude_session_line(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    landing["pull"] = proven("IN_PROGRESS")
-    later += [proven("IN_PROGRESS")]
-    assert waited(capsys, landing) == (
-        1,
-        [
-            f"PR #7: auto-merge on at {HEAD}, once check pass",
-            OFF,
-        ],
-        [(*MERGE, "--auto")],
+    """GitHub's default squash body copies each commit message, a cloud session's link included (#638)."""
+    trailers = "Co-Authored-By: Claude <noreply@anthropic.com>\nClaude-Session: https://example.com/session_1"
+    lands["open"](7, {"7.txt": "7\n"}, messages=(f"Add 7\n\nWhy 7.\n\n{trailers}",))
+    lands["open"](
+        8,
+        {"8.txt": "8\n"},
+        messages=(f"Add 8\n\nWhy 8.\n\n{trailers}", f"Test 8\n\nClaude-Session: x\n\n{trailers}"),
     )
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["bodies"] == {
+        7: "Why 7.\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+        8: "* Add 8\n\nWhy 8.\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
+        "* Test 8\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n"
+        "---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+    }
+    landed = git_in(lands["origin"], "log", "--format=%B", "main")
+    assert "Claude-Session" not in landed and "Why 8." in landed
 
 
-def test_land_wait_reads_again_a_pr_out_of_the_queue_before_github_says_merged(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"] = proven("IN_PROGRESS")
-    later += [
-        proven("SUCCESS", isInMergeQueue=True),
-        proven("SUCCESS"),  # out of the queue, not reported merged yet
-        proven("SUCCESS", state="MERGED"),
-    ]
-    assert waited(capsys, landing) == (
-        0,
-        [
-            f"PR #7: auto-merge on at {HEAD}, once check pass",
-            f"PR #7: in the merge queue at {HEAD}",
-            "PR #7 is merged",
-        ],
-        [(*MERGE, "--auto")],
-    )
-
-
-def queued(minutes: float, suites: int = 0) -> dict[str, Any]:
-    """A merge-queue entry enqueued `minutes` before the clock, waiting for checks, with `suites` on its commit."""
-    at = datetime.fromtimestamp(NOW - minutes * 60, UTC).isoformat().replace("+00:00", "Z")
+def rest_commit(
+    message: str, login: str, name: str, email: str, parents: int = 1
+) -> dict[str, Any]:
+    """One commit as REST's `pulls/<n>/commits` lists it, with the fields squash_body reads."""
     return {
-        "state": "AWAITING_CHECKS",
-        "enqueuedAt": at,
-        "headCommit": {"checkSuites": {"totalCount": suites}},
+        "author": {"login": login},
+        "parents": [{"sha": f"p{each}"} for each in range(parents)],
+        "commit": {"message": message, "author": {"name": name, "email": email}},
     }
 
 
-NOW = 1_800_000_000.0
-DEQUEUED = ("api", "graphql", "id=PR_7")
+CLAUDE = ("claude", "Claude", "noreply@anthropic.com")
+OPUS = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 
-def test_land_wait_dequeues_an_entry_github_never_started_checks_for_and_lands_it_again(
-    landing: dict[str, Any],
-    later: list[dict[str, Any]],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(approvals.time, "time", lambda: NOW)
-    landing["pull"] = proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=queued(11))
-    later += [
-        proven("SUCCESS", id="PR_7"),  # dequeued: open, out of the queue
-        proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=queued(0)),
-        proven("SUCCESS", id="PR_7", state="MERGED"),
+def test_squash_body_reproduces_a_real_squash_of_several_commits() -> None:
+    """The two commits of this repo's PR #805 as REST lists them, each less its `Claude-Session:` line, and the body
+    GitHub wrote for their squash (fe20c11), less the same lines: the trailers stay in their items and the footer
+    names the commits' author once, since the trailer shares its email (#638)."""
+    first = (
+        "engineering-loop: spec.auto takes a paths term, a spec approved by policy while its PR stays"
+        " inside them (#803)\n\nA spec labelled spec:paths is approved by the policy's `- paths: [...]` term"
+        " at check build and check merge\nwhile every path the PR touches, a renamed or copied file's old"
+        " name included, matches a glob. A file\noutside, a rename across the boundary either way, a file"
+        " list GitHub can't give in full, risk:high, the\nrisk rule (its verifier term too), an author"
+        " without write access, or the label without the term each\nleave the spec to the owner, naming"
+        " why. Renames are read in one function, touched(), the same code\n#791's merge-path hold uses, so"
+        f" the two merge into one.\n\n{OPUS}"
+    )
+    second = (
+        "engineering-loop: check merge and land refuse a spec:paths PR crossing the paths (#803)\n\n"
+        "Entry-point tests drive `check merge`, `check build` then `check merge`, and `land` through main()"
+        " for a\nrename into and out of the paths, a copy into and out of them, a deleted file outside them"
+        " and a diff\nthat left them after check build; a copy into the paths had no test before.\n\n"
+        f"{OPUS}"
+    )
+    commits = [rest_commit(first, *CLAUDE), rest_commit(second, *CLAUDE)]
+    assert approvals.squash_body(commits, "owner") == (
+        f"* {first}\n\n* {second}\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    )
+
+
+def test_squash_body_of_one_commit_moves_its_co_authors_to_the_end() -> None:
+    """One commit, shaped as this repo's PR #799 (4065939), its link replaced: GitHub empties each trailer line in
+    place and names the co-authors after the message; land then drops the link and the blank lines it leaves."""
+    message = (
+        "Make the test independent\n\nFake the check instead.\n\n"
+        "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\nClaude-Session: https://example.com/s"
+    )
+    body = approvals.squash_body([rest_commit(message, *CLAUDE)], "owner")
+    assert body == (
+        "Fake the check instead.\n\n\nClaude-Session: https://example.com/s\n\n"
+        "Co-authored-by: Claude <noreply@anthropic.com>"
+    )
+    assert approvals.unlinked(body) == (
+        "Fake the check instead.\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+    )
+    # a body of trailers alone leaves only the co-authors, and a commit of the PR's author none
+    trailers = rest_commit(f"Fix\n\n{OPUS}", "owner", "Owner", "owner@example.com")
+    assert approvals.squash_body([trailers], "owner") == f"Co-authored-by: {OPUS[16:]}"
+    assert approvals.squash_body([rest_commit("Fix", "owner", "Owner", "o@x")], "owner") == ""
+
+
+def test_squash_body_names_each_co_author_once_by_email_the_first_seen_keeping_its_name() -> None:
+    """As squashes on this repo's main show: in commit order, a commit's author other than the PR's, then the
+    trailers its message names; one line per email (#754 and #759); a merge commit is no item but its author is a
+    co-author (#711)."""
+    commits = [
+        rest_commit(f"One\n\n{OPUS}", "owner", "Owner", "owner@example.com"),
+        rest_commit("Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>", *CLAUDE),
+        rest_commit("Three\n\nCo-authored-by: Pat <pat@example.com>", "owner", "Owner", "o@x"),
     ]
-    code, out, calls = waited(capsys, landing)
-    assert code == 0
-    assert out[0] == (
-        "PR #7: its merge-queue entry waited 10 minutes for checks GitHub never started: dequeued, to land it again"
+    assert approvals.squash_body(commits, "owner") == (
+        "* One\n\n" + OPUS + "\n\n* Two\n\nCo-authored-by: Claude <NOREPLY@anthropic.com>\n\n"
+        "* Three\n\nCo-authored-by: Pat <pat@example.com>\n\n---------\n\n"
+        f"Co-authored-by: {OPUS[16:]}\nCo-authored-by: Pat <pat@example.com>"
     )
-    assert out[-1] == "PR #7 is merged"
-    assert calls.count(DEQUEUED) == 1
-    assert calls[0] == DEQUEUED and len(calls) == 2, calls
-
-
-@pytest.mark.parametrize(
-    "entry", [queued(11, suites=1), queued(9)], ids=["checks-started", "young"]
-)
-def test_land_wait_leaves_an_entry_with_a_check_suite_or_a_young_one_in_the_queue(
-    entry: dict[str, Any],
-    landing: dict[str, Any],
-    later: list[dict[str, Any]],
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(approvals.time, "time", lambda: NOW)
-    landing["pull"] = proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=entry)
-    later += [proven("SUCCESS", id="PR_7", state="MERGED")]
-    assert waited(capsys, landing) == (
-        0,
-        [f"PR #7: in the merge queue at {HEAD}", "PR #7 is merged"],
-        [],
+    # with no co-author, no separator either, as this repo's ae30f7e shows
+    alone = [rest_commit(each, "owner", "Owner", "o@x") for each in ("One", "Two")]
+    assert approvals.squash_body(alone, "owner") == "* One\n\n* Two"
+    bump = rest_commit(
+        "chore: adopt v1", "actions[bot]", "actions[bot]", "1+actions[bot]@example.com"
+    )
+    merge = rest_commit("Merge branch 'main'", "owner", "Owner", "owner@example.com", parents=2)
+    assert approvals.squash_body([bump, merge], "updater[bot]") == (
+        "Co-authored-by: actions[bot] <1+actions[bot]@example.com>\n"
+        "Co-authored-by: Owner <owner@example.com>"
     )
 
 
-def test_land_without_wait_never_dequeues_a_stuck_entry(
-    landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_land_passes_the_prs_body_under_the_pr_description_default(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    monkeypatch.setattr(approvals.time, "time", lambda: NOW)
-    landing["pull"] = proven("SUCCESS", id="PR_7", isInMergeQueue=True, mergeQueueEntry=queued(60))
-    assert DEQUEUED not in landed(capsys, landing)[2]
-
-
-def test_land_wait_ends_with_exit_3_on_a_red_check_under_auto_merge_already_on(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    on = {"enabledAt": "2026-10-01T12:00:00Z"}
-    landing["pull"] = proven("IN_PROGRESS", autoMergeRequest=on)
-    later += [proven("FAILURE", autoMergeRequest=on)]
-    assert waited(capsys, landing) == (
-        approvals.WAITING,
-        [f"PR #7: auto-merge is on at {HEAD}", "PR #7: `check` is FAILURE on the head commit"],
-        [],
+    """The repo's squash default is the PR's description: land passes that, less its link (#638)."""
+    lands["squash"] = "PR_BODY"
+    lands["open"](
+        7,
+        {"7.txt": "7\n"},
+        messages=("Add 7\n\nWhy 7.",),
+        body="## Evidence\n\nlog line\n\nClaude-Session: https://example.com/s\n\nThanks.\n",
     )
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert lands["bodies"] == {7: "## Evidence\n\nlog line\n\nThanks."}
 
 
-@pytest.mark.parametrize(
-    ("loop", "files", "hold"),
-    [
-        (GITHUB_RULE, (".github/ci.yml",), GITHUB),
-        (
-            add(GITHUB_RULE, "loop", "ci: false\n"),
-            ("app.py",),
-            (
-                "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head"
-                " (approvals.py local-ci)"
-            ),
-        ),
-    ],
-)
-def test_land_wait_ends_on_an_owner_or_local_ci_hold_under_auto_merge_already_on(
-    landing: dict[str, Any],
-    later: list[dict[str, Any]],
-    capsys: pytest.CaptureFixture[str],
-    loop: str,
-    files: tuple[str, ...],
-    hold: str,
+def test_land_passes_no_body_where_github_writes_none(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    """GitHub's auto-merge supplies neither the owner's label nor a local-ci record: the hold ends the wait."""
-    Path("docs/agents/loop.md").write_text(loop)
-    on = {"enabledAt": "2026-10-01T12:00:00Z"}
-    landing["pull"] = proven("SUCCESS", files=files, autoMergeRequest=on)
-    assert waited(capsys, landing) == (approvals.WAITING, [hold], [])
+    """A blank default, or a commit-messages default with nothing to write, leaves GitHub's own body; one whose body
+    is only a link goes as an empty one (#638)."""
+    lands["squash"] = "BLANK"
+    lands["open"](7, {"7.txt": "7\n"}, messages=("Add 7\n\nClaude-Session: x",))
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    lands["squash"] = "COMMIT_MESSAGES"
+    lands["open"](8, {"8.txt": "8\n"}, messages=("Add 8",))
+    lands["open"](9, {"9.txt": "9\n"}, messages=("Add 9\n\nClaude-Session: x",))
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    merges = {int(args[2]): args for args in lands["calls"] if args[:2] == ("pr", "merge")}
+    assert "--body" not in merges[7] and "--body" not in merges[8]
+    assert lands["bodies"][9] == ""
 
 
-def test_land_wait_reruns_a_red_approvals_run_once(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
+def test_land_gates_three_landable_prs_once_and_the_base_ends_at_the_gated_tree(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
 ) -> None:
-    approvals_red(landing)
-    later += [landing["pull"]]
-    code, lines, calls = waited(capsys, landing)
-    assert (code, calls) == (
-        approvals.WAITING,
-        [("run", "view", "12345"), ("run", "rerun", "12345"), ("run", "view", "12345")],
-    )
-    assert lines[-1] == (
-        "PR #7: every proof holds but `loop:approvals` is FAILURE on the head commit, again after land --wait reran"
-        " run 12345: read its log"
-    )
-
-
-def test_land_wait_stops_at_its_ceiling_naming_what_it_waits_for(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing.update(auto=False, pull=proven("QUEUED"))
-    assert waited(capsys, landing) == (
-        approvals.WAITING,
-        [
-            "PR #7: `check` is QUEUED on the head commit",
-            "PR #7: land --wait stopped after 2 hours, still waiting for CI on the head",
-        ],
-        [],
-    )
-
-
-def test_land_wait_ends_with_exit_3_on_more_checks_than_the_gate_reads(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """CI never clears a query's one page: the refusal ends the wait instead of polling it to the ceiling."""
-    landing.update(auto=False, rulesets=[], pull=proven(None))
-    rollup = landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
-    rollup["nodes"] = [
-        {
-            "__typename": "CheckRun",
-            "name": f"check-{n}",
-            "status": "COMPLETED",
-            "conclusion": "SUCCESS",
+    for number in (9, 7, 8):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7", "8", "9"])
+    tree, command = lands["main"]("^{tree}"), shlex.join(approvals.LOCAL_CI)
+    # each PR's tree is the base with it and those before it merged; the gate ran on the batch's
+    for number, back in ((7, "~2"), (8, "~1"), (9, "")):
+        assert landed_note(lands, number) == {
+            "Base": lands["main"](),
+            "Tree": lands["main"](f"{back}^{{tree}}"),
+            "Gate": f"{command}, run on {tree}",
+            "Batch": "#7, #8, #9",
         }
-        for n in range(100)
+    assert hub[lands["main"]()][0]["description"].startswith(f"Tree {tree} on ")
+    assert lands["lock"]() == ""
+    assert NAME not in git_in(lands["work"], "worktree", "list")
+
+
+HEAD_PROOF = "head_proof:\n  status: gate-ui\n  env:\n    - GATE_UI_TESTS\n"
+
+
+def test_with_head_proof_land_refuses_a_head_without_its_status_and_lands_it_once_there(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """The refusal names the command that records the proof; a status on an older head, or naming another tree,
+    proves nothing about this one."""
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(add(GITHUB_RULE, "loop", HEAD_PROOF))
+    older = lands["open"](7, {"7.txt": "7\n"})
+    hub[older] = [
+        status("gate-ui", f"Tree {approvals.tree_of(older)} on {older[:12]}: GATE_UI_TESTS=smoke")
     ]
-    rollup["totalCount"] = 101
-    assert waited(capsys, landing) == (
-        approvals.WAITING,
-        ["PR #7 has more than 100 CI checks: the gate reads one page"],
-        [],
-    )
-
-
-UNKNOWN = "PR #7: GitHub hasn't computed whether it can merge yet: run land again"
-
-
-def test_land_neither_readies_nor_merges_before_github_computes_the_merge_state(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"] = proven(mergeStateStatus="UNKNOWN")
-    assert landed(capsys, landing) == (approvals.WAITING, [UNKNOWN], [])
-
-
-def test_land_wait_rereads_an_unknown_merge_state_before_marking_a_draft_ready(
-    landing: dict[str, Any], later: list[dict[str, Any]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A draft whose merge state resolves to a conflict is refused while still a draft."""
-    landing["pull"] = proven("SKIPPED", isDraft=True, mergeStateStatus="UNKNOWN")
-    later += [proven("SKIPPED", isDraft=True, mergeStateStatus="DIRTY")]
-    code, lines, calls = waited(capsys, landing)
-    assert (code, lines[0], calls) == (1, UNKNOWN, [])
-    assert lines[1].startswith("PR #7 conflicts with main")
-
-
-@pytest.mark.parametrize(
-    ("status", "stale"), [("BEHIND", "is behind"), ("DIRTY", "conflicts with")]
-)
-@pytest.mark.parametrize("argv", [["land", "7"], ["land", "7", "--wait"]])
-def test_land_refuses_a_head_behind_or_in_conflict_with_its_base_before_marking_it_ready(
-    landing: dict[str, Any],
-    capsys: pytest.CaptureFixture[str],
-    status: str,
-    stale: str,
-    argv: list[str],
-) -> None:
-    """GitHub's refusal of a branch behind a base that requires it up to date reads `Required status check
-    "qualify" is expected`; land names the cause first."""
-    landing["pull"] = proven("SKIPPED", isDraft=True, mergeStateStatus=status)
-    assert approvals.main(argv) == 1
-    assert capsys.readouterr().out.splitlines() == [
+    work = lands["work"]
+    (work / "7.txt").write_text("seven\n")
+    git_in(work, "commit", "-qam", "PR 7, again")
+    head = git_in(work, "rev-parse", "HEAD").strip()
+    git_in(work, "push", "-q", "origin", f"{head}:refs/heads/pr7", f"{head}:refs/pull/7/head")
+    lands["pulls"][7].update(headRefOid=head, reviews={"nodes": [verdict_on(head)]})
+    hub[head] = [
+        status("gate-ui", f"Tree {approvals.tree_of(older)} on {head[:12]}: GATE_UI_TESTS=smoke")
+    ]
+    code, lines = lands["land"]("7")
+    assert (code, lands["runs"](), lands["merged"]()) == (1, 0, [])
+    assert lines == [
         (
-            f"PR #7 {stale} main: merge origin/main in, rerun the gates, get a verdict on the merge"
-            " (lead.md step 8), then land again"
+            f"PR #7: its head {head} has no green `gate-ui` status for its tree (loop.md `head_proof`): run"
+            " `approvals.py local-ci --record --head-proof` on a clean checkout of it, with the tier set in"
+            " GATE_UI_TESTS"
         )
     ]
-    assert landing["calls"] == []
+    hub[head].insert(
+        0, status("gate-ui", f"Tree {approvals.tree_of(head)} on {head[:12]}: GATE_UI_TESTS=smoke")
+    )
+    assert lands["land"]("7")[0] == 0
+    assert lands["merged"]() == ["7"]
+
+
+def test_an_up_to_date_pr_reuses_the_pass_on_its_head_and_runs_no_gate(
+    lands: dict[str, Any], refs: dict[str, dict[str, Any]]
+) -> None:
+    head = lands["open"](7, {"7.txt": "7\n"})
+    command = shlex.join(approvals.LOCAL_CI)
+    pushed_pass(refs, head, approvals.tree_of(head), command)
+    assert lands["land"]("7")[0] == 0
+    assert (lands["runs"](), lands["merged"]()) == (0, ["7"])
+    assert landed_note(lands, 7)["Gate"] == f"{command}, reused on {approvals.tree_of(head)}"
+    assert lands["main"]("^{tree}") == approvals.tree_of(head)
+
+
+def lock_commit(lands: dict[str, Any], seconds_ago: int) -> str:
+    """Another land's `held` lock commit, taken `seconds_ago`, pushed onto the lock branch's tip as a fast-forward."""
+    when = f"@{int(datetime.now(UTC).timestamp()) - seconds_ago} +0000"
+    tip = git_in(lands["origin"], "for-each-ref", "--format=%(objectname)", REF).strip()
+    tree = git_in(lands["work"], "hash-object", "-t", "tree", "-w", os.devnull).strip()
+    held = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            *(["-p", tip] if tip else []),
+            "-m",
+            f"{approvals.HELD} [skip ci]\n\npid 1, nonce 00",
+            tree,
+        ],
+        cwd=lands["work"],
+        env={**os.environ, "GIT_COMMITTER_DATE": when},
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_in(lands["work"], "push", "-q", "origin", f"{held}:{REF}")
+    return held
+
+
+def test_a_held_lock_waits_naming_its_age_and_a_stale_one_is_broken(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    held = lock_commit(lands, 10 * 60)
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING
+    assert lines[0].startswith(
+        f"another land holds the landing lock {NAME} (pid 1), taken 10 minutes ago ("
+    )
+    assert (lands["lock"](), lands["merged"]()) == (held, [])
+    lock_commit(lands, 3 * 60 * 60)
+    code, lines = lands["land"]("7")
+    assert (code, lines[0]) == (
+        0,
+        f"the landing lock {NAME} is 3 hours old, past 2 hours: broken as stale",
+    )
+    assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
+
+
+def test_a_red_batch_lands_one_pr_at_a_time_and_evicts_only_the_pr_red_alone(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    red = lands["open"](8, {"red.txt": "red\n"})
+    lands["open"](9, {"9.txt": "9\n"})
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    # the batch, #7 alone, #8 alone twice, #9 on #7
+    assert (lands["runs"](), lands["merged"]()) == (5, ["7", "9"])
+    assert ("pr", "ready", "--undo", "8") in lands["calls"]
+    [(number, body)] = [(n, body) for n, body in lands["comments"] if not body.startswith("Landed")]
+    assert number == 8 and body.startswith(f"{approvals.EVICTED}\nHead: {red}\n")
+    assert "````\n" in body
+    assert landed_note(lands, 9)["Batch"] == "#7, #9"
+    assert git_in(lands["origin"], "ls-tree", "--name-only", "main").split() == [
+        "7.txt",
+        "9.txt",
+        "app.py",
+    ]
+    # an evicted PR is a draft: the next land leaves it out
+    assert lands["land"]() == (0, [])
+
+
+def test_a_pr_red_alone_once_is_a_flake_and_lands(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"flaky.txt": "\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]()[0] == 0
+    assert (lands["runs"](), lands["merged"]()) == (4, ["7", "8"])
+
+
+def test_a_one_pr_batch_red_runs_its_gate_twice_then_evicts(lands: dict[str, Any]) -> None:
+    red = lands["open"](7, {"red.txt": "red\n"})
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    # the batch is its first run alone, then once more: two runs of the PR's tree, then the bare base's own
+    assert (lands["runs"](), lands["merged"]()) == (3, [])
+    assert sum("exited 1 (log" in line for line in lines) == 2
+    assert sum("once more, in case it was a flake" in line for line in lines) == 1
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+    [(number, body)] = lands["comments"]
+    assert number == 7 and body.startswith(f"{approvals.EVICTED}\nHead: {red}\n")
+
+
+def test_a_red_bare_base_evicts_nobody(lands: dict[str, Any]) -> None:
+    work = lands["work"]
+    (work / "red.txt").write_text("red\n")
+    git_in(work, "add", "red.txt")
+    git_in(work, "commit", "-qm", "red main")
+    git_in(work, "push", "-q", "origin", "HEAD:main")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("8")
+    assert code == 1
+    assert (
+        lines[-1]
+        == f"main itself is red at {lands['main']()}: nothing lands and nobody is evicted until it is fixed"
+    )
+    # the batch, #7 alone twice, then the bare base
+    assert (lands["runs"](), lands["merged"](), lands["comments"], lands["calls"]) == (
+        4,
+        [],
+        [],
+        [],
+    )
+    assert lands["lock"]() == ""
+
+
+MACHINE = add(GITHUB_RULE, "loop", "machine_exit: 78\n")
+
+
+def test_a_machine_fault_twice_stops_land_with_nothing_landed_evicted_or_posted(
+    lands: dict[str, Any],
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(MACHINE)
+    lands["open"](7, {"machine.txt": "2"})
+    code, lines = lands["land"]("7")
+    assert code == 1
+    assert (lands["runs"](), lands["merged"](), lands["comments"], lands["calls"]) == (
+        2,
+        [],
+        [],
+        [],
+    )
+    assert "a machine fault, not the change's" in "\n".join(lines)
+    assert "Fix the machine, then land again." in "\n".join(lines)
+    assert lines[-1] == "the screen is locked"  # the log's tail
+    assert lands["lock"]() == ""
+
+
+def test_a_machine_fault_once_runs_the_gate_again_and_the_batch_lands(
+    lands: dict[str, Any],
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(MACHINE)
+    lands["open"](7, {"machine.txt": "1"})
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]()
+    assert code == 0, lines
+    assert (lands["runs"](), lands["merged"]()) == (2, ["7", "8"])
+    assert landed_note(lands, 8)["Batch"] == "#7, #8"
+
+
+def test_without_machine_exit_a_gate_exiting_78_is_red(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"machine.txt": "9"})
+    code, _ = lands["land"]("7")
+    assert code == 1
+    # the batch is #7's first run alone, then once more, then the bare base, which is green: #7 is evicted
+    assert (lands["runs"](), lands["merged"]()) == (3, [])
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+
+
+def test_a_machine_fault_twice_on_the_tip_after_the_merges_still_says_landed(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(MACHINE)
+    for number in (7, 8):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    refusing(monkeypatch, lambda args: args[2] == "8")
+    codes = iter([0, 78, 78])
+    monkeypatch.setattr(approvals, "ran_gate", lambda cwd=None, out=None: next(codes))
+    code, lines = lands["land"]()
+    assert (code, lands["merged"]()) == (1, ["7"])
+    assert any("a machine fault, not the change's" in line for line in lines)
+    assert landed_note(lands, 7)["Batch"] == "#7"
+
+
+def test_a_low_risk_pr_carrying_approved_merge_is_a_candidate_like_any_other(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"}, labels=OWNED)
+    assert lands["land"]("7")[0] == 0
+    assert lands["merged"]() == ["7"]
+
+
+def test_a_pr_with_no_loop_trail_is_never_a_candidate_under_opt_out(lands: dict[str, Any]) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "opt_out: true\n")
+    )
+    lands["open"](7, {"7.txt": "7\n"}, reviews=())
+    lands["pulls"][7]["closingIssuesReferences"]["nodes"] = [specced(1, "kind:bug")]
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]()
+    assert code == 0 and OUTSIDE in lines
+    assert lands["merged"]() == ["8"]
+    assert lands["land"]("7") == (1, [OUTSIDE])
+
+
+def test_a_conflicting_pr_is_skipped_with_one_comment_per_head(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"app.py": "value = 7\n"})
+    head = lands["open"](8, {"app.py": "value = 8\n"})
+    code, lines = lands["land"]()
+    assert code == 1
+    assert "PR #8 conflicts with main plus #7 merged before it: skipped" in lines
+    assert lands["merged"]() == ["7"]
+    assert lands["land"]()[0] == 1  # alone on the new main it still conflicts, and says it no more
+    [(number, body)] = [
+        (n, body) for n, body in lands["comments"] if body.startswith(approvals.CONFLICTS)
+    ]
+    assert (number, body.splitlines()[1]) == (8, f"Head: {head}")
+    assert "It conflicts with main plus #7 merged before it: merge origin/main in" in body
+
+
+CHECK_SCRIPT = """import os, pathlib, subprocess, sys
+pathlib.Path(sys.argv[1]).open("a").write(f"{os.environ['LAND_HEAD']} {os.environ['LAND_BASE']}\\n")
+files = subprocess.run(["git", "ls-tree", "--name-only", os.environ["LAND_HEAD"]], capture_output=True, text=True)
+pathlib.Path("check.cache").write_text("left behind\\n")
+if os.environ["STALE"] in files.stdout.split():
+    print("forked before the restructuring: old.txt is back")
+    sys.exit(1)
+"""
+
+
+def pre_land(lands: dict[str, Any], configured: bool = True) -> Path:
+    """main holds `check.py`, which refuses a head whose tree holds the file `STALE` names and leaves a file behind,
+    and loop.md's `pre_land` runs it with `STALE=old.txt`, unless not `configured`; the log of its runs, one
+    `<LAND_HEAD> <LAND_BASE>` line each."""
+    work, runs = lands["work"], lands["work"].parent / "pre_land.log"
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    (work / "check.py").write_text(CHECK_SCRIPT)
+    git_in(work, "add", "check.py")
+    git_in(work, "commit", "-qm", "the pre-land check")
+    git_in(work, "push", "-q", "origin", "HEAD:main")
+    git_in(work, "fetch", "-q", "origin")
+    if configured:
+        (work / "docs" / "agents" / "loop.md").write_text(
+            add(
+                GITHUB_RULE,
+                "loop",
+                f"pre_land: {shlex.join(['STALE=old.txt', sys.executable, 'check.py', str(runs)])}\n",
+            )
+        )
+    return runs
+
+
+def test_a_pr_the_pre_land_check_refuses_is_left_out_with_one_comment_and_stays_ready(
+    lands: dict[str, Any],
+) -> None:
+    runs = pre_land(lands)
+    base = lands["main"]()
+    fine = lands["open"](7, {"7.txt": "7\n"})
+    old = lands["open"](8, {"old.txt": "old\n"})
+    # the heads are on origin only, as a PR's are, so the check reads one only once land fetched it
+    work = lands["work"]
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    for ref in ("pr7", "pr8"):  # the push's remote-tracking refs
+        git_in(work, "update-ref", "-d", f"refs/remotes/origin/{ref}")
+    git_in(work, "reflog", "expire", "--expire=now", "--all")
+    git_in(work, "gc", "-q", "--prune=now")
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    # one gate: what the check left in the worktree never reaches the batch
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7"])
+    assert runs.read_text().splitlines() == [f"{fine} {base}", f"{old} {base}"]
+    command = shlex.join(["STALE=old.txt", sys.executable, "check.py", str(runs)])
+    assert (
+        f"PR #8: `{command}` refused it against main at {base}, exiting 1: left out of this batch"
+        in lines
+    )
+    assert landed_note(lands, 7)["Batch"] == "#7"
+    # not red: neither evicted nor back to draft, and the same head refused again says it no more
+    assert lands["land"]()[0] == 1
+    assert not lands["pulls"][8]["isDraft"]
+    assert not [call for call in lands["calls"] if call[:2] == ("pr", "ready")]
+    [(number, body)] = [
+        (n, body) for n, body in lands["comments"] if body.startswith(approvals.PRE_LAND)
+    ]
+    assert (number, body.splitlines()[1]) == (8, f"Head: {old}")
+    assert "forked before the restructuring: old.txt is back\n" in body
+    assert lands["land"]("8")[0] == 1
+    # a new head refused is said again
+    said = lands["pulls"][8]["comments"]
+    for ref in ("refs/heads/pr8", "refs/pull/8/head"):  # a force-push
+        git_in(lands["origin"], "update-ref", "-d", ref)
+    newer = lands["open"](8, {"old.txt": "older\n"})
+    lands["pulls"][8]["comments"] = said
+    assert lands["land"]("8")[0] == 1
+    assert [
+        body.splitlines()[1]
+        for n, body in lands["comments"]
+        if n == 8 and body.startswith(approvals.PRE_LAND)
+    ] == [f"Head: {old}", f"Head: {newer}"]
+
+
+def test_a_pr_editing_the_pre_land_check_is_judged_by_the_bases_version(
+    lands: dict[str, Any],
+) -> None:
+    runs = pre_land(lands)
+    lands["open"](7, {"old.txt": "old\n", "check.py": "import sys\nsys.exit(0)\n"})
+    assert lands["land"]()[0] == 1
+    assert lands["merged"]() == []
+    assert len(runs.read_text().splitlines()) == 1
+
+
+def test_without_pre_land_no_check_runs(lands: dict[str, Any]) -> None:
+    runs = pre_land(lands, configured=False)
+    lands["open"](7, {"old.txt": "old\n"})
+    assert lands["land"]()[0] == 0
+    assert lands["merged"]() == ["7"]
+    assert not runs.exists()
+
+
+def configure_pre_land(lands: dict[str, Any], command: list[str]) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", f"pre_land: {shlex.join(command)}\n")
+    )
+
+
+def test_a_pre_land_refusal_too_long_for_a_comment_posts_its_end(lands: dict[str, Any]) -> None:
+    configure_pre_land(
+        lands,
+        [sys.executable, "-c", "print('x' * 70000); print('the reason'); raise SystemExit(1)"],
+    )
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]()[0] == 1
+    [body] = [body for _, body in lands["comments"] if body.startswith(approvals.PRE_LAND)]
+    assert "x\nthe reason\n````\n" in body
+    assert len(body) <= 65536
+
+
+def test_a_pre_land_whose_command_is_not_there_is_refused_naming_it(
+    lands: dict[str, Any],
+) -> None:
+    configure_pre_land(lands, ["misee", "run", "pre-land"])
+    lands["open"](7, {"7.txt": "7\n"})
+    code, lines = lands["land"]()
+    assert code == 1
+    assert any("can't run: [Errno 2] No such file or directory: 'misee'" in line for line in lines)
+
+
+def test_a_head_missing_from_origin_is_not_judged_by_pre_land(lands: dict[str, Any]) -> None:
+    runs = pre_land(lands)
+    head = lands["open"](7, {"7.txt": "7\n"})
+    work = lands["work"]
+    git_in(work, "switch", "-q", "--detach", "origin/main")
+    for ref in ("refs/heads/pr7", "refs/pull/7/head"):
+        git_in(lands["origin"], "update-ref", "-d", ref)
+    git_in(work, "update-ref", "-d", "refs/remotes/origin/pr7")
+    for repo in (work, lands["origin"]):
+        git_in(repo, "reflog", "expire", "--expire=now", "--all")
+        git_in(repo, "gc", "-q", "--prune=now")
+    code, lines = lands["land"]()
+    assert code == 1
+    assert f"PR #7: its head {head} is not on origin: push it, then land again" in lines
+    assert not runs.exists()
+    assert not [body for _, body in lands["comments"] if body.startswith(approvals.PRE_LAND)]
+
+
+def test_a_pre_land_with_a_shell_operator_is_refused() -> None:
+    with pytest.raises(
+        approvals.Refused, match="loop.md's `pre_land` is 'a && b': variables to set"
+    ):
+        approvals.command_line("a && b", "pre_land")
+
+
+def test_land_marks_a_named_draft_ready_and_waits_for_the_required_checks_it_starts(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check", approvals.APPROVALS})
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["isDraft"] = True
+    assert lands["land"]() == (0, [])  # no PR named: a draft is no candidate
+    code, lines = lands["land"]("7")
+    assert (code, lines) == (
+        approvals.WAITING,
+        ["PR #7 is ready now", "PR #7: CI starts on ready, so its required checks are pending"],
+    )
+    # ready, `check` green and `loop:approvals` not waited for: it lands, gated, since required checks never stand in
+    assert lands["land"]("7")[0] == 0
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7"])
+
+
+def test_the_lock_is_taken_broken_and_released_past_a_pre_push_hook_that_fails(
+    lands: dict[str, Any],
+) -> None:
+    # the lock commit holds the base's own tree, so a project's pre-push checks have nothing of it to check
+    lands["open"](7, {"7.txt": "7\n"})
+    lock_commit(lands, 3 * 60 * 60)
+    hook = lands["work"] / ".git/hooks/pre-push"
+    hook.write_text("#!/bin/sh\necho the hook ran >&2\nexit 1\n")
+    hook.chmod(0o755)
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
+
+
+def test_the_lock_is_released_when_land_fails(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+
+    def broken(*_args: Any) -> Any:
+        raise RuntimeError("GitHub went away")
+
+    monkeypatch.setattr(approvals, "merges", broken)
+    with pytest.raises(RuntimeError):
+        lands["land"]("7")
+    assert lands["lock"]() == ""
+    assert git_in(lands["work"], "worktree", "list").count("\n") == 1
+
+
+def test_a_pr_missing_a_proof_is_never_readied_nor_merged(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"}, reviews=())
+    lands["pulls"][7]["isDraft"] = True
+    assert lands["land"]("7")[0] == 1
+    assert (lands["calls"], lands["runs"]()) == ([], 0)
+
+
+def test_a_high_risk_pr_without_the_owners_go_waits_and_never_merges(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    lands["open"](7, {".github/ci.yml": "on: push\n"})
+    lands["pulls"][7]["files"] = {"nodes": [{"path": ".github/ci.yml"}]}
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING
+    assert any(line.startswith("PR #7 waits for the owner's go on its head") for line in lines)
+    assert lands["merged"]() == ["8"]
+
+
+def test_a_pr_whose_required_check_is_red_is_no_candidate(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
+    lands["open"](7, {"7.txt": "7\n"}, checks=(("check", "FAILURE"),))
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]("7")[0] == 1
+    assert lands["merged"]() == ["8"]
+
+
+def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_waits(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # one identity and one commit second: the lock commit's nonce alone tells the two lands' commits apart, else the
+    # loser's push of the same commit would succeed as a no-op
+    lands["open"](7, {"7.txt": "7\n"})
+    earlier: list[str] = []
+    assert approvals.locked("main", earlier)
+    assert approvals.unlock("main", earlier[-1]).returncode == 0
+    free = git_in(lands["origin"], "rev-parse", REF).strip()
+    now = f"@{int(datetime.now(UTC).timestamp())} +0000"
+    monkeypatch.setenv("GIT_COMMITTER_DATE", now)
+    monkeypatch.setenv("GIT_AUTHOR_DATE", now)
+    winner: list[str] = []
+    real = approvals.git
+
+    def git(*args: str) -> str:
+        out = real(*args)
+        if (
+            args[:1] == ("log",) and not winner
+        ):  # this land has read the free tip; another takes it first
+            winner.append("")
+            assert approvals.locked("main", winner)
+        return out
+
+    monkeypatch.setattr(approvals, "git", git)
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"]()) == (approvals.WAITING, [])
+    assert lands["lock"]() == winner[-1]
+    assert git_in(lands["origin"], "rev-parse", f"{winner[-1]}^").strip() == free
+    assert lines[-1].startswith(
+        f"another land holds the landing lock {NAME} (pid {os.getpid()}), taken 0 minutes ago ("
+    )
+
+
+def test_a_land_that_lost_one_race_and_took_the_lock_on_its_retry_releases_that_take(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # another land takes and releases the lock between this one's read and its push: its retry from the new free tip
+    # wins, and its release is of that commit, not of the first one origin never took
+    lands["open"](7, {"7.txt": "7\n"})
+    other: list[str] = []
+    real = approvals.git
+
+    def git(*args: str) -> str:
+        out = real(*args)
+        if args[:2] == ("rev-parse", f"refs/remotes/origin/{NAME}") and not other:
+            other.append("")
+            assert approvals.locked("main", other)
+            assert approvals.unlock("main", other[-1]).returncode == 0
+        return out
+
+    tip = lock_commit(lands, 60)
+    git_in(
+        lands["work"], "push", "-q", "origin", f"{approvals.lock_commit(approvals.FREE, tip)}:{REF}"
+    )
+    monkeypatch.setattr(approvals, "git", git)
+    assert lands["land"]("7")[0] == 0
+    assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
+    assert len(lands["tips"]()) == 6  # theirs taken and released, then ours
+
+
+def test_the_batch_starts_from_the_base_as_origin_has_it_when_the_lock_is_taken(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    # main moves on origin, to a tree of its own, after this checkout last fetched it
+    work, tip = lands["work"], lands["main"]()
+    (work / "elsewhere.txt").write_text("elsewhere\n")
+    git_in(work, "add", "elsewhere.txt")
+    git_in(work, "commit", "-qm", "elsewhere")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    moved = git_in(work, "rev-parse", "HEAD").strip()
+    git_in(work, "update-ref", "refs/remotes/origin/main", tip)
+    assert lands["land"]("7")[0] == 0
+    # one gate, on the batch made from the moved base, so the base ended at the gated tree without a second
+    assert (lands["runs"](), lands["main"]("~1")) == (1, moved)
+
+
+def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_grows(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]("7")[0] == 0
+    first = git_in(lands["origin"], "rev-parse", REF).strip()
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]("8")[0] == 0
+    second = git_in(lands["origin"], "rev-parse", REF).strip()
+    git_in(lands["origin"], "merge-base", "--is-ancestor", first, second)
+    empty = git_in(lands["origin"], "hash-object", "-t", "tree", os.devnull).strip()
+    assert git_in(lands["origin"], "log", "--format=%T", REF).split() == [empty] * 4
+    tips = [line.split("\0") for line in lands["tips"]()]
+    assert [subject for _, subject in tips] == [
+        f"{approvals.FREE} [skip ci]",
+        f"{approvals.HELD} [skip ci]",
+        f"{approvals.FREE} [skip ci]",
+        f"{approvals.HELD} [skip ci]",
+    ]
+    # each commit's parent is the one below it, and the first lock commit has none
+    commits = [ids.split() for ids, _ in tips]
+    assert [rest for _, *rest in commits] == [[c[0]] for c in commits[1:]] + [[]]
+    body = git_in(lands["origin"], "log", "-1", "--format=%b", f"{REF}~1").strip()
+    assert re.fullmatch(rf"pid {os.getpid()}, nonce [0-9a-f]{{16}}", body)
+    assert lands["lock"]() == ""
+
+
+def test_a_stale_lock_is_broken_and_taken_in_one_push_and_its_holders_release_then_leaves_it(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    old: list[str] = []
+    monkeypatch.setenv(
+        "GIT_COMMITTER_DATE", f"@{int(datetime.now(UTC).timestamp()) - 3 * 60 * 60} +0000"
+    )
+    assert approvals.locked("main", old)
+    monkeypatch.delenv("GIT_COMMITTER_DATE")
+    pushes: list[str] = []
+    run = subprocess.run
+
+    def counted(args: Any, *rest: Any, **kw: Any) -> Any:
+        if isinstance(args, list) and args[:2] == ["git", "push"]:
+            pushes.append(args[-1])
+        return run(args, *rest, **kw)
+
+    monkeypatch.setattr(approvals.subprocess, "run", counted)
+    new: list[str] = []
+    assert approvals.locked("main", new)
+    assert (
+        capsys.readouterr().out
+        == f"the landing lock {NAME} is 3 hours old, past 2 hours: broken as stale\n"
+    )
+    assert pushes == [f"{new[-1]}:{REF}"]
+    assert git_in(lands["origin"], "rev-parse", f"{new[-1]}^").strip() == old[-1]
+    released = approvals.unlock("main", old[-1])
+    assert released.returncode != 0
+    assert "stale info" in released.stderr
+    assert lands["lock"]() == new[-1]
+
+
+def test_origin_refuses_a_delete_or_rewrite_of_the_lock_so_no_land_ever_pushed_one(
+    lands: dict[str, Any],
+) -> None:
+    # the fixture's pre-receive hook is what every land test pushes the lock past: it is no hook that passes everything
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]("7")[0] == 0
+    tip = git_in(lands["origin"], "rev-parse", REF).strip()
+    for refspec in (f":{REF}", f"+{tip}~1:{REF}"):
+        pushed = subprocess.run(
+            ["git", "-C", str(lands["work"]), "push", "-q", "origin", refspec],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert pushed.returncode != 0 and "refused: " in pushed.stderr, pushed.stderr
+    assert git_in(lands["origin"], "rev-parse", REF).strip() == tip
+
+
+def test_origin_refusing_the_locks_push_is_refused_naming_its_reason(
+    lands: dict[str, Any],
+) -> None:
+    # a refusal of a push from the tip read again is origin's, not another land's race: no wait clears it
+    lands["open"](7, {"7.txt": "7\n"})
+    hook = lands["origin"] / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho no pushes to the lock >&2\nexit 1\n")
+    with pytest.raises(
+        approvals.Refused, match=f"origin refused the landing lock {NAME}: .*no pushes to the lock"
+    ):
+        approvals.locked("main", [])
+    assert lands["tips"]() == []
+
+
+def test_a_land_waits_on_the_previous_versions_lock_and_never_writes_it(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    theirs = lands["main"]()
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, theirs)
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"](), lands["tips"]()) == (approvals.WAITING, [], [])
+    assert lines == [
+        f"a land of the previous version holds the landing lock {approvals.LEGACY}: land --wait waits for it"
+    ]
+    assert git_in(lands["origin"], "rev-parse", approvals.LEGACY).strip() == theirs
+    git_in(lands["origin"], "update-ref", "-d", approvals.LEGACY)
+    assert lands["land"]("7")[0] == 0
+
+
+def test_a_stale_lock_of_the_previous_version_is_passed_over_and_left_in_place(
+    lands: dict[str, Any],
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    when = f"@{int(datetime.now(UTC).timestamp()) - approvals.CEILING - 60} +0000"
+    tree = git_in(lands["work"], "hash-object", "-t", "tree", "-w", os.devnull).strip()
+    theirs = subprocess.run(
+        ["git", "commit-tree", "-m", "landing lock", tree],
+        cwd=lands["work"],
+        env={**os.environ, "GIT_COMMITTER_DATE": when},
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git_in(lands["work"], "push", "-q", "origin", f"{theirs}:{approvals.LEGACY}")
+    assert lands["land"]("7")[0] == 0
+    assert git_in(lands["origin"], "rev-parse", approvals.LEGACY).strip() == theirs
+
+
+def test_a_previous_version_lock_released_after_it_was_listed_lets_the_land_go_on(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, lands["main"]())
+    real = approvals.git
+
+    def released_after_listing(*args: str) -> str:
+        out = real(*args)
+        if args[:2] == ("ls-remote", "origin") and approvals.LEGACY in out:
+            git_in(lands["origin"], "update-ref", "-d", approvals.LEGACY)
+        return out
+
+    monkeypatch.setattr(approvals, "git", released_after_listing)
+    assert lands["land"]("7")[0] == 0
+
+
+def test_a_failed_fetch_of_a_previous_version_lock_still_there_is_refused_not_waited_on(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    git_in(lands["origin"], "update-ref", approvals.LEGACY, lands["main"]())
+    real = approvals.git
+
+    def failing_fetch(*args: str) -> str:
+        if args[:3] == ("fetch", "-q", "origin") and args[3].startswith(f"+{approvals.LEGACY}:"):
+            raise subprocess.CalledProcessError(128, ["git", *args], stderr="transport failed")
+        return real(*args)
+
+    monkeypatch.setattr(approvals, "git", failing_fetch)
+    code, lines = lands["land"]("7")
+    assert code == 1 and "transport failed" in "\n".join(lines)
+    assert lands["merged"]() == []
+
+
+def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Origin's base moves after any earlier fetch but before the lock is taken: the batch is merged onto the moved
+    base and gated once."""
+    lands["open"](7, {"7.txt": "7\n"})
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: set())
+    work = lands["work"]
+    fetched = git_in(work, "rev-parse", "refs/remotes/origin/main").strip()
+    real = approvals.locked
+    moved: list[str] = []
+
+    def move_then_lock(base: str, held: list[str]) -> bool:
+        (work / "elsewhere.txt").write_text("elsewhere\n")
+        git_in(work, "add", "elsewhere.txt")
+        git_in(work, "commit", "-qm", "origin moves before the lock is taken")
+        git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+        moved.append(git_in(work, "rev-parse", "HEAD").strip())
+        git_in(work, "update-ref", "refs/remotes/origin/main", fetched)
+        return real(base, held)
+
+    monkeypatch.setattr(approvals, "locked", move_then_lock)
+    assert lands["land"]("7")[0] == 0
+    assert (lands["runs"](), lands["main"]("~1")) == (1, moved[0])
+
+
+@pytest.fixture
+def stoppable() -> Iterator[None]:
+    """SIGTERM and SIGHUP at their defaults for the test, since a runner started under nohup passes SIGHUP ignored."""
+    before = {sig: signal.signal(sig, signal.SIG_DFL) for sig in approvals.STOPS}
+    yield
+    for sig, handler in before.items():
+        signal.signal(sig, handler)
+
+
+@pytest.mark.usefixtures("stoppable")
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP])
+def test_a_land_stopped_by_sigterm_or_sighup_releases_its_lock_and_exits_128_plus_the_signal(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, sig: signal.Signals
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    held: list[str] = []
+
+    def stopped(*_args: Any) -> None:
+        held.append(lands["lock"]())
+        os.kill(os.getpid(), sig)
+
+    monkeypatch.setattr(approvals, "merges", stopped)
+    before = {s: signal.getsignal(s) for s in approvals.STOPS}
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert held[0], "the land held no lock when it was stopped"
+    assert (stop.value.code, lands["lock"]()) == (128 + sig, "")
+    assert {s: signal.getsignal(s) for s in approvals.STOPS} == before, (
+        "the land left its handlers behind"
+    )
+
+
+@pytest.mark.usefixtures("stoppable")
+@pytest.mark.parametrize("when", ["before taking", "taking", "releasing", "releasing first"])
+def test_a_stop_while_the_lock_is_pushed_still_releases_it(
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    when: str,
+) -> None:
+    # before taking: the stop arrives before the lock's push runs, so origin has no lock to release. taking: as the
+    # push reaches origin, before locked() returns. releasing: a second stop arrives as the release is pushed, as
+    # `uv run` forwards the signal Python already got. releasing first: the land's only stop arrives there
+    lands["open"](7, {"7.txt": "7\n"})
+    run = subprocess.run
+
+    def pushing(args: Any, *rest: Any, **kw: Any) -> Any:
+        target = args[-1] if isinstance(args, list) and args[:2] == ["git", "push"] else ""
+        state = (
+            git_in(lands["work"], "log", "-1", "--format=%s", target.split(":")[0])
+            if target.endswith(f":{REF}")
+            else ""
+        )
+        taking, releasing = state.startswith(approvals.HELD), state.startswith(approvals.FREE)
+        if (when == "before taking" and taking) or (when.startswith("releasing") and releasing):
+            os.kill(os.getpid(), signal.SIGTERM)
+        done = run(args, *rest, **kw)
+        if when == "taking" and taking:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return done
+
+    monkeypatch.setattr(approvals.subprocess, "run", pushing)
+    if when == "releasing":
+        monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert (stop.value.code, lands["lock"]()) == (143, "")
+    assert "was not released" not in capsys.readouterr().out
+
+
+def test_the_release_push_runs_outside_the_lands_process_group(
+    lands: dict[str, Any], tmp_path: Path
+) -> None:
+    # ssh and gh as the credential helper unblock SIGTERM and SIGHUP, so a group stop would end them mid-release
+    groups = tmp_path / "groups.log"
+    receive = tmp_path / "receive-pack"
+    receive.write_text(f'#!/bin/sh\nps -o pgid= -p $$ >> "{groups}"\nexec git-receive-pack "$@"\n')
+    receive.chmod(0o755)
+    git_in(lands["work"], "config", "remote.origin.receivepack", str(receive))
+    lands["open"](7, {"7.txt": "7\n"})
+    groups.unlink()
+    assert (lands["land"]("7")[0], lands["lock"]()) == (0, "")
+    pushes = [int(g) for g in groups.read_text().split()]
+    assert pushes[0] == os.getpgrp(), (
+        "the lock's take ran outside the land's group, so the test proves nothing"
+    )
+    assert pushes[-1] != os.getpgrp(), "the release push ran in the land's process group"
+
+
+@pytest.mark.usefixtures("stoppable")
+def test_a_second_stop_while_the_batch_worktree_is_removed_leaves_no_worktree(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # uv run forwards the first stop again while the unwinding removes the batch worktree; stopped() ignores it
+    lands["open"](7, {"7.txt": "7\n"})
+    removed: list[str] = []
+    run = subprocess.run
+
+    def removing(args: Any, *rest: Any, **kw: Any) -> Any:
+        if isinstance(args, list) and args[:3] == ["git", "worktree", "remove"]:
+            removed.append(args[-1])
+            os.kill(os.getpid(), signal.SIGTERM)
+        return run(args, *rest, **kw)
+
+    monkeypatch.setattr(approvals.subprocess, "run", removing)
+    monkeypatch.setattr(approvals, "merges", lambda *_: os.kill(os.getpid(), signal.SIGTERM))
+    with pytest.raises(SystemExit) as stop:
+        lands["land"]("7")
+    assert (stop.value.code, lands["lock"]()) == (143, "")
+    assert removed, "the land never removed its batch worktree"
+    assert not Path(removed[0]).exists(), (
+        f"the batch worktree {Path(removed[0]).name} was left behind"
+    )
+
+
+def test_a_land_that_inherits_sighup_ignored_outlives_a_hangup(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    merges = approvals.merges
+
+    def hangup(*args: Any) -> Any:
+        os.kill(os.getpid(), signal.SIGHUP)
+        return merges(*args)
+
+    monkeypatch.setattr(approvals, "merges", hangup)
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+        assert (lands["land"]("7")[0], lands["lock"]()) == (0, "")
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert lands["merged"]() == ["7"]
+
+
+def test_a_lock_another_land_took_meanwhile_stays_theirs(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    theirs: list[str] = []
+
+    def broken_and_taken(*_args: Any) -> None:
+        theirs.append(lock_commit(lands, 0))
+
+    monkeypatch.setattr(approvals, "merges", broken_and_taken)
+    _, lines = lands["land"]("7")
+    assert lands["lock"]() == theirs[0]
+    assert lines[-1].startswith(f"the landing lock {NAME} was not released: ")
+
+
+def test_breaking_a_stale_lock_leaves_one_another_land_took_first(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lock_commit(lands, 3 * 60 * 60)
+    fresh: list[str] = []
+    real = approvals.git
+
+    def git(*args: str) -> str:
+        out = real(*args)
+        if (
+            args[:1] == ("log",) and not fresh
+        ):  # this land has read the stale tip; another breaks and takes it first
+            fresh.append(lock_commit(lands, 60))
+        return out
+
+    monkeypatch.setattr(approvals, "git", git)
+    code, lines = lands["land"]("7")
+    assert (code, lands["lock"](), lands["merged"]()) == (approvals.WAITING, fresh[0], [])
+    assert lines[-1].startswith(
+        f"another land holds the landing lock {NAME} (pid 1), taken 1 minutes ago ("
+    )
+
+
+def refusing(monkeypatch: pytest.MonkeyPatch, refuse: Callable[[tuple[str, ...]], bool]) -> None:
+    """GitHub refuses `gh pr merge` where `refuse(args)` says so."""
+    fake = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("pr", "merge") and refuse(args):
+            raise subprocess.CalledProcessError(1, args, stderr="Required status check is expected")
+        return fake(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+
+
+def test_a_merge_github_refuses_stops_the_rest_and_the_partial_base_is_gated(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for number in (7, 8, 9):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    refusing(monkeypatch, lambda args: args[2] == "8")
+    code, lines = lands["land"]()
+    assert (code, lands["merged"]()) == (1, ["7"])
+    tip, tree = lands["main"](), lands["main"]("^{tree}")
+    assert (
+        f"main holds #7 of the batch, whose tree {tree} was never gated, so {tip} is gated now"
+        in lines
+    )
+    # the batch, then main with #7 alone
+    assert lands["runs"]() == 2
+    assert landed_note(lands, 7)["Tree"] == tree
+    assert hub[tip][0]["description"].startswith(f"Tree {tree} on ")
+
+
+def test_a_merge_github_leaves_unmerged_stops_the_rest(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`gh pr merge` exits 0 having only queued #8: it gets no `Landed`, and #9 waits for the next land."""
+    for number in (7, 8, 9):
+        lands["open"](number, {f"{number}.txt": f"{number}\n"})
+    fake = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:3] == ("pr", "merge", "8"):
+            return ""
+        return fake(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    code, lines = lands["land"]()
+    assert (code, lands["merged"]()) == (1, ["7"])
+    assert any("PR #8: the merge was refused" in line and "not merged" in line for line in lines)
+    assert [n for n, body in lands["comments"] if body.startswith("Landed\n")] == [7]
+
+
+def test_a_base_that_moved_during_the_merges_is_gated_and_red_gets_no_gate_status(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    work, moved = lands["work"], []
+
+    def merged_by_hand(_args: tuple[str, ...]) -> bool:
+        if not moved:
+            git_in(work, "switch", "-q", "--detach", "origin/main")
+            (work / "red.txt").write_text("red\n")
+            git_in(work, "add", "red.txt")
+            git_in(work, "commit", "-qm", "merged by hand")
+            moved.append(git_in(work, "push", "-q", "origin", "HEAD:main"))
+        return False
+
+    refusing(monkeypatch, merged_by_hand)
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"](), lands["runs"]()) == (0, ["7"], 2)
+    assert any("someone merged meanwhile" in line for line in lines)
+    assert [s for s in hub.get(lands["main"](), []) if s["context"] == "gate"] == []
+
+
+def test_a_gate_that_changes_the_tree_is_red(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"dirty.txt": "\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]()[0] == 1
+    assert lands["merged"]() == ["8"]
+    [body] = [
+        body for n, body in lands["comments"] if n == 7 and body.startswith(approvals.EVICTED)
+    ]
+    assert "the gate changed the tree, so it did not run on the batch as merged:" in body
+    assert "\nM app.py\n" in body
+
+
+def test_a_batch_tree_this_clone_passed_before_runs_no_gate(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    refused: list[str] = []
+    refusing(monkeypatch, lambda args: not refused and not refused.append(args[2]))
+    assert lands["land"]()[0] == 1
+    assert (lands["runs"](), lands["merged"](), hub) == (1, [], {})
+    assert lands["land"]()[0] == 0
+    # neither head holds the batch's tree, and nothing was published: this clone's record is the pass
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7", "8"])
+
+
+def test_land_on_a_merged_pr_says_so_and_on_a_closed_one_refuses(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["state"] = "MERGED"
+    assert lands["land"]("7") == (0, ["PR #7 is merged"])
+    lands["pulls"][7]["state"] = "CLOSED"
+    assert lands["land"]("7") == (1, ["PR #7 is closed: nothing to land"])
+    assert (lands["lock"](), lands["runs"]()) == ("", 0)
+
+
+def test_the_old_queue_commands_and_settings_work_and_say_they_are_deprecated(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loop = add(
+        add(LOOP, "loop", "ci: false\nbatch_queue: true\n"),
+        "carry_over_main",
+        "except:\n  - mise.toml\n",
+    )
+    approvals.DEPRECATED.clear()
+    assert approvals.no_ci(loop) and approvals.batch_queue(loop)
+    approvals.no_ci(loop)
+    assert capsys.readouterr().err.splitlines() == [
+        f"deprecated: {name} goes in the next release; land batches every landable PR (#650)"
+        for name in ("batch_queue", "ci", "carry_over_main")
+    ]
 
 
 # --- land: a local signed squash, where loop.md says so ---
@@ -3418,6 +4839,25 @@ def signing(landing: dict[str, Any], tmp_path: Path) -> dict[str, Any]:
     return {"git": git, "remote": remote, "base": git("rev-parse", "main"), "head": head}
 
 
+def signed_land(
+    landing: dict[str, Any], capsys: pytest.CaptureFixture[str], onto: tuple[str, str] | None = None
+) -> tuple[int, list[str], list[tuple[str, ...]]]:
+    """land's signed merge of the PR, as it runs it: refused by unsignable() before anything moves, else
+    signed_squash(); (exit, lines, gh pr calls)."""
+    try:
+        signed = approvals.signed(approvals.project()[1])
+        assert signed
+        if why := approvals.unsignable(landing["pull"], *signed):
+            raise approvals.Refused(why)
+        commit = approvals.signed_squash(landing["pull"], signed[1], onto)
+        print(f"PR #7 landed in main as {commit}, signed by a key in {signed[1]}")
+        code = 0
+    except approvals.Refused as exc:
+        print(exc)
+        code = 1
+    return code, capsys.readouterr().out.splitlines(), landing["calls"]
+
+
 def remote_ref(signing: dict[str, Any], ref: str) -> str:
     return sh("git", "rev-parse", ref, cwd=signing["remote"])
 
@@ -3445,7 +4885,7 @@ def test_a_hosts_global_git_config_cannot_take_over_a_tests_signing(
 def test_land_with_the_line_squashes_signs_and_pushes_the_pr_branch_then_main(
     landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    code, out, calls = landed(capsys, landing)
+    code, out, calls = signed_land(landing, capsys)
     commit = remote_ref(signing, "main")
     assert (code, out, calls) == (
         0,
@@ -3465,7 +4905,7 @@ def test_land_with_the_line_squashes_signs_and_pushes_the_pr_branch_then_main(
 def refused_untouched(
     landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> list[str]:
-    code, out, calls = landed(capsys, landing)
+    code, out, calls = signed_land(landing, capsys)
     assert (code, calls) == (1, [])
     assert remote_ref(signing, "feature") == signing["head"]
     return out
@@ -3556,7 +4996,7 @@ def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
 ) -> None:
     landing["pull"]["baseRefName"] = "release"
     assert refused_untouched(landing, signing, capsys) == [
-        "PR #7 targets release, but loop.md lands signed squashes only to main"
+        "PR #7 targets release, but the policy lands signed squashes only to main"
     ]
     loop = tmp_path / "docs" / "agents" / "loop.md"
     loop.write_text(loop.read_text().replace("  allowed_signers: signers\n", ""))
@@ -3565,16 +5005,26 @@ def test_land_with_the_line_refuses_another_base_and_a_line_it_cannot_read(
     ]
 
 
-def test_land_with_the_line_waits_for_pending_checks_without_auto_merge(
+def test_a_batch_squash_lands_the_gated_tree_on_the_commit_before_it(
     landing: dict[str, Any], signing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """GitHub's auto-merge would squash with GitHub's key, so the signed landing waits for the checks itself."""
-    landing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][
-        0
-    ].update(status="IN_PROGRESS", conclusion=None)
-    code, _, calls = landed(capsys, landing)
-    assert (code, calls) == (3, [])
-    assert remote_ref(signing, "main") == signing["base"]
+    """In land's batch the squash holds the tree gated with the PR, on the base's tip the batch merged onto; a base
+    that moved since is refused, since the squash would drop what landed meanwhile."""
+    git = signing["git"]
+    tree = git("rev-parse", f"{signing['head']}^{{tree}}")
+    assert signed_land(landing, capsys, ("c" * 40, tree))[:2] == (
+        1,
+        [
+            f"PR #7: main moved to {signing['base']} since the batch was merged onto {'c' * 40}: land again"
+        ],
+    )
+    code, _, _ = signed_land(landing, capsys, (signing["base"], tree))
+    commit = remote_ref(signing, "main")
+    assert (code, git("rev-parse", f"{commit}^"), git("rev-parse", f"{commit}^{{tree}}")) == (
+        0,
+        signing["base"],
+        tree,
+    )
 
 
 # --- opt-out: a person keeps their PR out of the loop ---
@@ -3584,6 +5034,401 @@ OUTSIDE = (
     "PR #7 is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
     " revert or bot exemption): its author merges it"
 )
+
+
+def test_a_green_signed_batch_gives_each_pr_a_commit_of_its_own_change(
+    lands: dict[str, Any], tmp_path: Path
+) -> None:
+    work = lands["work"]
+    git_in(work, "remote", "set-url", "origin", REPO)
+    git_in(work, "config", f"url.{lands['origin'].as_uri()}.insteadOf", REPO)
+    key = tmp_path / "key"
+    sh("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "lander", "-f", str(key), cwd=tmp_path)
+    git_in(work, "config", "gpg.format", "ssh")
+    git_in(work, "config", "user.signingkey", str(key))
+    (work / "signers").write_text(f"loop@example.com {key.with_suffix('.pub').read_text()}")
+    loop = work / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", SIGNED_LAND))
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]()[0] == 0
+    # one gate on the batch, and each commit holds its own PR's change, so reverting one reverts only it
+    assert lands["runs"]() == 1
+    assert git_in(work, "log", "-2", "--name-only", "--format=%s", lands["main"]()).split() == [
+        "PR", "8", "(#8)", "8.txt", "PR", "7", "(#7)", "7.txt",
+    ]  # fmt: skip
+
+
+# --- land in a cloud session: the landing key from the environment, never the VM's ---
+
+CLOUD_LAND = SIGNED_LAND + "where: cloud\nsigning_key_env: LAND_KEY\n"
+# a cloud VM's signing program, which signs with the session's key: here it fails, so a land through it fails
+VM_SIGNER = "#!/bin/sh\necho 'the session signer was used' >&2\nexit 1\n"
+
+
+@pytest.fixture
+def cloud_land(
+    lands: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    """`lands` as a cloud session runs it: the cloud marker set, PR 7 open, loop.md's `land` section with `where:
+    cloud` and `signing_key_env: LAND_KEY`, the variable holding a landing key listed in `signers`, and the VM's own
+    config (`commit.gpgsign`, a session key, a signing program that fails). The temporary directory is a fresh one,
+    `tmp`, so a key folder left behind shows. `out(code, lines)` checks the key's text was printed nowhere."""
+    work = lands["work"]
+    git_in(work, "remote", "set-url", "origin", REPO)
+    git_in(work, "config", f"url.{lands['origin'].as_uri()}.insteadOf", REPO)
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    for name in ("landing", "session", "stranger"):
+        sh(
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            name,
+            "-f",
+            str(keys / name),
+            cwd=keys,
+        )
+    (work / "signers").write_text(f"loop@example.com {(keys / 'landing.pub').read_text()}")
+    loop = work / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", CLOUD_LAND))
+    head = lands["open"](7, {"7.txt": "7\n"})
+    signer = tmp_path / "code-sign"
+    signer.write_text(VM_SIGNER)
+    signer.chmod(0o755)
+    for key, value in (
+        ("gpg.format", "ssh"),
+        ("commit.gpgsign", "true"),
+        ("user.signingkey", str(keys / "session")),
+        ("gpg.ssh.program", str(signer)),
+    ):
+        git_in(work, "config", key, value)
+    landing_key = (keys / "landing").read_text()
+    monkeypatch.setenv(approvals.CLOUD, "true")
+    monkeypatch.setenv("LAND_KEY", landing_key)
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp))
+    faked = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        """`lands`' gh, also listing the open PRs as drop_records reads them over REST once a land merged."""
+        if args[:2] == ("api", "--paginate") and "pulls?state=open" in args[2]:
+            assert args[3:] == ("--jq", ".[]"), args
+            return "".join(
+                json.dumps({"number": pr["number"], "head": {"sha": pr["headRefOid"]}}) + "\n"
+                for pr in lands["pulls"].values()
+                if pr["state"] == "OPEN"
+            )
+        return faked(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+
+    def out(capsys: pytest.CaptureFixture[str], code_lines: tuple[int, list[str]]) -> list[str]:
+        """land's lines, once the key's text is in neither them nor stderr, and no key folder is left."""
+        err = capsys.readouterr().err
+        for secret in (landing_key, *landing_key.splitlines()[1:-1]):
+            assert secret not in "\n".join(code_lines[1]) and secret not in err
+        assert list(tmp.iterdir()) == []
+        return code_lines[1]
+
+    lands.update(keys=keys, head=head, loop=loop, out=out, tmp=tmp, base=lands["main"]())
+    return lands
+
+
+def unmoved(cloud_land: dict[str, Any]) -> None:
+    """No ref the land would move moved: main, the PR's branch, and no landing lock taken."""
+    assert (cloud_land["main"](), git_in(cloud_land["origin"], "rev-parse", "pr7").strip()) == (
+        cloud_land["base"],
+        cloud_land["head"],
+    )
+    assert cloud_land["tips"]() == []
+
+
+def test_a_cloud_land_signs_the_squash_with_the_environments_key_not_the_vms(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The VM's signing program fails, yet the PR lands, as a squash a host verifies against `signers` with the
+    landing key; GitHub refusing the `gate` status, as a cloud session's proxy does, the pass goes to origin as its record
+    branch, which the land drops once that tree landed."""
+
+    def refused(*_args: Any, **_kw: Any) -> None:
+        raise subprocess.CalledProcessError(1, "gh", stderr="gh: Forbidden (HTTP 403)")
+
+    monkeypatch.setattr(approvals, "post_status", refused)
+    for name, real in (
+        ("record_ref", RECORD_REF),
+        ("push_record", PUSH_RECORD),
+        ("drop_records", DROP_RECORDS),
+    ):
+        monkeypatch.setattr(approvals, name, real)
+    lines = cloud_land["out"](capsys, cloud_land["land"]("7"))
+    tip = cloud_land["main"]()
+    assert f"PR #7 landed in main as {tip}, signed by a key in signers" in lines
+    assert cloud_land["merged"]() == []  # never GitHub's merge
+    assert git_in(cloud_land["origin"], "rev-parse", "pr7").strip() == tip
+    verified = subprocess.run(
+        # as a host checks it, with ssh-keygen rather than the VM's program
+        [
+            "git",
+            *("-c", "gpg.ssh.program=ssh-keygen"),
+            *("-c", "gpg.ssh.allowedSignersFile=signers"),
+            *("verify-commit", tip),
+        ],
+        cwd=cloud_land["work"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert 'Good "git" signature for loop@example.com with ED25519 key' in verified.stderr
+    assert cloud_land["tips"]() and cloud_land["lock"]() == ""  # the lock was taken and released
+    ref = approvals.RECORD_BRANCH.format(
+        approvals.record_name(cloud_land["main"]("^{tree}"), approvals.gate()[0])
+    )
+    assert any(line.startswith(f"published in origin as the record branch {ref}") for line in lines)
+    # and gone once the tree it holds landed (drop_records)
+    assert git_in(cloud_land["origin"], "for-each-ref", "--format=%(refname)", ref).strip() == ""
+
+
+@pytest.mark.parametrize(
+    ("key", "why"),
+    [
+        (None, "the variable LAND_KEY (loop.md's `land.signing_key_env`) is not set"),
+        ("", "the variable LAND_KEY (loop.md's `land.signing_key_env`) is empty"),
+        (" \n", "the variable LAND_KEY (loop.md's `land.signing_key_env`) is empty"),
+        (
+            "stranger",
+            (
+                "the key in the variable LAND_KEY (loop.md's `land.signing_key_env`) is not in signers: add its"
+                " public key there"
+            ),
+        ),
+        (
+            "garbage",
+            "the variable LAND_KEY (loop.md's `land.signing_key_env`) holds no SSH private key without a passphrase",
+        ),
+    ],
+)
+def test_a_cloud_land_refuses_a_missing_empty_or_unlisted_key_and_prints_no_key(
+    cloud_land: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    key: str | None,
+    why: str,
+) -> None:
+    if key is None:
+        monkeypatch.delenv("LAND_KEY")
+    elif key == "stranger":
+        monkeypatch.setenv("LAND_KEY", (cloud_land["keys"] / "stranger").read_text())
+    elif key == "garbage":
+        monkeypatch.setenv("LAND_KEY", (cloud_land["keys"] / "landing").read_text()[:-40] + "\n")
+    else:
+        monkeypatch.setenv("LAND_KEY", key)
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["out"](capsys, (code, lines))) == (1, [why])
+    unmoved(cloud_land)
+    if key in ("stranger", "garbage"):
+        text = os.environ["LAND_KEY"]
+        assert all(part not in "\n".join(lines) for part in text.splitlines()[1:-1])
+
+
+def test_a_cloud_land_refuses_a_section_naming_no_key_variable(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cloud_land["loop"].write_text(
+        cloud_land["loop"].read_text().replace("  signing_key_env: LAND_KEY\n", "")
+    )
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        (
+            "land in a cloud session signs with the key in the variable loop.md's `land.signing_key_env` names,"
+            " and it names none"
+        )
+    ]
+    unmoved(cloud_land)
+
+
+@pytest.mark.parametrize(
+    ("where", "marker", "place"),
+    [("host", True, "a cloud session"), ("cloud", False, "a host")],
+)
+def test_land_refuses_where_loop_md_excludes_the_place_it_runs(
+    cloud_land: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    marker: bool,
+    place: str,
+) -> None:
+    cloud_land["loop"].write_text(
+        cloud_land["loop"].read_text().replace("where: cloud", f"where: {where}")
+    )
+    if not marker:
+        monkeypatch.delenv(approvals.CLOUD)
+    # never a PR read: the refusal comes first
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pytest.fail(f"PR #{n} read"))
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        f"loop.md's `land.where` is `{where}`, so land does not run in {place}"
+    ]
+    unmoved(cloud_land)
+
+
+def test_a_cloud_land_defaults_to_host_and_lands_with_both(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`where` unset is `host`, which a cloud session refuses; `both` lands there."""
+    text = cloud_land["loop"].read_text()
+    cloud_land["loop"].write_text(text.replace("  where: cloud\n", ""))
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        "loop.md's `land.where` is `host`, so land does not run in a cloud session"
+    ]
+    unmoved(cloud_land)
+    cloud_land["loop"].write_text(text.replace("where: cloud", "where: both"))
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["main"]()) == (
+        0,
+        git_in(cloud_land["origin"], "rev-parse", "pr7").strip(),
+    )
+    cloud_land["out"](capsys, (code, lines))
+
+
+def test_a_cloud_land_without_the_land_section_names_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cloud_land["loop"].write_text(GITHUB_RULE)
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        (
+            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
+            " the session's proxy refuses, and signs with GitHub's key"
+        )
+    ]
+    unmoved(cloud_land)
+
+
+def test_the_cloud_key_folder_is_removed_when_the_land_fails_after_taking_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A land that raises once the key is on disk still removes its folder, and signs nothing after it."""
+    seen: list[list[str]] = []
+
+    def broken(*_args: Any) -> tuple[int, bool]:
+        seen.append(list(approvals.SIGNING))
+        raise approvals.Refused("broken")
+
+    monkeypatch.setattr(approvals, "landing_here", broken)
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == ["broken"]
+    assert seen[0][1::2] == [
+        "gpg.format=ssh",
+        f"user.signingkey={seen[0][3].split('=', 1)[1]}",
+        "gpg.ssh.program=ssh-keygen",
+    ]
+    assert Path(seen[0][3].split("=", 1)[1]).parent.parent == cloud_land["tmp"]
+    assert approvals.SIGNING == []
+
+
+def test_the_cloud_key_file_is_the_owners_alone(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    modes: list[int] = []
+    monkeypatch.setattr(
+        approvals,
+        "landing_here",
+        lambda *_a: (
+            modes.append(Path(approvals.SIGNING[3].split("=", 1)[1]).stat().st_mode & 0o777)
+            or (0, False)
+        ),
+    )
+    assert approvals.landing(7) == (0, False)
+    assert modes == [0o600]
+
+
+def test_a_cloud_land_refuses_a_draft_it_cannot_mark_ready(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses."""
+    cloud_land["pulls"][7]["isDraft"] = True
+    assert cloud_land["out"](capsys, cloud_land["land"]("7"))[-1] == (
+        "PR #7 is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+    )
+    assert cloud_land["calls"] == []
+    assert cloud_land["main"]() == cloud_land["base"]
+
+
+def test_a_cloud_land_reads_the_default_branch_over_rest(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "_rest_only", True)
+    monkeypatch.setattr(approvals, "rest", lambda path: {"default_branch": "main"})
+    named: list[str] = []
+    monkeypatch.setattr(approvals, "locked", lambda base, _held: named.append(base) or False)
+    assert approvals.landing(None) == (approvals.WAITING, True)
+    assert named == ["main"]
+
+
+def test_a_cloud_land_takes_a_pr_rest_cannot_say_is_queued_only_on_the_projects_word(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REST says neither whether a PR is in a merge queue nor whether classic branch protection requires one: a cloud
+    session refuses such a PR unless loop.md's `land` section says `merge_queue: false`. A host still refuses it."""
+    pull = cloud_land["pulls"][7] | {"isInMergeQueue": None}
+    with approvals.placed(approvals.project()[1]):
+        assert "`merge_queue: false`" in approvals.unsignable(pull, "main", Path("signers"))
+    cloud_land["loop"].write_text(
+        cloud_land["loop"]
+        .read_text()
+        .replace(
+            "  signing_key_env: LAND_KEY\n", "  signing_key_env: LAND_KEY\n  merge_queue: false\n"
+        )
+    )
+    with approvals.placed(approvals.project()[1]):
+        assert approvals.unsignable(pull, "main", Path("signers")) is None
+    monkeypatch.delenv(approvals.CLOUD)
+    git_in(cloud_land["work"], "config", "gpg.ssh.program", "ssh-keygen")
+    assert approvals.unsignable(pull, "main", Path("signers")).startswith(
+        "PR #7: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
+        " signature: land it where GraphQL answers"
+    )
+
+
+def test_a_key_is_listed_only_as_its_type_and_body_together_on_a_live_line(tmp_path: Path) -> None:
+    signers = tmp_path / "signers"
+    signers.write_text(
+        "# a@example.com ssh-ed25519 BODY\nb@example.com ssh-rsa BODY\nc@example.com ssh-ed25519 OTHER\n"
+    )
+    assert not approvals.listed("ssh-ed25519 BODY landing", signers)
+    signers.write_text(signers.read_text() + 'd@example.com namespaces="git" ssh-ed25519 BODY d\n')
+    assert approvals.listed("ssh-ed25519 BODY landing", signers)
+
+
+def test_a_cloud_eviction_leaves_the_pr_ready_and_says_so(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub turns a PR back to draft only over GraphQL: a cloud session says it stays ready; a host makes it one."""
+    pull = cloud_land["pulls"][7]
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert (
+        "PR #7 stays ready, since a cloud session can't make it a draft: make it one on GitHub"
+        in (capsys.readouterr().out.splitlines())
+    )
+    assert cloud_land["calls"] == []
+    monkeypatch.delenv(approvals.CLOUD)
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert cloud_land["calls"] == [("pr", "ready", "--undo", "7")]
+
+
+def test_required_checks_never_stand_in_for_the_gate(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # green required CI on an up-to-date head: the gate still runs, since its pass is published as the gate command's
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
+    lands["open"](7, {"7.txt": "7\n"})
+    assert lands["land"]("7")[0] == 0
+    assert (lands["runs"](), lands["merged"]()) == (1, ["7"])
+    assert landed_note(lands, 7)["Gate"].endswith(", run on " + lands["main"]("^{tree}"))
 
 
 def gate(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, list[str]]:
@@ -3599,8 +5444,6 @@ def test_a_pr_with_no_loop_trail_is_outside_the_loop_where_opt_out_is_allowed(
     mine["reviews"]["nodes"] = []
     mine["closingIssuesReferences"]["nodes"] = [specced(1, "kind:bug")]
     assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
-    # land never merges it, nor turns auto-merge on: the gate before it is the loop's
-    assert landed(capsys, landing) == (1, [OUTSIDE], [])
     # risk rules hold no PR outside the loop: the project accepted that with the setting
     mine["labels"]["nodes"].append({"name": "risk:high"})
     assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
@@ -3653,16 +5496,14 @@ def test_without_loop_md_an_issue_needs_only_approved_spec_and_no_needs_owner(
     bare = issue(1, "approved:spec")  # no category, component, size or approval record
     landing["pull"]["closingIssuesReferences"]["nodes"] = [bare]
     landing["pull"]["files"]["nodes"] = [{"path": ".github/ci.yml"}]
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
-    landing["calls"].clear()
+    assert gate(capsys, "check", "merge", "7") == (0, [])
     landing["pull"]["closingIssuesReferences"]["nodes"] = [
         issue(1, "approved:spec", "needs-owner"),
         issue(2, "size:XL"),
     ]
-    assert landed(capsys, landing) == (
+    assert gate(capsys, "check", "merge", "7") == (
         1,
         ["#1 waits for the owner (needs-owner)", "#2 lacks the `approved:spec` label"],
-        [],
     )
 
 
@@ -3699,14 +5540,24 @@ def test_a_run_from_a_subdirectory_reads_the_checkouts_loop_files(
 # --- check end to end, GitHub stubbed ---
 
 
-def test_check_without_a_pr_has_nothing_to_gate(
+def test_check_without_a_pr_or_an_issue_has_nothing_to_gate(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A merge has nothing to gate before its PR; a build on a branch naming no issue is refused, since it needs an
+    approved spec."""
     monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", lambda *_args: "spike\n")
     monkeypatch.chdir(PROJECT)
-    assert (approvals.main(["check", "build"]), capsys.readouterr().out) == (
+    assert (approvals.main(["check", "merge"]), capsys.readouterr().out) == (
         0,
         "no PR for this branch yet: nothing to gate\n",
+    )
+    assert (approvals.main(["check", "build"]), capsys.readouterr().out) == (
+        1,
+        (
+            "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build needs an"
+            " approved spec\n"
+        ),
     )
 
 
@@ -3766,12 +5617,16 @@ def checkout(
     """A checkout at the PR head and clean, its git common dir under tmp_path; a test changes it, or what the check
     does to it. `runs` counts the checks run."""
     state: dict[str, Any] = {"head": HEAD, "status": "", "exit": 0, "after": None, "runs": 0}
+    state["trees"] = {}  # a commit's tree, TREE unless named
     state["common"] = tmp_path / "common.git"
     state["loop"] = LOOP
 
     def git(*args: str) -> str:
         if args == ("rev-parse", "--path-format=absolute", "--git-common-dir"):
             return f"{state['common']}\n"
+        if args[0] == "rev-parse" and args[-1].endswith("^{tree}"):
+            commit = args[-1].removesuffix("^{tree}").replace("HEAD", state["head"])
+            return state["trees"].get(commit, TREE) + "\n"
         if args[0] == "rev-parse":
             return state["head"] + "\n"
         if args[0] == "ls-files":
@@ -3784,9 +5639,12 @@ def checkout(
         )
         return state["status"]
 
-    def run(command: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def run(
+        command: list[str], check: bool, env: dict[str, str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         assert (command, check) == (["mise", "run", "check:all"], False)
         state["runs"] += 1
+        state["env"] = env
         if state["after"]:
             state["status"] = state["after"]
         return subprocess.CompletedProcess(command, state["exit"])
@@ -3802,7 +5660,7 @@ def checkout(
 def test_a_passing_check_on_the_clean_head_is_recorded(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert github == [
         (
             "comment",
@@ -3810,11 +5668,10 @@ def test_a_passing_check_on_the_clean_head_is_recorded(
             f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
         )
     ]
-    record = json.loads(
-        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
-    )
-    assert {k: record[k] for k in ("head", "command", "exit")} == {
+    record = json.loads(record_at().read_text())
+    assert {k: record[k] for k in ("head", "tree", "command", "exit")} == {
         "head": HEAD,
+        "tree": TREE,
         "command": "mise run check:all",
         "exit": 0,
     }
@@ -3827,6 +5684,11 @@ def test_a_passing_check_on_the_clean_head_is_recorded(
         ({"head": "b" * 40}, f"the checkout is at {'b' * 40}, PR #7's head is {HEAD}"),
         ({"status": " M app.py\n"}, "the tree has changes"),
         ({"exit": 2}, "mise run check:all exited 2: nothing recorded"),
+        (
+            {"exit": 78, "loop": add(BARE, "loop", "machine_exit: 78\n")},
+            "mise run check:all hit a machine fault (exit 78, loop.md's `machine_exit`): nothing recorded",
+        ),
+        ({"exit": 78}, "mise run check:all exited 78: nothing recorded"),
         ({"after": " M uv.lock\n"}, "mise run check:all changed the checkout"),
     ],
 )
@@ -3838,36 +5700,75 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     said: str,
 ) -> None:
     checkout.update(change)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert github == []
     assert said in capsys.readouterr().out
     assert not (checkout["common"] / "approvals").exists()
 
 
-@pytest.mark.parametrize(
-    "change", [{"status": " M app.py\n"}, {"exit": 2}, {"after": " M uv.lock\n"}]
-)
+@pytest.mark.parametrize("change", [{"exit": 2}, {"after": " M uv.lock\n"}])
 def test_record_writes_only_a_passing_check_on_a_clean_unchanged_tree(
-    github: list[tuple[Any, ...]], checkout: dict[str, Any], change: dict[str, Any]
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    change: dict[str, Any],
 ) -> None:
     checkout.update(change)
     assert approvals.main(["local-ci", "--record"]) == 1
     assert not (checkout["common"] / "approvals").exists()
+    assert hub == {}
     checkout.update({"status": "", "exit": 0, "after": None})
     assert approvals.main(["local-ci", "--record"]) == 0
-    assert (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").exists()
+    assert record_at().exists()
     assert github == []  # no PR yet: nothing is posted
+
+
+@pytest.mark.parametrize("code", [0, 2])
+def test_record_on_a_checkout_with_changes_runs_the_check_and_records_nothing(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+    code: int,
+) -> None:
+    """The recording command is the gate while iterating too: a run on changes is no pass on HEAD, so it records
+    nothing, and the check's exit is the command's. A clean green run, the last one, records itself."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    checkout.update({"status": " M app.py\n", "exit": code})
+    assert approvals.main(["local-ci", "--record"]) == code
+    assert checkout["runs"] == 2  # a pass on HEAD's tree says nothing about the changes
+    assert "on a checkout with changes, so nothing is recorded" in capsys.readouterr().out
+    assert len(hub[HEAD]) == 1 and github == []
+
+
+def test_record_on_a_tree_already_green_reuses_it_and_publishes_it_again(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    refs: dict[str, dict[str, Any]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Rerun once the head is pushed, it publishes a pass origin and GitHub could not take before, without running the
+    check: the record branch again, and the `gate` status that shows it."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    hub.clear()  # the commit was not on GitHub yet
+    refs.clear()  # nor origin
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 1
+    assert [s["description"] for s in hub[HEAD]] == [
+        f"Tree {TREE} on {HEAD[:12]}: mise run check:all"
+    ]
+    assert list(refs) == [approvals.record_name(TREE, "mise run check:all")]
+    out = capsys.readouterr().out
+    assert f"Reused by tree from the pass recorded on {HEAD}" in out
 
 
 def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = json.loads(
-        (checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text()
-    )
+    record = json.loads(record_at().read_text())
     checkout["head"] = "c" * 40  # the checkout moved on: the record still proves the PR's head
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -3875,7 +5776,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
             7,
             (
                 f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n"
-                f"From the recorded run at {record['time']}, not run again.\n"
+                f"Reused by tree from the pass recorded on {HEAD} at {record['time']}, not run again.\n"
             ),
         )
     ]
@@ -3890,9 +5791,9 @@ def test_a_local_ci_comment_names_no_host(
     """Run and recorded on a host named for its owner, the pass is posted without it, and still proves the head."""
     sent = posts(monkeypatch)
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = json.loads(approvals.recorded(HEAD).read_text())
+    record = json.loads(record_at().read_text())
     assert record["host"] == "owner-MacBook.local"  # the local record keeps it
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     [body] = sent
     assert "owner-MacBook" not in body and "/Users/owner" not in body
     merged = pull(reviews=(VERDICT,), comments=(body,), labels=OWNED, checks=())
@@ -3902,20 +5803,20 @@ def test_a_local_ci_comment_names_no_host(
 @pytest.mark.parametrize(
     ("file", "record"),
     [
-        ("c" * 40, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
-        (HEAD, {"head": HEAD, "command": "mise run check", "exit": 0}),
-        (HEAD, {"head": HEAD, "command": "mise run check:all", "exit": 2}),
-        (HEAD, {"head": "c" * 40, "command": "mise run check:all", "exit": 0}),
+        ("f" * 40, {"tree": "f" * 40, "command": "mise run check:all", "exit": 0}),
+        (TREE, {"tree": TREE, "command": "mise run check", "exit": 0}),
+        (TREE, {"tree": TREE, "command": "mise run check:all", "exit": 2}),
+        (TREE, {"tree": "f" * 40, "command": "mise run check:all", "exit": 0}),
     ],
-    ids=["another head", "another command", "a failed run", "a record naming another head"],
+    ids=["another tree", "another command", "a failed run", "a record naming another tree"],
 )
-def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
+def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], file: str, record: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
-    (where / f"{file}.json").write_text(json.dumps({**record, "time": "t", "host": "h"}))
-    assert approvals.main(["local-ci", "7"]) == 0
+    where = approvals.recorded(file, "mise run check:all")
+    where.parent.mkdir(parents=True)
+    where.write_text(json.dumps({**record, "head": HEAD, "env": {}, "time": "t", "host": "h"}))
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -3924,83 +5825,328 @@ def test_a_record_for_another_head_or_command_or_a_failed_run_runs_the_check(
             f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
         )
     ]
+
+
+def test_local_ci_with_no_record_refuses_without_running_the_gate(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["local-ci", "7"]) == 1
+    out = capsys.readouterr().out
+    name = approvals.RECORD_BRANCH.format(approvals.record_name(TREE, "mise run check:all"))
+    assert (checkout["runs"], github) == (0, [])
+    assert HEAD in out and TREE in out and name in out and "--run" in out
+
+
+def test_local_ci_with_a_record_missing_its_time_refuses_and_names_the_field(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    where = approvals.recorded(TREE, "mise run check:all")
+    where.parent.mkdir(parents=True)
+    where.write_text(
+        json.dumps(
+            {
+                "head": HEAD,
+                "tree": TREE,
+                "command": "mise run check:all",
+                "exit": 0,
+                "env": {},
+                "host": "h",
+            }
+        )
+    )
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (checkout["runs"], github) == (0, [])
+    assert "lacks its `time` field" in capsys.readouterr().out
+
+
+def test_local_ci_run_alone_is_refused_without_a_pr(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["local-ci", "--record", "--run"]) == 1
+    assert checkout["runs"] == 0
 
 
 ENV_LOOP = add(LOOP, "loop", "local_ci_env:\n  - GATE_UI_TESTS\n  - GATE_SCOPE\n")
 
 
+def record_at(head: str = HEAD) -> Path:
+    """Where this clone records a pass on `head`'s tree under the current env."""
+    return approvals.recorded(approvals.tree_of(head), approvals.gate()[0])
+
+
 def recorded_pass(checkout: dict[str, Any]) -> dict[str, Any]:
-    return json.loads((checkout["common"] / "approvals" / "local-ci" / f"{HEAD}.json").read_text())
+    return json.loads(record_at().read_text())
 
 
-def test_a_pass_recorded_under_another_env_runs_the_check_again(
+def test_the_gate_runs_with_the_names_local_ci_env_lists_cleared_so_an_ambient_tier_changes_no_pass(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    checkout["loop"] = ENV_LOOP
-    monkeypatch.delenv("GATE_SCOPE", raising=False)
-    monkeypatch.setenv("GATE_UI_TESTS", "0")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert recorded_pass(checkout)["env"] == {"GATE_SCOPE": None, "GATE_UI_TESTS": "0"}
-    monkeypatch.delenv("GATE_UI_TESTS")  # unset is the default tier, not the same as 0
-    assert approvals.main(["local-ci", "7"]) == 0
-    assert checkout["runs"] == 2
-    assert github == [
-        (
-            "comment",
-            7,
-            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
-        )
-    ]
-    assert recorded_pass(checkout)["env"] == {"GATE_SCOPE": None, "GATE_UI_TESTS": None}
-
-
-def test_a_pass_recorded_under_the_same_env_is_reused_and_names_it(
-    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
+    """A host's ambient GATE_UI_TESTS is no part of the gate: it is cleared for the run, and the pass is reused
+    whatever the next host has set."""
     checkout["loop"] = ENV_LOOP
     monkeypatch.setenv("GATE_UI_TESTS", "0")
-    monkeypatch.setenv("GATE_SCOPE", "changed")
+    monkeypatch.setenv("UNLISTED", "kept")
     assert approvals.main(["local-ci", "--record"]) == 0
-    record = recorded_pass(checkout)
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert "GATE_UI_TESTS" not in checkout["env"] and checkout["env"]["UNLISTED"] == "kept"
+    assert recorded_pass(checkout)["env"] == {}
+    monkeypatch.setenv("GATE_UI_TESTS", "full")
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
+    [(_, _, body)] = github
+    assert "Env: default\nReused by tree" in body
+
+
+def test_a_gate_that_sets_a_name_runs_with_it_and_names_it(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout["loop"] = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    monkeypatch.setenv("GATE_UI_TESTS", "full")
+    monkeypatch.setenv("GATE_SCOPE", "changed")
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
+    assert checkout["env"]["GATE_UI_TESTS"] == "0" and "GATE_SCOPE" not in checkout["env"]
     assert github == [
         (
             "comment",
             7,
-            (
-                f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\n"
-                "Env: GATE_SCOPE=changed GATE_UI_TESTS=0\n"
-                f"From the recorded run at {record['time']}, not run again.\n"
-            ),
+            f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: GATE_UI_TESTS=0 mise run check:all\nEnv: GATE_UI_TESTS=0\n",
         )
     ]
+
+
+def test_record_head_proof_runs_the_gate_with_the_callers_tier_over_the_gate_lines_and_publishes_it(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the head proof's names pass through, and its pass is no plain gate pass: the plain gate runs again."""
+    gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    checkout["loop"] = add(gated, "loop", HEAD_PROOF)
+    monkeypatch.setenv("GATE_UI_TESTS", "smoke")
+    monkeypatch.setenv("GATE_SCOPE", "changed")
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
+    assert checkout["env"]["GATE_UI_TESTS"] == "smoke" and "GATE_SCOPE" not in checkout["env"]
+    assert [(s["context"], s["description"]) for s in hub[HEAD]] == [
+        ("gate-ui", f"Tree {TREE} on {HEAD[:12]}: GATE_UI_TESTS=smoke")
+    ]
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
+    assert (checkout["runs"], len(hub[HEAD])) == (1, 1)  # reused, and published once
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 2 and checkout["env"]["GATE_UI_TESTS"] == "0"
+    assert [s["context"] for s in hub[HEAD]] == ["gate", "gate-ui"]
+    assert github == []
+
+
+def test_record_head_proof_on_a_checkout_with_changes_runs_the_callers_tier_and_publishes_nothing(
+    checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    checkout.update(loop=add(gated, "loop", HEAD_PROOF), status=" M app.py\n")
+    monkeypatch.setenv("GATE_UI_TESTS", "smoke")
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
+    assert checkout["env"]["GATE_UI_TESTS"] == "smoke"
+    assert hub == {}
+
+
+@pytest.mark.parametrize(
+    ("loop", "argv"),
+    [
+        (LOOP, ["local-ci", "--record", "--head-proof"]),
+        (add(LOOP, "loop", HEAD_PROOF), ["local-ci", "7", "--head-proof"]),
+        (
+            add(LOOP, "loop", "head_proof:\n  status: gate-ui\n  env:\n    - 1GATE\n"),
+            ["local-ci", "--record", "--head-proof"],
+        ),
+        *(
+            (
+                add(LOOP, "loop", f"head_proof:\n  status: {taken}\n  env:\n    - GATE_UI_TESTS\n"),
+                ["local-ci", "--record", "--head-proof"],
+            )
+            for taken in (approvals.PUBLISHED, approvals.OWNER_GO, approvals.APPROVALS)
+        ),
+    ],
+    ids=[
+        "no head_proof in loop.md",
+        "with a PR",
+        "an env naming no variable",
+        "the gate's own status",
+        "the owner's go",
+        "the approvals status",
+    ],
+)
+def test_head_proof_without_the_setting_or_with_a_pr_is_refused(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    loop: str,
+    argv: list[str],
+) -> None:
+    checkout["loop"] = loop
+    assert approvals.main(argv) == 1
+    assert (checkout["runs"], github, hub) == (0, [], {})
+
+
+def test_head_proof_reuses_a_gate_pass_published_under_the_command_it_runs_naming_its_values(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    refs: dict[str, dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record from when the gate line itself set `smoke` is a pass of the command the head proof runs."""
+    gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
+    checkout["loop"] = add(gated, "loop", HEAD_PROOF)
+    monkeypatch.setenv("GATE_UI_TESTS", "smoke")
+    command, _, env = approvals.gate(["GATE_UI_TESTS"])
+    assert command == "GATE_UI_TESTS=smoke mise run check:all"
+    pushed_pass(refs, HEAD, TREE, command, env)
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
+    assert checkout["runs"] == 0
+    assert hub[HEAD][0] == status("gate-ui", f"Tree {TREE} on {HEAD[:12]}: GATE_UI_TESTS=smoke")
+
+
+def test_a_head_proof_description_says_default_for_no_value_and_fits_github() -> None:
+    record = {"tree": TREE, "head": HEAD, "env": {"LONG": "x" * 200}}
+    assert approvals.proof_line(record, ["UNSET"]) == f"Tree {TREE} on {HEAD[:12]}: default"
+    assert len(approvals.proof_line(record, ["UNSET", "LONG"])) == approvals.DESCRIBED
+
+
+def test_a_head_proof_description_names_no_home_directory() -> None:
+    scope = f"{Path.home()}/work/app"
+    record = {"tree": TREE, "head": HEAD, "env": {"GATE_SCOPE": scope}}
+    line = approvals.proof_line(record, ["GATE_SCOPE"])
+    assert str(Path.home()) not in line
+    assert line.endswith("GATE_SCOPE=~/work/app")
+
+
+def test_a_name_added_to_local_ci_env_keeps_every_pass(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any]
+) -> None:
+    assert approvals.main(["local-ci", "--record"]) == 0
+    checkout["loop"] = ENV_LOOP
+    assert approvals.reusable(HEAD) is not None
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
+    assert checkout["runs"] == 1
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        "GATE_UI_TESTS=0",
+        "1GATE=0 mise run check:all",
+        "' '",
+        "'mise run a && mise run b'",
+        "'mise run a;mise run b'",
+        "'mise run a | tee log'",
+    ],
+    ids=["nothing to run", "no variable name", "empty", "a chain", "a sequence", "a pipe"],
+)
+def test_a_gate_that_runs_nothing_or_sets_no_variable_is_refused(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    gate: str,
+) -> None:
+    checkout["loop"] = add(LOOP, "loop", f"gate: {gate}\n")
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
+    assert (checkout["runs"], github) == (0, [])
+    assert "loop.md's `gate`" in capsys.readouterr().out
+
+
+def test_a_gate_whose_command_is_not_there_is_refused_naming_it(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def missing(*_args: Any, **_kwargs: Any) -> Any:
+        raise FileNotFoundError(2, "No such file or directory", "misee")
+
+    monkeypatch.setattr(approvals.subprocess, "run", missing)
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert "can't run: [Errno 2] No such file or directory: 'misee'" in capsys.readouterr().out
+    assert not (checkout["common"] / "approvals").exists()
+
+
+def test_a_hash_inside_a_word_is_part_of_it(checkout: dict[str, Any]) -> None:
+    checkout["loop"] = add(LOOP, "loop", 'gate: "GATE_X=a#b mise run check:all#x"\n')
+    assert approvals.gate()[1:] == (["mise", "run", "check:all#x"], {"GATE_X": "a#b"})
+
+
+def test_a_variable_set_twice_runs_the_command_with_the_last_value(
+    checkout: dict[str, Any],
+) -> None:
+    checkout["loop"] = add(LOOP, "loop", "gate: A=1 A=2 mise run check:all\n")
+    assert approvals.gate() == (
+        "A=1 A=2 mise run check:all",
+        ["mise", "run", "check:all"],
+        {"A": "2"},
+    )
+
+
+def test_a_gate_too_long_for_a_status_publishes_its_digest_and_is_reused_from_it(
+    checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """GitHub refuses a description over 140 characters: the command's digest stands in, and still matches it."""
+    long = "GATE_SCOPE=full GATE_UI_TESTS=0 GATE_ANDROID=skip GATE_LINUX=skip mise run check:all"
+    checkout["loop"] = add(LOOP, "loop", f"gate: {long}\n")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    [published] = hub[HEAD]
+    assert len(published["description"]) <= approvals.DESCRIBED
+    assert (
+        published["description"] == f"Tree {TREE} on {HEAD[:12]}: sha256 {approvals.gate_key(long)}"
+    )
+    record_at().unlink()  # another clone: only the record branch
+    assert approvals.reusable(HEAD)["published"] is True
+
+
+def test_a_record_of_todays_command_under_an_old_key_adds_nothing_to_the_refusal(
+    checkout: dict[str, Any],
+) -> None:
+    """A clone that held passes before the gate was keyed by command keeps them under the old key: the refusal must not
+    name today's command as if it were another."""
+    old = approvals.recorded(TREE, "mise run check:all").with_name(f"{TREE}-0123456789ab.json")
+    old.parent.mkdir(parents=True)
+    old.write_text(json.dumps({"tree": TREE, "command": "mise run check:all", "exit": 0}))
+    assert approvals.elsewhere(HEAD) == ""
+    other = old.with_name(f"{TREE}-ba9876543210.json")
+    other.write_text(json.dumps({"tree": TREE, "command": "mise run check", "exit": 0}))
+    assert approvals.elsewhere(HEAD) == (
+        "; its tree passed under `mise run check`, and the gate is now `mise run check:all`"
+    )
 
 
 def test_a_record_without_env_runs_the_check_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
-    old = {"head": HEAD, "command": "mise run check:all", "exit": 0, "time": "t", "host": "h"}
-    (where / f"{HEAD}.json").write_text(json.dumps(old))  # as 0.23.1 wrote it
-    assert approvals.main(["local-ci", "7"]) == 0
+    where = record_at()
+    where.parent.mkdir(parents=True)
+    old = {
+        "head": HEAD,
+        "tree": TREE,
+        "command": "mise run check:all",
+        "exit": 0,
+        "time": "t",
+        "host": "h",
+    }
+    where.write_text(json.dumps(old))  # as 0.23.1 wrote it, but for the tree
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert recorded_pass(checkout)["env"] == {}
 
 
 @pytest.mark.parametrize(
     "drop",
-    [{"time": None}, {"host": None}, {"time": 1}, {"env": []}],
-    ids=["no time", "no host", "a number for time", "env not a dict"],
+    [{"time": None}, {"head": None}, {"time": 1}, {"env": []}],
+    ids=["no time", "no commit", "a number for time", "env not a dict"],
 )
 def test_an_incomplete_record_runs_the_check_again(
     github: list[tuple[Any, ...]], checkout: dict[str, Any], drop: dict[str, Any]
 ) -> None:
-    where = checkout["common"] / "approvals" / "local-ci"
-    where.mkdir(parents=True)
+    where = record_at()
+    where.parent.mkdir(parents=True)
     full = {
         "head": HEAD,
+        "tree": TREE,
         "command": "mise run check:all",
         "exit": 0,
         "env": {},
@@ -4008,8 +6154,8 @@ def test_an_incomplete_record_runs_the_check_again(
         "host": "h",
     }
     record = {k: v for k, v in {**full, **drop}.items() if v is not None}
-    (where / f"{HEAD}.json").write_text(json.dumps(record))
-    assert approvals.main(["local-ci", "7"]) == 0
+    where.write_text(json.dumps(record))
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -4028,7 +6174,7 @@ def test_a_local_ci_env_that_is_no_list_of_variable_names_is_refused(
     names: str,
 ) -> None:
     checkout["loop"] = add(LOOP, "loop", f"local_ci_env:{names}\n")
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (checkout["runs"], github) == (0, [])
     assert "`local_ci_env`" in capsys.readouterr().out
 
@@ -4044,7 +6190,7 @@ def test_local_ci_takes_a_pr_or_record(
 def test_a_local_ci_record_is_the_merge_proof_without_ci(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
@@ -4105,7 +6251,7 @@ def test_a_change_the_status_config_hides_still_records_nothing(
     head = git_in(repo, "rev-parse", "HEAD").strip()
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
     monkeypatch.chdir(repo)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert github == []
     assert "the tree has changes" in capsys.readouterr().out
 
@@ -4124,6 +6270,529 @@ def test_a_record_made_in_one_worktree_is_reused_from_another(
     monkeypatch.chdir(repo)
     assert approvals.reusable(head)["head"] == head
     assert approvals.reusable("c" * 40) is None
+
+
+def published_on_a(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Host A records and publishes a pass of `true` on a pushed head; the test then runs in host B, a clone made
+    before that head was pushed, with no record of it. Returns the head."""
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    a, b = tmp_path / "a", tmp_path / "b"
+    committed(a)
+    git_in(a, "remote", "add", "origin", str(origin))
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(tmp_path, "clone", "-q", str(origin), str(b))
+    (a / "app.py").write_text("value = 2\n")
+    git_in(a, "commit", "-qam", "change")
+    head = git_in(a, "rev-parse", "HEAD").strip()
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
+    monkeypatch.chdir(a)
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    assert approvals.main(["local-ci", "--record"]) == 0
+    monkeypatch.chdir(b)
+    return head
+
+
+def shallow_clone(tmp_path: Path, behind: int = 3, depth: int = 1) -> tuple[Path, str, str]:
+    """A bare origin whose main has one commit and whose `feature` is `behind` commits past it, and a `--depth`
+    clone of `feature` that holds none of main. Returns the clone, the fork point and the clone's head."""
+    origin, work, clone = tmp_path / "origin.git", tmp_path / "work", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    fork = committed(work)
+    git_in(work, "branch", "-M", "main")
+    git_in(work, "remote", "add", "origin", str(origin))
+    git_in(work, "push", "-q", "origin", "main")
+    for n in range(behind):
+        (work / "app.py").write_text(f"value = {n + 2}\n")
+        git_in(work, "commit", "-qam", f"change {n}")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    git_in(
+        tmp_path, "clone", "-q", "--depth", str(depth), "--branch", "feature",
+        f"file://{origin}", str(clone),
+    )  # fmt: skip
+    return clone, fork, git_in(clone, "rev-parse", "HEAD").strip()
+
+
+def test_a_shallow_clone_is_deepened_until_the_merge_base_with_the_base_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, fork, head = shallow_clone(tmp_path)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "baseRefName": "main"})
+    assert git_in(clone, "rev-parse", "--is-shallow-repository").strip() == "true"
+    approvals.deepened(None)
+    assert git_in(clone, "merge-base", "origin/main", "HEAD").strip() == fork
+    assert git_in(clone, "rev-parse", "HEAD").strip() == head
+    err = capsys.readouterr().err.splitlines()
+    assert err and all(line.startswith("local-ci: ") for line in err)
+    assert any("--deepen" in line for line in err)
+
+
+def test_a_pr_s_base_is_the_one_a_shallow_clone_is_deepened_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone, fork, _ = shallow_clone(tmp_path)
+    origin = tmp_path / "origin.git"
+    git_in(origin, "branch", "release", fork)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "baseRefName": "release"})
+    approvals.deepened(7)
+    assert git_in(clone, "merge-base", "origin/release", "HEAD").strip() == fork
+
+
+def test_a_history_deeper_than_one_step_unshallows_when_deepening_falls_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, fork, _ = shallow_clone(tmp_path, behind=400)
+    monkeypatch.chdir(clone)
+    approvals.deepened(None)
+    assert git_in(clone, "merge-base", "origin/main", "HEAD").strip() == fork
+    assert "--unshallow" in capsys.readouterr().err
+
+
+def test_a_full_clone_runs_no_deepening_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, _, _ = shallow_clone(tmp_path)
+    git_in(clone, "fetch", "-q", "--unshallow", "origin")
+    calls: list[list[str]] = []
+    real = subprocess.run
+
+    def traced(cmd: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append(list(cmd))
+        return real(cmd, *args, **kwargs)
+
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(subprocess, "run", traced)
+    approvals.deepened(None)
+    assert not [c for c in calls if "--deepen" in c or "--unshallow" in c or "fetch" in c]
+    assert capsys.readouterr().err == ""
+
+
+def test_local_ci_record_in_a_shallow_clone_gives_the_gate_a_merge_base_and_records_the_head_tree(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clone, fork, head = shallow_clone(tmp_path)
+    seen = tmp_path / "seen"
+    script = tmp_path / "gate.sh"
+    script.write_text(f"#!/bin/sh\ngit merge-base origin/main HEAD > {seen}\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "LOCAL_CI", [str(script)])
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert seen.read_text().strip() == fork
+    [record] = (clone / ".git" / "approvals" / "local-ci").glob("*.json")
+    assert (
+        json.loads(record.read_text())["tree"] == git_in(clone, "rev-parse", "HEAD^{tree}").strip()
+    )
+    assert git_in(clone, "rev-parse", "HEAD").strip() == head
+
+
+def test_a_shallow_clone_that_already_reaches_the_base_is_not_deepened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the clone holds the fork point, but not origin/main yet
+    clone, fork, _ = shallow_clone(tmp_path, depth=4)
+    monkeypatch.chdir(clone)
+    approvals.deepened(None)
+    assert git_in(clone, "merge-base", "origin/main", "HEAD").strip() == fork
+    assert git_in(clone, "rev-parse", "--is-shallow-repository").strip() == "true"
+    err = capsys.readouterr().err
+    assert "--deepen" not in err and "--unshallow" not in err
+
+
+def test_local_ci_record_on_a_changed_shallow_checkout_gives_the_gate_a_merge_base_and_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clone, fork, _ = shallow_clone(tmp_path)
+    (clone / "app.py").write_text("value = 99\n")
+    seen = tmp_path / "seen"
+    script = tmp_path / "gate.sh"
+    script.write_text(f"#!/bin/sh\ngit merge-base origin/main HEAD > {seen}\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(clone)
+    monkeypatch.setattr(approvals, "LOCAL_CI", [str(script)])
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert seen.read_text().strip() == fork
+    assert "nothing is recorded" in capsys.readouterr().out
+    assert not list((clone / ".git" / "approvals" / "local-ci").glob("*.json"))
+
+
+def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_env(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host B finds A's pushed pass and posts it without running the check, which would fail there."""
+    head = published_on_a(tmp_path, monkeypatch)
+    line = f"Tree {approvals.tree_of(head)} on {head[:12]}: true"
+    assert [s["description"] for s in hub[head]] == [line]
+
+    def never(*_args: Any) -> Any:
+        raise AssertionError("host B ran the check")
+
+    monkeypatch.setattr(approvals, "run_local_ci", never)
+    assert approvals.reusable(head)["head"] == head  # check queue, batch and check merge read this
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
+    [(_, _, body)] = github
+    assert f"Reused by tree from the pass recorded on {head} at 2026-" in body
+    assert {s["description"] for s in hub[head]} == {line}  # B shows the same pass
+
+
+def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Host B has no record to compare the command with, so the published status's key alone must tell: a gate whose
+    command changed since A's pass runs again, and check merge waits for that run."""
+    head = published_on_a(tmp_path, monkeypatch)
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    posted = note(f"{approvals.CHECKED}\nHead: {head}\nCommand: true\nEnv: default\n")
+    merged = {
+        **pull(reviews=(verdict_on(head),), comments=(posted,), labels=OWNED, checks=()),
+        "headRefOid": head,
+    }
+    assert merge(merged, [approved(1, "area:web")], no_ci) == []
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true", "--another-tier"])
+    ran: list[str | None] = []
+
+    def run_local_ci(pr: int | None, at: str | None) -> dict[str, Any]:
+        ran.append(at)
+        raise approvals.Refused("the check would run")
+
+    monkeypatch.setattr(approvals, "run_local_ci", run_local_ci)
+    assert approvals.reusable(head) is None
+    assert merge(merged, [approved(1, "area:web")], no_ci) == [
+        f"{NO_LOCAL_CHECK}; its tree passed under `true`, and the gate is now `true --another-tier`"
+    ]
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
+    assert (ran, github) == ([head], [])
+
+
+def test_a_green_gate_status_with_no_record_branch_is_no_pass(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance 2: a `gate` status naming the head's tree and today's command, by a writer, is only shown: with no
+    record branch and no record in this clone, the check runs."""
+    monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
+    hub[HEAD] = [status("gate", f"Tree {TREE} on {HEAD[:12]}: mise run check:all", by="maintainer")]
+    assert approvals.reusable(HEAD) is None
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
+    assert checkout["runs"] == 1
+
+
+def test_two_commits_with_one_tree_and_env_share_a_pass_and_another_tree_runs_it(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """A rebase or amended message keeps the tree: the second commit reuses the first's pass, naming it."""
+    assert approvals.main(["local-ci", "--record"]) == 0
+    amended = "c" * 40
+    checkout["head"] = amended
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 1
+    assert hub[amended][0]["description"] == f"Tree {TREE} on {HEAD[:12]}: mise run check:all"
+    checkout["trees"][amended] = "f" * 40  # the same commit name, another tree
+    hub.clear()
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert checkout["runs"] == 2
+
+
+def test_without_github_or_origin_the_pass_is_recorded_here_and_says_what_was_not_published(
+    github: list[tuple[Any, ...]],
+    checkout: dict[str, Any],
+    refs: dict[str, dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A refused status is said and is no error, since the record branch is the pass; a refused push leaves the pass
+    in this clone, which still reuses it."""
+
+    def offline(*_args: Any) -> Any:
+        raise subprocess.CalledProcessError(1, "gh", stderr="error connecting to api.github.com")
+
+    monkeypatch.setattr(approvals, "statuses", offline)
+    monkeypatch.setattr(approvals, "post_status", offline)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    out = capsys.readouterr().out
+    assert "published in origin as the record branch refs/heads/loop-gate/" in out
+    assert (
+        "the `gate` status, which only shows the pass on the PR, was not written: error connecting"
+        in out
+    )
+    refs.clear()
+
+    def no_origin(*_args: Any) -> Any:
+        raise subprocess.CalledProcessError(
+            1, "git push", stderr="could not read from remote repository"
+        )
+
+    monkeypatch.setattr(approvals, "push_record", no_origin)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert (
+        "not pushed to origin, so only this clone reuses it: could not read from remote repository"
+        in capsys.readouterr().out
+    )
+    assert record_at().exists()
+    assert approvals.reusable(HEAD)["head"] == HEAD
+
+
+def gate_faked(
+    tmp_path: Path, exit_code: int = 0, seconds: float = 0
+) -> tuple[Path, str, dict[str, str]]:
+    """A clean repo and an environment whose `mise` is a fake gate: it sleeps, prints, counts its runs, exits."""
+    repo = tmp_path / "repo"
+    head = committed(repo)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "mise"
+    fake.write_text(
+        f"#!/bin/sh\nsleep {seconds}\necho gate done\necho run >> {tmp_path / 'runs'}\nexit {exit_code}\n"
+    )
+    fake.chmod(0o755)
+    return repo, head, {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+def caller(repo: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
+    """`local-ci` run as an agent's harness runs it: in a process group of its own, not leading a session."""
+    return subprocess.Popen(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", *args],
+        cwd=repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        process_group=0,
+    )
+
+
+def polled(until: Callable[[], bool], seconds: float = 30) -> None:
+    deadline = time.monotonic() + seconds
+    while not until():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.05)
+
+
+def test_a_killed_caller_leaves_the_detached_check_to_finish_and_record(tmp_path: Path) -> None:
+    repo, head, env = gate_faked(tmp_path, seconds=2)
+    common = repo / ".git" / "approvals" / "local-ci"
+    run = caller(repo, env, "--record")
+    pid = common / f"{head}.pid"
+    # detach() fills the pid file only after the child's setsid, so the kill can't reach it (#732)
+    polled(lambda: pid.exists() and pid.read_text())
+    os.killpg(run.pid, signal.SIGKILL)
+    run.wait()
+    polled(lambda: (common / f"{head}.exit").exists())
+    assert (common / f"{head}.exit").read_text() == "0\n"
+    [record] = common.glob("*.json")  # keyed by tree and env
+    assert json.loads(record.read_text())["exit"] == 0
+    assert "gate done" in (common / f"{head}.log").read_text()
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (status.returncode, status.stdout.split(":")[0]) == (0, f"passed on {head}")
+
+
+def test_status_of_a_detached_head_proof_run_reads_the_command_it_ran(tmp_path: Path) -> None:
+    """Through the real detached entry point: the run records its command beside its exit code, so --status finds a
+    head proof under the caller's tier, and a plain --record run still reads under the plain gate."""
+    repo, head, env = gate_faked(tmp_path)
+    loop = add(
+        add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n"), "loop", HEAD_PROOF
+    )
+    (repo / "docs" / "agents").mkdir(parents=True)
+    (repo / "docs" / "agents" / "loop.md").write_text(loop)
+    git_in(repo, "add", "-A")
+    git_in(repo, "commit", "-qm", "loop")
+    head = git_in(repo, "rev-parse", "HEAD").strip()
+    common = repo / ".git" / "approvals" / "local-ci"
+
+    def status() -> str:
+        run = subprocess.run(
+            [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+        return run.stdout
+
+    proof = {**env, "GATE_UI_TESTS": "smoke"}
+    first = caller(repo, proof, "--record", "--head-proof")
+    out, err = first.communicate(timeout=60)
+    assert first.returncode == 0, out + err
+    polled(lambda: (common / f"{head}.exit").exists())
+    assert status().startswith(
+        f"passed on {head} under `GATE_UI_TESTS=smoke mise run check:all`: log"
+    )
+    # a plain run, as before: the plain gate's command and record
+    plain = {k: v for k, v in env.items() if k != "GATE_UI_TESTS"}
+    assert caller(repo, plain, "--record").wait(timeout=60) == 0
+    runs = tmp_path / "runs"
+    polled(lambda: runs.read_text().count("run") == 2 and (common / f"{head}.exit").exists())
+    assert status().startswith(f"passed on {head}: log")
+
+
+def test_status_never_says_passed_for_a_run_that_recorded_nothing(tmp_path: Path) -> None:
+    """A --record on a checkout with changes exits 0 without a pass on HEAD: --status must not call HEAD passed."""
+    repo, head, env = gate_faked(tmp_path)
+    (repo / "app.py").write_text("value = 3\n")
+    assert caller(repo, env, "--record").wait(timeout=60) == 0
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (status.returncode, status.stdout.split(":")[0]) == (
+        1,
+        f"exited 0 without recording a pass on {head} under the gate's command",
+    )
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "code", "last"),
+    [
+        (0, 0, "{checked} on {head}: recorded in {record}"),
+        (2, 1, "mise run check:all exited 2: nothing recorded"),
+    ],
+)
+def test_a_caller_left_alone_exits_and_prints_as_an_attached_run(
+    tmp_path: Path, exit_code: int, code: int, last: str
+) -> None:
+    repo, head, env = gate_faked(tmp_path, exit_code)
+    out, err = caller(repo, env, "--record").communicate(timeout=60)
+    record = next((repo / ".git" / "approvals" / "local-ci").glob("*.json"), None)
+    # a pass then says it isn't published: the repo has no remote
+    assert (out.splitlines()[:2], err) == (
+        ["gate done", last.format(checked=approvals.CHECKED, head=head, record=record)],
+        "",
+    )
+    assert (
+        subprocess.run(
+            [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--record"],
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            check=False,
+            start_new_session=True,
+        ).returncode
+        == code
+    )  # leading its session, it runs in place, as before
+
+
+def test_a_second_local_ci_on_a_running_head_follows_it(tmp_path: Path) -> None:
+    repo, head, env = gate_faked(tmp_path, seconds=2)
+    first = caller(repo, env, "--record")
+    pid = repo / ".git" / "approvals" / "local-ci" / f"{head}.pid"
+    polled(lambda: pid.exists() and pid.read_text())  # detach() writes it once the child runs
+    second = caller(repo, env, "--record")
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", "HEAD"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.returncode == 3 and status.stdout.startswith(f"running on {head}")
+    assert first.communicate(timeout=60)[0].startswith("gate done\n")
+    second.communicate(timeout=60)
+    assert (first.returncode, second.returncode) == (0, 0)
+    assert (tmp_path / "runs").read_text() == "run\n"  # one gate ran
+
+
+def test_two_callers_started_at_once_run_one_gate(tmp_path: Path) -> None:
+    repo, _, env = gate_faked(tmp_path, seconds=1)
+    callers = [caller(repo, env, "--record") for _ in range(4)]
+    for run in callers:
+        run.communicate(timeout=60)
+    assert [run.returncode for run in callers] == [0] * 4
+    assert (tmp_path / "runs").read_text() == "run\n"  # the pid file's lock let one start
+
+
+def test_a_caller_starts_no_gate_while_another_holds_the_pid_file(tmp_path: Path) -> None:
+    repo, head, env = gate_faked(tmp_path)
+    common = repo / ".git" / "approvals" / "local-ci"
+    common.mkdir(parents=True)
+    with open(common / f"{head}.pid", "a+") as claim:
+        fcntl.flock(claim, fcntl.LOCK_EX)
+        run = caller(repo, env, "--record")
+        time.sleep(2)  # long enough for an unlocked caller to start the gate and finish
+        assert (run.poll(), (tmp_path / "runs").exists()) == (None, False)
+    run.communicate(timeout=30)
+    assert (run.returncode, (tmp_path / "runs").read_text()) == (0, "run\n")
+
+
+def dead_pid() -> int:
+    ended = subprocess.Popen(["true"])
+    ended.wait()
+    return ended.pid
+
+
+def test_a_run_s_start_time_reads_the_same_whatever_the_caller_s_locale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    german = approvals.since(os.getpid())
+    monkeypatch.setenv("LC_ALL", "en_US.UTF-8")
+    assert german is not None and approvals.since(os.getpid()) == german
+
+
+@pytest.mark.parametrize(
+    ("pid", "exit_file"),
+    [
+        (dead_pid, "1\n"),  # an older run left its exit code; this one passes
+        (dead_pid, None),  # an older run was killed before it wrote one
+        (os.getpid, None),  # its pid now belongs to another process, started at another time
+    ],
+)
+def test_a_stale_run_on_the_head_is_replaced_by_a_new_one(
+    tmp_path: Path, pid: Callable[[], int], exit_file: str | None
+) -> None:
+    repo, head, env = gate_faked(tmp_path)
+    common = repo / ".git" / "approvals" / "local-ci"
+    common.mkdir(parents=True)
+    stale = {"pid": pid(), "since": "Thu Jan  1 00:00:00 1970", "argv": ["local-ci", "--record"]}
+    (common / f"{head}.pid").write_text(json.dumps(stale))
+    if exit_file:
+        (common / f"{head}.exit").write_text(exit_file)
+    status = subprocess.run(
+        [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.returncode == 1  # failed, or ended without an exit code: not running (3)
+    run = caller(repo, env, "--record")
+    out, _ = run.communicate(timeout=30)
+    assert (run.returncode, out.splitlines()[0]) == (0, "gate done")
+    assert (common / f"{head}.exit").read_text() == "0\n"
+    assert (tmp_path / "runs").read_text() == "run\n"
 
 
 # --- the owner's policy: specs approved and merges landed without an agent's approval ---
@@ -4256,6 +6925,76 @@ def by(author: str, found: dict[str, Any]) -> dict[str, Any]:
     return {**found, "author": {"login": author}}
 
 
+def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
+    writers: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With no PR, a `paths` risk rule under `spec.auto` reads the files the branch changed since it left the default
+    branch, as it reads a PR's: a protected file holds the spec for the owner, and files git can't list hold too."""
+    spec = {
+        1: by("worker", specced(1, "kind:enhancement")),
+        2: by("worker", approved(2, "kind:enhancement", "area:web", "size:S")),
+    }
+    changed: list[str | None] = [""]
+
+    def git(*args: str) -> str:
+        if args[0] == "diff":
+            assert args == ("diff", "--name-only", "--no-renames", "-z", "origin/main...HEAD")
+            if changed[0] is None:
+                raise subprocess.CalledProcessError(128, ["git", *args])
+            return "".join(f"{path}\0" for path in changed[0].split())
+        return "origin/main\n" if args[-1] == "origin/HEAD" else "loop/1-fix\n"
+
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, AUTO))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "issue_node", lambda n: spec[n])
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", git)
+
+    def build(number: int) -> tuple[int, list[str]]:
+        code = approvals.main(["check", "build", "--issue", str(number)])
+        return code, capsys.readouterr().out.splitlines()
+
+    assert build(1) == (0, ["#1: every build proof holds; no PR yet"])
+    changed[0] = "app.py\nbilling/a.py\n"
+    assert build(1) == (
+        1,
+        [
+            (
+                "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path"
+                " `billing/**`)"
+            ),
+            "#1 has no `Approved: spec` record by the owner",
+            "#1 lacks the `approved:spec` label",
+        ],
+    )
+    assert build(2)[0] == 0  # the owner approved it
+    changed[0] = None
+    code, out = build(1)
+    assert code == 1 and "the gate can't read every file the PR changes" in out[0]
+
+
+def test_the_branch_files_check_build_reads_are_its_real_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-ASCII name, which git quotes in its plain output, and one with spaces reach the risk rules as committed."""
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    committed(clone)
+    git_in(clone, "branch", "-M", "main")
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "push", "-q", "origin", "main")
+    git_in(clone, "remote", "set-head", "origin", "main")
+    git_in(clone, "checkout", "-q", "-b", "loop/1-fix")
+    names = [".github/workflows/contrôle.yml", "docs/decision notes.md"]
+    for name in names:
+        (clone / name).parent.mkdir(parents=True, exist_ok=True)
+        (clone / name).write_text("x\n")
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-qm", "files")
+    monkeypatch.chdir(clone)
+    assert sorted(approvals.paths(approvals.unopened())) == sorted(names)
+
+
 def test_spec_auto_is_its_own_policy() -> None:
     assert approvals.spec_auto(AUTO) and not approvals.spec_auto(POLICY)
     assert not approvals.spec_auto(loop_md("spec:\n  auto: false\n")) and not approvals.spec_auto(
@@ -4346,7 +7085,7 @@ def test_a_low_risk_agent_pr_lands_with_no_approval_record_and_no_label(
     )
     landing["pull"]["closingIssuesReferences"]["nodes"] = [follow_up]
     assert approvals.main(["check", "build", "7"]) == 0
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+    assert gate(capsys, "check", "merge", "7") == (0, [])
     assert added == []
 
 
@@ -4361,7 +7100,11 @@ def test_a_low_risk_agent_pr_lands_with_no_approval_record_and_no_label(
     ids=["label-on-the-pr", "label-on-its-issue", "risk-path", "risk-label"],
 )
 def test_a_high_risk_merge_waits_for_the_owner_and_says_why(
-    labels: tuple[str, ...], issue_labels: tuple[str, ...], files: tuple[str, ...], why: str
+    labels: tuple[str, ...],
+    issue_labels: tuple[str, ...],
+    files: tuple[str, ...],
+    why: str,
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     loop = loop_md(
         "spec:\n  auto:\n    - bug\n    - follow-up\n    - sub-issue\nrisk:\n  labels:\n    - size:L\n    - size:XL\n    - area:api\n  paths:\n    - billing/**\n"
@@ -4370,26 +7113,30 @@ def test_a_high_risk_merge_waits_for_the_owner_and_says_why(
     assert merge(pull(reviews=(VERDICT,), labels=labels, files=files), [found], loop) == [
         HELD + why
     ]
-    signed = pull(reviews=(VERDICT,), labels=(*labels, *OWNED), files=files)
+    signed = given_go(pull(reviews=(VERDICT,), labels=labels, files=files), hub)
     assert merge(signed, [found], loop) == []
 
 
-def test_land_adds_risk_high_when_it_infers_high_risk_and_holds_for_the_owner(
+def test_check_merge_adds_risk_high_when_it_infers_high_risk_and_holds_for_the_owner(
     landing: dict[str, Any],
     capsys: pytest.CaptureFixture[str],
     added: list[tuple[int, str, bool]],
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     landing["pull"]["files"]["nodes"] = [{"path": ".github/ci.yml"}]
-    assert landed(capsys, landing) == (approvals.WAITING, [GITHUB], [])
+    code, lines = gate(capsys, "check", "merge", "7")
+    assert (code, lines[0]) == (approvals.WAITING, GITHUB)
     assert added == [(7, "risk:high", True)]
     added.clear()
     landing["pull"]["labels"]["nodes"] = [{"name": "risk:high"}]
-    landed(capsys, landing)
+    gate(capsys, "check", "merge", "7")
     assert added == []  # already on the PR
-    signed = pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high", *OWNED))
+    signed = given_go(
+        pull(reviews=(VERDICT,), files=(".github/ci.yml",), labels=("risk:high",)), hub
+    )
     signed["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
     landing["pull"] = signed
-    assert landed(capsys, landing) == (0, [f"PR #7 merges at {HEAD}"], [MERGE])
+    assert gate(capsys, "check", "merge", "7")[0] == 0
 
 
 def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reported_not_fatal(
@@ -4508,6 +7255,176 @@ def test_check_build_refuses_an_issue_assigned_to_anyone_but_its_approver(
     assert approvals.proofs("merge", pull(reviews=(VERDICT,), labels=OWNED), [found], LOOP) == []
 
 
+def listed(number: int, branch: str, body: str, *closing: int) -> dict[str, Any]:
+    """An open PR as `gh pr list --json number,headRefName,body,closingIssuesReferences` prints it."""
+    return {
+        "number": number,
+        "headRefName": branch,
+        "body": body,
+        "closingIssuesReferences": [
+            {
+                "number": n,
+                "repository": {"name": "scratch-gate-revert", "owner": {"login": "kzarzycki"}},
+            }
+            for n in closing
+        ],
+    }
+
+
+def duplicate(number: int, other: int, branch: str) -> str:
+    return (
+        f"#{number} is also closed by open PR #{other} (branch `{branch}`): one build per issue, so close one of"
+        " the PRs, or link it with `Part of`"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mine", "theirs", "closing"),
+    [
+        ("Closes #1", "Fixes #1", ()),
+        ("Resolves #1", "the change", (1,)),  # GitHub links it, with no line in the body
+        (
+            "Implements #1",
+            "closes #1",
+            (),
+        ),  # under a `signoff` rule, Implements finishes the issue too
+    ],
+)
+def test_check_build_refuses_an_issue_another_open_pr_closes_and_each_names_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mine: str,
+    theirs: str,
+    closing: tuple[int, ...],
+) -> None:
+    monkeypatch.setattr(
+        approvals, "project", lambda: (TRACKER, add(LOOP, "signoff", "always: true\n"))
+    )
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    first, second = pull(body=mine), pull(body=theirs)
+    second.update(number=8, headRefName="second")
+    second["closingIssuesReferences"]["nodes"] = [spec for _ in closing]
+    first["closingIssuesReferences"]["nodes"] = [] if "#1" in mine else [spec]
+    pulls = {7: first, 8: second}
+    monkeypatch.setattr(approvals, "pull_request", lambda pr: pulls[pr])
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    listing = json.dumps([listed(7, "feature", mine), listed(8, "second", theirs, *closing)])
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        if "graphql" in args:  # the body's unlinked `#1`
+            return json.dumps({"data": {"repository": {"i1": spec}}})
+        assert args[:2] == ("pr", "list")
+        calls.append(args)
+        return listing
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 1
+    assert capsys.readouterr().out.splitlines() == [duplicate(1, 8, "second")]
+    assert approvals.main(["check", "build", "8"]) == 1
+    assert capsys.readouterr().out.splitlines() == [duplicate(1, 7, "feature")]
+    assert len(calls) == 2  # one list call per check
+
+
+def test_check_build_passes_as_today_when_no_other_open_pr_closes_its_issue(
+    monkeypatch: pytest.MonkeyPatch,
+    assigned: list[tuple[Any, ...]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Another PR that only builds on the issue (`Part of`), closes another one, or is this PR itself holds nothing."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    listing = [
+        listed(7, "feature", "Closes #1", 1),
+        listed(8, "part", "Part of #1"),
+        listed(9, "other", "Fixes #2", 2),
+        listed(10, "signed", "Implements #1"),  # no `signoff` rule: a link like `Part of`
+    ]
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        return json.dumps(listing)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert capsys.readouterr().out == ""
+    assert [args[:2] for args in calls] == [("pr", "list")]
+    assert (1, "loop", True) in assigned
+
+
+def test_check_build_counts_only_this_repos_issue_when_another_pr_closes_the_same_number_elsewhere(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`other/project#1` is another issue than this repo's #1, in the body or in GitHub's closing references."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    foreign = listed(8, "foreign", "Closes other/project#1")
+    foreign["closingIssuesReferences"] = [
+        {"number": 1, "repository": {"name": "project", "owner": {"login": "other"}}}
+    ]
+    monkeypatch.setattr(approvals, "gh", lambda *_args, **_kw: json.dumps([foreign]))
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_check_build_refuses_when_the_open_pr_list_reaches_its_limit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A list as long as the limit may have left out the PR that closes the issue too, so the check can't pass."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    spec = held(approved(1, "kind:bug", "area:web"), events=(labelled("loop"),))
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    monkeypatch.setattr(approvals, "pull_request", lambda _pr: mine)
+    monkeypatch.setattr(approvals, "OPEN_LIMIT", 2, raising=False)
+    everyone = [
+        listed(7, "feature", "Closes #1", 1),
+        listed(8, "a", "Fixes #2"),
+        listed(9, "b", "Fixes #1"),
+    ]
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        return json.dumps(everyone[: int(args[args.index("--limit") + 1])])
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    assert approvals.main(["check", "build", "7"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        (
+            "the duplicate-build check reads at most 2 open PRs and this repo has at least that many, so it could"
+            " not see every open PR: close stale PRs, or check by hand that no other open PR closes #1"
+        )
+    ]
+    assert len(calls) == 1
+
+
+def test_check_merge_lists_no_open_prs_and_a_duplicate_does_not_hold_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The duplicate check belongs to build: by merge the build it guards has run, and the list costs a request."""
+    spec = approved(1, "kind:bug", "area:web")
+    mine = pull(body="Closes #1")
+    mine["closingIssuesReferences"]["nodes"] = [spec]
+    listings: list[None] = []
+    second = {**listed(8, "second", "Fixes #1"), "closingIssuesReferences": {"nodes": []}}
+    monkeypatch.setattr(approvals, "open_pulls", lambda: listings.append(None) or [second])
+    assert duplicate(1, 8, "second") in approvals.proofs("build", mine, [spec], LOOP)
+    assert duplicate(1, 8, "second") not in approvals.proofs("merge", mine, [spec], LOOP)
+    assert len(listings) == 1  # the build check's, none at merge
+
+
 def test_being_assigned_is_no_go_ahead() -> None:
     claimed = held(specced(1, "kind:enhancement"), "loop")
     assert approvals.proofs("build", pull(), [claimed], LOOP) == [
@@ -4608,7 +7525,7 @@ def test_parking_removes_only_the_assignee_the_loop_added(
 
 
 FORK, THEM = "https://github.com/me/fork.git", "git@github.com:them/fork"
-POST_DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "post_demo.sh"
+DEMO = SCRIPTS.parent.parent / "demo" / "scripts" / "demo.sh"
 
 
 @pytest.mark.parametrize(
@@ -4636,7 +7553,7 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
     refused: bool,
 ) -> None:
     """gh reads `{owner}/{repo}` as `upstream`'s when several GitHub remotes have no default: approvals.py and
-    post_demo.sh refuse, naming them, before any gh call."""
+    demo.sh refuse, naming them, before any gh call but demo.sh's version check."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     for name, url in remotes.items():
         subprocess.run(["git", "-C", str(tmp_path), "remote", "add", name, url], check=True)
@@ -4650,14 +7567,17 @@ def test_one_repo_refuses_several_github_remotes_without_a_default(
             approvals.one_repo()
     else:
         approvals.one_repo()
-    # post_demo.sh: a gh that exits 77 on any call shows whether the guard let it through
+    # demo.sh: a gh that passes the version check and exits 77 on any other call shows whether the
+    # guard let it through
     shim = tmp_path / "bin"
     shim.mkdir()
-    (shim / "gh").write_text("#!/bin/sh\nexit 77\n")
+    (shim / "gh").write_text(
+        '#!/bin/sh\n[ "$1" = --version ] && echo "gh version 2.103.3" && exit 0\nexit 77\n'
+    )
     (shim / "gh").chmod(0o755)
     (tmp_path / "v.mp4").write_bytes(b"x")
     shell = subprocess.run(
-        ["bash", str(POST_DEMO), "x", "v.mp4"],
+        ["bash", str(DEMO), "v.mp4"],
         capture_output=True,
         text=True,
         env={"PATH": f"{shim}:/usr/bin:/bin", "HOME": str(tmp_path)},
@@ -4735,6 +7655,7 @@ def test_risk_high_another_word_or_no_line_waits_for_the_owner_and_flags_the_pr(
     added: list[tuple[int, str, bool]],
     risk: str | None,
     said: str,
+    hub: dict[str, list[dict[str, Any]]],
 ) -> None:
     state, comments = gating
     state["pull"] = judged_pr(judging(risk))
@@ -4744,7 +7665,7 @@ def test_risk_high_another_word_or_no_line_waits_for_the_owner_and_flags_the_pr(
     assert added == [(7, "risk:high", True)]
     assert [number for number, _ in comments] == [7]
     assert comments[0][1].startswith(f"{approvals.FLAGGED}, since {why}.")
-    signed = judged_pr(judging(risk), labels=("risk:high", *OWNED))
+    signed = given_go(judged_pr(judging(risk), labels=("risk:high",)), hub)
     assert merge(signed, signed["closingIssuesReferences"]["nodes"], VERIFIED) == []
 
 
@@ -4972,14 +7893,18 @@ def batch_note(head: str, merge: str, batch: str, exit: int = 0, env: str = "def
 
 
 def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
-    """Record a green `local-ci --record` pass on `head`, as run_local_ci() writes it."""
-    where = approvals.recorded(head)
+    """Record a green `local-ci --record` pass on `head`, as run_local_ci() writes it, of a gate that sets `env`."""
+    env = {} if env is None else env
+    held = approvals.tree_of(head)
+    command = shlex.join([*(f"{name}={value}" for name, value in env.items()), *approvals.LOCAL_CI])
+    where = approvals.recorded(held, command)
     where.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "head": head,
-        "command": " ".join(approvals.LOCAL_CI),
+        "tree": held,
+        "command": command,
         "exit": 0,
-        "env": {} if env is None else env,
+        "env": env,
         "time": "2026-01-01T00:00:00Z",
         "host": "host",
     }
@@ -4987,12 +7912,29 @@ def gated_head(head: str, env: dict[str, str | None] | None = None) -> None:
 
 
 NO_LOCAL_CHECK = "PR #7: the project has no CI (loop.md `ci: false`), and no local check passed on the head (approvals.py local-ci)"
+NO_CHECK = "PR #7: no `check` on the head commit yet"  # the CI wait a batch proof replaces
+
+
+QUEUED = add(
+    LOOP, "loop", "batch_queue: true\n"
+)  # a project that lands through a batching merge queue
+
+
+def test_a_batch_proof_counts_only_where_loop_md_opts_into_a_queue(batched: dict[str, str]) -> None:
+    """A project that never set up a batching merge queue gets no second way past the CI or local-check wait: the
+    same valid batch proof stands in for it only under `batch_queue: true`."""
+    gated_head(batched["head"])
+    proof = batch_note(batched["head"], batched["merge"], batched["batch"])
+    assert queued_merge(batched["head"], proof) == []
+    pr = pull(reviews=(verdict_on(batched["head"]),), comments=(proof,), checks=())
+    pr["headRefOid"] = batched["head"]
+    assert merge(pr, [approved(1, "area:web")]) == [NO_CHECK]
 
 
 def queued_merge(head: str, *comments: str) -> list[str]:
     pr = pull(reviews=(verdict_on(head),), comments=comments, checks=())
     pr["headRefOid"] = head
-    return merge(pr, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n"))
+    return merge(pr, [approved(1, "area:web")], QUEUED)
 
 
 def queued_reasons(head: str, *comments: str) -> list[str] | None:
@@ -5009,6 +7951,11 @@ def test_a_green_batch_that_merged_the_head_cleanly_is_its_merge_proof(
     assert queued_merge(head, batch_note(head, merged, batch)) == []
     # the batch's tip is the merge itself when the PR merged last
     assert queued_merge(head, batch_note(head, merged, merged)) == []
+    # under `ci: false` the head's own pass, which the batch needs, is the merge proof
+    pr = pull(reviews=(verdict_on(head),), comments=(batch_note(head, merged, batch),), checks=())
+    pr["headRefOid"] = head
+    no_ci = add(LOOP, "loop", "ci: false\nbatch_queue: true\n")
+    assert merge(pr, [approved(1, "area:web")], no_ci) == []
 
 
 @pytest.mark.parametrize(
@@ -5037,7 +7984,7 @@ def test_a_red_or_unproven_batch_is_no_merge_proof(
     names = {**batched, "fff": "f" * 40}
     proof = batch_note(head, fields["merge"], fields["batch"], fields["exit"])
     # it adds no hold of its own: the wait is the one a PR with no batch proof has
-    assert queued_merge(head, proof) == [NO_LOCAL_CHECK]
+    assert queued_merge(head, proof) == [NO_CHECK]
     assert queued_reasons(head, proof) == [f"PR #7: {said.format(**names)}"]
 
 
@@ -5046,14 +7993,22 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
 ) -> None:
     head, merged, batch = batched["head"], batched["merge"], batched["batch"]
     note = batch_note(head, merged, batch)
-    ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under this environment, which a batch never stands in for"
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    ungated = f"PR #7: the head {head} has no green `local-ci --record` pass of its own under the gate command, which a batch never stands in for"
+    other = f"{ungated}; its tree passed under `GATE_UI_TESTS=smoke mise run check:all`, and the gate is now `mise run check:all`"
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [ungated]
-    gated_head(head, {"GATE_UI_TESTS": "smoke"})  # gated, but under another env than this one
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
-    assert queued_reasons(head, note) == [ungated]
-    monkeypatch.setattr(approvals, "local_ci_env", lambda: {"GATE_UI_TESTS": "smoke"})
-    assert queued_merge(head, note) == [NO_LOCAL_CHECK]
+    gated_head(
+        head, {"GATE_UI_TESTS": "smoke"}
+    )  # gated, but under another gate command than this one
+    assert queued_merge(head, note) == [NO_CHECK]
+    assert queued_reasons(head, note) == [other]
+    smoke = "GATE_UI_TESTS=smoke mise run check:all"
+    monkeypatch.setattr(
+        approvals,
+        "gate",
+        lambda _passed=(): (smoke, approvals.LOCAL_CI, {"GATE_UI_TESTS": "smoke"}),
+    )
+    assert queued_merge(head, note) == [NO_CHECK]
     assert queued_reasons(head, note) == [
         f"PR #7: batch {batch} names the head's gate env `default`, its record `GATE_UI_TESTS=smoke`",
     ]
@@ -5063,12 +8018,12 @@ def test_a_batch_cannot_stand_in_for_the_heads_own_gate(
 def test_no_batch_comment_or_one_for_another_head_leaves_the_wait(batched: dict[str, str]) -> None:
     head = batched["head"]
     gated_head(head)
-    assert queued_merge(head) == [NO_LOCAL_CHECK]
+    assert queued_merge(head) == [NO_CHECK]
     assert queued_merge(head, batch_note("b" * 40, batched["merge"], batched["batch"])) == [
-        NO_LOCAL_CHECK
+        NO_CHECK
     ]
     assert queued_merge(head, "> " + batch_note(head, batched["merge"], batched["batch"])) == [
-        NO_LOCAL_CHECK
+        NO_CHECK
     ]
 
 
@@ -5081,12 +8036,12 @@ def test_only_a_batch_proof_by_the_running_account_or_a_writer_counts(
     monkeypatch.setattr(approvals, "writer", lambda login: login == "colleague")
     pr = pull(reviews=(verdict_on(head),), comments=(proof,), checks=())
     pr["headRefOid"] = head
-    lines = merge(pr, [approved(1, "area:web")])
+    lines = merge(pr, [approved(1, "area:web")], QUEUED)
     assert lines and all("batch" not in line for line in lines)  # waits on CI, as with no proof
     proof["author"] = {"login": "colleague"}
-    assert merge(pr, [approved(1, "area:web")]) == []
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == []
     proof["author"] = None  # a deleted account
-    assert merge(pr, [approved(1, "area:web")]) == lines
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == lines
 
 
 def test_comments_that_are_no_batch_proof_cost_no_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -5106,18 +8061,12 @@ def test_a_red_batch_through_another_pr_leaves_check_merge_on_green_ci() -> None
     assert merge(pull(reviews=(VERDICT,), comments=(RED_BATCH,)), [approved(1, "area:web")]) == []
 
 
-def test_a_red_batch_through_another_pr_leaves_land_alone(
-    landing: dict[str, Any], capsys: pytest.CaptureFixture[str]
-) -> None:
-    landing["pull"]["comments"]["nodes"].append(note(RED_BATCH))
-    code, lines, calls = landed(capsys, landing)
-    assert (code, calls) == (0, [MERGE]), lines
-
-
 def test_a_head_evicted_through_another_pr_may_re_enter_the_queue(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     queueing["pull"]["comments"]["nodes"].append(note(RED_BATCH))
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
 
@@ -5126,12 +8075,14 @@ def test_with_ci_check_queue_still_needs_the_heads_own_record(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """batch refuses a head without one, so a head check queue admitted would never get its proof."""
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     queueing["records"] = set()
     assert queue_check(capsys) == (
         1,
         [
-            f"PR #7: no `local-ci --record` pass on {HEAD} under this environment (approvals.py local-ci --record)"
+            f"PR #7: no `local-ci --record` pass on {HEAD} under the gate command (approvals.py local-ci --record)"
         ],
     )
 
@@ -5145,7 +8096,7 @@ def test_the_batch_proof_also_stands_in_for_ci(batched: dict[str, str]) -> None:
         checks=(),
     )
     pr["headRefOid"] = head
-    assert merge(pr, [approved(1, "area:web")]) == []
+    assert merge(pr, [approved(1, "area:web")], QUEUED) == []
 
 
 def test_batch_posts_the_proof_check_merge_reads(
@@ -5183,6 +8134,48 @@ def test_batch_posts_the_proof_check_merge_reads(
     assert queued_merge(batched["head"], body) == []
 
 
+def test_batch_posts_a_proof_for_a_head_admitted_on_its_head_proof_and_refuses_one_with_neither(
+    batched: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """A head that entered the queue on loop.md's head proof (a light gate's green status for its own tree) and has
+    no `local-ci --record` pass gets a proof naming that status and tree, which queued() and check merge read; a head
+    with neither is refused, and a proof claiming a stand-in the head lacks proves nothing."""
+    head, merged, batch = batched["head"], batched["merge"], batched["batch"]
+    loop = add(QUEUED, "loop", HEAD_PROOF)
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda _number, body: posted.append(body))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    log = tmp_path / "gate.log"
+    log.write_text("gate: green\n")
+    args = ["batch", "7", "--merge", merged, "--batch", batch, "--exit", "0", "--log", str(log)]
+    assert approvals.main(args) == 1
+    assert posted == []
+    tree = approvals.tree_of(head)
+    entry = f"gate-ui status on tree {tree}"
+    forged = f"{approvals.BATCHED}\nHead: {head}\nMerge: {merged}\nBatch: {batch}\nExit: 0\nAdmitted: {entry}\n"
+    pr = pull(reviews=(verdict_on(head),), comments=(forged,), checks=())
+    pr["headRefOid"] = head
+    assert approvals.queued(pr, loop) is not None
+    assert merge(pr, [approved(1, "area:web")], loop) == [NO_CHECK]
+    hub[head] = [status("gate-ui", f"Tree {tree} on {head[:12]}: GATE_UI_TESTS=smoke")]
+    assert approvals.main(args) == 0
+    [body] = posted
+    assert body.startswith(forged + f"Log: {log}\n") and "Env:" not in body and "Gated:" not in body
+    pr = pull(reviews=(verdict_on(head),), comments=(body,), checks=())
+    pr["headRefOid"] = head
+    assert approvals.queued(pr, loop) is None
+    assert merge(pr, [approved(1, "area:web")], loop) == []
+    # without the setting the status stands in for nothing
+    assert approvals.queued(pr, QUEUED) is not None
+    # a record made after the proof leaves it valid: the proof's `Admitted:` line, not today's record, picks the check
+    gated_head(head)
+    assert approvals.queued(pr, loop) is None
+
+
 def posts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Every body comment() hands gh, from a fake host whose name and home name its owner."""
     sent: list[str] = []
@@ -5201,9 +8194,10 @@ def test_posted_comments_name_no_host_or_home(
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     # a gate env naming a path under the home directory, posted as `~` and still matching the head's record
     env = {"CACHE": "/Users/owner/cache"}
-    monkeypatch.setattr(approvals, "local_ci_env", lambda: env)
+    command = "CACHE=/Users/owner/cache mise run check:all"
+    monkeypatch.setattr(approvals, "gate", lambda _passed=(): (command, approvals.LOCAL_CI, env))
     gated_head(batched["head"], env)
-    record = approvals.recorded(batched["head"])
+    record = approvals.recorded(approvals.tree_of(batched["head"]), command)
     record.write_text(record.read_text().replace('"host": "host"', '"host": "owner-MacBook.local"'))
     log = tmp_path / "gate.log"
     log.write_text(
@@ -5234,10 +8228,38 @@ def test_a_posted_review_names_no_home_however_it_is_spelled(
     assert (review["body"], review["comments"][0]["body"]) == ("cache ~/cache", "at ~")
 
 
+def test_posted_text_names_no_account_in_a_temp_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing test's path under pytest's `pytest-of-<user>` names the account; a relative `tmp/` path stays."""
+    monkeypatch.setenv("HOME", "/Users/owner")
+    monkeypatch.setattr(approvals.tempfile, "gettempdir", lambda: "/var/folders/ab/T")
+    text = (
+        "FAILED /tmp/pytest-of-owner/pytest-12/test_x0/a.py\n"
+        "/var/folders/ab/T/pytest-of-owner/pytest-current/b\n"
+        "/var/folders/ab/T/x.log /tmp\n"
+        "~/tmp/y tmp/loop/z.log /tmpfoo /Users/owner/c"
+    )
+    assert approvals.public(text) == (
+        "FAILED <tmp>/test_x0/a.py\n<tmp>/b\n<tmp>/x.log <tmp>\n~/tmp/y tmp/loop/z.log /tmpfoo ~/c"
+    )
+    # a temp dir under home or under /tmp, and one this process doesn't know
+    for tmp in ("/Users/owner/tmp", "/tmp/build"):
+        monkeypatch.setattr(approvals.tempfile, "gettempdir", lambda tmp=tmp: tmp)
+        assert (
+            approvals.public(f"{tmp}/pytest-of-owner/pytest-3/a /Users/owner/tmpx")
+            == "<tmp>/a ~/tmpx"
+        )
+    assert (
+        approvals.public("/scratch/pytest-of-owner/pytest-3/a")
+        == "/scratch/pytest-of-<user>/pytest-3/a"
+    )
+
+
 @pytest.fixture
 def queueing(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`landing` with `ci: false`, and a local-ci pass recorded on HEAD under the current env."""
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(add(GITHUB_RULE, "loop", "ci: false\n"))
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "ci: false\nbatch_queue: true\n")
+    )
     landing["records"] = {HEAD}
     monkeypatch.setattr(
         approvals, "reusable", lambda head: {"head": head} if head in landing["records"] else None
@@ -5251,10 +8273,27 @@ def queue_check(capsys: pytest.CaptureFixture[str], head: str = HEAD) -> tuple[i
     return code, capsys.readouterr().out.splitlines()
 
 
+def test_check_queue_refuses_a_project_without_the_setting(
+    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(add(GITHUB_RULE, "loop", "ci: false\n"))
+    assert queue_check(capsys) == (
+        1,
+        [
+            (
+                "PR #7: loop.md doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+                " through `land`"
+            )
+        ],
+    )
+
+
 def test_check_queue_waits_for_the_checks_the_base_branch_requires(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     monkeypatch.setattr(
         approvals, "required_checks", lambda _base: {"qualify", approvals.APPROVALS}
     )
@@ -5266,6 +8305,27 @@ def test_a_verified_head_with_its_recorded_pass_may_enter_the_queue(
 ) -> None:
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
     assert queueing["calls"] == []
+
+
+def test_check_queue_admits_a_head_without_a_recorded_pass_on_its_head_proof(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "ci: false\nbatch_queue: true\n" + HEAD_PROOF)
+    )
+    queueing["records"] = set()
+    monkeypatch.setattr(approvals, "tree_of", lambda _commit: "e" * 40)
+    monkeypatch.setattr(approvals, "elsewhere", lambda _head: "")  # no other gate command's records
+    refused = (
+        f"PR #7: no `local-ci --record` pass on {HEAD} under the gate command (approvals.py local-ci --record),"
+        " nor its loop.md `head_proof` status"
+    )
+    assert queue_check(capsys) == (1, [refused])
+    hub[HEAD] = [status("gate-ui", f"Tree {'e' * 40} on {HEAD[:12]}: GATE_UI_TESTS=smoke")]
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
 
 
 def test_check_queue_refuses_another_head(
@@ -5283,31 +8343,74 @@ def test_check_queue_refuses_a_head_without_a_recorded_pass(
     assert queue_check(capsys) == (
         1,
         [
-            f"PR #7: no `local-ci --record` pass on {HEAD} under this environment (approvals.py local-ci --record)"
+            f"PR #7: no `local-ci --record` pass on {HEAD} under the gate command (approvals.py local-ci --record)"
         ],
     )
 
 
+def owner_labels(pr: dict[str, Any], labels: tuple[str, ...], at: str) -> None:
+    pr["labels"]["nodes"] = [{"name": name} for name in labels]
+    pr["timelineItems"]["nodes"] += [{"createdAt": at, "label": {"name": name}} for name in labels]
+
+
+def test_an_owner_approved_high_risk_pr_may_enter_the_queue(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    """The owner's go on the head covers that head, in a batch as through `land`; their label alone does not."""
+    owner_labels(queueing["pull"], ("risk:high", "approved:merge"), LABELED)
+    assert queue_check(capsys)[0] == 1
+    given_go(queueing["pull"], hub)
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
+
+
 @pytest.mark.parametrize(
-    ("labels", "said"),
+    ("labels", "labeled", "said"),
     [
         (
             ("risk:high",),
-            "PR #7 is high risk (`risk:high` is on PR #7): it lands alone through `land`",
+            LABELED,
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: `risk:high` is on PR #7",
         ),
         (
-            ("approved:merge",),
-            "PR #7 has the owner's `approved:merge`, which covers its head alone: it lands through `land`",
+            ("risk:high", "approved:merge"),
+            LABELED,
+            f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; into main `approved:merge` is no go), since it is high risk: `risk:high` is on PR #7",
         ),
     ],
 )
-def test_check_queue_keeps_a_high_risk_or_owner_approved_pr_out(
-    queueing: dict[str, Any], capsys: pytest.CaptureFixture[str], labels: tuple[str, ...], said: str
+def test_check_queue_keeps_out_a_high_risk_pr_the_owner_has_not_approved_at_its_head(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    labels: tuple[str, ...],
+    labeled: str,
+    said: str,
 ) -> None:
-    queueing["pull"]["labels"]["nodes"] = [{"name": name} for name in labels]
-    code, lines = queue_check(capsys)
-    assert code == 1
-    assert said in lines
+    owner_labels(queueing["pull"], labels, labeled)
+    assert queue_check(capsys) == (1, [said])
+
+
+def test_check_merge_takes_the_batch_proof_of_an_owner_approved_high_risk_pr(
+    batched: dict[str, str], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Once the queue landed it, the batch stands in for the CI wait, and the owner's go covers the landed head only:
+    another head still waits for the owner."""
+    head = batched["head"]
+    gated_head(head)
+    pr = pull(
+        reviews=(verdict_on(head),),
+        comments=(batch_note(head, batched["merge"], batched["batch"]),),
+        labels=("risk:high",),
+        checks=(),
+    )
+    pr["headRefOid"] = head
+    loop = add(LOOP, "loop", "ci: false\nbatch_queue: true\n")
+    assert merge(given_go(pr, hub), [approved(1, "area:web")], loop) == []
+    hub.clear()
+    assert merge(pr, [approved(1, "area:web")], loop) == [
+        HELD.replace(HEAD, head) + "`risk:high` is on PR #7"
+    ]
 
 
 def test_check_queue_refuses_a_missing_merge_proof(
@@ -5324,7 +8427,9 @@ def test_check_queue_refuses_a_missing_merge_proof(
 def test_with_ci_check_queue_needs_the_heads_check_green(
     queueing: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(GITHUB_RULE)
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(
+        add(GITHUB_RULE, "loop", "batch_queue: true\n")
+    )
     assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
     queueing["pull"]["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][0][
         "conclusion"
@@ -5367,8 +8472,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
     app.py's first line. `merged(files)` commits `files` on a branch off that `main` (`base`) and merges it into the
     head as git would (`merge`, the head its first parent): `resolve` writes what a conflict leaves, `extra` adds a
     file the merge alone has, `crossed` first has each side merge the other's commit (a criss-cross, so the head is
-    that merge and the two have two merge bases). The test runs in a clone made before any of them was pushed, so
-    the gate must fetch."""
+    that merge and the two have two merge bases), `onto` merges into that commit instead of the head and `main` moves
+    main from that commit, `then` commits `then` on top of the merge as a PR commit after it (`merge`). The test runs
+    in a clone made before any of them was pushed, so the gate must fetch."""
     origin, work, checker = (tmp_path / name for name in ("origin.git", "work", "checker"))
     sh("git", "init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
     sh("git", "clone", "-q", str(origin), str(work), cwd=tmp_path)
@@ -5396,12 +8502,15 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         resolve: dict[str, str] | None = None,
         extra: dict[str, str] | None = None,
         crossed: bool = False,
+        onto: str | None = None,
+        main: str = "main",
+        then: dict[str, str] | None = None,
     ) -> dict[str, str]:
         n = next(cases)
-        git("switch", "-qc", f"base{n}", "main")
+        git("switch", "-qc", f"base{n}", main)
         write(files)
         git("commit", "-qm", f"main moved {n}")
-        first = head
+        first = onto or head
         if crossed:
             moved = git("rev-parse", "HEAD")
             git("merge", "-q", "--no-ff", "-m", f"main takes the feature {n}", head)
@@ -5419,6 +8528,9 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         )
         write({**(resolve or {}), **(extra or {})})
         git("commit", "-qm", f"Merge main {n}")
+        if then:
+            write(then)
+            git("commit", "-qm", f"the feature after main {n}")
         merge = git("rev-parse", "HEAD")
         git(
             "push",
@@ -5471,7 +8583,7 @@ def test_a_clean_merge_of_main_carries_the_verdict_but_never_the_local_ci_record
     head, merge_sha = case["head"], case["merge"]
     gated_head(head)
     posting["pull"] = carried_pull(case)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (posting["ran"], posting["posted"]) == ([merge_sha], [])
     capsys.readouterr()
     on_head = f"{approvals.CHECKED}\nHead: {head}\nCommand: mise run check:all\nEnv: default\n"
@@ -5479,6 +8591,124 @@ def test_a_clean_merge_of_main_carries_the_verdict_but_never_the_local_ci_record
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {carries(merge_sha, head, case['base'], case['since'])}"
     ]
+
+
+# --- the go on a head carries over merges of the base a verifier pass says change no logic (#808) ---
+
+NO_LOGIC = "Logic change: none\n"
+
+
+def go_over(
+    case: dict[str, str],
+    hub: dict[str, list[dict[str, Any]]],
+    logic: str = NO_LOGIC,
+    satisfied: str = "yes",
+    on: str = "merge",
+) -> dict[str, Any]:
+    """A high-risk PR whose head is the case's `merge`, with the owner's go on the head it merged the base into and a
+    verifier pass on `on` ending in `logic`."""
+    review = verdict_on(case[on], satisfied=satisfied)
+    review["body"] += logic
+    pr = pull(reviews=(review,), checks=(), files=("app.py",), labels=("risk:high",))
+    pr.update(headRefOid=case["head"], baseRefOid=case["base"])
+    given_go(pr, hub)
+    pr["headRefOid"] = case["merge"]
+    return pr
+
+
+def held_at(case: dict[str, str], why: str) -> list[str]:
+    return [
+        HELD.replace(HEAD, case["merge"]) + "`risk:high` is on PR #7",
+        f"PR #7: the go on {case['head']} carries nothing to {case['merge']}: {why}",
+    ]
+
+
+def test_the_go_carries_over_a_merge_of_the_base_with_conflict_fixes_a_verdict_calls_no_logic_change(
+    carrying: Callable[..., dict[str, str]], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    case = carrying(
+        {"app.py": CONFLICTED}, resolve={"app.py": APP.replace("line 1\n", "line 1, both\n")}
+    )
+    pr = go_over(case, hub)
+    assert approvals.owner_waits(pr, [], LOOP) == []
+    assert approvals.whose(pr, LOOP) == [
+        (
+            f"PR #7: the go on {case['head']} is the owner's, carried to {case['merge']}: every commit since is a"
+            " merge of main, and the verifier's pass on it says `Logic change: none`"
+        )
+    ]
+    # a go withdrawn on the old head has nothing to carry
+    withdrawn = status("owner", "The owner withdrew their go", state="failure")
+    hub[case["head"]].insert(0, withdrawn)
+    held = [HELD.replace(HEAD, case["merge"]) + "`risk:high` is on PR #7"]
+    assert approvals.owner_waits(pr, [], LOOP) == held
+    hub[case["head"]].pop(0)
+    # a go withdrawn on the new head stays withdrawn, whatever the older one says
+    hub[case["merge"]] = [withdrawn]
+    assert approvals.owner_waits(pr, [], LOOP) == held
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        (
+            {"then": {"app.py": APP.replace("line 2\n", "line 2, after\n")}},
+            "it is no merge of two parents",
+        ),
+        ({"base": "main"}, "its second parent {base} is not on main"),
+    ],
+    ids=["a PR commit after the merge", "a merge of another branch"],
+)
+def test_the_go_carries_nothing_over_a_commit_other_than_a_merge_of_the_base(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    given: dict[str, Any],
+    why: str,
+) -> None:
+    case = carrying({"other.txt": "main moved\n"}, then=given.get("then"))
+    pr = go_over(case, hub)
+    if (
+        "base" in given
+    ):  # the branch merged in is not the base: the base's tip stayed where the PR started
+        pr["baseRefOid"] = case["since"]
+    assert approvals.owner_waits(pr, [], LOOP) == held_at(case, why.format(**case))
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        ({"on": "head"}, "no verifier review is on {merge}"),
+        (
+            {"satisfied": "no"},
+            "the verifier's pass 1 on {merge} is not satisfied, or has a blocker or major open",
+        ),
+        ({"logic": ""}, "the verifier's pass 1 on {merge} does not say `Logic change: none`"),
+        (
+            {"logic": "Logic change: the retry count\n"},
+            "the verifier's pass 1 on {merge} does not say `Logic change: none`",
+        ),
+    ],
+    ids=["no verdict on the new head", "an unsatisfied verdict", "no logic line", "a logic change"],
+)
+def test_the_go_carries_nothing_without_a_satisfied_verdict_on_the_new_head_saying_no_logic_change(
+    carrying: Callable[..., dict[str, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    given: dict[str, str],
+    why: str,
+) -> None:
+    case = carrying({"other.txt": "main moved\n"})
+    assert approvals.owner_waits(go_over(case, hub, **given), [], LOOP) == held_at(
+        case, why.format(**case)
+    )
+
+
+def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(
+        f"Verifier: claude, pass 2 (merge of main)\n\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\n"
+        f"SATISFIED: yes\nRisk: low — a merge\n{NO_LOGIC}"
+    )
+    assert approvals.parse_report(report)[3][-1] == NO_LOGIC.strip()
 
 
 def test_a_carried_verdicts_risk_line_still_holds_the_merge(
@@ -5632,6 +8862,8 @@ def test_without_the_line_check_merge_and_land_read_no_git(
     case = carrying({"other.txt": "main moved\n"})
     monkeypatch.setattr(approvals, "git", lambda *args: pytest.fail(f"git {args}"))
     monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
+    monkeypatch.setattr(approvals, "reusable", lambda head: None)  # the merge proof, not a carry
+    monkeypatch.setattr(approvals, "elsewhere", lambda head: "")  # and what its refusal adds
     pr = carried_pull(case)
     assert approvals.judged(pr, NO_CI) is None
     assert merge(pr, [approved(1, "area:web")], NO_CI)[0].startswith(
@@ -5653,3 +8885,1721 @@ def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
     assert capsys.readouterr().out.splitlines() == [
         f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
     ]
+
+
+def test_two_clean_merges_of_main_carry_the_verdict_from_before_both(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Main merged in twice since the verdict: each merge carries its first parent's, down to the verified head."""
+    first = carrying({"other.txt": "main moved\n"})
+    second = carrying({"more.txt": "main moved again\n"}, onto=first["merge"], main=first["base"])
+    pr = carried_pull(first)
+    pr.update(headRefOid=second["merge"], baseRefOid=second["base"])
+    assert merge(pr, [approved(1, "area:web")], CARRY) == [NO_LOCAL_CHECK]
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {carries(first['merge'], first['head'], first['base'], first['since'])}",
+        f"PR #7: {carries(second['merge'], first['merge'], second['base'], first['base'])}",
+    ]
+
+
+def test_a_pr_commit_after_a_clean_merge_carries_nothing(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The commit on top of the merge is the PR's own, never reviewed: the head needs its own verdict. A rebased or
+    amended head is the same case, a commit of one parent where the walk looks for a merge."""
+    case = carrying(
+        {"other.txt": "main moved\n"}, then={"app.py": APP.replace("line 5\n", "line 5, new\n")}
+    )
+    assert merge(carried_pull(case), [approved(1, "area:web")], CARRY)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {case['merge']} carries nothing from {case['head']}: it is no merge of two parents"
+    ]
+
+
+def test_a_pr_commit_between_two_clean_merges_carries_nothing(
+    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clean merge on top hides no PR commit under it: the walk meets that commit before the verified one."""
+    first = carrying({"other.txt": "main moved\n"})
+    rewritten = carrying(
+        {"more.txt": "main moved again\n"}, then={"app.py": APP.replace("line 2\n", "line 2!\n")}
+    )
+    case = carrying(
+        {"third.txt": "main moved a third time\n"}, onto=rewritten["merge"], main=first["base"]
+    )
+    pr = carried_pull(first)
+    pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
+    assert merge(pr, [approved(1, "area:web")], CARRY)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+    assert capsys.readouterr().out.splitlines() == [
+        f"PR #7: {case['merge']} carries nothing from {first['head']}: {rewritten['merge']} is no merge of two parents"
+    ]
+
+
+# --- the delegated approver's go on a head (#748) ---
+
+DELEGATE_ALL = add(GITHUB_RULE, "loop", "delegate: all\n")
+DELEGATE_GO = f"The delegate's go on {HEAD[:12]}, under the owner's delegation"
+DELEGATE_RECORD = (
+    f"Approved under the owner's delegation.\nApproved: merge\nBy: delegate\nHead: {HEAD}\n"
+)
+LABELLED_HIGH = HELD + "`risk:high` is on PR #7"
+OWNER_RECORD = f"Approved by the owner.\nApproved: merge\nBy: owner\nHead: {HEAD}\n"
+
+
+@pytest.fixture
+def delegating(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, str]]:
+    """The landing checkout with `loop.delegate: all` and a high-risk PR into main; each comment posted lands on the
+    PR, as GitHub reads it back."""
+    Path("docs/agents/loop.md").write_text(DELEGATE_ALL)
+    landing["pull"]["files"]["nodes"] = [{"path": ".github/ci.yml"}]
+    landing["pull"]["labels"]["nodes"] = [{"name": "risk:high"}]
+    posted: list[tuple[int, str]] = []
+
+    def comment(number: int, body: str) -> None:
+        posted.append((number, body))
+        landing["pull"]["comments"]["nodes"].append(note(body))
+
+    monkeypatch.setattr(approvals, "comment", comment)
+    return posted
+
+
+def test_with_delegate_all_the_delegates_go_into_main_posts_its_status_and_record_and_clears_check_merge(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, lines = gate(capsys, "check", "merge", "7")
+    assert (code, lines[0]) == (approvals.WAITING, LABELLED_HIGH)
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate") == (
+        0,
+        [f"PR #7: the delegate's go is on {HEAD}, under the owner's delegation"],
+    )
+    assert [(s["context"], s["description"]) for s in hub[HEAD]] == [("owner", DELEGATE_GO)]
+    assert delegating == [(7, DELEGATE_RECORD)]
+    assert gate(capsys, "check", "merge", "7") == (
+        0,
+        [f"PR #7: the go on {HEAD} is the delegate's, under the owner's delegation"],
+    )
+
+
+def test_without_the_setting_the_delegates_go_into_main_is_refused_naming_it(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    code, lines = gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")
+    assert code == 1 and "`loop.delegate: all`" in lines[0] and "main" in lines[0]
+    assert (delegating, hub) == ([], {})
+    Path("docs/agents/loop.md").write_text(add(GITHUB_RULE, "loop", "delegate: feature\n"))
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 1
+    assert (delegating, hub) == ([], {})
+
+
+def test_into_a_feature_branch_the_delegates_go_needs_no_setting(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    into_feature(landing["pull"])
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    assert approvals.owner_waits(landing["pull"], [], GITHUB_RULE) == []
+
+
+def test_a_head_that_moved_is_refused_for_the_delegate_as_for_the_owner(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for by in ("owner", "delegate"):
+        code, lines = gate(capsys, "approve", "merge", "7", "--head", "c" * 40, "--by", by)
+        assert (code, lines) == (
+            1,
+            [f"PR #7's head is {HEAD}, not {'c' * 40}: ask about the head it has now"],
+        )
+    assert (delegating, hub) == ([], {})
+
+
+def test_a_delegates_status_no_longer_counts_once_the_setting_is_removed(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == []
+    assert approvals.owner_waits(landing["pull"], [], GITHUB_RULE) == [LABELLED_HIGH]
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    code, lines = gate(capsys, "check", "merge", "7")
+    assert (code, lines) == (approvals.WAITING, [LABELLED_HIGH])
+    # nor is the delegate's record read as the owner's, or the owner's status with the delegate's record
+    hub[HEAD] = [status("owner", f"The owner's go on {HEAD[:12]}")]
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [LABELLED_HIGH]
+
+
+def test_the_owners_and_the_delegates_records_open_with_their_own_plain_line(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "owner") == (
+        0,
+        [f"PR #7: the owner's go is on {HEAD}"],
+    )
+    assert gate(capsys, "check", "merge", "7") == (0, [f"PR #7: the go on {HEAD} is the owner's"])
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    assert delegating == [(7, OWNER_RECORD), (7, DELEGATE_RECORD)]
+    assert [approvals.parsed(body, "merge")["by"] for _, body in delegating] == [
+        "owner",
+        "delegate",
+    ]
+    assert (
+        gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate", "--withdraw")[0]
+        == 0
+    )
+    assert delegating[-1] == (7, f"Withdrawn: merge\nBy: delegate\nHead: {HEAD}\n")
+    assert hub[HEAD][0]["state"] == "failure"
+    assert approvals.owner_waits(landing["pull"], [], DELEGATE_ALL) == [LABELLED_HIGH]
+
+
+def test_land_says_whose_go_it_landed_on(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    (lands["work"] / "docs" / "agents" / "loop.md").write_text(DELEGATE_ALL)
+    head = lands["open"](1, {".github/ci.yml": "on: push\n"}, labels=("risk:high",))
+    pr = lands["pulls"][1]
+    pr["comments"]["nodes"].append(note(DELEGATE_RECORD.replace(HEAD, head)))
+    hub[head] = [status("owner", f"The delegate's go on {head[:12]}, under the owner's delegation")]
+    code, lines = lands["land"]("1")
+    assert code == 0, lines
+    assert f"PR #1: the go on {head} is the delegate's, under the owner's delegation" in lines
+
+
+def test_check_merge_names_no_go_on_a_low_risk_head_that_carries_one(
+    delegating: list[tuple[int, str]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # a later pass that says `Risk: low` takes `risk:high` off a head that already carries a go
+    landing["pull"]["files"]["nodes"] = [{"path": "app.py"}]
+    landing["pull"]["labels"]["nodes"] = []
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "owner")[0] == 0
+    assert gate(capsys, "check", "merge", "7") == (0, [])
+
+
+def test_land_names_no_go_on_a_low_risk_head_that_carries_one(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    head = lands["open"](1, {"1.txt": "1\n"})
+    lands["pulls"][1]["comments"]["nodes"].append(note(OWNER_RECORD.replace(HEAD, head)))
+    hub[head] = [status("owner", f"The owner's go on {head[:12]}")]
+    code, lines = lands["land"]("1")
+    assert code == 0, lines
+    assert not [line for line in lines if "the go on" in line], lines
+
+
+def test_without_the_setting_the_delegate_still_withdraws_their_go_into_main_naming_themself(
+    delegating: list[tuple[int, str]],
+    hub: dict[str, list[dict[str, Any]]],
+    landing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")[0] == 0
+    Path("docs/agents/loop.md").write_text(GITHUB_RULE)
+    assert gate(
+        capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate", "--withdraw"
+    ) == (0, [f"PR #7: the delegate's go on {HEAD} is withdrawn"])
+    assert (hub[HEAD][0]["state"], hub[HEAD][0]["description"]) == (
+        "failure",
+        f"The delegate withdrew their go on {HEAD[:12]}",
+    )
+    assert delegating[-1] == (7, f"Withdrawn: merge\nBy: delegate\nHead: {HEAD}\n")
+
+
+def test_delegate_is_a_choice_of_all_or_feature() -> None:
+    assert approvals.settings(add(BARE, "loop", "delegate: all\n"))["delegate"] == "all"
+    assert approvals.delegation(BARE) == "feature"
+    with pytest.raises(approvals.Refused, match=r"`loop.delegate` must be one of all, feature"):
+        approvals.settings(add(BARE, "loop", "delegate: everything\n"))
+
+
+def test_a_spec_or_plan_is_never_the_delegates_to_approve(
+    github: list[tuple[Any, ...]], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["approve", "spec", "1", "--by", "delegate"]) == 1
+    assert "approve spec is the owner's" in capsys.readouterr().out
+    assert github == []
+
+
+# --- one route for a gate pass: the record branch in origin (#798, #807) ---
+
+PROXY = "gh: Write access to this GitHub API path is not permitted through this proxy. (HTTP 403)"
+
+
+def no_status(*_args: Any) -> Any:
+    raise subprocess.CalledProcessError(1, "gh", stderr=PROXY)
+
+
+def real_refs(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, real in (
+        ("record_ref", RECORD_REF),
+        ("push_record", PUSH_RECORD),
+        ("pushed_commands", PUSHED_COMMANDS),
+        ("drop_records", DROP_RECORDS),
+    ):
+        monkeypatch.setattr(approvals, name, real)
+
+
+def pushed_from_a_cloud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[str, str]:
+    """A cloud session (clone `a`, whose status write GitHub refuses) records a pass of `true` on a pushed head; the
+    test then runs in host `b`, a clone with no record of it, where the status write works. Returns the head and the
+    line local-ci printed."""
+    head = published_on_a_with(tmp_path, monkeypatch, no_status)
+    return head, capsys.readouterr().out
+
+
+def published_on_a_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, post: Any) -> str:
+    real_refs(monkeypatch)
+    hosted = approvals.post_status
+    monkeypatch.setattr(approvals, "post_status", post)
+    head = published_on_a(tmp_path, monkeypatch)
+    monkeypatch.setattr(approvals, "post_status", hosted)
+    git_in(tmp_path / "b", "fetch", "-q", "origin")
+    return head
+
+
+def name_of(head: str, command: str = "true") -> str:
+    return f"{approvals.tree_of(head)}-{approvals.gate_key(command)}"
+
+
+def branch_of(head: str, command: str = "true") -> str:
+    return f"refs/heads/loop-gate/{name_of(head, command)}"
+
+
+@pytest.mark.parametrize("where", ["host", "cloud"])
+def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_clone_alike(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    where: str,
+) -> None:
+    """Acceptance 1: whether GitHub takes clone A's status (a host) or refuses it (a cloud session), A pushes the
+    record branch, and clone B reuses it for `local-ci <pr>` through reusable() without running the gate, naming the
+    branch and writing the `gate` status it holds on the head."""
+    post = approvals.post_status if where == "host" else no_status
+    head = published_on_a_with(tmp_path, monkeypatch, post)
+    out = capsys.readouterr().out
+    branch = branch_of(head)
+    assert f"published in origin as the record branch {branch}" in out
+    line = f"Tree {approvals.tree_of(head)} on {head[:12]}: true"
+    message = git_in(tmp_path / "origin.git", "log", "-1", "--format=%B", branch)
+    assert message.splitlines()[0] == line
+    assert git_in(tmp_path / "origin.git", "for-each-ref", "--format=%(refname)") == (
+        f"refs/heads/feature\n{branch}\nrefs/heads/main\n"
+    )
+    if where == "host":
+        assert [s["description"] for s in hub.pop(head)] == [line]
+    else:
+        assert hub.get(head) is None
+        assert f"was not written: {PROXY}" in out
+
+    def never(*_args: Any) -> Any:
+        raise AssertionError("clone B ran the gate")
+
+    monkeypatch.setattr(approvals, "run_local_ci", never)
+    assert approvals.reusable(head)["ref"] == branch
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
+    [(_, _, body)] = github
+    assert f"Reused by tree from the pass recorded on {head} at 2026-" in body
+    assert f"and pushed as {branch}, not run again." in body
+    assert {(s["context"], s["state"], s["description"]) for s in hub[head]} == {
+        ("gate", "success", line)
+    }
+
+
+@pytest.mark.parametrize("risk", [(), ("risk:high",)], ids=["low", "high"])
+def test_check_merge_and_land_reuse_a_record_branch_with_no_status_at_every_risk(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    risk: tuple[str, ...],
+) -> None:
+    """Acceptance 3: a PR whose only pass is the record branch, with no `gate` status on its head (GitHub refuses
+    every status write), has no gate line in check merge, and land's batch gate on that tree is reused, naming it."""
+    monkeypatch.chdir(PROJECT)
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    monkeypatch.chdir(tmp_path / "b")
+    monkeypatch.setattr(approvals, "post_status", no_status)
+    no_ci = add(LOOP, "loop", "ci: false\n")
+    pr = {
+        **pull(reviews=(verdict_on(head),), labels=(*OWNED, *risk), checks=()),
+        "headRefOid": head,
+    }
+    monkeypatch.setattr(approvals, "record_ref", lambda *_args: None)
+    assert NO_LOCAL_CHECK in merge(pr, [approved(1, "area:web")], no_ci)  # without the record
+    real_refs(monkeypatch)
+    lines = merge(pr, [approved(1, "area:web")], no_ci)
+    assert lines == [] or not [line for line in lines if "local check" in line]
+    git_in(tmp_path / "b", "checkout", "-q", head)
+    monkeypatch.setattr(approvals, "ran_gate", lambda *_a, **_k: pytest.fail("land ran the gate"))
+    assert approvals.gate_batch(tmp_path / "b", [pr]) == (approvals.tree_of(head), "reused")
+    assert f"passed on it before, reused from {branch_of(head)}" in capsys.readouterr().out
+    assert hub.get(head) is None
+
+
+def test_a_green_gate_status_naming_the_tree_with_no_record_branch_is_not_reused(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Acceptance 2, against a real origin: once the record branch is gone, the `gate` status A wrote on the head,
+    naming its tree and command, is no pass for B."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    assert [s["description"] for s in hub[head]] == [
+        f"Tree {approvals.tree_of(head)} on {head[:12]}: true"
+    ]
+    git_in(tmp_path / "b", "push", "-q", "origin", f":{branch_of(head)}")
+    assert approvals.reusable(head) is None
+
+
+def forged(
+    tmp_path: Path,
+    head: str,
+    name: str,
+    *,
+    tree: str,
+    line: str,
+    env: str,
+    more: tuple[str, ...] = (),
+) -> None:
+    """Push to origin, under `name`, a record whose content is what the test says, as anyone who can push may;
+    `more` are parents beside `head`."""
+    a = tmp_path / "a"
+    parents = [arg for parent in (head, *more) for arg in ("-p", parent)]
+    commit = git_in(a, "commit-tree", tree, *parents, "-m", f"{line}\n\nEnv: {env}\n").strip()
+    git_in(a, "push", "-q", "-f", "origin", f"{commit}:refs/heads/loop-gate/{name}")
+
+
+@pytest.mark.parametrize(
+    "wrong", ["none", "another tree", "another command", "another env", "another commit"]
+)
+def test_a_ref_whose_content_is_not_the_pass_asked_for_is_not_reused(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wrong: str,
+) -> None:
+    """Acceptance 5 (#800's forged records): the branch's name says which tree and command it holds, and its commit
+    must say the same: its tree, the command in its line, the env and the commit the line names. One field off and
+    the gate runs; `none` is the forged record with nothing off, reused, so each other case fails only on its own
+    field."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    held, base = approvals.tree_of(head), git_in(tmp_path / "a", "rev-parse", "HEAD~1").strip()
+    other = git_in(tmp_path / "a", "rev-parse", "HEAD~1^{tree}").strip()
+    fields = {
+        "tree": other if wrong == "another tree" else held,
+        "line": f"Tree {held} on {(base if wrong == 'another commit' else head)[:12]}: "
+        + ("true --tier" if wrong == "another command" else "true"),
+        "env": '{"TIER": "light"}' if wrong == "another env" else "{}",
+    }
+    forged(tmp_path, head, name_of(head), **fields)
+    git_in(tmp_path / "b", "fetch", "-q", "origin")
+    assert (approvals.reusable(head) is None) == (wrong != "none")
+
+
+@pytest.mark.parametrize(
+    ("wrong", "said"),
+    [
+        ("another tree", "its commit holds the tree {other}, not {held}"),
+        ("another env", """its message lacks the line 'Env: {{}}'"""),
+        ("another command", "its description reads '{line} --tier', not '{line}'"),
+        ("two parents", "its commit has 2 parents, not the one commit the pass ran on"),
+    ],
+)
+def test_local_ci_refusing_a_found_record_branch_says_it_was_found_and_why_it_was_rejected(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wrong: str,
+    said: str,
+) -> None:
+    """#862 user story 2: a record branch origin holds under the expected name but whose content is not the pass
+    asked for is named in the refusal with what was wrong, so the lead can tell the worker what to push, and the
+    gate does not run."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    held = approvals.tree_of(head)
+    other = git_in(tmp_path / "a", "rev-parse", "HEAD~1^{tree}").strip()
+    line = f"Tree {held} on {head[:12]}: true"
+    forged(
+        tmp_path,
+        head,
+        name_of(head),
+        tree=other if wrong == "another tree" else held,
+        line=f"{line} --tier" if wrong == "another command" else line,
+        env='{"TIER": "light"}' if wrong == "another env" else "{}",
+        more=(git_in(tmp_path / "a", "rev-parse", "HEAD~1").strip(),)
+        if wrong == "two parents"
+        else (),
+    )
+    monkeypatch.setattr(approvals, "run_local_ci", lambda *_a: pytest.fail("the gate ran"))
+    assert approvals.main(["local-ci", "7"]) == 1
+    out = capsys.readouterr().out
+    assert (
+        f"origin holds the record branch {branch_of(head)}, but it is not this pass: "
+        + said.format(other=other, held=held, line=line)
+    ) in out
+    assert github == []
+
+
+def test_a_record_branch_with_no_committer_or_unreadable_says_why_it_was_rejected(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The rest of record_ref()'s rejections reach `why`: a commit naming no committer, whose time is unknown, and a
+    branch origin lists but that can't be fetched."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    a, held = tmp_path / "a", approvals.tree_of(head)
+    body = f"tree {held}\nparent {head}\n\nTree {held} on {head[:12]}: true\n\nEnv: {{}}\n"
+    loose = tmp_path / "commit"
+    loose.write_text(body)
+    commit = git_in(a, "hash-object", "-t", "commit", "-w", "--literally", str(loose)).strip()
+    git_in(a, "push", "-q", "-f", "origin", f"{commit}:{branch_of(head)}")
+    why: list[str] = []
+    assert approvals.reusable(head, why=why) is None
+    assert why == [
+        (
+            f"origin holds the record branch {branch_of(head)}, but it is not this pass: its commit names no"
+            " committer, so its time is unknown"
+        )
+    ]
+    real = approvals.git
+
+    def no_fetch(*args: str) -> str:
+        if args[0] == "fetch":
+            raise subprocess.CalledProcessError(128, "git", stderr="fatal: the remote hung up\n")
+        return real(*args)
+
+    monkeypatch.setattr(approvals, "git", no_fetch)
+    why.clear()
+    assert approvals.reusable(head, why=why) is None
+    assert why == [
+        f"origin's record branch {branch_of(head)} could not be read: fatal: the remote hung up"
+    ]
+
+
+def test_a_ref_for_another_tree_or_command_is_not_reused_and_the_refusal_names_its_command(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The record is found by the tree asked about and today's gate command: another head's tree, or a changed gate,
+    looks for another name and runs the gate; the refusal names the command the record branch passed under."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    b = tmp_path / "b"
+    assert approvals.reusable(head) is not None
+    base = git_in(b, "rev-parse", "origin/main").strip()
+    assert approvals.reusable(base) is None
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true", "--another-tier"])
+    assert approvals.reusable(head) is None
+    assert approvals.elsewhere(head) == (
+        "; its tree passed under `true`, and the gate is now `true --another-tier`"
+    )
+
+
+def test_a_record_on_the_prs_fork_does_not_count(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Acceptance 5 (#800's fork ref): only origin, the base repo, is read, since a fork's owner may push any branch
+    to the fork."""
+    real_refs(monkeypatch)
+    fork = tmp_path / "fork.git"
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    git_in(tmp_path, "init", "-q", "--bare", str(fork))
+    a, b = tmp_path / "a", tmp_path / "b"
+    committed(a)
+    git_in(a, "remote", "add", "origin", str(fork))  # the fork's clone
+    head = git_in(a, "rev-parse", "HEAD").strip()
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(a, "push", "-q", str(origin), "HEAD:refs/heads/main")
+    git_in(tmp_path, "clone", "-q", str(origin), str(b))
+    git_in(b, "remote", "add", "fork", str(fork))  # the host fetches the PR's fork too
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["true"])
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "post_status", no_status)
+    monkeypatch.chdir(a)
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert (
+        "published in origin as the record branch refs/heads/loop-gate/" in capsys.readouterr().out
+    )
+    assert git_in(fork, "for-each-ref", "refs/heads/loop-gate/")
+    monkeypatch.chdir(b)
+    assert approvals.reusable(head) is None
+    ref = branch_of(head)
+    record = git_in(fork, "rev-parse", ref).strip()
+    git_in(a, "push", "-q", str(origin), f"{record}:{ref}")  # the same record, in the base
+    assert approvals.reusable(head)["ref"] == ref
+
+
+def test_origin_refusing_refs_outside_branches_still_takes_the_record(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A cloud session's proxy pushes only branches: the record is one, which another clone reuses."""
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text(
+        "#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/*) ;; *) echo refused $ref; exit 1;; esac;"
+        " done\n"
+    )
+    hook.chmod(0o755)
+    head, out = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    assert f"published in origin as the record branch {branch_of(head)}" in out
+    assert approvals.reusable(head)["ref"] == branch_of(head)
+
+
+def recorded_in_origin(b: Path, tree_of_commit: str, when: str) -> str:
+    """Push from clone `b` a record of `true` on `tree_of_commit`'s tree, made at `when`; returns its branch."""
+    held = approvals.tree_of(tree_of_commit)
+    record = {"head": tree_of_commit, "tree": held, "command": "true", "env": {}, "time": when}
+    return approvals.push_record(record)
+
+
+def open_prs(*heads: str) -> Any:
+    """gh answering `api --paginate .../pulls?state=open --jq <items>` for open PRs on `heads` as gh prints it: one
+    line per item, a string bare and anything else as compact JSON."""
+
+    def gh(*args: str) -> str:
+        assert args[:2] == ("api", "--paginate") and "pulls?state=open" in args[2], args
+        assert args[3] == "--jq", args
+        selector = args[4]
+        assert selector.startswith(".[]"), selector
+        lines = []
+        for number, sha in enumerate(heads, 1):
+            item: Any = {"number": number, "head": {"sha": sha, "ref": f"pr-{number}"}}
+            for key in filter(None, selector.removeprefix(".[]").split(".")):
+                item = item[key]
+            lines.append(item if isinstance(item, str) else json.dumps(item, separators=(",", ":")))
+        return "".join(f"{line}\n" for line in lines)
+
+    return gh
+
+
+def loop_gate_branches(origin: Path) -> set[str]:
+    return set(
+        git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
+    )
+
+
+def test_land_deletes_the_records_it_landed_and_old_ones_no_open_pr_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Acceptance 4: after land, the landed head's record branch is gone, fresh or not; a record over a day old whose
+    tree is no open PR's head (a replaced head) is deleted; a fresh one (its PR not open yet) and an old one for an
+    open PR's head stay. Another command's record of the landed tree goes too."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    a, b, origin = tmp_path / "a", tmp_path / "b", tmp_path / "origin.git"
+    commits = {}
+    for name in ("replaced", "unopened", "open"):
+        (a / "app.py").write_text(f"value = {name!r}\n")
+        git_in(a, "commit", "-qam", name)
+        commits[name] = git_in(a, "rev-parse", "HEAD").strip()
+        git_in(a, "push", "-q", "origin", f"HEAD:refs/heads/{name}")
+    git_in(b, "fetch", "-q", "origin")
+    old, fresh = "2026-01-01T00:00:00Z", approvals.now()
+    kept = {
+        recorded_in_origin(b, commits["unopened"], fresh),
+        recorded_in_origin(b, commits["open"], old),
+    }
+    replaced = recorded_in_origin(b, commits["replaced"], old)
+    landed_other = approvals.push_record(
+        {
+            "head": head,
+            "tree": approvals.tree_of(head),
+            "command": "true --x",
+            "env": {},
+            "time": old,
+        }
+    )
+    monkeypatch.setattr(approvals, "gh", open_prs(commits["open"]))
+    capsys.readouterr()
+    approvals.drop_records([head])
+    left = set(
+        git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
+    )
+    assert left == kept
+    assert not {branch_of(head), replaced, landed_other} & left
+    assert capsys.readouterr().out == ""
+
+
+def test_a_refused_delete_is_said_and_without_the_open_prs_only_landed_records_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    b, origin = tmp_path / "b", tmp_path / "origin.git"
+    git_in(b, "fetch", "-q", "origin")
+    other = recorded_in_origin(
+        b, git_in(b, "rev-parse", "origin/main").strip(), "2026-01-01T00:00:00Z"
+    )
+
+    def unreadable(*_args: Any, **_kwargs: Any) -> Any:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403")
+
+    monkeypatch.setattr(approvals, "rest_pages", unreadable)
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho deleting is refused\nexit 1\n")
+    hook.chmod(0o755)
+    approvals.drop_records([head])
+    assert f"the record branch {branch_of(head)} was not deleted: remote: deleting is refused" in (
+        capsys.readouterr().out
+    )
+    hook.unlink()
+    approvals.drop_records([head])
+    left = git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
+    assert left == [other]  # old, but whether an open PR needs it is unknown
+
+
+def test_an_old_record_goes_while_a_pr_is_open_reading_the_open_prs_as_gh_prints_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F1: the open PRs come through rest_pages() from gh's own output, which JSON-decodes each line; an open PR
+    on the published head keeps its record, and an old record of another tree goes."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    b, origin = tmp_path / "b", tmp_path / "origin.git"
+    stale = recorded_in_origin(
+        b, git_in(b, "rev-parse", "origin/main").strip(), "2026-01-01T00:00:00Z"
+    )
+    monkeypatch.setattr(approvals, "gh", open_prs(head))
+    capsys.readouterr()
+    approvals.drop_records([])
+    left = loop_gate_branches(origin)
+    assert stale not in left
+    assert left == {branch_of(head)}
+    assert capsys.readouterr().out == ""
+
+
+def test_an_open_head_whose_tree_is_unknown_keeps_every_record_but_the_landed_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2: an open PR's head this clone can't fetch (a fork's) has no tree here, so whether an old record is its
+    head's is unknown: only the landed trees' records go, as when the open PRs are unreadable."""
+    real_refs(monkeypatch)
+    origin = tmp_path / "origin.git"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    author, clone = tmp_path / "author", tmp_path / "clone"
+    committed(author)
+    git_in(author, "remote", "add", "origin", str(origin))
+    git_in(author, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(tmp_path, "clone", "-q", "--single-branch", "--branch", "main", str(origin), str(clone))
+    for value in ("2", "3"):
+        (author / "app.py").write_text(f"value = {value}\n")
+        git_in(author, "commit", "-qam", f"value {value}")
+    fork = git_in(author, "rev-parse", "HEAD").strip()
+    landed = git_in(author, "rev-parse", "HEAD~1").strip()
+    git_in(author, "push", "-q", "origin", f"{landed}:refs/heads/main")
+    monkeypatch.chdir(author)
+    old = "2026-01-01T00:00:00Z"
+    kept = recorded_in_origin(author, fork, old)
+    gone = recorded_in_origin(author, landed, old)
+    monkeypatch.chdir(clone)
+    git_in(clone, "fetch", "-q", "origin")
+    monkeypatch.setattr(approvals, "gh", open_prs(fork))
+    assert approvals.tree_of(fork) is None
+    approvals.drop_records([landed])
+    assert loop_gate_branches(origin) == {kept}
+    assert gone not in loop_gate_branches(origin)
+
+
+def test_a_landing_on_the_gated_tree_leaves_no_record_of_it_and_shows_the_pass_on_the_tip(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F3: merges() publishes the pass on the new tip, which pushes the landed tree's record again when it is the
+    head's tree; the record clean-up runs after it, so origin ends with no record of the landed tree, and the tip
+    still shows the `gate` status."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    b, origin = tmp_path / "b", tmp_path / "origin.git"
+    tree = approvals.tree_of(head)
+    assert branch_of(head) in loop_gate_branches(origin)
+    listing = open_prs()
+
+    def gh(*args: str) -> str:
+        if args[:2] == ("pr", "merge"):
+            git_in(b, "push", "-q", "origin", f"{head}:refs/heads/main")
+            return ""
+        return listing(*args)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    # the squash body is tested on its own
+    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    hub.clear()
+    approvals.merges(
+        [({**pull(), "headRefOid": head}, tree, tree, "reused")], "main", head, b, LOOP, set()
+    )
+    assert loop_gate_branches(origin) == set()
+    assert f"published in origin as the record branch {branch_of(head)}" in capsys.readouterr().out
+    assert [found["context"] for found in hub[head]] == [approvals.PUBLISHED]
+
+
+def test_land_deletes_the_record_branches_of_the_prs_it_merged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dropped: list[list[str]] = []
+    monkeypatch.setattr(approvals, "drop_records", dropped.append)
+    monkeypatch.setattr(approvals, "gh", lambda *_a, **_k: "")
+    # the squash body is tested on its own
+    monkeypatch.setattr(approvals, "land_body", lambda _pull: None)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "git", lambda *args: TREE if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(approvals, "publish", lambda *_a, **_k: None)
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
+    landed = [(pull(), TREE, TREE, "run")]
+    approvals.merges(landed, "main", BASE, tmp_path, LOOP, set())
+    assert dropped == [[HEAD]]
+
+
+# --- risk.merge_paths: paths whose merge only the owner's go on the head allows (#791) ---
+
+ORDERS = loop_md("risk:\n  merge_paths:\n    - src/orders/**\n")
+ORDERS_AUTO = loop_md("spec:\n  auto: true\nrisk:\n  merge_paths:\n    - src/orders/**\n")
+ORDERS_HELD = (
+    f"PR #7 waits for the owner's go on its head (`approve merge 7 --head {HEAD} --by owner`; the delegate's go and"
+    " `approved:merge` are no go), since it touches `src/orders/place.py`, which `risk.merge_paths` names"
+    " (`src/orders/**`), so only the owner approves its merge"
+)
+# a satisfied pass that judges the change low, so neither label nor verifier holds it
+LOW = {**VERDICT, "body": VERDICT["body"] + "Risk: low\n"}
+
+
+def orders_pull(*files: str, labels: tuple[str, ...] = ()) -> dict[str, Any]:
+    return pull(reviews=(LOW,), files=files or ("src/orders/place.py",), labels=labels)
+
+
+@pytest.mark.parametrize("loop", [ORDERS, ORDERS_AUTO], ids=["spec-auto-off", "spec-auto-on"])
+def test_merge_paths_hold_a_matching_pr_for_the_owners_go_naming_the_path(
+    loop: str, hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """No `risk:high`, a verifier that says low, and still the owner's go on the head; it covers that head only."""
+    issues = [approved(1, "area:web")]
+    assert merge(orders_pull(), issues, loop) == [ORDERS_HELD]
+    owned = given_go(orders_pull(), hub)
+    assert merge(owned, issues, loop) == []
+    # a new push: the go was on the head the owner saw, not this one
+    pushed = {**owned, "headRefOid": "c" * 40}
+    assert merge(pushed, issues, loop)[-1] == ORDERS_HELD.replace(HEAD, "c" * 40)
+
+
+def test_merge_paths_hold_a_pr_whose_files_the_gate_cannot_read_all_of() -> None:
+    unread = orders_pull("README.md")
+    unread["files"]["totalCount"] = 101
+    assert approvals.owner_waits(unread, [], ORDERS) == [
+        ORDERS_HELD.split(", since ")[0]
+        + ", since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner"
+        " judges them"
+    ]
+
+
+def test_a_pr_touching_no_merge_path_behaves_as_without_the_setting(
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    issues = [approved(1, "area:web")]
+    for files in (("web/app.ts",), ("src/orderly.py",), ("src/orders",)):
+        assert merge(orders_pull(*files), issues, ORDERS) == merge(
+            orders_pull(*files), issues, BARE
+        )
+        assert merge(orders_pull(*files), issues, ORDERS) == []
+    # a high-risk one still takes the delegate's go or the label where it did before
+    feature = into_feature(orders_pull("web/app.ts", labels=("risk:high", "approved:merge")))
+    assert approvals.owner_waits(feature, issues, ORDERS) == []
+    assert approvals.settings(BARE).get("risk") is None
+
+
+def test_merge_paths_take_no_label_and_no_delegate_status_as_the_go(
+    hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the default branch's policy is the one passed here, not the repo's real origin/main (#842)
+    monkeypatch.setattr(approvals, "base_policy", lambda _base, checkout: checkout)
+    labelled = into_feature(orders_pull(labels=("risk:high", "approved:merge")))
+    held = ORDERS_HELD
+    assert approvals.owner_waits(labelled, [], ORDERS) == [held]
+    # the delegate's status and record on the head, with `delegate: all`, into main and into a feature branch
+    delegated = orders_pull()
+    delegated["comments"]["nodes"].append(note(DELEGATE_RECORD))
+    hub[HEAD] = [status("owner", DELEGATE_GO)]
+    everyone = add(ORDERS, "loop", "delegate: all\n")
+    assert approvals.owned(delegated, everyone) == "delegate"
+    assert approvals.owner_waits(delegated, [], everyone) == [held]
+    assert approvals.owner_waits(into_feature(delegated), [], everyone) == [held]
+
+
+@pytest.fixture
+def ordering(landing: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """The landing checkout with `risk.merge_paths` and `delegate: all`, a low-risk PR touching a listed path; each
+    comment and label lands on the PR, as GitHub reads it back."""
+    Path("docs/agents/loop.md").write_text(
+        add(
+            add(GITHUB_RULE, "risk", "merge_paths:\n  - src/orders/**\n"), "loop", "delegate: all\n"
+        )
+    )
+    landing["pull"]["files"]["nodes"] = [{"path": "src/orders/place.py"}]
+    landing["pull"]["reviews"]["nodes"] = [LOW]
+    landing["posted"] = []
+
+    def comment(number: int, body: str) -> None:
+        landing["posted"].append((number, body))
+        landing["pull"]["comments"]["nodes"].append(note(body))
+
+    def label(number: int, name: str, add: bool) -> None:
+        landing["posted"].append((number, name, add))
+        nodes = landing["pull"]["labels"]["nodes"]
+        nodes[:] = [n for n in nodes if n["name"] != name] + [{"name": name}] * add
+
+    monkeypatch.setattr(approvals, "comment", comment)
+    monkeypatch.setattr(approvals, "label", label)
+    return landing
+
+
+def test_check_merge_refuses_a_delegates_go_on_a_merge_path_and_passes_the_owners_until_a_push(
+    ordering: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert gate(capsys, "check", "merge", "7") == (approvals.WAITING, [ORDERS_HELD])
+    assert (7, "risk:high", True) in ordering["posted"]  # the board shows why it waits
+    ordering["posted"].clear()
+    code, lines = gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "delegate")
+    assert (code, ordering["posted"], hub) == (1, [], {})
+    assert lines == [
+        (
+            "PR #7: the delegate's go is no go here, since it touches `src/orders/place.py`, which"
+            " `risk.merge_paths` names (`src/orders/**`), so only the owner approves its merge: it waits for the"
+            " owner's"
+        )
+    ]
+    into_feature(ordering["pull"])
+    code, lines = gate(capsys, "delegate", "7")
+    assert (code, ordering["posted"]) == (1, [])
+    assert lines[0].startswith(
+        "PR #7: `approved:merge` is no go here, since it touches `src/orders/place.py`"
+    )
+    ordering["pull"]["baseRefName"] = "main"
+    assert gate(capsys, "approve", "merge", "7", "--head", HEAD, "--by", "owner")[0] == 0
+    assert gate(capsys, "check", "merge", "7") == (0, [f"PR #7: the go on {HEAD} is the owner's"])
+    ordering["pull"]["headRefOid"] = "c" * 40
+    ordering["pull"]["reviews"]["nodes"] = [{**LOW, "commit": {"oid": "c" * 40}}]
+    assert gate(capsys, "check", "merge", "7") == (
+        approvals.WAITING,
+        [ORDERS_HELD.replace(HEAD, "c" * 40)],
+    )
+
+
+def test_check_queue_keeps_out_a_merge_path_pr_until_the_owners_go(
+    queueing: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    hub: dict[str, list[dict[str, Any]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rule = add(
+        add(GITHUB_RULE, "loop", "ci: false\nbatch_queue: true\n"),
+        "risk",
+        "merge_paths:\n  - src/orders/**\n",
+    )
+    (Path.cwd() / "docs" / "agents" / "loop.md").write_text(rule)
+    queueing["pull"]["files"]["nodes"] = [{"path": "src/orders/place.py"}]
+    queueing["pull"]["reviews"]["nodes"] = [LOW]
+    assert queue_check(capsys) == (1, [ORDERS_HELD])
+    given_go(queueing["pull"], hub)
+    assert queue_check(capsys) == (0, [f"PR #7 may enter a merge queue at {HEAD}"])
+
+
+def test_land_never_merges_a_merge_path_pr_without_the_owners_go_on_its_head(
+    lands: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "label", lambda *args, **kwargs: None)
+    loop = lands["work"] / "docs" / "agents" / "loop.md"
+    loop.write_text(
+        add(
+            add(GITHUB_RULE, "risk", "merge_paths:\n  - src/orders/**\n"), "loop", "delegate: all\n"
+        )
+    )
+    head = lands["open"](7, {"src/orders/place.py": "orders\n"})
+    pr = lands["pulls"][7]
+    pr["files"] = {"nodes": [{"path": "src/orders/place.py"}]}
+    pr["reviews"]["nodes"] = [{**LOW, "commit": {"oid": head}}]
+    # the delegate's go, under `delegate: all`, is no go here
+    pr["comments"]["nodes"].append(note(DELEGATE_RECORD.replace(HEAD, head)))
+    hub[head] = [status("owner", f"The delegate's go on {head[:12]}, under the owner's delegation")]
+    code, lines = lands["land"]("7")
+    assert code == approvals.WAITING
+    assert ORDERS_HELD.replace(HEAD, head) in lines
+    assert lands["merged"]() == []
+    pr["comments"]["nodes"].append(note(OWNER_RECORD.replace(HEAD, head)))
+    hub[head].insert(0, status("owner", f"The owner's go on {head[:12]}"))
+    code, lines = lands["land"]("7")
+    assert code == 0, lines
+    assert lands["merged"]() == ["7"]
+
+
+@pytest.mark.parametrize(
+    ("change", "old", "new"),
+    [
+        ("RENAMED", "src/orders/place.py", "outside/place.py"),
+        ("COPIED", "src/orders/place.py", "outside/copy.py"),
+        ("RENAMED", "outside/place.py", "src/orders/place.py"),
+    ],
+    ids=["renamed-out", "copied-out", "renamed-in"],
+)
+def test_merge_paths_and_risk_paths_match_a_moved_files_old_name_as_well_as_its_new_one(
+    change: str, old: str, new: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub's GraphQL names only a moved file's new path: the old one is read from the REST file list."""
+    asked: list[int] = []
+
+    def changes(number: int) -> list[dict[str, Any]]:
+        asked.append(number)
+        return [{"filename": new, "previous_filename": old, "status": change.lower()}]
+
+    monkeypatch.setattr(approvals, "pr_changes", changes)
+    moved = orders_pull(new)
+    moved["files"]["nodes"][0]["changeType"] = change
+    held = ORDERS_HELD.replace(
+        "`src/orders/place.py`", f"`{new if new.startswith('src/orders/') else old}`"
+    )
+    assert approvals.owner_waits(moved, [], ORDERS) == [held]
+    assert sorted(approvals.touched(moved)) == sorted({old, new})
+    assert asked == [7]  # read once per PR
+    rule = loop_md("risk:\n  paths:\n    - src/orders/**\n")
+    assert approvals.risk(moved, [], rule) == "it matches a risk rule (path `src/orders/**`)"
+
+
+def test_a_moved_file_whose_old_name_github_wont_give_holds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refused(_number: int) -> list[dict[str, Any]]:
+        raise subprocess.CalledProcessError(1, ("gh", "api"), stderr="HTTP 502")
+
+    monkeypatch.setattr(approvals, "pr_changes", refused)
+    moved = orders_pull("outside/place.py")
+    moved["files"]["nodes"][0]["changeType"] = "RENAMED"
+    assert approvals.touched(moved) is None
+    assert approvals.owner_waits(moved, [], ORDERS) == [
+        ORDERS_HELD.split(", since ")[0]
+        + ", since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner"
+        " judges them"
+    ]
+    assert approvals.risk(moved, [], GITHUB_RULE) == (
+        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        [],
+        [{"filename": "outside/place.py", "status": "renamed"}],
+        [{"filename": "other/new.py", "previous_filename": "other/old.py", "status": "renamed"}],
+        [{"filename": "outside/b.py", "previous_filename": "b.py", "status": "renamed"}],
+    ],
+    ids=["empty", "no-old-name", "another-file", "partial"],
+)
+def test_a_file_list_that_gives_no_old_name_for_each_moved_file_holds(
+    answer: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A REST answer that succeeds but lacks a moved file's old name (an entry without it, or a list that changed
+    since the GraphQL read) proves nothing about where that file came from, so both rules hold."""
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: answer)
+    moved = orders_pull("outside/place.py", "outside/b.py")
+    for node in moved["files"]["nodes"]:
+        node["changeType"] = "RENAMED"
+    assert approvals.touched(moved) is None
+    assert approvals.owner_waits(moved, [], ORDERS)[0].endswith(
+        "since the gate can't read every file the PR changes, so `risk.merge_paths` holds until the owner judges them"
+    )
+    assert approvals.risk(moved, [], GITHUB_RULE) == (
+        "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    )
+
+
+def test_a_deleted_file_under_a_merge_path_holds_the_merge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals, "pr_changes", lambda _n: pytest.fail("no old name to read"))
+    gone = orders_pull()
+    gone["files"]["nodes"][0]["changeType"] = "DELETED"
+    assert approvals.owner_waits(gone, [], ORDERS) == [ORDERS_HELD]
+
+
+def test_check_build_before_the_pr_lists_a_moved_files_old_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    committed(clone)
+    git_in(clone, "branch", "-M", "main")
+    (clone / "src" / "orders").mkdir(parents=True)
+    (clone / "src" / "orders" / "place.py").write_text("orders\n" * 20)
+    git_in(clone, "add", "-A")
+    git_in(clone, "commit", "-qm", "orders")
+    git_in(clone, "remote", "add", "origin", str(origin))
+    git_in(clone, "push", "-q", "origin", "main")
+    git_in(clone, "remote", "set-head", "origin", "main")
+    git_in(clone, "checkout", "-q", "-b", "loop/1-fix")
+    (clone / "outside").mkdir()
+    git_in(clone, "mv", "src/orders/place.py", "outside/place.py")
+    git_in(clone, "commit", "-qm", "move")
+    monkeypatch.chdir(clone)
+    assert sorted(approvals.paths(approvals.unopened())) == [
+        "outside/place.py",
+        "src/orders/place.py",
+    ]
+
+
+def gate_sees(tmp_path: Path, launcher: list[str], env: dict[str, str]) -> dict[str, str | None]:
+    """The VIRTUAL_ENV, PATH and UV_RUN_RECURSION_DEPTH the gate command sees when the real script, started by
+    `launcher` with `env` over a bare one, runs `local-ci --record` in a checkout whose gate dumps them."""
+    repo, seen = tmp_path / "repo", tmp_path / "seen.json"
+    (repo / "docs" / "agents").mkdir(parents=True)
+    (repo / "docs" / "agents" / "loop.md").write_text(loop_md("loop:\n  gate: python3 dump.py\n"))
+    (repo / "dump.py").write_text(
+        "import json, os\n"
+        f"keys = ('VIRTUAL_ENV', 'PATH', 'UV_RUN_RECURSION_DEPTH')\n"
+        f"json.dump({{k: os.environ.get(k) for k in keys}}, open({str(seen)!r}, 'w'))\n"
+    )
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "x"]):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+    script = SCRIPTS / "approvals.py"
+    run = subprocess.run(
+        [*launcher, str(script), "local-ci", "--record"],
+        cwd=repo,
+        env={
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("VIRTUAL_ENV", "UV_RUN_RECURSION_DEPTH")
+        }
+        | env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    return json.loads(seen.read_text())
+
+
+def caller_venv(tmp_path: Path) -> Path:
+    """An environment a caller activated: a folder with a pyvenv.cfg and a bin."""
+    venv = tmp_path / "caller-venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / "bin" / "python3").symlink_to(
+        sys.executable
+    )  # uv inspects an active environment's interpreter
+    return venv
+
+
+UV = [shutil.which("uv") or "uv", "run", "-q", "--script"]
+needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="uv is not installed")
+
+
+def test_the_gate_started_in_the_scripts_own_environment_does_not_see_it(tmp_path: Path) -> None:
+    """The script's entry point strips its own environment before the gate starts."""
+    own_bin = os.path.join(sys.prefix, "bin")
+    seen = gate_sees(
+        tmp_path,
+        [sys.executable],
+        {"VIRTUAL_ENV": sys.prefix, "PATH": os.pathsep.join([own_bin, "/usr/bin", "/bin"])},
+    )
+    assert seen["VIRTUAL_ENV"] is None
+    assert own_bin not in (seen["PATH"] or "").split(os.pathsep) and "/usr/bin" in seen["PATH"]
+
+
+def test_a_virtual_env_the_caller_set_on_purpose_reaches_the_gate(tmp_path: Path) -> None:
+    path = os.pathsep.join([os.path.join(sys.prefix, "bin"), "/usr/bin", "/bin"])
+    elsewhere = str(tmp_path / "project-venv")
+    seen = gate_sees(tmp_path, [sys.executable], {"VIRTUAL_ENV": elsewhere, "PATH": path})
+    assert seen == {"VIRTUAL_ENV": elsewhere, "PATH": path, "UV_RUN_RECURSION_DEPTH": None}
+
+
+# the cases a path heuristic can't tell apart: uv replaces the caller's VIRTUAL_ENV before the script starts, so
+# neither is reconstructed, whether or not the caller activated an environment
+CALLERS = {
+    "activated, another directory in front of its bin": lambda venv: (
+        str(venv),
+        ["/usr/bin", str(venv / "bin"), "/bin"],
+    ),
+    "not activated, its bin first on PATH": lambda venv: (
+        None,
+        [str(venv / "bin"), "/usr/bin", "/bin"],
+    ),
+}
+
+
+@needs_uv
+@pytest.mark.parametrize("case", CALLERS)
+def test_under_uv_run_the_gate_gets_no_virtual_env_and_the_callers_path(
+    tmp_path: Path, case: str
+) -> None:
+    """The gate gets no VIRTUAL_ENV, never a guessed one, and the caller's PATH without the script's own bin."""
+    virtual_env, entries = CALLERS[case](caller_venv(tmp_path))
+    path = os.pathsep.join(entries)
+    seen = gate_sees(
+        tmp_path, UV, {"PATH": path} | ({"VIRTUAL_ENV": virtual_env} if virtual_env else {})
+    )
+    assert seen["VIRTUAL_ENV"] is None
+    assert seen["PATH"] == path
+
+
+def test_a_gate_nested_under_another_uv_run_sees_the_callers_environment_depth(
+    tmp_path: Path,
+) -> None:
+    """uv counts each nested run in UV_RUN_RECURSION_DEPTH; the gate gets the count minus this script's."""
+    seen = gate_sees(
+        tmp_path,
+        [sys.executable],
+        {"VIRTUAL_ENV": sys.prefix, "UV_RUN_RECURSION_DEPTH": "2", "PATH": "/usr/bin:/bin"},
+    )
+    assert seen["UV_RUN_RECURSION_DEPTH"] == "1"
+
+
+def test_unlinked_keeps_the_blank_lines_no_session_line_left() -> None:
+    """A PR body's own blank lines stay; only those a removed line left beside another fold."""
+    body = "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nClaude-Session: https://x\n\nend"
+    assert approvals.unlinked(body) == "Notes\n\n```text\nfirst\n\n\nsecond\n```\n\nend"
+    assert approvals.unlinked("a\nClaude-Session: x\nb") == "a\nb"
+    assert approvals.unlinked("a\n\nClaude-Session: x") == "a"
+
+
+def test_land_only_lands_the_named_pr_and_leaves_the_other_untouched(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    other = lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7", "--only")
+    assert code == 0, lines
+    assert lands["merged"]() == ["7"]
+    # the other PR: no ready or merge call, no comment, still open on its own head
+    assert all(args[-1] != "8" and args[2] != "8" for args in lands["calls"])
+    assert [n for n, _ in lands["comments"]] == [7]
+    assert (lands["pulls"][8]["state"], lands["pulls"][8]["headRefOid"]) == ("OPEN", other)
+    assert lands["lock"]() == ""
+    # without the flag it lands with the next
+    assert lands["land"]()[0] == 0 and lands["merged"]() == ["7", "8"]
+
+
+def test_land_only_evicts_the_named_pr_red_alone_and_leaves_the_other_untouched(
+    lands: dict[str, Any],
+) -> None:
+    red = lands["open"](7, {"red.txt": "red\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    code, lines = lands["land"]("7", "--only")
+    assert code == 1, lines
+    assert lands["merged"]() == []
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+    [(number, body)] = lands["comments"]
+    assert number == 7 and body.startswith(f"{approvals.EVICTED}\nHead: {red}\n")
+    assert lands["pulls"][8]["state"] == "OPEN" and not lands["pulls"][8]["isDraft"]
+    assert all("8" not in args[2:3] for args in lands["calls"])
+
+
+def test_land_only_with_wait_lands_the_named_pr_alone(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    assert lands["land"]("7", "--only", "--wait")[0] == 0
+    assert lands["merged"]() == ["7"]
+    assert [n for n, _ in lands["comments"]] == [7]
+
+
+def test_land_only_without_a_pr_is_refused(
+    lands: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    lands["open"](7, {"7.txt": "7\n"})
+    with pytest.raises(SystemExit) as exited:
+        approvals.main(["land", "--only"])
+    assert exited.value.code == 2
+    assert "--only" in capsys.readouterr().err
+    assert lands["merged"]() == [] and lands["calls"] == []
+
+
+# --- without GraphQL: a cloud session's proxy refuses it, and REST answers the same reads ---
+
+REFUSED_GRAPHQL = "gh: GitHub GraphQL is not available from Claude Code sessions (HTTP 403)"
+NAME_WITH_OWNER = "kzarzycki/scratch-gate-revert"
+
+
+@pytest.fixture(autouse=True)
+def graphql_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts as a run that has not seen GraphQL refused."""
+    monkeypatch.setattr(approvals, "_rest_only", False)
+
+
+def user(login: str, kind: str = "User") -> dict[str, Any]:
+    return {"login": login, "type": kind}
+
+
+def rest_comment(body: str, by: str = "loop", **fields: Any) -> dict[str, Any]:
+    return {
+        "node_id": f"IC_{next(IDS)}",
+        "user": user(by),
+        "body": body,
+        "created_at": WRITTEN,
+        "updated_at": WRITTEN,
+        "minimized": None,
+        **fields,
+    }
+
+
+def labeled(name: str, by: str = "octocat", at: str = LABELED) -> dict[str, Any]:
+    return {"event": "labeled", "created_at": at, "actor": user(by), "label": {"name": name}}
+
+
+def cloud_routes(spec: str = "the spec", record_of: str | None = None) -> dict[str, Any]:
+    """PR #7 and issue #1 as GitHub's REST API returns them: #7 closes #1, whose spec the owner approved by its text
+    (or by `record_of`), and #7 has a green `check`, a satisfied verifier review on its head and no open thread."""
+    approved_text = record_of or "sha256 " + hashlib.sha256(spec.encode()).hexdigest()
+    pages = {
+        "pulls/7": {
+            "node_id": "PR_7",
+            "number": 7,
+            "title": "Feature",
+            "user": user("loop"),
+            "assignees": [user("octocat")],
+            "state": "open",
+            "merged": False,
+            "draft": False,
+            "auto_merge": None,
+            "body": "Closes #1\n\n## Evidence\n\nlog line\n",
+            "base": {
+                "ref": "main",
+                "sha": "0" * 40,  # stale: the base's tip is read from its branch
+                "repo": {"full_name": NAME_WITH_OWNER, "default_branch": "main"},
+            },
+            "head": {"ref": "feature", "sha": HEAD, "repo": {"full_name": NAME_WITH_OWNER}},
+            "labels": [],
+            "changed_files": 1,
+            "commits": 1,
+        },
+        "branches/main": {"commit": {"sha": BASE}},
+        "pulls/7/reviews?per_page=100": [
+            {
+                "user": user("loop"),
+                "state": "COMMENTED",
+                "body": VERDICT["body"],
+                "commit_id": HEAD,
+            }
+        ],
+        "pulls/7/files?per_page=100": [
+            {"filename": "app.py", "status": "modified", "patch": "@@ -1 +1 @@\n-a\n+b"}
+        ],
+        "issues/7/comments?per_page=100": [],
+        "pulls/7/ccr/review_threads": [{"resolved": True, "comment_ids": [1]}],
+        "pulls/7/commits?per_page=100": [
+            {
+                "author": user("loop"),
+                "committer": user("web-flow"),
+                "commit": {"message": "the change"},
+            }
+        ],
+        "issues/7/timeline?per_page=100": [],
+        f"commits/{HEAD}/check-runs?filter=all&per_page=100": {
+            "total_count": 1,
+            "check_runs": [
+                {
+                    "name": "check",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "started_at": PUSHED,
+                    "completed_at": PUSHED,
+                    "check_suite": {"id": 5},
+                }
+            ],
+        },
+        f"commits/{HEAD}/check-suites?per_page=100": {
+            "check_suites": [{"id": 5, "status": "completed"}]
+        },
+        f"actions/runs?head_sha={HEAD}&per_page=100": {
+            "workflow_runs": [{"check_suite_id": 5, "name": "CI"}]
+        },
+        f"commits/{HEAD}/status?per_page=100": {"total_count": 0, "statuses": []},
+        "issues/1": {
+            "number": 1,
+            "body": spec,
+            "created_at": WRITTEN,
+            "updated_at": LABELED,
+            "labels": [
+                {"name": name}
+                for name in ("kind:enhancement", "area:web", "size:S", "approved:spec")
+            ],
+            "user": user("loop"),
+            "assignees": [user("octocat")],
+        },
+        "issues/1/comments?per_page=100": [
+            rest_comment(record("spec", "owner", spec=approved_text))
+        ],
+        "issues/1/timeline?per_page=100": [labeled("approved:spec")],
+        "pulls?state=open&per_page=100": [
+            {
+                "number": 7,
+                "head": {"ref": "feature"},
+                "base": {"ref": "main"},
+                "draft": False,
+                "body": "Closes #1",
+            }
+        ],
+        "pulls?state=closed&base=feature&per_page=100": [],
+        f"compare/{BASE}...{HEAD}": {
+            "files": [
+                {
+                    "filename": "app.py",
+                    "patch": "@@ -1,2 +10,4 @@\n a\n+b\n+c\n d",
+                }
+            ]
+        },
+        "": {"permissions": {"push": True}},
+    }
+    return {f"repos/{{owner}}/{{repo}}/{path}".rstrip("/"): page for path, page in pages.items()}
+
+
+class Cloud:
+    """GitHub behind a cloud session's proxy: REST answers from `routes`, GraphQL (`gh api graphql`, and `gh pr` and
+    `gh repo`, which read through it) is refused with 403, as is the collaborator permission path. Every call is kept
+    in order, and every write is kept in `writes` instead of made."""
+
+    FORBIDDEN = ("/collaborators/",)
+
+    def __init__(self, routes: dict[str, Any]) -> None:
+        self.routes, self.calls, self.writes = routes, [], []
+
+    @staticmethod
+    def graphql(args: tuple[str, ...]) -> bool:
+        return "graphql" in args or args[0] in ("pr", "repo")
+
+    def __call__(self, *args: str, data: str | None = None) -> str:
+        self.calls.append(args)
+        if self.graphql(args):
+            raise subprocess.CalledProcessError(1, "gh", stderr=REFUSED_GRAPHQL)
+        assert args[0] == "api", args
+        rest = [arg for arg in args[1:] if arg != "--paginate"]
+        path = rest[0]
+        if data is not None or any(flag in rest for flag in ("-X", "-f", "-F", "--input")):
+            self.writes.append((path, data))
+            return ""
+        if any(part in path for part in self.FORBIDDEN):
+            raise subprocess.CalledProcessError(1, "gh", stderr="not permitted (HTTP 403)")
+        if path not in self.routes:
+            raise subprocess.CalledProcessError(1, "gh", stderr=f"{path}: Not Found (HTTP 404)")
+        page = self.routes[path]
+        jq = rest[rest.index("--jq") + 1] if "--jq" in rest else None
+        if jq is None:
+            return json.dumps(page)
+        if jq == ".[]":
+            items = page
+        elif jq.endswith("[]") and jq.startswith("."):
+            items = page[jq[1:-2]]
+        elif jq == ".files[] | {filename, patch}":
+            items = [{"filename": f["filename"], "patch": f["patch"]} for f in page["files"]]
+        else:
+            raise AssertionError(f"jq not faked: {jq}")
+        return "".join(json.dumps(item) + "\n" for item in items)
+
+
+@pytest.fixture
+def cloud(monkeypatch: pytest.MonkeyPatch) -> Cloud:
+    """approvals.py against Cloud, run in the fixture project, with the real REST readers the autouse fixtures fake."""
+    found = Cloud(cloud_routes())
+    monkeypatch.setattr(approvals, "gh", found)
+    monkeypatch.setattr(approvals, "merged_high", MERGED_HIGH)
+    monkeypatch.setattr(approvals, "open_pulls", OPEN_PULLS)
+    monkeypatch.setattr(approvals, "comment", COMMENT)
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(PROJECT)
+    return found
+
+
+def test_in_a_cloud_session_each_command_completes_with_no_graphql_call_past_the_refused_one(
+    cloud: Cloud,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """`check build`, `check merge`, `local-ci <pr>` and `verdict` complete for a PR with an approved spec, a green
+    gate and a satisfied verifier review where GraphQL answers 403: the first GraphQL call is refused, and the run
+    reads REST alone from then on, so no command makes a second. Each command is its own run."""
+    record = {
+        "head": HEAD,
+        "tree": TREE,
+        "command": "mise run check:all",
+        "exit": 0,
+        "env": {},
+        "time": WRITTEN,
+        "published": True,
+    }
+    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(), why=None: record)
+    report = tmp_path / "report.md"
+    report.write_text(REPORT.replace("app.py:12", "app.py:11").replace("app.py:40", "app.py:12"))
+    for argv in (
+        ["check", "build", "7"],
+        ["check", "merge", "7"],
+        ["local-ci", "7"],
+        ["verdict", "7", str(report)],
+    ):
+        monkeypatch.setattr(approvals, "_rest_only", False)  # a new run
+        cloud.calls.clear()
+        assert approvals.main(argv) == 0, (argv, capsys.readouterr().out)
+        asked = [call for call in cloud.calls if Cloud.graphql(call)]
+        assert len(asked) <= 1 and (not asked or cloud.calls.index(asked[0]) == 0), argv
+    out = capsys.readouterr().out
+    assert "has no `Approved: spec`" not in out and "verifier" not in out.lower(), out
+    posted = [path for path, _data in cloud.writes]
+    assert posted == [
+        "repos/{owner}/{repo}/issues/7/comments",  # local-ci's pass
+        "repos/{owner}/{repo}/pulls/7/reviews",  # verdict's review
+    ]
+
+
+def test_without_graphql_check_merge_still_fails_a_missing_proof(
+    cloud: Cloud, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """REST reads every proof GraphQL did: an unresolved thread, a red check and a spec changed after its approval
+    each still hold the merge."""
+    pages = cloud.routes
+    pages["repos/{owner}/{repo}/pulls/7/ccr/review_threads"] = [{"resolved": False}]
+    runs = pages[f"repos/{{owner}}/{{repo}}/commits/{HEAD}/check-runs?filter=all&per_page=100"]
+    runs["check_runs"][0]["conclusion"] = "failure"
+    pages["repos/{owner}/{repo}/issues/1"]["body"] = "the spec, edited"
+    assert approvals.main(["check", "merge", "7"]) == 1
+    out = capsys.readouterr().out.splitlines()
+    assert (
+        "PR #7: 1 review thread(s) unresolved: fix and reply, or triage, then resolve (github.md, Review trail)"
+        in out
+    )
+    assert "PR #7: `check` is FAILURE on the head commit" in out
+    assert (
+        "#1 has no `Approved: spec` record by the owner for its current spec: the owner approves it again"
+        in out
+    )
+
+
+def test_review_threads_a_host_cannot_read_over_rest_fail_closed(cloud: Cloud) -> None:
+    """GitHub's own REST API has no review threads: where the proxy's route is missing, the read raises rather than
+    count none unresolved."""
+    del cloud.routes["repos/{owner}/{repo}/pulls/7/ccr/review_threads"]
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        approvals.pull_request(7)
+    assert "ccr/review_threads: Not Found" in raised.value.stderr
+
+
+def test_where_graphql_answers_it_is_the_one_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On a host the PR and its issues come from one GraphQL call each, as before: REST is never asked."""
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, data: str | None = None) -> str:
+        calls.append(args)
+        assert "graphql" in args, args
+        if "pullRequest(number: $n)" in " ".join(args):
+            return json.dumps({"data": {"repository": {"pullRequest": pull()}}})
+        return json.dumps({"data": {"repository": {"issue": approved(1)}}})
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    assert approvals.pull_request(7)["headRefOid"] == HEAD
+    assert approvals.issue_node(1)["number"] == 1
+    assert len(calls) == 2 and approvals._rest_only is False
+
+
+def test_another_error_from_graphql_is_no_refusal_and_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def gh(*args: str, data: str | None = None) -> str:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: Bad Gateway")
+
+    monkeypatch.setattr(approvals, "gh", gh)
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        approvals.pull_request(7)
+    assert "502" in raised.value.stderr
+    assert approvals._rest_only is False
+
+
+def test_rest_reads_a_pr_in_graphqls_shape(cloud: Cloud) -> None:
+    """A bot's login loses the `[bot]` REST adds, GitHub's web-flow committer is no account, a review that only
+    comments leaves a request for changes standing, a check run is named by its workflow, the base is its branch's tip,
+    and what REST can't say (the merge queue, GitHub's closing links) is left for the caller to refuse or read from
+    the body."""
+    pages = cloud.routes
+    pages["repos/{owner}/{repo}/pulls/7"]["user"] = user("renovate[bot]", "Bot")
+    pages["repos/{owner}/{repo}/pulls/7/reviews?per_page=100"] = [
+        {"user": user("ann"), "state": "CHANGES_REQUESTED", "body": "", "commit_id": HEAD},
+        {"user": user("ann"), "state": "COMMENTED", "body": "a note", "commit_id": HEAD},
+        {"user": user("bob"), "state": "CHANGES_REQUESTED", "body": "", "commit_id": HEAD},
+        {"user": user("bob"), "state": "APPROVED", "body": "", "commit_id": HEAD},
+    ]
+    found = approvals.pull_request(7)
+    assert found["author"] == {"login": "renovate", "__typename": "Bot"}
+    assert found["baseRefOid"] == BASE
+    assert found["authored"]["nodes"][0]["commit"]["committer"] == {"user": None}
+    assert [(r["author"]["login"], r["state"]) for r in found["latestReviews"]["nodes"]] == [
+        ("ann", "CHANGES_REQUESTED"),
+        ("bob", "APPROVED"),
+    ]
+    [run] = found["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+    assert (approvals.workflow(run), run["conclusion"], run["checkSuite"]["status"]) == (
+        "CI",
+        "SUCCESS",
+        "COMPLETED",
+    )
+    assert found["closingIssuesReferences"] == {"nodes": []}
+    assert [issue["number"] for issue in approvals.closing_issues(found)] == [1]
+    assert "doesn't say whether it is in a merge queue" in approvals.unsignable(
+        found, "main", Path("signers")
+    )
+
+
+def test_a_co_author_rest_cannot_name_leaves_no_bot_exemption(cloud: Cloud) -> None:
+    """GraphQL names a commit's co-authors; REST does not, so a `Co-authored-by` trailer exempts nothing."""
+    loop = add(BARE, "bot", "renovate:\n  paths:\n    - app.py\n")
+    pages = cloud.routes
+    pages["repos/{owner}/{repo}/pulls/7"]["user"] = user("renovate[bot]", "Bot")
+    commit = pages["repos/{owner}/{repo}/pulls/7/commits?per_page=100"][0]
+    commit["author"] = user("renovate[bot]", "Bot")
+    assert approvals.exempt(approvals.pull_request(7), loop)
+    approvals._rest_only = False
+    commit["commit"]["message"] = "bump\n\nCo-authored-by: Mallory <m@example.com>"
+    assert not approvals.exempt(approvals.pull_request(7), loop)
+
+
+def test_the_account_running_this_is_a_writer_by_its_own_permissions_where_the_proxy_refuses_the_lookup(
+    cloud: Cloud, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "viewer", lambda: "loop")
+    assert approvals.writer("loop")
+    assert not approvals.writer("drive-by")  # anyone else still can't be looked up, so isn't one
+    cloud.routes["repos/{owner}/{repo}"] = {"permissions": {"pull": True}}
+    assert not approvals.writer("loop")
+
+
+# --- an approval names the spec's text ---
+
+
+def rest_shaped(node: dict[str, Any]) -> dict[str, Any]:
+    """`node` as REST gives it: no edit time."""
+    return {key: value for key, value in node.items() if key != "lastEditedAt"} | {
+        "updatedAt": WRITTEN
+    }
+
+
+@pytest.mark.parametrize("shape", [lambda node: node, rest_shaped], ids=["graphql", "rest"])
+def test_an_approval_of_the_spec_text_holds_until_the_text_changes(
+    shape: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    spec = issue(
+        1, "size:S", "approved:spec", "area:web", comments=(record("spec", "owner", spec=TEXTED),)
+    )
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == []
+    spec["body"] = "the spec\nand one more line"
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == [
+        "#1 has no `Approved: spec` record by the owner for its current spec: the owner approves it again"
+    ]
+    spec["body"] = "the spec"  # exactly the approved text again: the approval holds again
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == []
+    spec["body"] = "the spec\r\n"  # line ends as a browser may send them: the text is the same
+    spec["comments"]["nodes"][0]["body"] = record(
+        "spec", "owner", spec=approvals.texted({"body": "the spec\n"})
+    )
+    assert approvals.proofs("build", pull(), [shape(spec)], LOOP) == []
+
+
+def test_a_record_of_the_last_edit_holds_where_graphql_dates_it_and_over_rest_says_how_to_renew_it() -> (
+    None
+):
+    """Records written before texts were named carry the edit time: GraphQL still checks them, REST can't, so it
+    refuses with the command that renews the approval."""
+    assert approvals.proofs("build", pull(), [approved(1, "area:web")], LOOP) == []
+    assert approvals.proofs("build", pull(), [rest_shaped(approved(1, "area:web"))], LOOP) == [
+        (
+            "#1 has no `Approved: spec` record by the owner for its current text: its record names the spec's last"
+            " edit, which GitHub's REST API can't date, so the owner approves it again (`approve spec 1 --by owner`)"
+            " or the check runs where GraphQL answers"
+        )
+    ]
+
+
+def test_over_rest_the_owners_label_is_recorded_only_when_nothing_changed_the_spec_after_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """REST has no edit time, so the spec's `updatedAt`, which every edit moves, dates its last change: a label the
+    owner added after it is their word; one at or before it is never taken as covering the text."""
+    loop = add(LOOP, "loop", "owner: octocat\n")
+    spec = rest_shaped(issue(1, "kind:enhancement", "area:web", "size:S", "approved:spec"))
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+    sent: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: sent.append(body))
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    spec["updatedAt"] = LABELED
+    approvals.adopted([spec], loop)
+    assert sent == []
+    assert capsys.readouterr().out == (
+        "#1: the owner's `approved:spec` can't be dated after the spec's last edit, since GitHub's REST API gives no"
+        f" edit time and the spec changed at {LABELED}, after it: the owner records it with `approve spec 1 --by"
+        " owner`, or the check runs where GraphQL answers\n"
+    )
+    spec["updatedAt"] = PUSHED
+    approvals.adopted([spec], loop)
+    assert sent == [f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n"]
+
+
+def test_approve_over_rest_records_the_text_and_minimizes_nothing_it_cannot_tell_it_may(
+    github: list[tuple[Any, ...]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    earlier = rest_shaped(
+        issue(
+            1,
+            "kind:bug",
+            comments=(note(record("spec", "owner", spec=AS_WRITTEN), viewerCanMinimize=False),),
+        )
+    )
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: earlier)
+    assert approvals.main(["approve", "spec", "1", "--by", "owner"]) == 0
+    assert github[0] == (
+        "comment",
+        1,
+        f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n{approvals.CHANGED['spec']}",
+    )
+    assert not any(call[0] == "minimize" for call in github)

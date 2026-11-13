@@ -1,31 +1,34 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run -q --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["PyYAML==6.0.3"]
+# ///
 """Label sync (engineering loop): make the repo's labels the loop's fixed set plus docs/agents/issue-tracker.md's.
 
-    python3 scripts/labels.py [--dry-run]
+    uv run scripts/labels.py [--dry-run]
 
 Run in the project's checkout, from the installed engineering-loop skill, `--dry-run` first. The project's
-`mise run setup:github` runs it only once project-templates wires it in. One line per change, then one per label it keeps:
+`mise run setup:github` runs it too. One line per change, then one per label it keeps:
 
 - Renames first, in place (`PATCH labels/<old>`), so every open and closed issue and PR keeps its label: the
-  tracker's `## Renamed labels` map, then the loop's own (`bug`, `enhancement` and `chore` to their `kind:` names,
+  tracker's `renames` (`old: new`), then the loop's own (`bug`, `enhancement` and `chore` to their `kind:` names,
   `documentation` to `kind:documentation`), then each component's and extra category's bare name to its `area:` or
   `kind:` label. Dependabot's labels are never renamed or folded. A rename whose new name already exists is a fold: each issue or PR with the old label gets the new
   one and loses the old, then the old is deleted. An old name the repo lacks is skipped, so the map can stay.
-- Then it creates every listed label it lacks and updates one whose colour or description differs. A tracker item's
-  description is its text after the name, cut to GitHub's 100 characters.
+- Then it creates every listed label it lacks and updates one whose colour or description differs. A tracker name's
+  description is its value, cut to GitHub's 100 characters.
 - Then each unlisted label: deleted when no issue or PR, open or closed, carries it, else kept and reported with its
   count, since deleting it would lose who had it. A label whose name has a comma is kept and reported, never
   deleted or folded, since its carriers can't be counted. Dependabot's are kept, since it recreates them and its PRs use them.
 
 A second run changes nothing. `--dry-run` reads the same and writes nothing. Without docs/agents/issue-tracker.md it
-refuses, since nothing would say which labels are the repo's. Exit 1 with gh's reason. Stdlib only.
+refuses, since nothing would say which labels are the repo's. Exit 1 with gh's reason. Stdlib, and PyYAML through approvals.py.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import re
 import subprocess
 import sys
 from urllib.parse import quote
@@ -43,12 +46,11 @@ from approvals import (  # the label names, defined once
     SIZE_ORDER,
     TRACKER,
     Refused,
-    items,
     one_repo,
     qualified,
     read,
-    section,
     toplevel,
+    tracker_settings,
 )
 
 # the loop's fixed set (issues.md, Labels): name -> (colour, description)
@@ -94,30 +96,27 @@ def described(text: str) -> str:
 def wanted(tracker: str) -> dict[str, tuple[str, str]]:
     """Every listed label: the loop's, the tracker's components (`area:`), extra categories (`kind:`) and extra
     labels, each with its colour and description."""
-    found = dict(LOOP_LABELS)
-    for heading, kind, colour in (
-        ("Components", "component", AREA),
-        ("Extra categories", "category", KIND),
+    found, tracked = dict(LOOP_LABELS), tracker_settings(tracker)
+    for section, kind, colour in (
+        ("components", "component", AREA),
+        ("categories", "category", KIND),
     ):
-        for name, text in items(tracker, heading).items():
+        for name, text in tracked.get(section, {}).items():
             found[qualified(kind, name)] = (colour, described(text))
-    for name, text in items(tracker, "Extra labels").items():
+    for name, text in tracked.get("labels", {}).items():
         found.setdefault(name, (EXTRA, described(text)))
     return found
 
 
 def renames(tracker: str) -> list[tuple[str, str]]:
-    """Old name to new, in order: the tracker's `## Renamed labels` (each item's first two backticked names), the
-    loop's, then each component's and extra category's bare name to its label."""
-    mapped = re.findall(
-        r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`[^`\n]*`([^`\n]+)`",
-        section(tracker, "Renamed labels"),
-        re.MULTILINE,
-    )
+    """Old name to new, in order: the tracker's `renames`, the loop's, then each component's and extra category's
+    bare name to its label."""
+    tracked = tracker_settings(tracker)
+    mapped = list(tracked.get("renames", {}).items())
     bare = [
         (name, qualified(kind, name))
-        for heading, kind in (("Components", "component"), ("Extra categories", "category"))
-        for name in items(tracker, heading)
+        for section, kind in (("components", "component"), ("categories", "category"))
+        for name in tracked.get(section, {})
     ]
     return [(old, new) for old, new in [*mapped, *LOOP_RENAMES, *bare] if old != new]
 

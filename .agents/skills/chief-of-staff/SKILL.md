@@ -62,7 +62,10 @@ its landing order.
   deliverables, steps, tests or guardrails the owner never named, since the lead reads
   every sentence as a requirement. An approval the owner gave (a spec, a merge, a standing
   rule) goes in word for word, with who said it, where and when: a lead refuses an approval it
-  is only told about, and stops to ask the owner.
+  is only told about, and stops to ask the owner. A pack script the brief names is the copy
+  installed in the lead's repo (`.claude/skills/…` or `.agents/skills/…`), else your own
+  installed copy, never a developer checkout of the pack: one can sit on any branch, and a
+  stale `approvals.py` there fails every land.
 - **Start.** `python3 <script> start --top-level <claude|codex> <title> <brief-file>
   <report> --role <role-file>`, with the report under your `tmp/loop/` and the
   role the ask needs (an engineering ask: engineering-loop's `lead.md`, by absolute path),
@@ -125,7 +128,11 @@ its landing order.
   the sessions, and writes nothing.
 - **Adopted sessions.** A session the owner hands you that they started themselves is a lead
   from then on: subscribe to it as above or add its line to the registry (`<session>=<report>`, a tab, `follow`), and answer its reversible
-  questions under the owner's standing decisions (Authority).
+  questions under the owner's standing decisions (Authority). A lead the owner works with in
+  its own session (they talk to it there, not through you) you mark with `python3 <script>
+  direct <session>` (`--off` clears it): the supervisor still tells you its `DONE`, failures
+  and approval prompts, but raises no deadline, sends no nudge and leaves its quiet ends and
+  questions to the owner, who reads them there.
 - **Host load.** Before starting or resuming sessions on a host, check its capacity: load
   average per core and available memory, in one call on that host with `python3 <script> capacity`
   (exit 0 with room, 1 over; `start` and `run` wait for room themselves). Over it,
@@ -148,8 +155,11 @@ an earlier `DONE` or `PARKED` line: an ask after a `DONE` is the ending, since i
 Under `--console` the supervisor already did the routine part: it sends the stall nudge (once per
 progress chain) and the revive (once per lead) itself, as a `relay` whose text is `Supervisor:
 your turn ended with no ending and no named wait. Carry on to your next step, and end your turn
-with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED.` (`LEAD_NUDGE`). When a
-lead's history shows that line, the nudge is spent: you never send another, because a second one
+with DONE, STILL WORKING naming what you wait on, USER NEEDED or PARKED.` (`LEAD_NUDGE`). For a
+timed wait (`until <UTC time>`) still quiet once its time has passed, it sends the wake instead,
+`Supervisor: the time your STILL WORKING named, <time>, has passed. …` (`LEAD_WAKE`), from the
+same budget, since nothing else wakes an idle lead at its time. When a lead's history shows
+either line, the nudge is spent: you never send another, because a second one
 would break the once-per-chain budget the supervisor keeps in `state.json` across restarts. A
 post that reaches you has already been through that, so the rows below that say "nudge" or
 "revive" apply only to a supervisor running without `--console`.
@@ -158,7 +168,7 @@ post that reaches you has already been through that, so the rows below that say 
 |---|---|
 | Turn ended (completed), `DONE` | One line to the owner with the result: PR, merge, issue. Send each lead that waits on this one, and was started without `start --after` (or under a supervisor without `--console`), a line of yours naming its result, the merge or that it ended without one, since nothing else wakes it; a lead started with `--after` is told by the supervisor, and a second line of yours would wake it twice. Then archive the lead once its report says it cleaned up (`reap <session>` with the registry, which drops its line first, so the supervisor posts no `archived` for it). |
 | Turn ended, `USER NEEDED` | When a standing decision delegates that kind of question and the answer is reversible, decide it as Authority says: `relay` your answer quoting the standing decision it rests on, and report it to the owner in one line. Otherwise put its question to the owner in one line, linked to the lead's session, and never answer it yourself, even when you think you know. You may add a fact from the board, marked as yours. |
-| Turn ended, `STILL WORKING`, with something pending | Send nothing, since the state file records what it waits on (Handover, Follow): its own worker, verifier or CI wakes it, another lead's merge reaches it through that lead's `DONE`, and a timed wait (`until <UTC time>`) raises no deadline before its time. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
+| Turn ended, `STILL WORKING`, with something pending | Send nothing, since the state file records what it waits on (Handover, Follow): its own worker, verifier or CI wakes it, another lead's merge reaches it through that lead's `DONE`, and a timed wait (`until <UTC time>`) raises no deadline before its time, then gets the supervisor's wake (`--console`, see above) or, without it, a `relay` from you once its time has passed. Tell the owner only when the turn changes the task, in one line naming the block or the new scope: it is blocked on something outside the lead, another lead's merge included, or its scope changed. |
 | Turn ended, `PARKED` | Send nothing (the state file records it as parked, and its last message holds the next step): it is no stall and spends no nudge. Once the host has room, `relay` it a line to resume, one lead at a time. |
 | Turn ended, `STILL WORKING` with nothing pending (its message names no wait), no ending, or cancelled | A stall: send it one nudge to carry on to its next step (under `--console` the supervisor sent it: see above). A second stall without progress goes to the owner. |
 | Blocked on a prompt | Tell the owner which session waits and on what. Once they approve it (or decline it), run `python3 <script> approve <session>` (`--decline`), which answers each approval prompt pending; their word is the approval, never yours. |
@@ -194,10 +204,16 @@ the foreground and never poll the lead afterwards:
 | 5 | Queued: the lead holds it until its current step ends, or until the approval prompt it names is answered; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
 | 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
 
-A lead blocked only on a question (its own ask of the owner) gets the message as the
-question's answer, because a question holds every message behind it until answered: relay
-the owner's answer to it the same way. `relay` never answers an approval prompt; `approve`
+A lead blocked only on a question (its own ask of the owner) holds every message behind it
+until it is answered, so relay the owner's answer to it with `relay --answer`, which gives the
+message as the question's answer. Without `--answer` the message waits behind the question
+(exit 5): use that for anything that is not the answer. `relay` never answers an approval prompt; `approve`
 does, on the owner's word (the table above).
+
+A scheduled task or an agent that relays to you passes `relay --from <its name>`, so its
+message opens with `[relay from <name>: …]` and is clearly not the owner's words; no relay
+without `--answer` becomes the answer to a question of yours, so only the owner answers what you
+asked the owner. Set that flag in each task's prompt you write.
 
 ## Authority
 
@@ -206,8 +222,14 @@ never stand in for the owner's approval of a spec, a merge or anything hard to u
 a lead asks for approval, the owner gives it, to you or in the lead's session, and you relay
 it quoted.
 
+- **Cite it.** When you relay a decision the owner gave you, run `python3 <script> owner-said
+  <your session id> <quote-file>` with their words verbatim and put the line it prints (the
+  session link, item, time and author) under the quote, in the relay and in any comment
+  recording it. A lead can then check the words against your session with the same command
+  instead of taking your word for them; a quote it can't find there is no approval. Exit 1 means
+  the words are not the owner's own message in your session: never relay them as an approval.
 - **What you may record.** For an approval the owner gave you, add its label (such as
-  `approved:spec`) with a comment quoting their words and the session id they said them in.
+  `approved:spec`) with a comment quoting their words and the `owner-said` citation.
   The written approval record a gate checks (the loop's `approve --by owner`) is the owner's
   own to make. When a gate still waits on it, put the exact command or click the owner must
   give on the attention list; never retry a write a tool refused as self-approval.
@@ -238,6 +260,11 @@ it quoted.
   as inferred.
 - A question offers a few options, one line each, with your recommendation first. Under a
   delegating standing decision it also says what you did (Authority).
+- Ask as text at the end of your turn, numbered when there are several, never through a tool
+  that waits for the answer (Claude Code's AskUserQuestion, Codex's requestUserInput): it holds
+  your turn open, and Omnigent delivers new input only when a turn ends, so every relay,
+  supervisor event and idle compaction waits behind the question until the owner replies,
+  often hours later. Their reply arrives as your next message.
 
 ## Handover
 
@@ -280,10 +307,17 @@ a successor on any host reads the current one:
   not yours, its file is the one there, since this checkout's may be older: read it on
   that host (a pushed board you pull instead), or ask the owner to paste it when you cannot
   reach the host, since rebuilding
-  from transcripts is what the file exists to avoid. Once the predecessor's turn has ended,
-  archive it (`reap <session>`, which keeps its transcript): archiving drops its
-  subscriptions, which would otherwise wake it on every lead's notice, so two chiefs of
-  staff would both act, and it marks every file that names it in Owner contact as stale. Stop
+  from transcripts is what the file exists to avoid. Archive the predecessor at takeover
+  (`reap <session>`, which keeps its transcript): archiving drops its subscriptions, which
+  would otherwise wake it on every lead's notice, so two chiefs of staff would both act, and
+  it marks every file that names it in Owner contact as stale. `reap` keeps one whose turn
+  has not ended and prints `kept (…)` with the state (running, blocked on a prompt, input
+  pending and the like: the owner switched away mid-turn, or Omnigent lost its turn end), and
+  its subscriptions stay until it is archived. Write `to archive` beside its id in Owner
+  contact and run `reap` on it again at every wake until it prints `archived` or `already
+  archived`, then drop the mark. The first wake it is still kept, ask the owner once whether
+  it still works, since a lost turn end and a live turn look the same from here and only the
+  owner can stop its turn. Stop
   its supervisor too (Follow in the file), since it notifies the archived id, and start yours
   with `--console` on the same registry with your own id: the `follow` lines stay in it, and the
   state file beside it keeps the settled events, nudge and revive budgets, open intents, queued
@@ -296,7 +330,9 @@ a successor on any host reads the current one:
   found by the registry's name, so the two must keep it; a registry without its state file
   starts fresh, which re-raises every event, and a copy of the registry alone follows its leads
   but forgets their budgets. Nothing is written back to the predecessor's files.
-  Then recall with the query `owner standing decisions` (Memory), read a lead's state from
+  Then recall with the query `owner standing decisions` (Memory) in this repo and in each
+  live lead's repo you can reach, since `memory.py` reaches only the bank of the directory it
+  runs in and a decision retained in a lead's repo is missed otherwise. Read a lead's state from
   `status <session>` only when the state file or a post doesn't settle it, subscribe to a lead
   (`sys_session_subscribe(session_id=<id>)`) only when you follow it by subscription, never
   beside the supervisor: the subscription wakes you on every turn and bypasses the supervisor's

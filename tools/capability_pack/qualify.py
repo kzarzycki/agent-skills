@@ -41,6 +41,10 @@ class BreakingDriftError(QualificationError):
     """An imported skill disappeared or was renamed upstream."""
 
 
+class QualificationTimeoutError(QualificationError):
+    """A step stopped on ``QUALIFY_TIMEOUT``: the host was too slow, nothing failed."""
+
+
 class PatchError(QualificationError):
     def __init__(self, patch: str, detail: str) -> None:
         super().__init__(f"patch failed: {patch}: {detail}")
@@ -846,8 +850,8 @@ def _timeout(default: int = 120) -> int:
     return int(raw)
 
 
-def _timed_out(what: str, timeout: int) -> QualificationError:
-    return QualificationError(
+def _timed_out(what: str, timeout: int) -> QualificationTimeoutError:
+    return QualificationTimeoutError(
         f"{what} timed out after {timeout} seconds; on a loaded host raise {TIMEOUT_VARIABLE}"
     )
 

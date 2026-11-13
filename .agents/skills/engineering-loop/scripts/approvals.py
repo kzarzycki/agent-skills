@@ -1,94 +1,234 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run -q --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["PyYAML==6.0.3"]
+# ///
 """Approvals (engineering-loop): every step leaves proof on GitHub, and this checks it before the loop moves on.
 
-    python3 scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
-    python3 scripts/approvals.py land <pr> [--wait]         # every merge proof, then ready and merge; exit 0, 1 or 3
-    python3 scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
-    python3 scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
-    python3 scripts/approvals.py local-ci <pr>              # with `CI: none`: run `mise run check:all` on the PR head
-    python3 scripts/approvals.py local-ci --record          # the same on HEAD before review; `local-ci <pr>` reuses it
-    python3 scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
+    uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
+    uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
+    uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
+    uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
+    uv run scripts/approvals.py land [<pr>] [--wait]       # land every landable PR as one gated batch; exit 0, 1 or 3
+    uv run scripts/approvals.py approve <spec|plan> <issue> --by owner   # on the owner's word
+    uv run scripts/approvals.py approve merge <pr> --head <sha> --by owner [--withdraw]  # the owner's go on that head
+    uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
+    uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
+    uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
+    uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
+    uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
+    uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
+    uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
+    uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
+    uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
 
-Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The project's `mise run loop:approvals
+Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
+`## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
+policy in each is refused, naming both, since two sources of the bar would drift. "loop.md's" setting below means the
+policy's, in whichever file holds it. The project's `mise run loop:approvals
 <point> [pr]` task runs `check`, and its `loop:land <pr>` task, where it has one, runs `land`; the loop and CI call
 those tasks.
 
 `check build` needs every issue the PR closes to be free of `needs-owner`, with exactly one category, a component and
 exactly one size (a `wayfinder:` ticket needs only `approved:spec` and no `needs-owner`), and its spec approved: the
-owner's current record and `approved:spec`, unless loop.md's `spec: auto unless risk` or `spec: auto` covers it (below). A `## Plan`
-comment needs the same where a `plan:` rule asks, and is due with a `Plan:` line in loop.md § Practice. Category,
-component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's (`label_names`): a category is
-`kind:<name>`, a component `area:<name>`, whether the tracker file and loop.md's conditions name it bare or in full.
+owner's current record and `approved:spec`, unless loop.md's `spec.auto` covers it
+(below). A `## Plan` comment needs the same where the `plan` rule asks, and is due when loop.md's `practice` names a
+`plan` skill. Category, component and size names are the loop's fixed set plus docs/agents/issue-tracker.md's
+(`label_names`): a category is `kind:<name>`, a component `area:<name>`, whether the tracker file names it bare or in
+full.
 `check build` also refuses an issue assigned to anyone but its approver (the person who last added `approved:spec`,
-or for a spec the policy approves the account running this), since an assignee says whose the issue is. When every
-build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
+or for a spec the policy approves the account running this), since an assignee says whose the issue is; and, with a
+PR, an issue another open PR closes too (a closing keyword, or `Implements` under a `signoff` rule), naming that PR
+and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. `release` removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
-A repo without docs/agents/loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
+A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
-each issue, where loop.md has `signoff:` rules (below); the verifier's PR
+each issue, where loop.md has a `signoff` rule (below); the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
 PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, since every
-commit after a verdict needs one of its own; no unresolved
-review thread; and no review whose latest state is `CHANGES_REQUESTED`. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
-status) for the newest run of the aggregate `check` on the head to be green, the one check it reads (with the line
-`CI: none` in loop.md, a `local-ci` pass on the head instead), and, while the change is high risk, for the owner's
-`approved:merge` label on the PR, added after the head was pushed and still present. High risk is `risk:high` on the
-PR or an issue it names, a risk rule matching (below) unless under `spec: auto`, or a review at the cap or later not satisfied or
+commit after a verdict needs one of its own; on a high-risk change (below), that pass came from the default tier, not
+one whose heading names `mid` or `small` (a `Verifier model:` tier, verifier.md), since a lower tier's review is enough
+only for a change it rates low; no unresolved
+review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
+author posted one, that embeds its videos as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
+status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head, or
+of the aggregate `check` when it requires none (with
+`ci: false` in loop.md, a `local-ci` pass on the head's tree under today's gate command, read as `local-ci` reads
+it below, instead; its comment is the trace, never the proof), and, while the change is high risk, for the owner's
+go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
+green, and the PR holds the owner's record (`Approved: merge`, `By: owner`, `Head: <sha>`) naming that head.
+`approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the record's every word the script
+writes, refusing a head other than the one named, which is the one the owner was shown; `--withdraw` posts a newer
+failing status and a `Withdrawn: merge` record and removes the `approved:merge` label. A status belongs to one
+commit, so no push carries the go to a head the owner didn't see. Into the default branch that is the only go: a
+label is anyone's with triage rights, the delegated approver's included, so `approved:merge` there is no go, nor is
+an `owner` status an older gate wrote from the label (marked as from it). On a change that is not high risk the
+label means nothing. High risk is `risk:high` on the
+PR or an issue it names, a risk rule matching (below) unless under `spec.auto: true`, or a review at the cap or later not satisfied or
 with a blocker or major open (`cap`, SKILL.md § The cap); when the gate infers it, `check merge` and `land` add `risk:high` to the PR, reporting a
-failure to add it and carrying on. A push removes the label (the
-approvals workflow does it on `synchronize`), so the label never covers a head the owner did not see; the push time is
-GitHub's repository activity for the head branch. No PR yet, or every proof held: exit 0.
-With the line `Opt-out: allowed` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
+failure to add it and carrying on. On a PR into a feature branch (any base but the repository's default branch)
+`approved:merge` added after the head was pushed is a go too, the push time being GitHub's repository activity for
+the head branch; a label added before the push is no go, and the approvals workflow removes it on `synchronize`. There
+the label may be the delegated approver's: `delegate <pr>` adds it, then a record (`Approved: merge`,
+`By: delegate`), and refuses a PR into the default branch, whose merge only the owner approves. A PR from a branch
+into the default branch is high risk while any PR merged into that branch carries `risk:high`, so a feature
+branch's merge waits for the owner.
+Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
+the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
+since a build needs an approved spec. `check merge` with no PR yet: exit 0.
+With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
 `Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
-workflow posts success and its author merges it their usual way; `land` prints the same line and exits 1, so the
-loop never merges it or turns auto-merge on for it. Risk rules and `risk:high` hold no such PR. `check build` is
-unchanged. A spec a policy covers is no trail, since under `spec: auto` every issue is covered.
-`land` is the one way an agent merges. It runs every proof of `check merge` and refuses (exit 1) before touching the
-PR when one fails, or when GitHub's merge state says the head is behind a base that requires it up to date
-(`BEHIND`) or conflicts with it (`DIRTY`): merge the base in, rerun the gates and get a verdict on the merge. While
-GitHub has not computed that state yet (`UNKNOWN`) it neither marks ready nor merges: exit 3, run it again. A draft
-it marks ready, which starts CI, and exits 3, since a draft's skipped checks say nothing about the ready PR: run it again. On a ready PR it reads the checks the base requires (its rulesets and branch
-protection; a base requiring none requires every check on the head green). A private repo on GitHub's free plan
-has neither, nor auto-merge: GitHub's 403 on its rules reads as none required, and `land` says GitHub enforces nothing
-there, so its proofs are the only gate. With every required check
-green and the label where the change is high risk: `gh pr merge --squash --match-head-commit <head>`, exit 0. While only
-required checks are pending and the repo allows auto-merge, the same with `--auto`, so GitHub merges once they pass,
-exit 0. Otherwise (a red check, the label, no auto-merge, `CI: none` without a record) exit 3: run it again. A
-merged PR: exit 0; a closed one: exit 1.
-With loop.md's line `Land: local signed squash to <branch>, allowed signers <path>`, for a repo that trusts only
-commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the same proofs and waits
-hold, but where `land` would merge it squashes the PR in this checkout instead: one commit with the head's tree on the
-base's tip, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key (`gpg.format ssh`, `user.signingkey`) and
-checked with `git verify-commit` against the allowed signers file. It pushes that commit to the PR's branch, pinned to
-the head the gates checked, then fast-forwards the base to it, so GitHub shows the PR merged; exit 0. A base push
-refused (the base moved meanwhile) puts the PR's branch back on its head, exit 1. It never turns
-auto-merge on, since GitHub would sign that squash, and waits (exit 3) while checks are pending. It refuses (exit 1),
-before touching the PR, a PR from another repository (its branch isn't ours to push), a base other than the line's,
-auto-merge or the merge queue on, an `origin` that isn't the PR's repo, a checkout that signs nothing, or a missing
-signers file; and at the merge a head that moved, a head that doesn't contain the base's tip (merge it in) and a
-signature the file doesn't allow. A `Land:` line it can't read is refused. Without the line nothing changes.
-`land --wait` runs it again every 30 seconds, printing each new state, while what waits is GitHub's merge state or CI
-on the head: a draft it marked ready, a required check pending with none red (with or without the label), or a `loop:approvals` run it reran,
-once. With auto-merge on or the PR in a merge queue, whoever put it there, and after its own merge, which a base
-requiring a merge queue queues, it waits for GitHub's merge (exit 0 only once the PR is merged) unless the owner's
-label or a local-ci record holds it, which GitHub never supplies; auto-merge turned off, or the PR out of the queue,
-without a merge is exit 1, and a red required check exit 3. Whatever CI won't clear exits 3 as without `--wait`, so the owner is asked only about
-a head CI has passed, and so does a wait of 2 hours.
+workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
+prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
+unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
+`land [<pr>]` is the one way an agent merges. It lands every landable PR into one base, the named PR's or else the
+repository's default branch, as one batch:
+1. It takes the landing lock: it pushes a commit with no parent (the base's tree, titled `landing lock`, with its pid
+and a random value, so two lands in the same second never make the same commit and both push it) to
+`refs/loop/landing` on `origin`, which refuses a second such push while the ref is there, as no fast-forward, so two
+hosts never land at once; a ref outside `refs/heads/` starts no workflow. The lock's commit date is its age. Held by
+another: exit 3, naming its age. One older than 2 hours is stale, left by a land that died: it is deleted and taken. The
+lock is released at the end whatever happened, but only while it is still ours, so a stale one broken and taken by
+another land stays theirs.
+2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
+proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
+risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
+own output) green on its head. Under `ci: false` the head needs no `local-ci` pass of its own: the gate on the batch is
+the proof. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
+names the command that records it. `land <pr>` on a draft marks it ready first, never on a missing proof, since ready starts CI; while the
+checks that starts are required, it waits (exit 3). A named PR that is no candidate says why: a missing proof exits 1,
+a wait for the owner or a pending required check 3, a red required check 1.
+3. In a temporary worktree of `origin/<base>` under the git common dir, removed after, it first runs loop.md's
+`pre_land`, where set, for each candidate: a command parsed as `gate` is, run there at the base's tip with `LAND_HEAD`
+(the PR's head) and `LAND_BASE` (that tip) set, so the base's tree holds the check and a PR never changes what judges
+it. A non-zero exit leaves that PR out of this batch, with a comment, once per head, holding the check's output; it is
+not red, so it is neither evicted nor turned back to draft. Then it merges each candidate's head
+(`git merge --no-ff`). A PR that conflicts is skipped, with a comment, once per head, saying it conflicts with the base
+plus the PRs merged before it, so it needs the base merged in.
+4. It gates the result's tree. A pass is reused when the gate command passed on that tree before (reusable, below):
+this clone's record, or a `gate` status on a candidate's head with that same tree, so one PR already up to date with
+the base runs no gate. GitHub's required checks never stand in for it, since the pass is then published as the gate
+command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
+the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
+5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
+--match-head-commit`). A merge GitHub refuses, or leaves unmerged (a base requiring a merge queue only queues it, to
+merge later on a tree no gate saw), stops there: that PR and those after it wait for the next land. Then it fetches
+and compares the base's tree with the gated tree. Equal: the pass is published as the `gate` status on the new tip.
+Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
+which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
+`Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
+and the tree it passed on, and `Batch:` the PRs landed together.
+6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone. A PR red alone is
+gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
+`land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
+the bare base is gated: red, the run stops (exit 1) and evicts nobody, since every PR would fail on that base.
+With loop.md's `machine_exit` (78, say), a gate run in steps 4 and 6 exiting with it is the machine's fault, not the
+tree's: it runs once more on the same tree, and a second such exit stops the run (exit 1), landing nothing, evicting
+nobody and posting nothing, and prints the log's last 30 lines: fix the machine, then land again.
+Exit 0 when the named PR merged, or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
+eviction, a merge GitHub refused or a red base; 3 while it waits. `land --wait` runs it again every 30 seconds while it
+waits on the lock or on CI, printing each new state once, for up to 2 hours, then exits 3; a wait for the owner ends it
+at once, since only the owner clears it.
+With loop.md's `land` section (`signed_squash_to: <branch>`, `allowed_signers: <path>`), for a repo that trusts only
+commits signed by its maintainers' keys (GitHub signs its own squash with GitHub's key), the batch is the same, but each
+PR lands as a squash made in this checkout instead: one commit holding the tree it lands, on the base's tip the
+batch was merged onto (or the squash before it), so each commit holds its own PR's change, titled `<PR title> (#<pr>)`, signed with the checkout's SSH key
+(`gpg.format ssh`, `user.signingkey`) and checked with `git verify-commit` against the allowed signers file. It pushes
+that commit to the PR's branch, pinned to the head the gates checked, then fast-forwards the base to it, so GitHub shows
+the PR merged. A base that moved since the batch was merged is refused, since the squash would drop what landed
+meanwhile; a base push refused puts the PR's branch back on its head. It is no candidate when it comes from another
+repository (its branch isn't ours to push), targets a base other than the section's, has auto-merge or the merge queue
+on (GitHub would sign that squash), or when `origin` isn't the PR's repo, the checkout signs nothing or the signers file
+is missing. Without the section nothing changes.
+`check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
+printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
-A pass also leaves a record keyed by commit under the git common dir (`approvals/local-ci/<sha>.json`: head, command,
-exit, env, time, host), which every worktree sees and nothing commits; `local-ci --record` makes one on HEAD with no PR.
-`env` holds the value, or null for unset, of each variable loop.md's `Local CI env: NAME NAME…` line names, since a
-check that reads them may run a different tier under each. When the record for the PR's exact head holds exit 0, the
-same command and the same env, `local-ci <pr>` posts the pass from it, naming its time and host, instead of running the
-check again; a record without env is never reused. The posted comment names the env it ran under (`Env: A=1 B=x`, unset
-names left out, or `Env: default`).
+The check is the gate: loop.md's `gate` under `loop` (default `mise run check:all`), variables it sets in front of
+its command included (`GATE_UI_TESTS=0 mise run check:all`), one command run with no shell, so an operator
+such as `&&` is refused. It runs with every name loop.md's `local_ci_env` lists
+removed from the environment unless the command sets it, so a host's ambient tier never changes what ran and the
+command alone says what a pass proves. A pass also leaves a record keyed by tree and command under the git common dir
+(`approvals/local-ci/<tree>-<key>.json`: head, tree, command, exit, env, time, host, `head` being the commit it ran
+on, `env` the variables the command sets, `<key>` a digest of the command), which every worktree sees and nothing
+commits; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
+nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
+records itself.
+Unless it already leads its own session, `local-ci` starts itself again in a new one, stdin from /dev/null, and follows
+it, exiting with its exit code: a caller killed with its process group (a harness capping a background command) leaves
+the check running, and it still records its pass or failure. Beside the records it writes `<head>.log` (its output),
+`<head>.pid` (its pid and start time, so a pid the system has given another process reads as gone) and, once it
+ends, `<head>.exit` (its exit code), keyed by the commit it started on. A `local-ci` on a head whose run is still going
+follows that run instead of starting another (after it, one with other arguments runs its own), and `local-ci --status
+<head>` says whether it is running (exit 3), passed (0, only when a pass on the head's tree is recorded) or failed (1,
+naming the exit), with the log's path. The run's stderr goes to the same log, so a caller prints the check's stderr and
+a refusal (`exited N: nothing recorded`) on its stdout. Stopping the caller, Ctrl-C included, leaves the run going:
+`kill -- -<pid>`, with the pid `<head>.pid` holds, stops its process group.
+Every pass this clone holds, run or reused, is published as a commit status on the head it covers:
+success, context `gate`, description `Tree <tree> on <commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when
+it doesn't fit GitHub's 140 characters), since `gh`'s token can write a status where a check run needs a GitHub App.
+GitHub refusing it (a commit not pushed yet) or unreachable is said and changes nothing else: the record stays local,
+and a later `local-ci` publishes it. A pass is reusable for a commit when this clone's record for its tree holds exit
+0 under today's command, or when a `gate` status on that commit itself names its tree and today's command, posted by
+the account running this or a writer, since anyone who can only open a PR must never publish a pass; so any host
+reuses it, and adding a name to `local_ci_env` keeps every pass. `local-ci <pr>`, `local-ci --record`, `land`, `check
+queue`, `batch` and `check merge` read it the same way; the posted comment then says it was reused by tree from the
+pass recorded on that commit, and when, instead of running the check again. A refusal for a missing pass names each
+other command the tree passed under, from this clone's records and the head's statuses, and today's. The host stays
+in the record: nothing `approvals.py` posts names it, and posted text writes the home directory `~` (public), since a
+public board would show both. The posted comment names the gate's command and the variables it sets (`Env: A=1`, or
+`Env: default`).
+With loop.md's `head_proof` under `loop` (`status: <context>`, `env: [<names>]`), each head proves itself under a tier
+the lead picks, which the batch gate's fixed tier doesn't. `local-ci --record --head-proof` runs the gate as `--record`
+does, but takes each `env` name the caller's environment sets from it instead of clearing it, over the gate line's own
+assignment of that name, so the command it records names the value (`GATE_UI_TESTS=smoke mise run check:all`). It
+publishes the pass as the commit status `<context>` instead of `gate`, described `Tree <tree> on <commit's first 12>:
+<name>=<value> ...` for the `env` names it ran with (`default` for none), so the verifier reads the tier off the head.
+`land` reads it as it reads `gate`: a green status of that context on the head commit itself, naming the head's tree,
+by the account running this or a writer. A status on an older head never counts, since a status belongs to one commit.
+Which tier a change needs is the project's rule; `land` checks only that a head proof exists.
+Deprecated: a project may land through a batching merge queue of its own (merge every waiting PR's head onto the base, run the
+full gate once on the result, push the batch) instead of one `land` per PR, opting in with `batch_queue: true` under
+loop.md's `loop`; without it `check queue` refuses and no batch proof counts, so a project that never set one up gets
+no second way to satisfy the CI wait. `check queue <pr> --head <sha>` exits 0
+when that head may enter it: it is the PR's head, every proof of `check merge` holds but the CI wait, which the queue's
+gate on the batch replaces, the head has its own `local-ci --record` pass under the current env, or loop.md's
+`head_proof` status green for its tree, such as a light gate's pass (either is what `batch` needs) and,
+with CI, the checks `check merge` waits for passed, and a high-risk change has the owner's go on that head
+(owner_waits, as `check merge` and `land` read it), which the queue checks again before it merges it. After its gate the queue posts `batch` on
+each PR it merged: a comment `Merge queue batch` naming the head, the PR's merge commit, the batch commit, the gate's
+exit, the env and time of the head's own `local-ci --record` pass, or for a head with none an `Admitted:` line naming
+the head proof status and tree it entered on, and the log and its last lines; `batch` refuses a head with neither.
+`check merge` takes that comment in place of the CI wait (either kind) once it holds: the exit is 0, the head has its
+own green `local-ci --record` pass under the current env and the env the comment names, or the head proof status
+green for its tree that the `Admitted:` line names, since a batch gate never stands in for a head's own pass or its
+head proof, the merge commit's second parent is the head
+(the head landed unchanged), its tree is what
+`git merge-tree` makes of its parents (the queue resolved no conflict and added nothing), and the batch commit
+contains it; a commit the checkout lacks is fetched from `origin` first. Only a comment by the account running this
+or a writer counts, since anyone can comment on a public repo. A red, unproven or missing batch leaves the wait
+exactly as it was: it adds no line of its own, so a PR evicted through another PR's red batch lands or re-queues at
+the same head like any other. The proof is the verifier's
+verdict and gate on the PR's own head plus the full gate on the batch that merged it.
+Deprecated: with loop.md's `carry_over_main` section (`except: <globs>`), merges of the base into a PR head H keep H's proofs:
+each commit from the head H' down its first-parent line to H is a merge whose second parent is on the base (an
+ancestor of its tip), whose tree is what `git merge-tree --write-tree` makes of its parents (no conflict resolved,
+nothing added), and where the base's changes since the merge base touch no file the PR's side changes and no path an
+`except` glob matches (fnmatch, as a rule's `paths`: the project's merge-check configuration, such as lint, type,
+test and gate config and lockfiles). So a PR commit after H, new, edited or rebased, carries nothing. Then H's newest
+verdict covers H' (`check merge`, `check queue` and `land`, the verifier's `Risk:` line included). It never carries
+a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line per merge
+naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
+any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
+Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
+variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
 `verdict` posts a report in verifier.md's format as one PR review (event COMMENT, since GitHub refuses the others on
-one's own PR) on the commit its `Head:` line names, refusing a report without that line or its
+one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
+(a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
 `Verifier: <family>, pass <n>` line or its `Risk:` line, a `### ` heading with a `(<severity>)` it can't read as a finding, or finding
 headings that don't add up to the `VERDICT:` counts (any other `### ` heading is a sub-heading and posts nothing): one
 inline comment per finding, moved to the nearest line of the diff when its
@@ -101,7 +241,8 @@ differ), and every path either touches has at the PR's merge base the mode it ha
 it had before #n, absence included. A file GitHub shows no diff of (binary, too large, only renamed or moded) is never
 exact. Its code returns to a state already specced and reviewed, so `check build` passes it and `check merge` asks
 only for Evidence (what went wrong), no unresolved thread or review requesting changes, a green `check` and the
-label where the change is high risk.
+label where the change is high risk, which for a revert also means `risk:high` on an issue it names or on #n, or #n's
+last verdict judging it high, since undoing a high-risk change changes as much as making it.
 A `Reverts #<n>` PR that is not exact gets a line saying why, then every proof of any PR.
 
 A spec or plan approval is a person's: a comment `approve --by owner` writes on the owner's word, which the gate
@@ -114,60 +255,81 @@ is no approval:
 
 A spec or plan is named by its last edit as GitHub shows it in the edit history (`as written <time>` before any), so
 a person can open the version approved. Every approval is a new comment: a re-approval says the spec or plan
-changed, and `approve` minimizes as outdated each earlier record, which it supersedes.
+changed, and `approve` minimizes as outdated each earlier record, which it supersedes. With `owner: <login>` under
+loop.md's `loop`, `check build`, `check merge` and `land` record an `approved:spec` (or `approved:plan`) label that
+login added after the spec's (plan's) last edit as `approve --by owner` would, removing `needs-owner`, and say so: the
+label is the owner's word. One they added before the last edit is named and changes nothing, nor does anyone else's.
 
-loop.md § Approvals holds the owner's standing policy, one `- <point>: <text>` line each. `spec: auto unless risk`
-approves by policy, with no record or label, the spec of an issue that is a bug, carries a `Found while #<n>` line in
-its body (a follow-up an agent raised), or is a native sub-issue of an epic with the owner's current spec record and
-`approved:spec`, opened by an account GitHub's collaborator permission gives admin, maintain or write. A high-risk one
-is still built; its merge waits for the owner. `spec: auto` approves every spec the same way, epics included,
-except one a risk rule matches on the labels of the issue and the PR and the PR's files (at `check build` the files
-pushed so far), or one opened by an account without write access: those need the owner's record and label, and
-`check` says why. Under `spec: auto` a risk rule holds the spec instead of the merge, since the owner approved the
-change before it was built; `risk:high` and the cap still hold the merge. `merge: auto unless risk` says the gates are the merge approval of a
-change that is not high risk, which also holds without the line. Each `risk: <condition>` line is a risk rule, and
-so is each `merge:` line with a condition in place of a policy, until the project rewrites it, and each `spec:`
-condition beside `spec: auto unless risk` or `spec: auto` (without either the owner approves every spec, so it
-holds nothing). A
-`plan: <condition>` line asks for the owner's plan approval. A `bot: <login> <condition>` line, such as
-`bot: dependabot[bot] path uv.lock or path package-lock.json`, lets that bot's PR merge without a verifier review
-when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it
-changes, none renamed or copied, matches the condition on its path (exempt); without one, every PR needs the
-review. A `signoff: <condition>` line says whose change the owner signs off in use after it lands: `check merge` needs
-the PR to link each issue such a rule matches, or whose spec has a line `Sign-off: owner`, with `Implements #<n>`,
-which leaves it open for the sign-off, and every other issue with a closing keyword (`Part of` suits both); without
-a `signoff:` line no keyword is checked and `Implements` is a link like `Part of`. A condition the gate can read is `always`, `size:L`
-(`size:L or larger`, `size:L+`), `component <name>`, `category <name>`, `path <glob>` (bare, or in backticks for a
-glob with a space or comma) or `verifier`, joined by `or`, judged on the labels of the PR and its issues and the PR's
-files; a risk condition the gate can't read matches, since nothing else would enforce it. `verifier` holds in a risk
-rule at the merge (under `spec: auto` too, since the verdict comes after the build) when the verifier judges the
-change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any word but `low`, or
-has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a PR that needs
-none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that line comes with a comment
-saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again after that
-comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says. A `plan:` rule never reads a path, and
-any other words make it the loop's alone, since a plan comes before the change. The spec is the issue
-body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
-credentials as the person. issue-tracker.md's components and extra categories are the first backticked name of each
-list item under `## Components` and `## Extra categories`. Reads and writes through `gh`. Stdlib only.
+The policy block (SKILL.md § Settings), YAML, holds the owner's standing policy, checked against SCHEMA: a
+section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
+the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `batch_queue`, `owner`, `machine_exit`,
+`pre_land` and `head_proof`; `spec` holds `auto`.
+`spec.auto` as a list approves by policy, with no record or label, the spec of an issue of each kind it names:
+`bug`, labelled a bug; `follow-up`, carrying a `Found while #<n>` line in its body (a follow-up an agent raised);
+`sub-issue`, a native sub-issue of an epic with the owner's current spec record and `approved:spec`, opened by an
+account GitHub's collaborator permission gives admin, maintain or write. A high-risk one is still built; its merge
+waits for the owner. `spec.auto: true` approves every spec the same
+way, epics included, except one the risk rule matches on the labels of the issue and the PR and the PR's files (at
+`check build` the files pushed so far), or one opened by an account without write access: those need the owner's
+record and label, and `check` says why. Under `spec.auto: true` the risk rule holds the spec instead of the merge, since
+the owner approved the change before it was built; `risk:high` and the cap still hold the merge. Without `auto`, or
+with `false` or an empty list, the owner approves every spec, and the gates are the merge approval of a change that is not high risk.
+
+A rule (`risk`, `plan`, `signoff`) is a section of terms, any one of which matches: `always: true`; `labels`,
+label names matched exactly on the PR and its issues; `paths`, globs matched on the PR's files; and in `risk` alone
+`verifier: true`. A list holds strings. The gate reads the keys, never the words of a rule, so a path or
+label can never read as a term. Paths it can't judge, past the one page of files it reads, hold. The `plan` rule asks
+for the owner's plan approval, and has no `paths`, since a plan comes before the change. A `bot.<login>` section,
+such as `bot.dependabot[bot]` with `paths` uv.lock and **/package.json, lets that bot's PR merge without a verifier
+review when every commit is the bot's (authors, and a committer that is the bot or no account) and each file it changes, none renamed or copied,
+matches one of its paths (exempt); with `branch: renovate/` it names an updater opening PRs under a person's token by
+its head branch instead, and a `verify` label refuses either; without one, every PR needs the review. The `signoff` rule says whose change the
+owner signs off in use after it lands: `check merge` needs the PR to link each issue it matches, or whose spec has a
+line `Sign-off: owner`, with `Implements #<n>`, which leaves it open for the sign-off, and every other issue with a
+closing keyword (`Part of` suits both); without a `signoff` section no keyword is checked and `Implements` is a link like
+`Part of`. `verifier` holds at the merge (under `spec.auto: true` too, since the verdict comes after the build) when the
+verifier judges the change high: the highest pass on the head, by a trusted account (passes), says `Risk: high`, any
+word but `low`, or has no `Risk:` line, and the hold quotes it. A head no review covers waits for its review instead; a
+PR that needs none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that term comes with a
+comment saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again
+after that comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says.
+The spec is the issue body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
+credentials as the person. issue-tracker.md's components and extra categories are the keys of its settings block's
+`components` and `categories` (tracker_settings). Reads and writes through `gh`. Stdlib, and PyYAML for the settings
+block (SKILL.md § Settings says how it is delivered).
 """
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import fnmatch
+import functools
+import hashlib
 import io
+import itertools
 import json
 import os
 import re
+import shlex
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+try:
+    import yaml
+except ImportError:  # run as `python3 approvals.py` where PyYAML isn't installed
+    sys.exit(
+        f"{Path(sys.argv[0]).name} needs PyYAML: run it with `uv run {sys.argv[0]}`, which installs it"
+    )
 
 # the ready state: an approved spec (board: Ready); waiting for the owner
 READY, NEEDS_OWNER = "approved:spec", "needs-owner"
@@ -178,9 +340,18 @@ PREFIXES = {"component": "area:", "category": "kind:"}
 SIZE_ORDER = ["size:XS", "size:S", "size:M", "size:L", "size:XL"]
 SIZES = set(SIZE_ORDER)
 TRACKER, LOOP = Path("docs/agents/issue-tracker.md"), Path("docs/agents/loop.md")
+# the gatekeeper's policy, under `## Policy`; loop.md's `## Settings` block is read without it, deprecated
+POLICY = Path("docs/agents/gatekeeper.md")
 POINTS = ("spec", "plan")
+# the `By:` of the delegated approver's merge record (delegate), which owner_waits refuses on the default branch
+DELEGATE = "delegate"
 MERGE_LABEL = "approved:merge"
-# a change's consequences, not its urgency (that is `priority:`): set by a person or at triage, or by the gate
+# the owner's go on a high-risk head, a commit status on that one commit (approve merge), so no push carries it over
+OWNER_GO = "owner"
+# how an OWNER_GO status the gate once turned from the `approved:merge` label ends: no go, since the label can be a
+# delegate's
+LABELLED = f"from their `{MERGE_LABEL}` label"
+# a change's consequences, not its urgency (that is the tracker's priority): set by a person or at triage, or by the gate
 RISK_LABEL = "risk:high"
 # the collaborator permissions that can write; GitHub's `permission` field reads `maintain` as `write`
 WRITE = {"admin", "maintain", "write"}
@@ -190,16 +361,13 @@ FOUND_WHILE = re.compile(r"^[ \t>*-]*Found while[ \t]+#\d+", re.MULTILINE | re.I
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
+# a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
+# family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
+LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
-# its default in SKILL.md § The cap, a project's own in a loop.md line `cap: <n>`.
+# its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
-CAP_LINE = re.compile(
-    r"^[ \t]*(?:[-*][ \t]+)?`?cap:[ \t]*(\d+)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
-    re.MULTILINE | re.IGNORECASE,
-)
-# any line setting the cap, so one CAP_LINE can't read fails closed instead of falling back to the default
-CAP_ANY = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?cap:", re.MULTILINE | re.IGNORECASE)
-NOTE = "id body createdAt lastEditedAt isMinimized viewerCanMinimize"
+NOTE = "id author { login } body createdAt lastEditedAt isMinimized viewerCanMinimize"
 SPECCED = f"number body createdAt lastEditedAt labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}"
 ASSIGNEES = "assignees(first: 10) { nodes { login } }"
 # who added `approved:spec` (approver) and who was assigned when (release); ponytail: the newest 100 such events
@@ -210,7 +378,7 @@ EVENTS = """timelineItems(last: 100, itemTypes: [LABELED_EVENT, ASSIGNED_EVENT])
 ISSUE = f"{SPECCED} author {{ login }} parent {{ {SPECCED} }} {ASSIGNEES} {EVENTS}"
 # the first line of the record claim() leaves when it assigns an issue, which release() reads
 ASSIGNED = "Assigned: @"
-PULL = f"""number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeStateStatus autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
+PULL = f"""id number title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
   reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body commit {{ oid }} }} }}
   reviewThreads(first: 100) {{ totalCount nodes {{ isResolved }} }}
@@ -220,9 +388,9 @@ PULL = f"""number title isCrossRepository author {{ __typename login }} {ASSIGNE
   commits(last: 1) {{ nodes {{ commit {{ statusCheckRollup {{ contexts(first: 100) {{ totalCount nodes {{
     __typename ... on CheckRun {{ name status conclusion startedAt completedAt checkSuite {{ status workflowRun {{ workflow {{ name }} }} }} }}
     ... on StatusContext {{ context state createdAt targetUrl }} }} }} }} }} }} }}
-  closingIssuesReferences(first: 50) {{ nodes {{ {ISSUE} }} }}"""
+  closingIssuesReferences(first: 50) {{ nodes {{ repository {{ nameWithOwner }} {ISSUE} }} }}"""
 # GitHub's closing keywords, plus two links that leave the issue open: `Part of` for a spec the PR builds on but
-# leaves unfinished, and `Implements` for one the owner signs off after landing (`signoff:`). ponytail: same-repo `#n`
+# leaves unfinished, and `Implements` for one the owner signs off after landing (`signoff`). ponytail: same-repo `#n`
 # only, add owner/repo#n and issue URLs when a PR here uses one.
 CLOSING = re.compile(
     r"\b(?:(close[sd]?|fix(?:e[sd])?|resolve[sd]?)|(part[ \t]+of)|(implements)):?[ \t]+#(\d+)\b",
@@ -236,34 +404,18 @@ SIGNOFF = re.compile(
 )
 # code and comments: an example, not a closing line
 QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL | re.MULTILINE)
-CONDITION = re.compile(
-    r"\balways\b|\b(size:(?:XS|S|M|L|XL))(\+|[ \t]+or[ \t]+larger\b)?"
-    r"|\b(component|category):?[ \t]*`?([\w./:-]+)`?|\bpath:?[ \t]*(?:`([^`]+)`|([^\s`,;]+))|\b(verifier)\b",
-    re.IGNORECASE,
-)
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
 FLAGGED = f"`{RISK_LABEL}` added by the gate"
-# loop.md's opt-out: the line `CI: none`, as a list item or with a note in parentheses, nothing else on it.
-NO_CI = r"^[ \t]*(?:[-*][ \t]+)?`?CI:[ \t]*none`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
-# loop.md's per-person opt-out: the line `Opt-out: allowed`, written as `CI: none` is.
-OPT_OUT = r"^[ \t]*(?:[-*][ \t]+)?`?Opt-out:[ \t]*allowed`?[ \t]*(?:\([^)\n]*\))?[ \t]*$"
-# loop.md's local signed landing: `Land: local signed squash to <branch>, allowed signers <path>`, written as
-# `CI: none` is. LANDING finds any `Land:` line, so one SIGNED can't read is refused rather than landed on GitHub.
-SIGNED = re.compile(
-    r"^[ \t]*(?:[-*][ \t]+)?`?Land:[ \t]*local signed squash to[ \t]+`?([^\s`,]+)`?,[ \t]*allowed signers[ \t]+"
-    r"`?([^`\n]+?)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
-    re.MULTILINE | re.IGNORECASE,
-)
-LANDING = re.compile(r"^[ \t]*(?:[-*][ \t]+)?`?Land:", re.MULTILINE | re.IGNORECASE)
-# loop.md's `Local CI env: NAME NAME…`, the environment variables the merge check reads, written as `CI: none` is.
-LOCAL_CI_ENV = re.compile(
-    r"^[ \t]*(?:[-*][ \t]+)?`?Local CI env:(.*?)`?[ \t]*(?:\([^)\n]*\))?[ \t]*$",
-    re.MULTILINE | re.IGNORECASE,
-)
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
+# a gate pass published as a commit status: its context, and its description (described): tree, commit, command
+PUBLISHED = "gate"
+PASSED = re.compile(r"Tree ([0-9a-f]{40,64}) on ([0-9a-f]{7,64}): (.+)")
+# the first line of a merge queue's batch proof (batch), which queued() reads, and how much of the gate's log it shows
+BATCHED = "Merge queue batch"
+LOG_TAIL = 30
 CHANGED = {
     "spec": "The spec changed after the last approval, so it was checked again.\n",
     "plan": "The plan changed after the last approval, so it was checked again.\n",
@@ -271,16 +423,16 @@ CHANGED = {
 GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 # a finished check run or a set status that is not green: it turns green only when run again, never by waiting
 RED = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"}
-# the commit status the project's approvals workflow posts; its target is the Actions run that posted it
+# the commit status the project's approvals workflow posts
 APPROVALS = "loop:approvals"
-RUN = re.compile(r"/actions/runs/(\d+)")
-# land --wait: seconds between reads of the PR, and how long it waits in all before it exits 3
+# a URL in a `## Demo` comment; gh's --attach embeds a video as a bare user-attachments one, which plays inline
+URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
+ATTACHMENT = "https://github.com/user-attachments/"
+# land --wait: seconds between tries, and how long it waits in all before it exits 3; a landing lock older than the
+# ceiling is stale
 POLL, CEILING = 30, 2 * 60 * 60
-# what land --wait polls for: CI on the head, GitHub's auto-merge, or its merge state
-ON_CI, ON_MERGE = "CI on the head", "GitHub to merge it (auto-merge or the merge queue)"
-ON_STATE = "GitHub to compute its merge state"
-# GitHub's merge states that no wait clears: the head is behind a base that requires it up to date, or conflicts
-STALE_BASE = {"BEHIND": "is behind", "DIRTY": "conflicts with"}
+# the landing lock: a ref outside refs/heads/, so pushing it starts no workflow
+LOCK = "refs/loop/landing"
 # how ci() ends its refusal of a head with more checks than the one page it reads, which no CI run clears
 PAGED = "CI checks: the gate reads one page"
 
@@ -311,24 +463,6 @@ def section(text: str, heading: str) -> str:
     return found.group(1) if found else ""
 
 
-def items(tracker: str, heading: str) -> dict[str, str]:
-    """The first backticked name of each list item under `## <heading>`, with the text after it (`**`, `:` and the
-    surrounding space dropped)."""
-    return {
-        name: text.strip()
-        for name, text in re.findall(
-            r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`\**:?[ \t]*(.*)$",
-            section(tracker, heading),
-            re.MULTILINE,
-        )
-    }
-
-
-def listed(tracker: str, heading: str) -> set[str]:
-    """The first backticked name of each list item under `## <heading>`."""
-    return set(items(tracker, heading))
-
-
 def qualified(kind: str, name: str) -> str:
     """A component's or category's label: `billing` and `area:billing` both name `area:billing`."""
     prefix = PREFIXES[kind.lower()]
@@ -338,117 +472,267 @@ def qualified(kind: str, name: str) -> str:
 def label_names(tracker: str) -> dict[str, set[str]]:
     """The loop's label rule: each kind's names, the loop's fixed set plus docs/agents/issue-tracker.md's, a
     component as `area:<name>` and a category as `kind:<name>`."""
+    found = tracker_settings(tracker)
     return {
         "category": CATEGORIES
-        | {qualified("category", name) for name in listed(tracker, "Extra categories")},
-        "component": {qualified("component", name) for name in listed(tracker, "Components")},
+        | {qualified("category", name) for name in found.get("categories", {})},
+        "component": {qualified("component", name) for name in found.get("components", {})},
         "size": SIZES,
     }
 
 
-def rules(loop: str) -> list[tuple[str, str]]:
-    """loop.md § Approvals as (point, condition) pairs: `spec`, `plan`, `merge`, `risk`, `bot` and `signoff`."""
-    return re.findall(
-        r"^[ \t]*[-*] +(spec|plan|merge|risk|bot|signoff):[ \t]*(.+?)[ \t]*$",
-        section(loop, "Approvals"),
-        re.MULTILINE,
-    )
+class Table(dict):
+    """A settings section whose every key is required, such as `land`."""
 
 
-# each point's policy lines, as opposed to conditions
-POLICIES = {"spec": ("auto unless risk", "auto"), "merge": ("auto unless risk",)}
+# loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
+# A list holds strings; `bot.<login>` is a section per bot.
+STAGES = ("intent", "spec", "plan", "build", "review", "land")
+# the specs `spec.auto` may name: an issue that is a bug, a follow-up an agent raised, a sub-issue of an approved epic
+SPEC_KINDS = ("bug", "follow-up", "sub-issue")
+SCHEMA: dict[str, dict[str, Any]] = {
+    "loop": {
+        "cap": int,
+        "ci": bool,
+        "opt_out": bool,
+        "local_ci_env": list,
+        "gate": str,
+        "batch_queue": bool,
+        "owner": str,
+        "machine_exit": int,
+        "pre_land": str,
+        "head_proof": Table(status=str, env=list),
+    },
+    "spec": {"auto": SPEC_KINDS},
+    "practice": dict.fromkeys(STAGES, str),
+    "risk": {"always": bool, "labels": list, "paths": list, "verifier": bool},
+    "plan": {"always": bool, "labels": list},
+    "signoff": {"always": bool, "labels": list, "paths": list},
+    "bot": {"paths": list, "branch": str},
+    "land": Table(signed_squash_to=str, allowed_signers=str),
+    "carry_over_main": Table({"except": list}),
+}
+# docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
+TRACKED: dict[str, Any] = dict.fromkeys(
+    ("components", "categories", "labels", "renames", "board"), str
+)
+# the settings block: a docs/agents/ file's first fenced `yaml` block, under its `## Settings` (gatekeeper.md: `## Policy`)
+# heading
+SETTINGS = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.DOTALL | re.MULTILINE)
+KINDS = {bool: "true or false", int: "a whole number", list: "a list of strings", str: "a string"}
 
 
-def is_policy(condition: str, point: str) -> bool:
-    """Whether a `spec:` or `merge:` line's text is one of that point's policies (POLICIES), not a condition."""
-    return condition.strip(" .`").lower() in POLICIES.get(point, ())
+class Policy(str):
+    """docs/agents/gatekeeper.md's text, whose block settings() reads under `## Policy`; a plain str is loop.md's,
+    read under `## Settings`."""
 
 
-def policy(loop: str | None, point: str, text: str = "auto unless risk") -> bool:
-    """Whether loop.md § Approvals has the line `<point>: <text>`."""
-    return any(
-        rule == point and condition.strip(" .`").lower() == text
-        for rule, condition in rules(loop or "")
-    )
+def source(policy: str | None) -> str:
+    """The file the policy was read from, as its messages name it."""
+    return "gatekeeper.md" if isinstance(policy, Policy) else "loop.md"
+
+
+def block(text: str, file: str, heading: str = "Settings") -> dict[str, Any]:
+    """The file's settings block, parsed as YAML; refused without one under `## <heading>`, since a file still on the
+    line form would otherwise lose its settings unnoticed, or when it is no YAML mapping. Only that section is
+    searched, so a YAML example elsewhere in the prose is never read as the settings. A key set twice is refused,
+    since YAML would keep the last one silently."""
+    found = SETTINGS.search(section(text, heading))
+    if found is None:
+        raise Refused(
+            f"{file} has no ```yaml settings block under ## {heading}: SKILL.md § Settings has its keys"
+        )
+    try:
+        once(yaml.compose(found[1], Loader=yaml.SafeLoader), file)
+        data = yaml.safe_load(found[1])
+    except yaml.YAMLError as exc:
+        raise Refused(f"{file}'s settings block is not YAML: {exc}") from None
+    if data is None:  # an empty block: no settings
+        return {}
+    if not isinstance(data, dict):
+        raise Refused(f"{file}'s settings block is not YAML sections of `key: value`, but {data!r}")
+    return data
+
+
+def once(node: Any, file: str, path: str = "") -> None:
+    """Refuse a key set twice in the same section of the block's YAML node tree, naming it."""
+    if isinstance(node, yaml.MappingNode):
+        seen = set()
+        for key, value in node.value:
+            if key.value in seen:
+                raise Refused(f"{file}'s `{path}{key.value}` is set twice")
+            seen.add(key.value)
+            once(value, file, f"{path}{key.value}.")
+
+
+def sections(data: dict[str, Any], file: str) -> dict[str, dict[str, Any]]:
+    """The block's sections, refusing a key outside one, since every setting belongs to a section. A section with no
+    keys under it is empty."""
+    for name, value in data.items():
+        if value is None:
+            data[name] = {}
+        elif not isinstance(value, dict):
+            raise Refused(f"{file} has a setting `{name}` outside a section")
+    return data
+
+
+def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md") -> dict[str, Any]:
+    """A section's values checked against its schema (a map of keys, or one type for any key), refusing one that
+    doesn't match it and naming the key, so a mistyped setting is never read as a rule nobody wrote. Types match
+    exactly, which also refuses what YAML 1.1 reads as another type where a name was meant (`no` as false, `1.10` as
+    a float), naming the key, since such a value is never the name written."""
+    for key, value in section.items():
+        where = f"`{name}.{key}`"
+        if not isinstance(
+            key, str
+        ):  # `on:`, `no:` or `1.10:` as a name is read as a boolean or a number
+            raise Refused(f"{file}'s {where} is no name: quote it")
+        kind = schema.get(key) if isinstance(schema, dict) else schema
+        if kind is None:
+            raise Refused(f"{file} has an unknown setting {where}")
+        if isinstance(kind, dict):  # a section within the section, such as `loop.head_proof`
+            if not isinstance(value, dict):
+                raise Refused(f"{file}'s {where} must be a section holding `{'`, `'.join(kind)}`")
+            typed(value, kind, f"{name}.{key}", file)
+        elif isinstance(kind, tuple):  # true, false, or a list naming some of the tuple's values
+            if not (
+                isinstance(value, bool)
+                or isinstance(value, list)
+                and all(isinstance(item, str) and item in kind for item in value)
+            ):
+                raise Refused(
+                    f"{file}'s {where} must be true, false or a list of {', '.join(kind)}, not {value!r}"
+                )
+        # bool is an int to Python, so a type is matched exactly
+        elif type(value) is not kind or (
+            kind is list and not all(isinstance(item, str) for item in value)
+        ):
+            raise Refused(f"{file}'s {where} must be {KINDS[kind]}, not {value!r}")
+        elif kind is str and isinstance(schema, dict) and not value:
+            raise Refused(
+                f"{file}'s {where} is empty"
+            )  # a name's description may be empty, a path may not
+    if isinstance(schema, Table) and (missing := [key for key in schema if key not in section]):
+        raise Refused(f"{file}'s `{name}` lacks `{'`, `'.join(missing)}`")
+    return section
+
+
+def settings(loop: str | None) -> dict[str, Any]:
+    """The policy's block (gatekeeper.md's `## Policy`, a Policy, else loop.md's `## Settings`), checked against
+    SCHEMA: `loop`'s keys at the top level, every other section under its name and `bot` a list of `{login, paths}`;
+    {} without either file, which has no rules. A file without the block is refused rather than read as one without
+    rules, since a project still on the line form would otherwise lose its risk rules unnoticed."""
+    if loop is None:
+        return {}
+    file = source(loop)
+    data: dict[str, Any] = {}
+    parsed = block(loop, file, "Policy" if isinstance(loop, Policy) else "Settings")
+    for name, section in sections(parsed, file).items():
+        if name == "bot":
+            for login, bot in section.items():
+                where = f"bot.{login}"
+                if not isinstance(login, str):
+                    raise Refused(f"{file}'s `{where}` is no name: quote it")
+                if bot is None:  # a login with nothing under it
+                    bot = {}
+                if not isinstance(bot, dict):
+                    raise Refused(f"{file}'s `{where}` must be a section holding `paths`")
+                if "paths" not in bot:
+                    raise Refused(f"{file}'s `{where}` lacks `paths`")
+                data.setdefault("bot", []).append(
+                    {"login": login, **typed(bot, SCHEMA["bot"], where, file)}
+                )
+        elif name == "loop":
+            data.update(typed(section, SCHEMA["loop"], name, file))
+            for key in ("batch_queue", "ci"):
+                if key in section:
+                    deprecated(key)
+        elif name in SCHEMA:
+            data[name] = typed(section, SCHEMA[name], name, file)
+            if name == "carry_over_main":
+                deprecated(name)
+        else:
+            raise Refused(f"{file} has an unknown settings section `{name}`")
+    return data
+
+
+DEPRECATED: set[str] = set()
+
+
+def deprecated(name: str) -> None:
+    """Say once per run, on stderr, that a command or setting goes in the next release: a project's own queue keeps
+    working until it adopts the batch `land`."""
+    if name not in DEPRECATED:
+        DEPRECATED.add(name)
+        print(
+            f"deprecated: {name} goes in the next release; land batches every landable PR (#650)",
+            file=sys.stderr,
+        )
+
+
+def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
+    """docs/agents/issue-tracker.md's settings block, checked against TRACKED: each section's names with their text.
+    `components` and `categories` name a label bare (`billing`) or in full (`area:billing`)."""
+    data = sections(block(tracker, "issue-tracker.md"), "issue-tracker.md")
+    unknown = [name for name in data if name not in TRACKED]
+    if unknown:
+        raise Refused(f"issue-tracker.md has an unknown settings section `{unknown[0]}`")
+    return {
+        name: typed(section, TRACKED[name], name, "issue-tracker.md")
+        for name, section in data.items()
+    }
 
 
 def spec_auto(loop: str | None) -> bool:
-    """Whether loop.md § Approvals has `spec: auto`, under which a risk rule holds the spec instead of the merge."""
-    return policy(loop, "spec", "auto")
+    """Whether loop.md's `spec.auto` is true, under which a risk rule holds the spec instead of the merge."""
+    return settings(loop).get("spec", {}).get("auto") is True
 
 
-def risk_rules(loop: str | None) -> list[str]:
-    """loop.md's risk conditions: each `risk:` line, and each `merge:` line that is no policy line, read as a `risk:`
-    rule until the project rewrites it. A `spec:` condition counts only beside `spec: auto unless risk` or
-    `spec: auto`: without either the owner approves every spec already, so a legacy `spec: always` holds nothing."""
-    specs = policy(loop, "spec") or spec_auto(loop)
-    legacy = ("risk", "merge", "spec") if specs else ("risk", "merge")
-    return [
-        text for rule, text in rules(loop or "") if rule in legacy and not is_policy(text, rule)
-    ]
+def spec_kinds(loop: str | None) -> set[str]:
+    """The kinds of spec loop.md's `spec.auto` list names (SPEC_KINDS), which the policy approves; empty when it
+    is no list."""
+    auto = settings(loop).get("spec", {}).get("auto")
+    return set(auto) if isinstance(auto, list) else set()
 
 
-def practice_plans(loop: str) -> bool:
-    """Whether loop.md § Practice names a plan skill."""
-    return (
-        re.search(r"^[ \t]*(?:[-*] +)?`?Plan`?:[ \t]*\S", section(loop, "Practice"), re.MULTILINE)
-        is not None
-    )
-
-
-def matches(condition: str, labels: set[str], paths: list[str] | None) -> bool | None:
-    """Whether a rule's condition holds on labels and paths; None when it has words the gate can't read, or a path and
-    no paths yet (the loop judges it). The `verifier` term never holds here: ruled() adds the verifier's judgment."""
-    if re.sub(r"[,;]|\bor\b|\s", "", CONDITION.sub("", condition), flags=re.IGNORECASE):
-        return None
-    unread = False
-    for found in CONDITION.finditer(condition):
-        size, larger, kind, name, quoted, bare, verifier = found.groups()
-        glob = quoted or bare
-        if verifier:
-            hit = False  # the verifier's judgment, which ruled() reads where a verdict exists
-        elif size:
-            index = SIZE_ORDER.index("size:" + size[5:].upper())
-            hit = bool(
-                labels & set(SIZE_ORDER[index:] if larger else SIZE_ORDER[index : index + 1])
-            )
-        elif kind:
-            hit = qualified(kind, name) in labels
-        elif glob:
-            unread |= paths is None
-            hit = any(fnmatch.fnmatch(path, glob) for path in paths or [])
-        else:
-            hit = True  # always
-        if hit:
-            return True
-    return None if unread else False
-
-
-def has_verifier(condition: str) -> bool:
-    """Whether a rule's condition has the `verifier` term: CONDITION's own match, so the word inside a path or a
-    label's name is no term."""
-    return any(found.group(7) for found in CONDITION.finditer(condition))
+def matches(terms: dict[str, Any], labels: set[str], paths: list[str] | None) -> str | bool | None:
+    """The first term of a rule (`always`, a label, a path glob) that holds on labels and paths, as the gate quotes
+    it; False when none does, None when only its paths could and the gate doesn't have them all (the loop judges it).
+    The `verifier` term never holds here: ruled() adds the verifier's judgment."""
+    if terms.get("always"):
+        return "always"
+    for label in terms.get("labels", []):
+        if label in labels:
+            return f"label `{label}`"
+    for glob in terms.get("paths", []):
+        if any(fnmatch.fnmatch(path, glob) for path in paths or []):
+            return f"path `{glob}`"
+    return None if paths is None and terms.get("paths") else False
 
 
 def exempt(pull: dict[str, Any], loop: str | None) -> bool:
-    """Whether the PR needs no verifier review: its author is a bot a loop.md `bot: <login> <condition>` line names,
-    and every file it changes matches that line's condition on its path alone (lock and manifest files). GitHub's
-    GraphQL spells a bot's login without the `[bot]` REST and the line write, so both compare without it; a person
-    can't hold a bot's login, so the author's type is checked too. Every commit's authors must be the bot, and its
-    committer the bot or no account (GitHub's web-flow committer on the bot's own commits), since a person's push
-    or rebase of its branch is a change no verifier saw. A renamed or copied file refuses it, since GraphQL
-    gives only the new path, which may hide code moved onto a lock file's name. No line, more files or commits than the gate reads, or
-    a condition it can't read: no exemption."""
+    """Whether the PR needs no verifier review: a `bot.<name>` section of loop.md names it, and every file it changes
+    matches one of that section's `paths` (lock and manifest files). A section names a bot by its login, or, with
+    `branch`, a head-branch prefix (`renovate/`), for an updater that opens its PRs under a person's token; then the
+    head must be this repository's own branch, since a fork's PR may name any branch and only a writer pushes one
+    here. GitHub's GraphQL spells a bot's login without the `bot` REST and the setting write, so both compare
+    without it; a person can't hold a bot's login, so for a login the author's type is checked too. Every commit's
+    authors must be the PR's author, and its committer the author or no account (GitHub's web-flow committer on a
+    bot's or an API's commits), since another person's push or rebase of its branch is a change no verifier saw. A
+    renamed or copied file refuses it, since GraphQL gives only the new path, which may hide code moved onto a lock
+    file's name, and so does the label `verify`, which asks for the review (a major update). No entry, or more files
+    or commits than the gate reads: no exemption."""
     author, files = pull.get("author") or {}, paths(pull)
     renamed = any(
         file.get("changeType") in ("RENAMED", "COPIED") for file in pull["files"]["nodes"]
     )
-    if author.get("__typename") != "Bot" or not files or renamed:
+    labels = {label["name"] for label in pull["labels"]["nodes"]}
+    if not files or renamed or "verify" in labels:
         return False
     login = (author.get("login") or "").removesuffix("[bot]").lower()
     commits = pull.get("authored") or {}
     nodes = commits.get("nodes") or []
-    if not nodes or (commits.get("totalCount") or 0) > len(nodes):
+    if not login or not nodes or (commits.get("totalCount") or 0) > len(nodes):
         return False
     for node in nodes:
         authors = node["commit"]["authors"]
@@ -460,16 +744,20 @@ def exempt(pull: dict[str, Any], loop: str | None) -> bool:
             logins.append(committer)
         if any(name.removesuffix("[bot]").lower() != login for name in logins):
             return False
-    lines = [text.partition(" ") for rule, text in rules(loop or "") if rule == "bot"]
+
+    def names(bot: dict[str, Any]) -> bool:
+        if "branch" in bot:
+            return not pull["isCrossRepository"] and pull["headRefName"].startswith(bot["branch"])
+        return (
+            author.get("__typename") == "Bot"
+            and bot["login"].removesuffix("[bot]").lower() == login
+        )
+
     return any(
-        name.strip("`").removesuffix("[bot]").lower() == login
-        and all(matches(condition, set(), [path]) is True for path in files)
-        for name, _, condition in lines
+        names(bot)
+        and all(any(fnmatch.fnmatch(path, glob) for glob in bot["paths"]) for path in files)
+        for bot in settings(loop).get("bot", [])
     )
-
-
-def owner_needed(point: str, loop_rules: list[tuple[str, str]], labels: set[str]) -> bool:
-    return any(matches(condition, labels, None) for rule, condition in loop_rules if rule == point)
 
 
 def paths(pull: dict[str, Any]) -> list[str] | None:
@@ -482,29 +770,33 @@ def paths(pull: dict[str, Any]) -> list[str] | None:
 def ruled(
     labels: set[str], files: list[str] | None, loop: str | None, judged: str | None = None
 ) -> str | None:
-    """Why a risk rule (risk_rules) holds on these labels and files, or None; a condition the gate can't read
-    matches, since nothing else would enforce it. `judged` is why the verifier holds the change high (judged()), which
-    its `verifier` term reads; None where no verdict is read, such as a spec before the build."""
-    for condition in risk_rules(loop):
-        hit = matches(condition, labels, files)
-        if hit:
-            return f"it matches a risk rule ({condition})"
-        if hit is None:
-            return f"a risk rule the gate can't judge holds until a person does ({condition})"
-        if judged and has_verifier(condition):
-            return f"it matches a risk rule ({condition}): {judged}"
+    """Why loop.md's `risk` rule holds on these labels and files, or None; paths the gate can't judge for want of the
+    files hold, since nothing else would enforce them. `judged` is why the verifier holds the change high (judged()),
+    which its `verifier` term reads; None where no verdict is read, such as a spec before the build."""
+    terms = settings(loop).get("risk", {})
+    hit = matches(terms, labels, files)
+    if hit:
+        return f"it matches a risk rule ({hit})"
+    if hit is None:
+        return "the gate can't read every file the PR changes, so the risk rule's `paths` hold until a person judges them"
+    if judged and terms.get("verifier"):
+        return f"it matches a risk rule (verifier): {judged}"
     return None
 
 
-def judged(pull: dict[str, Any]) -> str | None:
-    """Why the verifier holds the change high, or None: the highest pass on the head (passes) says `Risk: high`, any
-    other word than `low`, or has no `Risk:` line; a mixed PR's two verifiers both must say `low`. A head no review
-    covers is None, since reviewed() then refuses the merge, or the PR needs no review (exempt, an exact revert)."""
+def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
+    """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
+    proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
+    PR's two verifiers both must say `low`. A head no review covers is None, since reviewed() then refuses the merge,
+    or the PR needs no review (exempt, an exact revert)."""
     found = passes(pull)
     if isinstance(found, str):
         return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
     head = pull["headRefOid"].lower()
     on_head = [(number, lines) for commit, number, lines in found if commit == head]
+    if not on_head and found and isinstance(carry := carried(pull, loop, found[-1][0]), tuple):
+        head = carry[0]
+        on_head = [(number, lines) for commit, number, lines in found if commit == head]
     if not on_head:
         return None
     last = max(number for number, _ in on_head)
@@ -518,22 +810,30 @@ def judged(pull: dict[str, Any]) -> str | None:
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
     """Why the change is high risk, or None: `risk:high` on the PR or an issue it names; a risk rule (ruled) on the
-    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under `spec:
-    auto`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
+    labels of the PR and its issues, the PR's files and the verifier's `Risk:` line (judged), except under
+    `spec.auto: true`, where the rule's other terms hold the spec instead (spec_hold) and the owner approved the change before it
     was built, while its `verifier` term still holds the merge; or a review at the cap was not satisfied or left a
-    blocker or major open (capped)."""
+    blocker or major open (capped). An exact revert's issues (gated's `named`) count as its issues here."""
+    issues = issues + pull.get("named", [])
     marked = [f"PR #{pull['number']}"] * (RISK_LABEL in names(pull)) + [
         f"#{issue['number']}" for issue in issues if RISK_LABEL in names(issue)
     ]
+    if not marked and default(pull) and not pull["isCrossRepository"]:
+        # a feature branch's merge to the default branch carries every high-risk PR that landed in it
+        marked = [
+            f"#{n}, merged into {pull['headRefName']}" for n in merged_high(pull["headRefName"])
+        ]
     if marked:
         return f"`{RISK_LABEL}` is on {', '.join(marked)}"
+    if why := pull.get("reverted"):
+        return why
     if not spec_auto(loop):
         labels = names(pull).union(*(names(issue) for issue in issues))
-        if why := ruled(labels, paths(pull), loop, judged(pull)):
+        if why := ruled(labels, paths(pull), loop, judged(pull, loop)):
             return why
-    elif any(has_verifier(condition) for condition in risk_rules(loop)):
+    elif settings(loop).get("risk", {}).get("verifier"):
         # spec_hold() read the paths and labels before the build; the verdict comes after it, so it holds the merge
-        if why := judged(pull):
+        if why := judged(pull, loop):
             return f"it matches a risk rule's `verifier` term: {why}"
     limit = cap(loop)
     if capped(pull, limit):
@@ -541,27 +841,52 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     return None
 
 
+def default(pull: dict[str, Any]) -> bool:
+    """Whether the PR's base is its repository's default branch; any other base is a feature branch."""
+    return pull["baseRefName"] == pull["baseRepository"]["defaultBranchRef"]["name"]
+
+
+def merged_high(branch: str) -> list[int]:
+    """The merged PRs into `branch` that carry `risk:high` (flag() adds it to each high-risk PR that lands)."""
+    # ponytail: one page of 100; page when a feature branch takes more high-risk PRs than that
+    found = gh(
+        "pr",
+        "list",
+        "--base",
+        branch,
+        "--state",
+        "merged",
+        "--label",
+        RISK_LABEL,
+        "--limit",
+        "100",
+        "--json",
+        "number",
+        "--jq",
+        ".[].number",
+    )
+    return [int(number) for number in found.split()]
+
+
 def signoff(
     pull: dict[str, Any], issue: dict[str, Any], loop: str | None
 ) -> tuple[bool, str] | None:
     """Whether the owner signs the issue's change off in use after it lands, and why; None when loop.md has no
-    `signoff:` line, which leaves every link as it was. A `signoff:` rule is judged as a risk rule is (matches), on the
-    labels of the PR and this issue and the PR's files, and one the gate can't read matches; with no rule matching,
-    the spec's own `Sign-off: owner` line asks for it. A spec's `Sign-off: none` never waives a matching rule, since
-    the rule is the owner's standing word."""
-    conditions = [text for rule, text in rules(loop or "") if rule == "signoff"]
-    if not conditions:
+    `signoff` section, which leaves every link as it was. The rule is judged as the risk rule is (matches), on the
+    labels of the PR and this issue and the PR's files, and paths it can't judge hold; with no term matching, the
+    spec's own `Sign-off: owner` line asks for it. A spec's `Sign-off: none` never waives a matching rule, since the
+    rule is the owner's standing word."""
+    terms = settings(loop).get("signoff")
+    if terms is None:
         return None
-    labels = names(pull) | names(issue)
-    for condition in conditions:
-        hit = matches(condition, labels, paths(pull))
-        if hit:
-            return True, f"it matches a sign-off rule ({condition})"
-        if hit is None:
-            return (
-                True,
-                f"a sign-off rule the gate can't judge holds until a person does ({condition})",
-            )
+    hit = matches(terms, names(pull) | names(issue), paths(pull))
+    if hit:
+        return True, f"it matches a sign-off rule ({hit})"
+    if hit is None:
+        return (
+            True,
+            "the gate can't read every file the PR changes, so the sign-off rule's `paths` hold",
+        )
     found = SIGNOFF.search(QUOTED.sub("", spec_holder(issue).get("body") or ""))
     if found and found[1].lower() == "owner":
         return True, "its spec says `Sign-off: owner`"
@@ -609,7 +934,7 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         return [
             f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
         ]
-    if (verdict := judged(pull)) and verdict in why:
+    if (verdict := judged(pull, loop)) and verdict in why:
         try:
             comment(
                 pull["number"],
@@ -744,14 +1069,17 @@ def bodies(node: dict[str, Any]) -> list[str]:
     return [note["body"] for note in notes(node)]
 
 
-def headed(node: dict[str, Any], heading: str) -> dict[str, Any] | None:
-    """The last comment whose first line is `heading`: `## Specification notes` is no `## Spec`.
-    A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
+def headed(
+    node: dict[str, Any], heading: str, keep: Callable[[dict[str, Any]], bool] = lambda _note: True
+) -> dict[str, Any] | None:
+    """The last comment whose first line is `heading`, among those `keep` takes: `## Specification notes` is no
+    `## Spec`. A leading `> 🤖 AI` line (github.md) is skipped, so an agent's marked comment is still found."""
     found = [
         note
         for note in notes(node)
         if re.sub(r"\A\s*> 🤖 AI[ \t]*\n\s*", "", note["body"]).strip().split("\n", 1)[0].rstrip()
         == heading
+        and keep(note)
     ]
     return found[-1] if found else None
 
@@ -798,15 +1126,20 @@ def approvals(where: str, node: dict[str, Any], point: str, value: str) -> list[
     return found
 
 
-def spec_policy(issue: dict[str, Any]) -> bool:
-    """Whether `spec: auto unless risk` approves the issue's spec: a bug; a follow-up an agent raised (a
-    `Found while #n` line in its body); or a native sub-issue of an epic with the owner's current spec record and
-    `approved:spec`, opened by someone with write access. An epic is never covered: the owner approves it."""
+def spec_policy(issue: dict[str, Any], kinds: set[str]) -> bool:
+    """Whether a kind `spec.auto` names (`kinds`) approves the issue's spec: `bug`, an issue labelled a bug;
+    `follow-up`, one an agent raised (a `Found while #n` line in its body); `sub-issue`, a native sub-issue of an epic
+    with the owner's current spec record and `approved:spec`, opened by someone with write access. An epic is never
+    covered: the owner approves it."""
     if EPIC in names(issue):
         return False
-    if BUG in names(issue) or FOUND_WHILE.search(QUOTED.sub("", issue.get("body") or "")):
+    if "bug" in kinds and BUG in names(issue):
+        return True
+    if "follow-up" in kinds and FOUND_WHILE.search(QUOTED.sub("", issue.get("body") or "")):
         return True
     parent = issue.get("parent")
+    if "sub-issue" not in kinds:
+        return False
     if not parent or READY not in names(parent):
         return False
     if not current(parent, "spec", "spec", version(spec_holder(parent)), "owner"):
@@ -816,7 +1149,7 @@ def spec_policy(issue: dict[str, Any]) -> bool:
 
 
 def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str | None:
-    """Why `spec: auto` leaves the issue's spec to the owner, or None when the policy approves it: a risk rule (ruled)
+    """Why `spec.auto: true` leaves the issue's spec to the owner, or None when the policy approves it: a risk rule (ruled)
     on the labels of the issue and the PR and the files pushed so far, so a file the spec didn't foresee still reaches
     the owner; or an author without write access, since anyone who can open an issue would otherwise have their own
     spec approved."""
@@ -829,12 +1162,12 @@ def spec_hold(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> 
 
 
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
-    """A line per issue whose spec `spec: auto` leaves to the owner (spec_hold), approved or not, so a gate run says
+    """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`."""
     if not spec_auto(loop):
         return []
     return [
-        f"#{issue['number']}: its spec is the owner's to approve under `spec: auto`, since {why}"
+        f"#{issue['number']}: its spec is the owner's to approve under `spec.auto: true`, since {why}"
         for issue in issues
         if not any(label.startswith("wayfinder:") for label in names(issue))
         and (why := spec_hold(pull, issue, loop))
@@ -886,6 +1219,74 @@ def others(issue: dict[str, Any]) -> str | None:
     )
 
 
+def closed(pull: dict[str, Any], repo: str, loop: str | None) -> set[int]:
+    """The issues of `repo` a PR finishes: GitHub's closing references there and each `#n` after a closing keyword,
+    plus `Implements` where loop.md has a `signoff` rule, which leaves the issue open only for the owner's sign-off.
+    `Part of` builds on an issue without finishing it, so two PRs may share one. A reference to another repo's issue
+    is a different issue, whatever its number; a body's `#n` is always `repo`'s (CLOSING)."""
+    kinds = {CLOSES, IMPLEMENTS} if "signoff" in settings(loop) else {CLOSES}
+    named = {n for n, kind in links(pull.get("body") or "").items() if kind in kinds}
+    return named | {
+        issue["number"]
+        for issue in pull["closingIssuesReferences"]["nodes"]
+        if issue["repository"]["nameWithOwner"].lower() == repo.lower()
+    }
+
+
+# how many open PRs duplicates() reads, in one call; a list that long may have left one out
+OPEN_LIMIT = 1000
+
+
+def open_pulls() -> list[dict[str, Any]]:
+    """The repo's open PRs, up to OPEN_LIMIT, each with its number, branch, base, whether it is a draft, body and closing references (each naming its
+    issue's repo as `nameWithOwner`, as the PR query does), in one call."""
+    found = json.loads(
+        gh(
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            str(OPEN_LIMIT),
+            "--json",
+            "number,headRefName,baseRefName,isDraft,body,closingIssuesReferences",
+        )
+    )
+    for other in found:
+        nodes = other["closingIssuesReferences"]
+        for issue in nodes:
+            where = issue["repository"]
+            issue["repository"] = {"nameWithOwner": f"{where['owner']['login']}/{where['name']}"}
+        other["closingIssuesReferences"] = {"nodes": nodes}
+    return found
+
+
+def duplicates(pull: dict[str, Any], loop: str | None) -> list[str]:
+    """One line per issue the PR finishes (closed) that another open PR finishes too, naming that PR and its branch:
+    two builds of one issue each run a verifier, a gate and the queue, and one of them is thrown away. A list as long
+    as OPEN_LIMIT may have left that PR out, so it refuses rather than pass on a partial comparison."""
+    repo = pull["baseRepository"]["nameWithOwner"]
+    mine = closed(pull, repo, loop)
+    if not mine:
+        return []
+    found = open_pulls()
+    if len(found) >= OPEN_LIMIT:
+        return [
+            (
+                f"the duplicate-build check reads at most {OPEN_LIMIT} open PRs and this repo has at least that many,"
+                " so it could not see every open PR: close stale PRs, or check by hand that no other open PR closes"
+                f" {', '.join(f'#{n}' for n in sorted(mine))}"
+            )
+        ]
+    return [
+        f"#{number} is also closed by open PR #{other['number']} (branch `{other['headRefName']}`): one build per"
+        " issue, so close one of the PRs, or link it with `Part of`"
+        for other in found
+        if other["number"] != pull["number"]
+        for number in sorted(mine & closed(other, repo, loop))
+    ]
+
+
 def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) -> list[str]:
     """One line per reason an issue the PR closes waits for the owner or lacks a label of `kinds` (label_names;
     None, without docs/agents/issue-tracker.md, checks no label's shape); empty when none does. A missing
@@ -920,6 +1321,27 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     return found
 
 
+def demo_form(pull: dict[str, Any]) -> list[str]:
+    """A line when the PR's newest `## Demo` comment by a trusted author, not minimized as outdated, links a video
+    (a release asset, any URL but a user-attachments one) instead of embedding it, or embeds none; a PR with no
+    demo has none. A stranger's demo neither holds nor clears the merge."""
+    shown = lambda note: not note.get("isMinimized") and trusted(pull, note)
+    demo = headed(pull, "## Demo", shown) if "comments" in pull else None
+    if demo is None:
+        return []
+    urls = URL.findall(demo["body"])
+    linked = [url for url in urls if not url.startswith(ATTACHMENT)]
+    if not linked and urls:
+        return []
+    what = f"links {linked[0]}" if linked else "embeds no video"
+    return [
+        (
+            f"PR #{pull['number']}: its `## Demo` comment {what}: post the demo with the demo skill's"
+            " `scripts/demo.sh`, which embeds each video as an attachment that plays inline"
+        )
+    ]
+
+
 def proofs(
     point: str,
     pull: dict[str, Any],
@@ -929,11 +1351,11 @@ def proofs(
 ) -> list[str]:
     """One line per approval or proof the PR and its issues lack at `point` (build or merge); an exact revert of
     #`revert` names no issue and needs no verdict. Without docs/agents/loop.md (`loop` None) an issue needs only the
-    `approved:spec` label; with it, the owner's record and the label, unless `spec: auto unless risk` covers it
-    (spec_policy) or `spec: auto` does (spec_hold). A plan needs them where a `plan:` rule asks. What the merge
+    `approved:spec` label; with it, the owner's record and the label, unless a kind `spec.auto` names covers it
+    (spec_policy) or `spec.auto: true` does (spec_hold). A plan needs them where the `plan` rule asks. What the merge
     waits for is waits()'s."""
-    loop_rules, found = rules(loop or ""), []
-    auto, every = policy(loop, "spec"), spec_auto(loop)
+    rule, found = settings(loop), []
+    kinds, every = spec_kinds(loop), spec_auto(loop)
     for issue in issues:
         labels = names(issue)
         if point == "build" and (line := others(issue)):
@@ -945,14 +1367,19 @@ def proofs(
             if READY not in labels:
                 found.append(f"{where} lacks the `{READY}` label")
             continue
-        if not (every and spec_hold(pull, issue, loop) is None or auto and spec_policy(issue)):
+        if not (every and spec_hold(pull, issue, loop) is None or spec_policy(issue, kinds)):
             found += approvals(where, issue, "spec", version(spec_holder(issue)))
         plan = headed(issue, "## Plan")
         if plan is not None:
-            if owner_needed("plan", loop_rules, labels):
+            if matches(rule.get("plan", {}), labels, None):
                 found += approvals(where, issue, "plan", version(plan))
-        elif practice_plans(loop):
+        elif "plan" in rule.get("practice", {}):
             found.append(f"{where} has no `## Plan` comment, and one is due")
+    if (
+        point == "build" and "number" in pull
+    ):  # before the PR exists (unopened) there is nothing to compare
+        found += duplicates(pull, loop)
+    found += demo_form(pull)
     if point != "merge":
         return found
     where = f"PR #{pull['number']}"
@@ -962,7 +1389,14 @@ def proofs(
     if loop is not None:
         found += linked(pull, issues, loop)
     if revert is None and not exempt(pull, loop):
-        found += reviewed(where, pull)
+        verdicts = passes(pull)
+        found += (unreviewed := reviewed(where, pull, loop, verdicts))
+        # only on a verdict that would land, and tier first, since risk() reads the reviews again
+        if not unreviewed and (tier := lower(verdicts)) and (why := risk(pull, issues, loop)):
+            found.append(
+                f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
+                " default-tier verifier pass on the head first"
+            )
     threads = pull["reviewThreads"]
     if (threads.get("totalCount") or 0) > len(threads["nodes"]):
         found.append(
@@ -989,6 +1423,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
+    # the lines read, plus the heading's family, which names the verifier's tier when it ran below the default
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
     others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
     trusted |= {login for login in others if writer(login)}
@@ -997,14 +1432,36 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
             ((review.get("commit") or {}).get("oid") or "").lower(),
             int(PASS.match(review["body"])[2]),
             {
-                key.strip(): value.strip()
-                for key, _, value in (line.partition(":") for line in review["body"].splitlines())
-                if key.strip() in ("VERDICT", "SATISFIED", "Risk")
+                "Family": PASS.match(review["body"])[1],
+                **{
+                    key.strip(): value.strip()
+                    for key, _, value in (
+                        line.partition(":") for line in review["body"].splitlines()
+                    )
+                    if key.strip() in ("VERDICT", "SATISFIED", "Risk")
+                },
             },
         )
         for review in found
         if (review.get("author") or {}).get("login") in trusted
     ]
+
+
+def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
+    """The tier below the default (LOWER_TIER) the newest verifier pass names in its heading's family, the newest
+    commit's highest pass (a mixed PR's two verifiers share one), or None: a heading naming no tier reads as the
+    default, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
+    if isinstance(verdicts, str) or not verdicts:
+        return None
+    head = verdicts[-1][0]
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    last = max(number for number, _ in on_head)
+    tiers = [
+        found[1]
+        for number, lines in on_head
+        if number == last and (found := LOWER_TIER.search(lines["Family"]))
+    ]
+    return tiers[0].lower() if tiers else None
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:
@@ -1021,13 +1478,11 @@ def held(lines: dict[str, str]) -> bool:
 
 
 def cap(loop: str | None) -> int:
-    """The project's cap: its loop.md `cap: <n>` line (a note in parentheses may follow), else SKILL.md's default. A
-    `cap:` line it can't read is refused, since falling back would hold nothing at the project's cap."""
-    found = CAP_LINE.search(loop or "")
-    if found is None and CAP_ANY.search(loop or ""):
-        raise Refused("loop.md has a `cap:` line that is not `cap: <n>`: write it as `- cap: <n>`")
+    """The project's cap: loop.md's `cap` setting, else SKILL.md's default."""
+    if (own := settings(loop).get("cap")) is not None:
+        return own
     skill = Path(__file__).resolve().parents[1] / "SKILL.md"
-    found = found or CAP_DEFAULT.search(skill.read_text())
+    found = CAP_DEFAULT.search(skill.read_text())
     if found is None:
         raise Refused("SKILL.md § The cap names no default (`The cap is <n> passes`)")
     return int(found[1])
@@ -1042,13 +1497,19 @@ def capped(pull: dict[str, Any], limit: int) -> bool:
     )
 
 
-def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
+def reviewed(
+    where: str,
+    pull: dict[str, Any],
+    loop: str | None,
+    verdicts: list[tuple[str, int, dict[str, str]]] | str | None = None,
+) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
-    since every commit after a verdict needs one of its own, or on its commit the highest pass (a mixed PR's two
+    since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried,
+    which prints a line either way where loop.md opts in), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open. A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
-    needs none (exempt)."""
-    verdicts = passes(pull)
+    needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
+    verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
         return [f"{where} {verdicts}"]
     if not verdicts:
@@ -1062,7 +1523,7 @@ def reviewed(where: str, pull: dict[str, Any]) -> list[str]:
             f"{where}: a verifier review lacks its commit, or a `VERDICT:` or `SATISFIED:` line (approvals.py verdict)"
         ]
     found = []
-    if pull["headRefOid"].lower() != head:
+    if pull["headRefOid"].lower() != head and not carries(where, pull, loop, head):
         found.append(
             f"{where}: the newest verifier review is on {head}, not on the head {pull['headRefOid']}:"
             " every commit after a verdict needs a verdict of its own"
@@ -1084,30 +1545,28 @@ def waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """One line per thing the merge waits for: ran()'s aggregate `check`, and the owner's label (owner_waits)."""
+    """One line per thing the merge waits for: ran()'s checks, and the owner's go (owner_waits)."""
     return ran(pull, loop) + owner_waits(pull, issues, loop, pushed)
 
 
+def batch_queue(loop: str | None) -> bool:
+    """Whether loop.md opts into a batching merge queue (`batch_queue: true` under `loop`), without which no batch
+    proof stands in for the CI wait: a project that never set one up gets no second way to satisfy it."""
+    return settings(loop).get("batch_queue") is True
+
+
 def no_ci(loop: str | None) -> bool:
-    return re.search(NO_CI, loop or "", re.MULTILINE | re.IGNORECASE) is not None
+    return settings(loop).get("ci") is False
 
 
 def opted_out(loop: str | None) -> bool:
-    return re.search(OPT_OUT, loop or "", re.MULTILINE | re.IGNORECASE) is not None
+    return settings(loop).get("opt_out", False)
 
 
 def signed(loop: str | None) -> tuple[str, Path] | None:
-    """loop.md's `Land: local signed squash to <branch>, allowed signers <path>` as (branch, signers), None without a
-    `Land:` line. One it can't read is refused, since landing on GitHub instead would sign with GitHub's key."""
-    found = SIGNED.search(loop or "")
-    if found:
-        return found[1], Path(found[2]).expanduser()
-    if LANDING.search(loop or ""):
-        raise Refused(
-            "loop.md has a `Land:` line this can't read: write it"
-            " `Land: local signed squash to <branch>, allowed signers <path>`"
-        )
-    return None
+    """loop.md's `land` section as (branch, signers), None without one."""
+    land = settings(loop).get("land")
+    return (land["signed_squash_to"], Path(land["allowed_signers"]).expanduser()) if land else None
 
 
 def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
@@ -1116,7 +1575,7 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     if pull["isCrossRepository"]:
         return f"{where} comes from another repository: its branch isn't ours to push, push it to {pull['baseRepository']['nameWithOwner']} first"
     if pull["baseRefName"] != branch:
-        return f"{where} targets {pull['baseRefName']}, but loop.md lands signed squashes only to {branch}"
+        return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
     # the URL as configured, before any `insteadOf` rewrite
@@ -1138,10 +1597,12 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
     return None
 
 
-def signed_squash(pull: dict[str, Any], signers: Path) -> str:
+def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | None = None) -> str:
     """Squash the PR's head onto its base here, signed with this checkout's key and checked against `signers`, then
     push it to the PR's branch and fast-forward the base to it: GitHub marks a PR merged once its head is in the
-    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing."""
+    base. The head must be the one the gates checked and contain the base's tip, so the squash undoes nothing; with
+    `onto` (a commit and a tree, from land's batch), the base's tip must be that commit and the squash holds that
+    tree, the merge of the head the batch gated."""
     pr, base, branch, head = (
         pull["number"],
         pull["baseRefName"],
@@ -1155,12 +1616,19 @@ def signed_squash(pull: dict[str, Any], signers: Path) -> str:
     if git("rev-parse", "FETCH_HEAD").strip() != head:
         raise Refused(f"PR #{pr}'s head moved past {head}: run land again")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
-    if subprocess.run(["git", "merge-base", "--is-ancestor", tip, head], check=False).returncode:
+    if onto is not None:
+        if tip != onto[0]:
+            raise Refused(
+                f"PR #{pr}: {base} moved to {tip} since the batch was merged onto {onto[0]}: land again"
+            )
+        tree = onto[1]
+    elif subprocess.run(["git", "merge-base", "--is-ancestor", tip, head], check=False).returncode:
         raise Refused(
             f"PR #{pr} does not contain {base}'s head {tip}: merge origin/{base} in, rerun the gates, get a"
             " verdict on the merge (lead.md step 8), then land again"
         )
-    tree = git("rev-parse", f"{head}^{{tree}}").strip()
+    else:
+        tree = git("rev-parse", f"{head}^{{tree}}").strip()
     try:
         commit = git("commit-tree", "-S", "-p", tip, "-m", f"{pull['title']} (#{pr})", tree).strip()
         git("-c", f"gpg.ssh.allowedSignersFile={signers}", "verify-commit", commit)
@@ -1202,9 +1670,9 @@ def signed_squash(pull: dict[str, Any], signers: Path) -> str:
 
 
 def outside(pull: dict[str, Any], loop: str | None) -> str | None:
-    """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `Opt-out: allowed`. A trail
+    """Why the PR is outside the loop, or None when it left a loop trail or loop.md lacks `opt_out: true`. A trail
     is a verifier review (passes), an `Approved: spec` record or `approved:spec` on an issue it links, a `Reverts #<n>`
-    line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `spec: auto` every issue is covered,
+    line, or a bot PR loop.md exempts. A spec a policy covers is no trail: under `spec.auto: true` every issue is covered,
     so a person who opted out could never link one."""
     if not opted_out(loop):
         return None
@@ -1217,29 +1685,315 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
         if READY in names(issue) or records(issue, "spec"):
             return None
     return (
-        f"PR #{pull['number']} is outside the loop (loop.md `Opt-out: allowed`, no verifier review, spec approval,"
+        f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
         " revert or bot exemption): its author merges it"
     )
 
 
 def ran(pull: dict[str, Any], loop: str | None, required: set[str] | None = None) -> list[str]:
-    """One line per check the merge waits for on the head: ci()'s `required` (None: the aggregate `check`), or with
-    `CI: none` a local-ci pass."""
+    """One line per check the merge waits for on the head: ci()'s `required` (None: the base branch's required checks but
+    `loop:approvals`, or the aggregate `check` when that leaves none), or with `ci: false` a local-ci pass on the head's
+    tree under today's gate command (reusable)."""
     where = f"PR #{pull['number']}"
+    if batch_queue(loop) and queued(pull, loop) is None:
+        return []
     if no_ci(loop):
-        head = [CHECKED, f"Head: {pull['headRefOid']}"]
-        if any(
-            [line.strip() for line in body.strip().splitlines()[:2]] == head
-            for body in bodies(pull)
-        ):
-            found = []
-        else:
-            found = [
-                f"{where}: the project has no CI (loop.md `CI: none`), and no local check passed on the head (approvals.py local-ci)"
+        # the proof is the pass itself (reusable), never the `Local check passed` comment, which anyone who can
+        # comment may write and which says nothing about today's gate command
+        found = (
+            []
+            if reusable(pull["headRefOid"])
+            else [
+                (
+                    f"{where}: the project has no CI ({source(loop)} `ci: false`), and no local check passed on the head"
+                    f" (approvals.py local-ci){elsewhere(pull['headRefOid'])}"
+                )
             ]
+        )
     else:
+        if required is None:
+            # the approvals status is check merge's own output: waiting for it never ends
+            required = required_checks(pull["baseRefName"]) - {APPROVALS} or None
         found = ci(where, pull, required)
     return found
+
+
+def queued(pull: dict[str, Any], loop: str | None = None) -> list[str] | None:
+    """None when a merge queue's batch proof (batch) on the head, by the account running this or a writer, holds
+    (unproven), standing in for the CI wait; else one line per such proof that holds nothing, for diagnosis only:
+    ran() adds none of them, so a red batch never holds a merge the CI wait alone would let through."""
+    where, head, found = f"PR #{pull['number']}", pull["headRefOid"].lower(), []
+    for note in notes(pull):
+        lines = note["body"].strip().splitlines()
+        if not lines or lines[0].strip() != BATCHED:
+            continue
+        header = itertools.takewhile(
+            str.strip, lines[1:]
+        )  # the log's tail after the blank line names no field
+        fields = {
+            key.strip(): value.strip() for key, _, value in (line.partition(":") for line in header)
+        }
+        if fields.get("Head", "").lower() != head or not trusted(pull, note, author=False):
+            continue
+        if (why := unproven(head, fields, loop)) is None:
+            return None
+        found.append(f"{where}: {why}")
+    return found
+
+
+def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> bool:
+    """Whether a proof comment's author counts: the account running this, a writer (writer), and with `author` the
+    PR's author, as passes() reads verifier reviews, since anyone can comment on a public repo."""
+    login = (note.get("author") or {}).get("login")
+    if login is None:
+        return False
+    if author and login == (pull.get("author") or {}).get("login"):
+        return True
+    return login == viewer() or writer(login)
+
+
+def unproven(head: str, fields: dict[str, str], loop: str | None = None) -> str | None:
+    """Why a batch proof's fields prove nothing about `head`, or None: its gate exited 0, the head has its own green
+    local-ci pass under the gate command, the env the proof names, or entered the queue on its head proof (admitted),
+    the stand-in the proof names, since a batch gate never stands in for the head's own pass, its merge commit's second
+    parent is the head, so the head landed unchanged, its tree is the clean merge of its parents, so the queue resolved
+    no conflict and added nothing, and the batch commit contains it."""
+    merge, batch, code = (fields.get(key, "").lower() for key in ("Merge", "Batch", "Exit"))
+    if code != "0":
+        return f"the merge queue's gate on batch {batch} exited {code or 'with no exit code'}"
+    # the proof's own line says which it entered on, so a record made later doesn't void an `Admitted:` proof
+    if "Admitted" in fields:
+        if (entry := admitted(head, loop)) is None:
+            return (
+                f"batch {batch} names the stand-in `{fields['Admitted']}`, but the head {head} has no green loop.md"
+                f" `head_proof` status for its tree"
+            )
+        if fields["Admitted"] != entry:
+            return f"batch {batch} names the head's stand-in `{fields['Admitted']}`, its head proof `{entry}`"
+    elif (record := reusable(head)) is None:
+        return (
+            f"the head {head} has no green `local-ci --record` pass of its own under the gate command, which a batch"
+            f" never stands in for{elsewhere(head)}"
+        )
+    # the comment names the env as posted, its home written `~` (public)
+    elif (env := public(env_line(record["env"])[len("Env: ") :].strip())) != fields.get("Env"):
+        return (
+            f"batch {batch} names the head's gate env `{fields.get('Env', '')}`, its record `{env}`"
+        )
+    for kind, sha in (("merge", merge), ("batch", batch)):
+        if not fetched(sha):
+            return f"{kind} {sha} is not a commit origin has"
+    parents = git("rev-list", "--parents", "-n", "1", merge).split()[1:]
+    if len(parents) != 2 or parents[1] != head:
+        return f"merge {merge} does not merge the head {head} as its second parent"
+    clean = merged(*parents)
+    if isinstance(clean, str) or clean[0] != git("rev-parse", f"{merge}^{{tree}}").strip():
+        return f"merge {merge} is not the clean merge of its parents: the queue resolved or added something"
+    if subprocess.run(["git", "merge-base", "--is-ancestor", merge, batch], check=False).returncode:
+        return f"batch {batch} does not contain merge {merge}"
+    return None
+
+
+def merged(
+    first: str, second: str, guard: list[str] | None = None, base: str = "the base"
+) -> tuple[str, str] | str:
+    """The tree `git merge-tree --write-tree` makes of commits `first` and `second`, so a merge with that tree resolved
+    no conflict and added nothing, and their merge base; a string names why not. With `guard`, the globs of loop.md's
+    `carry_over_main.except`, the proofs on `first` carry over to that merge only when `second`'s changes since the
+    merge base (`base`'s) touch no file `first`'s changes touch, neither side's changes touch a file a glob matches
+    (fnmatch on the full path, as a rule's `paths`), and the two have one merge base. `first` is the PR's head, so a
+    why names its side as the PR's. Fail-closed: a git error is a why, never a carry."""
+    try:
+        clean = subprocess.run(
+            ["git", "merge-tree", "--write-tree", first, second],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if clean.returncode or not clean.stdout.split():
+            return f"{first} and {second} conflict"
+        tree = clean.stdout.split()[0]
+        if guard is None:
+            return tree, ""
+        bases = git("merge-base", "--all", first, second).split()
+        if len(bases) != 1:
+            return f"{first} and {second} have {len(bases)} merge bases"
+        # plumbing: porcelain `git diff` follows config (diff.relative, a submodule's `ignore = all`) that hides paths
+        changed = [
+            set(
+                filter(
+                    None,
+                    git(
+                        "diff-tree",
+                        "-r",
+                        "--name-only",
+                        "--no-renames",
+                        "--ignore-submodules=none",
+                        "-z",
+                        bases[0],
+                        side,
+                    ).split("\0"),
+                )
+            )
+            for side in (first, second)
+        ]
+        if both := sorted(changed[0] & changed[1]):
+            return f"{both[0]} changed on both sides since {bases[0]}"
+        # the PR's own config change was gated only on the PR's code, never on what the base added since
+        for side, paths in ((f"{base}'s", changed[1]), ("the PR's", changed[0])):
+            if hit := sorted(
+                path for path in paths if any(fnmatch.fnmatch(path, glob) for glob in guard)
+            ):
+                return f"{side} changes since {bases[0]} touch {hit[0]}, a `carry_over_main.except` path"
+        return tree, bases[0]
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return f"git failed reading the merge of {first} and {second}: {exc}"
+
+
+def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
+    """The line check merge and land print when `what` carries the proofs of `head` (carried, merged)."""
+    return (
+        f"{what} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {base}'s"
+        f" {second}, whose changes since {since} touch none of the PR's files, and neither side touches a"
+        " `carry_over_main.except` path"
+    )
+
+
+def carried(
+    pull: dict[str, Any], loop: str | None, verified: str
+) -> tuple[str, list[str]] | str | None:
+    """`verified` with one carry_line() per merge, oldest first, when the PR's head carries the verdict on
+    `verified`, the newest verdict's commit, where loop.md has `carry_over_main`: from the head, each commit on its
+    first-parent line down to `verified` is a merge whose second parent is on the base (an ancestor of its tip), whose
+    tree is git merge-tree's of its parents, and where merged() finds the base's changes disjoint from the PR's and
+    neither side's touching an except glob. So a PR commit after `verified` (new, edited or rebased) carries nothing.
+    A string names why it carries nothing; None without the setting, which then reads no git at all."""
+    guard = settings(loop).get("carry_over_main")
+    if guard is None:
+        return None
+    head, tip, base = pull["headRefOid"].lower(), pull["baseRefOid"].lower(), pull["baseRefName"]
+    commit, lines = head, []
+    try:
+        if not (fetched(head) and fetched(tip)):
+            return f"the head or {base}'s head {tip} is not a commit origin has"
+        while commit != verified:
+            it, its = ("it", "its") if commit == head else (commit, f"{commit}'s")
+            parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
+            if len(parents) != 2:
+                return f"{it} is no merge of two parents"
+            first, second = parents
+            on_base = ["git", "merge-base", "--is-ancestor", second, tip]
+            if subprocess.run(on_base, capture_output=True, check=False).returncode:
+                return f"{its} second parent {second} is not on {base}"
+            found = merged(first, second, guard["except"], base)
+            if isinstance(found, str):
+                return found
+            if found[0] != git("rev-parse", f"{commit}^{{tree}}").strip():
+                return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
+            lines.insert(0, carry_line(commit, first, second, found[1], base))
+            commit = first
+    except (subprocess.CalledProcessError, OSError) as exc:
+        return f"git failed reading {commit}: {exc}"
+    return verified, lines
+
+
+def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
+    """Whether the PR's head carries the proofs of `verified`, the newest verdict's commit (carried), printing the
+    lines that say so, or where loop.md opts in, why it carries nothing."""
+    carry = carried(pull, loop, verified)
+    if carry is None:
+        return False
+    if isinstance(carry, str):
+        print(f"{where}: {pull['headRefOid']} carries nothing from {verified}: {carry}")
+        return False
+    for line in carry[1]:
+        print(f"{where}: {line}")
+    return True
+
+
+def fetched(sha: str) -> bool:
+    """Whether `sha` names a commit here, fetching `origin` once when it doesn't yet."""
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+        return False
+    have = ["git", "cat-file", "-e", f"{sha}^{{commit}}"]
+    if subprocess.run(have, capture_output=True, check=False).returncode == 0:
+        return True
+    subprocess.run(["git", "fetch", "--quiet", "origin"], capture_output=True, check=False)
+    return subprocess.run(have, capture_output=True, check=False).returncode == 0
+
+
+def queueable(pull: dict[str, Any], head: str, tracker: str | None, loop: str | None) -> int:
+    """check queue: exit 0 when `head` may enter a batching merge queue, else one line per reason and exit 1."""
+    where, found = f"PR #{pull['number']}", []
+    if not batch_queue(loop):
+        print(
+            f"{where}: {source(loop)} doesn't opt into a batching merge queue (`batch_queue: true` under `loop`), so it lands"
+            " through `land`"
+        )
+        return 1
+    if pull["state"] != "OPEN":
+        found.append(f"{where} is {pull['state'].lower()}: nothing to queue")
+    if pull["headRefOid"].lower() != head.lower():
+        found.append(
+            f"{where}'s head is {pull['headRefOid']}, not {head}: queue the head the verifier reviewed"
+        )
+    if why := outside(pull, loop):
+        found.append(why)
+    missing, issues = gated("merge", pull, tracker, loop)
+    found += missing
+    if not no_ci(loop):
+        found += ran(pull, loop)
+    # with CI too: batch refuses a head with neither, so it may not enter
+    if reusable(head) is None and admitted(head, loop) is None:
+        found.append(
+            f"{where}: no `local-ci --record` pass on {head} under the gate command (approvals.py local-ci --record)"
+            f"{nor_head_proof(loop)}{elsewhere(head)}"
+        )
+    # the queue re-runs this before it merges the head, and check merge reads the owner's go on the landed head again
+    found += owner_waits(pull, issues, loop)
+    for line in found:
+        print(line)
+    if found:
+        return 1
+    print(f"{where} may enter a merge queue at {head}")
+    return 0
+
+
+def batch(pr: int, merge: str, batch_sha: str, code: int, log: Path) -> int:
+    """Post a merge queue's batch proof on PR `pr`, which queued() reads: the head (the merge's second parent), the
+    merge, the batch, the gate's exit, the head's own local-ci pass and its env, the log, and the log's last LOG_TAIL
+    lines. A head with no such pass that entered the queue on its head proof (admitted) gets an `Admitted:` line naming
+    that status and its tree in place of the env and time. Refused for a head with neither."""
+    if not fetched(merge.lower()):
+        raise Refused(f"merge {merge} is not a commit here or on origin")
+    head = git("rev-parse", f"{merge}^2").strip()
+    record, entry, loop = reusable(head), None, project()[1]
+    if record is None and (entry := admitted(head, loop)) is None:
+        raise Refused(
+            f"the head {head} has no green `local-ci --record` pass of its own under the gate command"
+            f"{nor_head_proof(loop)}: no batch proof without it{elsewhere(head)}"
+        )
+    try:
+        tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
+    except OSError:
+        tail = []
+    body = (
+        f"{BATCHED}\nHead: {head}\nMerge: {merge}\nBatch: {batch_sha}\nExit: {code}\n"
+        + (
+            f"{env_line(record['env'])}Gated: {record['time']}\n"
+            if record
+            else f"Admitted: {entry}\n"
+        )
+        + f"Log: {log}\n"
+    )
+    if tail:
+        body += (
+            "\n<details><summary>The gate's last lines</summary>\n\n````\n"
+            + "\n".join(tail)
+            + "\n````\n</details>\n"
+        )
+    comment(pr, body)
+    return 0
 
 
 def owner_waits(
@@ -1248,15 +2002,29 @@ def owner_waits(
     loop: str | None,
     pushed: Callable[[dict[str, Any]], str | None] | None = None,
 ) -> list[str]:
-    """A line while the change is high risk (risk) and the owner's `approved:merge` label is not on the PR, added
-    after the head's push. `pushed(pull)` is when the head was pushed (default: GitHub's repository activity)."""
+    """A line while the change is high risk (risk) and the owner's go is not on the head (owned). Into the default
+    branch only that go counts, since a delegate acting through the owner's account adds a label no differently from
+    the owner; into a feature branch the `approved:merge` label, added after the head's push, counts too, the
+    owner's or the delegate's (delegate). `pushed(pull)` is when the head was pushed (default: GitHub's repository
+    activity)."""
     where, found = f"PR #{pull['number']}", []
     why = risk(pull, issues, loop)
-    if why is None:
+    if why is None or owned(pull):
         return found
+    command = f"`approve merge {pull['number']} --head {pull['headRefOid']} --by owner`"
+    if default(pull):
+        return [
+            (
+                f"{where} waits for the owner's go on its head ({command}; into {pull['baseRefName']} `{MERGE_LABEL}`"
+                f" is no go), since it is high risk: {why}"
+            )
+        ]
     if MERGE_LABEL not in names(pull):
         return [
-            f"{where} waits for the owner's `{MERGE_LABEL}` label, since it is high risk: {why}"
+            (
+                f"{where} waits for the owner's go on its head ({command}, or `{MERGE_LABEL}`), since it is high"
+                f" risk: {why}"
+            )
         ]
     added = max(
         (
@@ -1276,6 +2044,57 @@ def owner_waits(
             f"{where}: `{MERGE_LABEL}` was added before the head was pushed: the owner adds it again"
         )
     return found
+
+
+def owned(pull: dict[str, Any]) -> bool:
+    """Whether the owner's go (go) is on the PR's head: the newest `owner` status there by the account running this
+    or a writer (a status is the repo's to write) is green, so a later one the owner withdrew it with wins, and the
+    PR holds the `Approved: merge` record by the owner naming that head. A status once turned from the label
+    (LABELLED) is no go. GitHub unreachable: no go."""
+    try:
+        found = statuses(pull["headRefOid"])
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        return False
+    for status in found:  # newest first
+        login = (status.get("creator") or {}).get("login")
+        if (
+            status.get("context") != OWNER_GO
+            or login is None
+            or not (login == viewer() or writer(login))
+        ):
+            continue
+        return (
+            status.get("state") == "success"
+            and not (status.get("description") or "").endswith(LABELLED)
+            and current(pull, "merge", "head", pull["headRefOid"], "owner")
+        )
+    return False
+
+
+def go(number: int, head: str, withdraw: bool = False) -> int:
+    """approve merge: the owner's go on `head`, the PR's head they were shown, on their word: the status OWNER_GO on
+    that commit and a record naming it; with `withdraw`, a newer failing status and record that take it back. The
+    script writes every word, so no agent's description of the change travels with it. A head that moved is refused,
+    since the owner saw the one they were asked about."""
+    pull = pull_request(number)
+    if pull["state"] != "OPEN":
+        raise Refused(f"PR #{number} is {pull['state'].lower()}: nothing to approve")
+    if pull["headRefOid"].lower() != head.lower():
+        raise Refused(
+            f"PR #{number}'s head is {pull['headRefOid']}, not {head}: ask the owner about the head it has now"
+        )
+    head = pull["headRefOid"]
+    if withdraw:
+        # the label off too, since into a feature branch it is a go of its own
+        label(number, MERGE_LABEL, add=False)
+        post_status(head, OWNER_GO, f"The owner withdrew their go on {head[:12]}", state="failure")
+        comment(number, f"Withdrawn: merge\nBy: owner\nHead: {head}\n")
+        print(f"PR #{number}: the owner's go on {head} is withdrawn")
+        return 0
+    post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
+    comment(number, f"Approved: merge\nBy: owner\nHead: {head}\n")
+    print(f"PR #{number}: the owner's go is on {head}")
+    return 0
 
 
 def changed_lines(patch: str) -> list[tuple[list[str], list[str]]]:
@@ -1304,15 +2123,36 @@ def inexact(
     original: list[dict[str, Any]],
     revert: list[dict[str, Any]],
     number: int,
-    undone: tuple[dict[str, str] | None, dict[str, str] | None],
-    undoing: tuple[dict[str, str] | None, dict[str, str] | None],
+    undone: tuple[dict[str, tuple[str, str]] | None, dict[str, tuple[str, str]] | None],
+    undoing: tuple[dict[str, tuple[str, str]] | None, dict[str, tuple[str, str]] | None],
 ) -> list[str]:
     """Why `revert` does not undo #number, both as GitHub's REST API lists a PR's files; empty when it does. Each file
     must have the inverse status and the inverse runs of changed lines in order, while line numbers and context move
     with main. Every path either touches must have, in `undoing` (the revert's merge base and head trees), the modes
     it had in `undone` (#number's base and merge commit trees) the other way round, absence included. A tree GitHub
-    truncated is None."""
+    truncated is None. Trees map a path to its (mode, blob): a revert that touches only #number's paths and whose
+    trees hold #number's blobs the other way round is exact whatever its diff looks like, since a diff can pair the
+    same change's lines another way (#351)."""
     why: list[str] = []
+    before, after = undone
+    base, head = undoing
+    trees = None not in (before, after, base, head)
+
+    def paths(entries: list[dict[str, Any]]) -> set[str]:
+        return {
+            entry[name]
+            for entry in entries
+            for name in ("filename", "previous_filename")
+            if entry.get(name)
+        }
+
+    touched = paths(original) | paths(revert)
+    if (
+        trees
+        and touched == paths(original)
+        and all(base.get(p) == after.get(p) and head.get(p) == before.get(p) for p in touched)
+    ):
+        return why
 
     def changes(entries: list[dict[str, Any]], inverted: bool) -> dict[tuple[str, str], Any]:
         found = {}
@@ -1357,27 +2197,17 @@ def inexact(
                 if extra or missing
                 else f"`{shown(*key)}` changes the lines #{number} changed in another order"
             )
-    before, after = undone
-    base, head = undoing
-    if None in (before, after, base, head):
+    if not trees:
         why.append("GitHub truncates a tree it would compare file modes in")
     else:
-        touched = {
-            entry[name]
-            for entry in original + revert
-            for name in ("filename", "previous_filename")
-            if entry.get(name)
-        }
         for path in sorted(touched):
             for theirs, ours, where, when in (
                 (after, base, "at the merge base", "after"),
                 (before, head, "at the head", "before"),
             ):
-                if ours.get(path) != theirs.get(path):
-                    why.append(
-                        f"`{path}` has mode {ours.get(path, 'absent')} {where}, and"
-                        f" {theirs.get(path, 'absent')} {when} #{number}"
-                    )
+                mode, wanted = (ours.get(path, ("absent",))[0], theirs.get(path, ("absent",))[0])
+                if mode != wanted:
+                    why.append(f"`{path}` has mode {mode} {where}, and {wanted} {when} #{number}")
     return why
 
 
@@ -1420,8 +2250,8 @@ def head_checks(
     pull: dict[str, Any], required: set[str] | None
 ) -> tuple[list[tuple[str, str]], int | None, set[str]]:
     """The state of the newest run of each check on the head the merge reads, as (name, state): `required` (None:
-    the aggregate `check`, the one check `check merge` reads, since every other check is advisory or the ruleset's;
-    empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
+    the aggregate `check`, the one check `check merge` reads on a base that requires none, since every other check is
+    advisory; empty: every check); how many checks GitHub returned when it holds more than that one page, else None; and the
     names whose only run is a draft's skip, which the ready PR's CI has not reached yet."""
     commits = pull["commits"]["nodes"]
     contexts = commits[0]["commit"]["statusCheckRollup"] if commits else None
@@ -1513,7 +2343,53 @@ def started(node: dict[str, Any]) -> str:
     return node.get("startedAt") or node.get("createdAt") or ""
 
 
+# the environment variable naming the local deny list (denied), a file kept outside the repo
+DENY_LIST = "LOOP_DENY_LIST"
+
+
+def denied(text: str) -> None:
+    """Refuse to post `text` when it names a term of the local deny list: the file `LOOP_DENY_LIST` names, one term per
+    line (a name, a repo slug, a hostname; `#` starts a comment), matched ignoring case at word boundaries, since a
+    public repo's comment keeps its first text in GitHub's edit history for good. Without the variable nothing is
+    checked; a list it names that can't be read refuses, since an unread list would let every post through."""
+    if not (where := os.environ.get(DENY_LIST)):
+        return
+    try:
+        listed = Path(where).expanduser().read_text().splitlines()
+    except OSError as exc:
+        raise Refused(
+            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
+        ) from exc
+    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
+    for number, line in enumerate(text.splitlines(), 1):
+        for term in terms:
+            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
+                raise Refused(
+                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
+                )
+
+
+def texts(data: str) -> list[str]:
+    """The text GitHub will publish from a post's `data`: every string a JSON payload holds, decoded (a review's body
+    and its inline comments), else the data itself (a comment's body)."""
+    try:
+        found: list[Any] = [json.loads(data)]
+    except ValueError:
+        return [data]
+    strings = []
+    while found:
+        value = found.pop()
+        if isinstance(value, str):
+            strings.append(value)
+        elif isinstance(value, dict | list):
+            found.extend(value.values() if isinstance(value, dict) else value)
+    return strings
+
+
 def gh(*args: str, data: str | None = None) -> str:
+    if data is not None:  # every comment and review approvals.py posts goes as `data`
+        for text in texts(data):
+            denied(text)
     return subprocess.run(
         ["gh", *args], input=data, check=True, capture_output=True, text=True
     ).stdout
@@ -1575,14 +2451,16 @@ PLAN_LIMIT = "Upgrade to GitHub Pro"
 
 def required_checks(base: str) -> set[str]:
     """The checks the base branch requires, from its live rules: its rulesets' and its branch protection's. A private
-    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises."""
+    repo on GitHub's free plan has no rulesets: that 403 reads as none, and any other error raises. A base whose rules
+    require GitHub's merge queue is refused: GitHub would merge each PR later, on a tree land never gated."""
     try:
         rulesets = gh(
             "api",
             "--paginate",
             f"repos/{{owner}}/{{repo}}/rules/branches/{base}",
             "--jq",
-            '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context',
+            '.[] | if .type == "merge_queue" then ":merge_queue"'
+            ' elif .type == "required_status_checks" then .parameters.required_status_checks[].context else empty end',
         )
     except subprocess.CalledProcessError as error:
         if "(HTTP 403)" not in (error.stderr or "") or PLAN_LIMIT not in error.stderr:
@@ -1591,6 +2469,11 @@ def required_checks(base: str) -> set[str]:
             f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
         )
         rulesets = ""
+    if ":merge_queue" in rulesets.split():
+        raise Refused(
+            f"{base}'s rules require GitHub's merge queue, which would merge each PR later on a tree land never gated:"
+            " drop it from the ruleset (SKILL.md, Adopting the loop)"
+        )
     protection = gh(
         "api",
         f"repos/{{owner}}/{{repo}}/branches/{base}",
@@ -1600,17 +2483,17 @@ def required_checks(base: str) -> set[str]:
     return set((rulesets + protection).split())
 
 
-def auto_merge_allowed() -> bool:
-    return gh("api", "repos/{owner}/{repo}", "--jq", ".allow_auto_merge").strip() == "true"
-
-
-def tree(sha: str) -> dict[str, str] | None:
-    """The mode of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
+def tree(sha: str) -> dict[str, tuple[str, str]] | None:
+    """The (mode, blob SHA) of every path in commit `sha`'s tree, from GitHub's trees API; None when GitHub truncates it.
     ponytail: one recursive read, up to GitHub's 100,000 entries; read each touched directory when a repo outgrows it."""
     found = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/git/trees/{sha}?recursive=1"))
     if found["truncated"]:
         return None
-    return {entry["path"]: entry["mode"] for entry in found["tree"] if entry["type"] != "tree"}
+    return {
+        entry["path"]: (entry["mode"], entry["sha"])
+        for entry in found["tree"]
+        if entry["type"] != "tree"
+    }
 
 
 def head_pushed(pull: dict[str, Any]) -> str | None:
@@ -1675,6 +2558,24 @@ def assign(number: int, login: str, add: bool) -> None:
     )
 
 
+def public(text: str) -> str:
+    """`text` as posted: the home directory written `~` and the temp dir `<tmp>`, pytest's `pytest-of-<user>/pytest-<n>`
+    under it included, since a path under either (a log's, a cache's, a failing test's) names the person whose machine
+    posted it, and GitHub's edit history keeps a comment's first text for good."""
+    # the longest temp dir first and home last, since a temp dir can sit under /tmp or under home
+    # ponytail: this process's temp dir and /tmp; another TMPDIR's paths stay, with only the account name masked
+    tmps = {tempfile.gettempdir(), os.path.realpath(tempfile.gettempdir()), "/tmp"}
+    for tmp in sorted(filter(None, (t.rstrip("/") for t in tmps)), key=len, reverse=True):
+        text = re.sub(
+            r"(?<![\w.~-])" + re.escape(tmp) + r"(?:/pytest-of-[^/\s]+(?:/pytest-\w+)?)?(?![\w.-])",
+            "<tmp>",
+            text,
+        )
+    if home := str(Path.home()).rstrip("/"):
+        text = re.sub(re.escape(home) + r"(?![\w.-])", "~", text)
+    return re.sub(r"pytest-of-[^/\s]+", "pytest-of-<user>", text)
+
+
 def comment(number: int, body: str) -> None:
     gh(
         "api",
@@ -1682,7 +2583,7 @@ def comment(number: int, body: str) -> None:
         "-F",
         "body=@-",
         "--silent",
-        data=body,
+        data=public(body),
     )
 
 
@@ -1710,7 +2611,7 @@ def viewer() -> str | None:
 
 def writer(login: str) -> bool:
     """Whether `login` can write to the repo, by GitHub's collaborator permission; an account GitHub refuses to look
-    up can't. ponytail: a bot's GraphQL login lacks the `[bot]` REST needs, so a bot author fails closed; add the
+    up can't. ponytail: a bot's GraphQL login lacks the `bot` REST needs, so a bot author fails closed; add the
     suffix when a project's bot opens sub-issues."""
     try:
         permission = gh(
@@ -1735,6 +2636,10 @@ def current_pr() -> int | None:
 
 class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
+
+
+class MachineFault(Refused):
+    """The gate exited with loop.md's `machine_exit` twice on one tree in `land`: the machine isn't ready."""
 
 
 def read(path: Path) -> str:
@@ -1791,33 +2696,126 @@ def one_repo() -> None:
 
 
 def project() -> tuple[str | None, str | None]:
-    """The checkout's docs/agents/issue-tracker.md and loop.md, None for one it lacks: a repo without the loop's
-    files has no rules, and its issues no label shape."""
+    """The checkout's docs/agents/issue-tracker.md and its policy, None for one it lacks: a repo without the files has
+    no rules, and its issues no label shape. The policy is gatekeeper.md's (a Policy), else loop.md's `## Settings`
+    block, read with a deprecation line; a project with both is refused, since two sources of the bar would drift.
+    Settings off their schema are refused here, before any proof is printed or any PR touched."""
     root = toplevel()
-    tracker, loop = (
-        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP)
+    tracker, loop, policy = (
+        read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP, POLICY)
     )
+    if policy is not None:
+        if loop is not None and SETTINGS.search(section(loop, "Settings")):
+            raise Refused(
+                f"both {POLICY} and {LOOP}'s ## Settings hold a policy: keep it in {POLICY} alone"
+            )
+        loop = Policy(policy)
+    elif loop is not None:
+        moved()
+    settings(loop)
+    if tracker is not None:
+        tracker_settings(tracker)
     return tracker, loop
+
+
+@functools.cache
+def moved() -> None:
+    """One line per run, however often the policy is read."""
+    print(
+        f"{LOOP}'s ## Settings is deprecated: move the block to {POLICY} under ## Policy (SKILL.md § Settings)",
+        file=sys.stderr,
+    )
+
+
+def adopted(issues: list[dict[str, Any]], loop: str | None) -> list[dict[str, Any]]:
+    """The issues, each read again after recording an `approved:<point>` label the owner (loop.md's `owner`) added
+    after the spec's or plan's last edit as their approval (approve), which also removes `needs-owner`, printing a line
+    for each; a label the owner added before that edit gets a line saying so and changes nothing, nor does anyone
+    else's. Without `owner` nothing is read, since only the owner's own label is their word."""
+    owner = settings(loop).get("owner")
+    if not owner:
+        return issues
+    found = []
+    for issue in issues:
+        number, recorded = issue["number"], False
+        for point in POINTS:
+            holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
+            name = f"approved:{point}"
+            if holder is None or name not in names(issue):
+                continue
+            value = version(holder)
+            if current(issue, point, point, value, "owner"):
+                continue
+            added = [
+                event
+                for event in events(issue, "LabeledEvent")
+                if (event.get("label") or {}).get("name") == name
+            ]
+            # GitHub logins are case-insensitive: `Octocat` in loop.md names the account `octocat`
+            if (
+                not added
+                or (added[-1].get("actor") or {}).get("login", "").lower() != str(owner).lower()
+            ):
+                continue
+            if added[-1]["createdAt"] <= (holder.get("lastEditedAt") or holder["createdAt"]):
+                print(
+                    f"#{number}: the owner's `{name}` was added before the {point}'s last edit ({value}): the"
+                    " owner adds it again"
+                )
+                continue
+            approve(point, number, value)
+            recorded = True
+            print(
+                f"#{number}: recorded the owner's `{name}`, added after the {point}'s last edit, as their approval"
+            )
+        found.append(issue_node(number) if recorded else issue)
+    return found
 
 
 def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Every missing proof at `point`, and the issues the PR names (none for an exact revert)."""
+    """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
+    reads its issues from `named` and the reverted PR's risk from `reverted` instead)."""
     revert, found = reverts(pull)
-    issues = [] if revert else closing_issues(pull)
-    if not revert:
-        found += problems(issues, None if tracker is None else label_names(tracker))
+    if revert:
+        pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
+        return found + proofs(point, pull, [], loop, revert), []
+    issues = adopted(closing_issues(pull), loop)
+    found += problems(issues, None if tracker is None else label_names(tracker))
     return found + proofs(point, pull, issues, loop, revert), issues
 
 
-def check(point: str, pr: int | None) -> int:
+def reverted(number: int) -> str | None:
+    """Why an exact revert of #number is high risk for what it reverts, or None: `risk:high` on #number, or #number's
+    last verdict judging it high (judged), since undoing a high-risk change (or re-landing one, a revert of its
+    revert) changes as much as making it."""
+    original = pull_request(number)
+    if RISK_LABEL in names(original):
+        return f"`{RISK_LABEL}` is on #{number}, which it reverts"
+    if why := judged(original):
+        return f"it reverts #{number}, and {why}"
+    return None
+
+
+def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
     tracker, loop = project()
-    cap(loop)  # an unreadable `cap:` line is refused before any proof is printed
+    if issue is not None:
+        return unbuilt(issue, tracker, loop)
     if pr is None and (pr := current_pr()) is None:
+        if point == "build":
+            if (issue := branch_issue()) is None:
+                print(
+                    "no PR for this branch yet, and its name holds no issue number: pass --issue <n>, since a build"
+                    " needs an approved spec"
+                )
+                return 1
+            return unbuilt(issue, tracker, loop)
         print("no PR for this branch yet: nothing to gate")
         return 0
     pull = pull_request(pr)
+    if point == "queue" and head is not None:
+        return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):
         print(why)
         return 0
@@ -1830,201 +2828,583 @@ def check(point: str, pr: int | None) -> int:
     return 1 if found else WAITING if waiting else 0
 
 
-def land(pr: int, wait: bool = False) -> int:
-    """landing() once, or with `wait` again every POLL seconds while it polls, printing what changed: until it
-    ends, or exit 3 at CEILING."""
+def unopened() -> dict[str, Any]:
+    """The PR `check build` judges an issue's spec beside before it exists: no labels, and the files the branch has
+    changed since it left origin's default branch, as a PR's would be at `check build`; when git can't tell, more files
+    than it lists (paths() None), so a `paths` risk rule holds rather than reading as unmatched."""
+    try:
+        base = git("rev-parse", "--abbrev-ref", "origin/HEAD").strip()
+        # NUL-separated, since git quotes a non-ASCII name and a name may hold spaces
+        found = git("diff", "--name-only", "-z", f"{base}...HEAD").split("\0")[:-1]
+    except subprocess.CalledProcessError:
+        return {"labels": {"nodes": []}, "files": {"nodes": [], "totalCount": 1}}
+    return {"labels": {"nodes": []}, "files": {"nodes": [{"path": path} for path in found]}}
+
+
+def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
+    """check build on one issue before its PR exists: every build proof a PR's issues need (problems, proofs), judged
+    on the issue and the files the branch changes so far (unopened); it claims nothing, since there is no PR to give
+    the assignee."""
+    issues, pull = adopted([issue_node(number)], loop), unopened()
+    found = problems(issues, None if tracker is None else label_names(tracker))
+    found += proofs("build", pull, issues, loop)
+    for line in holds(pull, issues, loop) + found:
+        print(line)
+    if not found:
+        print(f"#{number}: every build proof holds; no PR yet")
+    return 1 if found else 0
+
+
+def branch_issue() -> int | None:
+    """The issue number the current branch's name starts a segment with (`loop/329-build-issue`), or None."""
+    found = re.search(r"(?:^|/)(\d+)(?:-|$)", git("rev-parse", "--abbrev-ref", "HEAD").strip())
+    return int(found[1]) if found else None
+
+
+def land(pr: int | None, wait: bool = False) -> int:
+    """landing() once, or with `wait` again every POLL seconds while it waits on something time clears, printing each
+    new state once: until it ends, or exit 3 at CEILING."""
     if not wait:
         return landing(pr)[0]
-    deadline, said, polled = time.monotonic() + CEILING, "", None
-    reran: set[str] = set()
+    deadline, said = time.monotonic() + CEILING, ""
     while True:
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
-                code, polled = landing(pr, reran, polled == ON_MERGE)
+                code, again = landing(pr)
         finally:
-            # a background command's log: each state once, not every 30 seconds
-            if out.getvalue() != said:
+            # a background command's log: each state once, not every 30 seconds; a held lock's age is no new state
+            if (state := re.sub(r"\d+ minutes? ago", "", out.getvalue())) != said:
                 print(out.getvalue(), end="", flush=True)
-            said = out.getvalue()
-        if polled is None:
+            said = state
+        if not again:
             return code
         if time.monotonic() + POLL > deadline:
-            print(
-                f"PR #{pr}: land --wait stopped after {CEILING // 3600} hours, still waiting for {polled}"
-            )
+            print(f"land --wait stopped after {CEILING // 3600} hours, still waiting")
             return WAITING
         time.sleep(POLL)
 
 
-def landing(
-    pr: int, reran: set[str] | None = None, merging: bool = False
-) -> tuple[int, str | None]:
-    """Every merge proof; a draft is then marked ready and waits (exit 3) for the CI that starts. A ready PR merges
-    pinned to the head: at once when nothing waits, else auto-merge while only the base's required checks are pending
-    and the repo allows it; exit 3 while anything else waits. When a red `loop:approvals` status is all that
-    waits, its Actions run is rerun: exit 3. A head behind its base, or in conflict, is refused first.
-    With `reran` (land --wait), also what a wait would poll for (ON_CI, ON_MERGE, ON_STATE), else None: it ends
-    here. Then auto-merge already on, or the merge queue, is watched rather than merged again, `merging` says this wait
-    merged or turned auto-merge on, and each approvals run is rerun once."""
+def landing(pr: int | None) -> tuple[int, bool]:
+    """Land every landable PR into the base (PR `pr`'s, else the default branch) as one gated batch, under the landing
+    lock; the exit, and whether a wait would end it (lock, CI on a head), so land --wait runs it again."""
     tracker, loop = project()
-    cap(loop)  # an unreadable `cap:` line is refused before any proof or `gh pr ready`
-    local = signed(loop)  # and so is an unreadable `Land:` line
-    pull = pull_request(pr)
-    where, head = f"PR #{pr}", pull["headRefOid"]
-    watching = reran is not None
-    if pull["state"] == "MERGED":
-        print(f"{where} is merged")
-        return 0, None
-    if pull["state"] != "OPEN":
-        raise Refused(f"{where} is closed: nothing to land")
-    auto = pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]
-    if merging and not auto:
-        raise Refused(
-            f"{where}: auto-merge was turned off, or the PR left the merge queue, without a merge"
+    named = None if pr is None else pull_request(pr)
+    if named is not None:
+        if named["state"] == "MERGED":
+            print(f"PR #{pr} is merged")
+            return 0, False
+        if named["state"] != "OPEN":
+            raise Refused(f"PR #{pr} is closed: nothing to land")
+    base = (
+        named["baseRefName"]
+        if named
+        else gh(
+            "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
+        ).strip()
+    )
+    ours = locked(base)
+    if ours is None:
+        return WAITING, True
+    try:
+        return batched(named, base, tracker, loop)
+    finally:
+        # only while it is still ours: a lock broken as stale and taken by another land stays theirs
+        released = subprocess.run(
+            [
+                "git",
+                "push",
+                "-q",
+                "--no-verify",
+                f"--force-with-lease={LOCK}:{ours}",
+                "origin",
+                f":{LOCK}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        if released.returncode:
+            print(f"the landing lock {LOCK} was not released: {' '.join(released.stderr.split())}")
+
+
+def locked(base: str) -> str | None:
+    """Take the landing lock: push a parentless commit of the base's tree to LOCK, which origin refuses as no
+    fast-forward while another is there, so any host sees it. Its commit date is its age; one older than CEILING is
+    stale, deleted and taken. Our commit, or None after saying who holds it since when."""
+    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    # pid and a random value: two lands in the same second, under one identity, would otherwise build one commit,
+    # and the second push of it would succeed as a no-op
+    ours = git(
+        "commit-tree",
+        "-m",
+        f"landing lock\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
+        f"refs/remotes/origin/{base}^{{tree}}",
+    ).strip()
+    for _ in range(2):
+        pushed = subprocess.run(
+            ["git", "push", "-q", "--no-verify", "origin", f"{ours}:{LOCK}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if not pushed.returncode:
+            return ours
+        held = git("ls-remote", "origin", LOCK).split()
+        if not held:
+            raise Refused(
+                f"origin refused the landing lock {LOCK}: {' '.join(pushed.stderr.split())}"
+            )
+        try:
+            git("fetch", "-q", "origin", LOCK)
+            taken = int(git("log", "-1", "--format=%ct", held[0]).strip())
+        except subprocess.CalledProcessError:  # released meanwhile: push again
+            continue
+        age = int(time.time()) - taken
+        if age <= CEILING:
+            print(
+                f"another land holds the landing lock {LOCK}, taken {age // 60} minutes ago"
+                f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
+            )
+            return None
+        print(
+            f"the landing lock {LOCK} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
+        )
+        subprocess.run(
+            [
+                "git",
+                "push",
+                "-q",
+                "--no-verify",
+                f"--force-with-lease={LOCK}:{held[0]}",
+                "origin",
+                f":{LOCK}",
+            ],
+            capture_output=True,
+            check=False,
+        )
+    print(
+        f"another land took the landing lock {LOCK} as this one broke it: land --wait waits for it"
+    )
+    return None
+
+
+def landable(
+    pull: dict[str, Any], tracker: str | None, loop: str | None, required: set[str]
+) -> tuple[int, bool] | None:
+    """None when the PR is a candidate for the batch: every merge proof (gated, the head's own CI or local-ci pass
+    aside, since the batch's gate is the proof), no owner wait, the base's required checks green on its head, and a
+    signed squash possible where loop.md asks for one. Else, after printing why, the exit it means for a named PR and
+    whether a wait would clear it. A draft (only a named PR is read as one) is marked ready first."""
+    where, local = f"PR #{pull['number']}", signed(loop)
+    if pull["isCrossRepository"]:
+        print(f"{where} comes from another repository: land merges only branches of this one")
+        return 1, False
     if why := outside(pull, loop):
-        # land is the loop's merge: auto-merge on a PR no verifier saw would merge it on CI alone
-        raise Refused(why)
-    # GitHub says this as a required check `expected`
-    if stale := STALE_BASE.get(pull["mergeStateStatus"]):
-        raise Refused(
-            f"{where} {stale} {pull['baseRefName']}: merge origin/{pull['baseRefName']} in, rerun the gates, get a"
-            " verdict on the merge (lead.md step 8), then land again"
-        )
+        # land is the loop's merge: a PR no verifier saw merges its author's way
+        print(why)
+        return 1, False
     found, issues = gated("merge", pull, tracker, loop)
-    if found:  # never ready on a missing proof: ready starts CI and, with auto-merge, the merge
+    if found:  # never ready on a missing proof: ready starts CI
         for line in holds(pull, issues, loop) + found:
             print(line)
-        return 1, None
+        return 1, False
+    if (proof := head_proof(loop)) and not proved(pull["headRefOid"], proof["status"]):
+        names = f", with the tier set in {', '.join(proof['env'])}" if proof["env"] else ""
+        print(
+            f"{where}: its head {pull['headRefOid']} has no green `{proof['status']}` status for its tree (loop.md"
+            f" `head_proof`): run `approvals.py local-ci --record --head-proof` on a clean checkout of it{names}"
+        )
+        return 1, False
     if local and (why := unsignable(pull, *local)):
-        raise Refused(why)
+        print(why)
+        return 1, False
     for line in flag(pull, issues, loop):
         print(line)
-    required = required_checks(pull["baseRefName"])
-    checking, owner = ran(pull, loop, required), owner_waits(pull, issues, loop)
-    # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the repo's
-    # delete_branch_on_merge removes the remote one. Add it when a repo lacks that setting.
-    merge = ["pr", "merge", str(pr), "--squash", "--match-head-commit", head]
-    checks = head_checks(pull, required)[0]  # ran() already waits for a draft-only skip
-    red = [(name, state) for name, state in checks if state not in GREEN]
-    # GitHub merges once the required checks pass; a red one it never merges past. The owner's label and a local-ci
-    # record are no check of GitHub's, so either hold ends the wait below instead.
-    if watching and auto and not owner and not (no_ci(loop) and checking):
-        if not RED.intersection(state for _, state in red):
-            print(
-                f"{where}: {'in the merge queue' if pull['isInMergeQueue'] else 'auto-merge is on'} at {head}"
-            )
-            return WAITING, ON_MERGE
-        for line in checking + owner:
-            print(line)
-        return WAITING, None
-    # GitHub computes the merge state after a push or a base change; ready or merge before it may expose a head the
-    # next read refuses as behind or in conflict
-    if pull["mergeStateStatus"] == "UNKNOWN":
-        print(f"{where}: GitHub hasn't computed whether it can merge yet: run land again")
-        return WAITING, ON_STATE
     if pull["isDraft"]:
         # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
-        gh("pr", "ready", str(pr))
-        print(f"{where} is ready now: CI starts on ready, run land again")
-        return WAITING, ON_CI
-    if not checking + owner and local:
-        commit = signed_squash(pull, local[1])
-        print(f"{where} landed in {pull['baseRefName']} as {commit}, signed by a key in {local[1]}")
-        return 0, None
-    if not checking + owner:
-        gh(*merge)
-        print(f"{where} merges at {head}")
-        # on a base that requires a merge queue, GitHub queues it instead: a wait follows it to MERGED
-        return 0, ON_MERGE
-    # a required check not on the head yet may be a draft's skipped run, which GitHub's auto-merge counts as passing
-    pending = (
-        not owner
-        and not no_ci(loop)
-        and required <= {name for name, _ in checks}
-        and not RED.intersection(state for _, state in checks)
-    )
-    # GitHub's auto-merge would sign the squash with GitHub's key: a signed landing waits for the checks instead
-    if pending and required and not local and auto_merge_allowed():
-        gh(*merge, "--auto")
-        print(f"{where}: auto-merge on at {head}, once {', '.join(sorted(required))} pass")
-        return 0, ON_MERGE
-    statuses = [
-        node
-        # a head no check ran on has a null rollup
-        for node in (
-            pull["commits"]["nodes"][0]["commit"]["statusCheckRollup"]
-            or {"contexts": {"nodes": []}}
-        )["contexts"]["nodes"]
-        if node.get("__typename") == "StatusContext" and node.get("context") == APPROVALS
-    ]
-    # Resolving a review thread starts no workflow, so the FAILURE the approvals workflow posted while one was open
-    # stays on the head. When every proof holds and that status is all that waits, run its workflow again.
-    if (
-        statuses
-        and not owner
-        and not no_ci(loop)
-        and required <= {name for name, _ in checks}
-        and [name for name, _ in red] == [APPROVALS]
-        and red[0][1] in RED
-    ):
-        stale = f"{where}: every proof holds but `{APPROVALS}` is {red[0][1]} on the head commit"
-        found = RUN.search(max(statuses, key=started).get("targetUrl") or "")
-        if found is None:
-            print(
-                f"{stale}, and the status names no Actions run to rerun:"
-                " rerun the workflow that posts it, then run land again"
-            )
-            return WAITING, None
-        # gh resolves the id in this checkout's repo; a target naming another repo's run, or one that is gone, fails
-        try:
-            run = json.loads(gh("run", "view", found[1], "--json", "status,url"))
-        except subprocess.CalledProcessError:
-            run = None
-        if run is None or not RUN.search(run.get("url") or ""):
-            print(
-                f"{stale}, and its target names no Actions run of this repo:"
-                " rerun the workflow that posts it, then run land again"
-            )
-            return WAITING, None
-        if run.get("status") != "completed":
-            print(
-                f"{stale}: its run {found[1]} is {run.get('status')}, so the status is not posted yet; run land again"
-            )
-            return WAITING, ON_CI
-        if reran is not None and found[1] in reran:
-            print(f"{stale}, again after land --wait reran run {found[1]}: read its log")
-            return WAITING, None
-        # ponytail: a status forged to name another workflow's run reruns that run; whoever can post statuses
-        # can rerun runs anyway. Pin the context to the approvals app in the ruleset to close it.
-        gh("run", "rerun", found[1])
-        if reran is not None:
-            reran.add(found[1])
-        print(
-            f"{stale}: reran run {found[1]}, since resolving a review thread starts no workflow; run land again"
+        gh("pr", "ready", str(pull["number"]))
+        print(f"{where} is ready now")
+        if required:
+            print(f"{where}: CI starts on ready, so its required checks are pending")
+            return WAITING, True
+    if required and (lines := ci(where, pull, required)):
+        for line in lines:
+            print(line)
+        red = {state for _, state in head_checks(pull, required)[0]} & RED
+        return (1, False) if red or any(line.endswith(PAGED) for line in lines) else (WAITING, True)
+    # after CI, so the owner is never asked about a head CI could still reject
+    if owner := owner_waits(pull, issues, loop):
+        for line in owner:
+            print(line)
+        return WAITING, False  # the owner is asked, not polled
+    return None
+
+
+def batched(
+    named: dict[str, Any] | None, base: str, tracker: str | None, loop: str | None
+) -> tuple[int, bool]:
+    """Under the lock: merge every candidate's head onto `base` locally, oldest PR first, gate the result's tree once
+    (or reuse a pass on it), and merge each through GitHub in that order; a red batch lands one PR at a time."""
+    # `loop:approvals` is check merge's own status, on the proofs land reads itself
+    required = required_checks(base) - {APPROVALS}
+    waits: dict[int, tuple[int, bool]] = {}
+    candidates = []
+    listed = {
+        other["number"]
+        for other in open_pulls()
+        if other["baseRefName"] == base and not other["isDraft"]
+    } | ({named["number"]} if named else set())
+    for number in sorted(listed):
+        pull = named if named and number == named["number"] else pull_request(number)
+        if (why := landable(pull, tracker, loop, required)) is None:
+            candidates.append(pull)
+        else:
+            waits[number] = why
+    failed: set[int] = set()
+    # each PR to land, the tree it lands, the tree gated with it, and how that passed
+    landed: list[tuple[dict[str, Any], str, str, str]] = []
+    if candidates:
+        with batch_tree(base) as work:
+            tip = run_in(work, "rev-parse", "HEAD")
+            candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
+            landed = merge_batch(candidates, base, work, failed)
+            if landed:
+                merges(landed, base, tip, work, loop, failed)
+    number = named["number"] if named else None
+    if number is not None:
+        if number in waits:
+            return waits[number]
+        return (
+            (0, False)
+            if any(pull["number"] == number for pull, *_ in landed) and number not in failed
+            else (1, False)
         )
-        return WAITING, ON_CI
-    for line in checking + owner:
-        print(line)
-    # CI may still clear what waits while a required check is pending and none is red; the owner is asked after it
-    pending = (
-        checking
-        and not no_ci(loop)
-        and not RED.intersection(state for _, state in red)
-        and not any(line.endswith(PAGED) for line in checking)
+    if failed:
+        return 1, False
+    return (WAITING, True) if any(again for _, again in waits.values()) else (0, False)
+
+
+@contextlib.contextmanager
+def batch_tree(base: str) -> Any:
+    """A detached worktree of origin's `base` under the git common dir, removed after; its gate logs stay beside it.
+    Under the common dir rather than the system's temp dir, so a tool that trusts the clone's path trusts it too."""
+    root = (
+        Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+        / "approvals"
+        / "landing"
     )
-    return WAITING, ON_CI if pending else None
+    root.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(dir=root))
+    git("worktree", "add", "-q", "--detach", str(work), f"refs/remotes/origin/{base}")
+    try:
+        yield work
+    finally:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(work)], capture_output=True, check=False
+        )
+        shutil.rmtree(work, ignore_errors=True)
+        subprocess.run(["git", "worktree", "prune"], capture_output=True, check=False)
 
 
-def approve(point: str, number: int) -> int:
+def merge_batch(
+    candidates: list[dict[str, Any]], base: str, work: Path, failed: set[int]
+) -> list[tuple[dict[str, Any], str, str, str]]:
+    """Merge the candidates onto the base in `work` and gate the result; red: one PR at a time on the last green
+    commit, a PR red alone gated once more, then evicted, and when the first one is red twice the bare base gated,
+    which red ends the run evicting nobody. Each PR to land, with the tree it lands (the base with it and the PRs
+    before it merged), the tree gated with it, and how."""
+    tip = run_in(work, "rev-parse", "HEAD")
+    merged: list[dict[str, Any]] = []
+    trees: list[str] = []
+    for pull in candidates:
+        if merged_onto(pull, work, base, [other["number"] for other in merged], failed):
+            merged.append(pull)
+            trees.append(run_in(work, "rev-parse", "HEAD^{tree}"))
+    if not merged:
+        return []
+    tree, how = gate_batch(work, merged)
+    if how:
+        return [(pull, own, tree, how) for pull, own in zip(merged, trees, strict=True)]
+    numbers = ", ".join(f"#{pull['number']}" for pull in merged)
+    print(f"the batch of {numbers} is red: one PR at a time")
+    green, landed, base_green = tip, [], False
+    for pull in merged:
+        reset(work, green)
+        if not merged_onto(pull, work, base, [p["number"] for p, *_ in landed], failed):
+            continue
+        tree, how = gate_batch(work, [pull])
+        if not how:
+            print(
+                f"PR #{pull['number']} is red alone on {green}: once more, in case it was a flake"
+            )
+            tree, how = gate_batch(work, [pull])
+        if how:
+            green = run_in(work, "rev-parse", "HEAD")
+            landed.append((pull, tree, tree, how))
+            continue
+        if green == tip and not base_green:
+            reset(work, tip)
+            if not gate_batch(work, [])[1]:
+                print(
+                    f"{base} itself is red at {tip}: nothing lands and nobody is evicted until it is fixed"
+                )
+                failed.add(pull["number"])
+                return []
+            base_green = True
+        evict(pull, base, green, work.parent / f"{tree}.log")
+        failed.add(pull["number"])
+    return landed
+
+
+def run_in(work: Path, *args: str) -> str:
+    return git("-C", str(work), "-c", "commit.gpgsign=false", *args).strip()
+
+
+def reset(work: Path, commit: str) -> None:
+    """`work` at `commit` with nothing a red gate left behind but ignored files, such as caches, so the next gate's
+    tree is the commit's."""
+    run_in(work, "reset", "-q", "--hard", commit)
+    run_in(work, "clean", "-fdq")
+
+
+CONFLICTS = "Conflicts in the landing batch"
+PRE_LAND = "Refused by the pre-land check"
+EVICTED = "Evicted from the landing batch"
+
+
+def merged_onto(
+    pull: dict[str, Any], work: Path, base: str, before: list[int], failed: set[int]
+) -> bool:
+    """Merge the PR's head into `work` (`git merge --no-ff`); a conflict is aborted and said once per head on the PR,
+    since it needs the base merged in. `before` names the PRs merged ahead of it."""
+    where, head = f"PR #{pull['number']}", pull["headRefOid"]
+    if not fetched(head):
+        print(f"{where}: its head {head} is not on origin: push it, then land again")
+        failed.add(pull["number"])
+        return False
+    try:
+        run_in(work, "merge", "-q", "--no-ff", "--no-edit", head)
+        return True
+    except subprocess.CalledProcessError:
+        subprocess.run(
+            ["git", "-C", str(work), "merge", "--abort"], capture_output=True, check=False
+        )
+    failed.add(pull["number"])
+    ahead = f" plus {', '.join(f'#{n}' for n in before)} merged before it" if before else ""
+    print(f"{where} conflicts with {base}{ahead}: skipped")
+    if not any(
+        note["body"].startswith(CONFLICTS) and f"Head: {head}" in note["body"]
+        for note in notes(pull)
+    ):
+        comment(
+            pull["number"],
+            f"{CONFLICTS}\nHead: {head}\n\nIt conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates,"
+            " get a verdict on the merge (lead.md step 8), then land again.\n",
+        )
+    return False
+
+
+def pre_landed(
+    pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
+) -> bool:
+    """Whether loop.md's `pre_land` passes the PR, True without one. It runs in `work` at the base's tip, with
+    LAND_HEAD and LAND_BASE set, so the base's tree holds the check that judges a PR, never the PR's own. Non-zero
+    leaves the PR out of this batch with its output said once per head on the PR; it isn't red, so it stays ready."""
+    if not (written := settings(loop).get("pre_land")):
+        return True
+    command, words, sets = command_line(written, "pre_land")
+    where, head, tip = (
+        f"PR #{pull['number']}",
+        pull["headRefOid"],
+        run_in(work, "rev-parse", "HEAD"),
+    )
+    # so the check can read the head; a head not on origin is merged_onto's to report
+    if not fetched(head):
+        return True
+    try:
+        ran = subprocess.run(
+            words,
+            cwd=work,
+            env=os.environ | sets | {"LAND_HEAD": head, "LAND_BASE": tip},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise Refused(f"loop.md's `pre_land` {command!r} can't run: {exc}") from None
+    reset(work, tip)  # the batch merges onto the base as it is, whatever the check left
+    if not ran.returncode:
+        return True
+    failed.add(pull["number"])
+    print(
+        f"{where}: `{command}` refused it against {base} at {tip}, exiting {ran.returncode}: left out of this batch"
+    )
+    if not any(
+        note["body"].startswith(PRE_LAND) and f"Head: {head}" in note["body"]
+        for note in notes(pull)
+    ):
+        comment(
+            pull["number"],
+            f"{PRE_LAND}\nHead: {head}\n\n`{command}` refused it against {base} at {tip}, exiting {ran.returncode}: fix"
+            " what it says, then land again.\n\n````\n"
+            # its end, where a check says why, within GitHub's 65536 characters a comment holds
+            + ran.stdout.rstrip("\n")[-60000:]
+            + "\n````\n",
+        )
+    return False
+
+
+def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
+    """The tree checked out in `work` and how it passed the gate (`run` or `reused`), empty when red. A pass is reused
+    when the gate command passed on the tree before (reusable), on the batch's commit or a PR's head with that tree;
+    never on GitHub's required checks alone, since the pass is published as the gate command's. Else the gate runs
+    there and its pass is recorded by tree. Its log stays beside the worktree."""
+    commit, tree = run_in(work, "rev-parse", "HEAD"), run_in(work, "rev-parse", "HEAD^{tree}")
+    command = gate()[0]
+    if reusable(commit) or any(
+        tree_of(pull["headRefOid"]) == tree and reusable(pull["headRefOid"]) for pull in pulls
+    ):
+        print(f"Tree {tree}: `{command}` passed on it before, reused")
+        return tree, "reused"
+    log, fault = work.parent / f"{tree}.log", settings(project()[1]).get("machine_exit")
+    for again in (False, True):
+        with log.open("w") as out:
+            code = ran_gate(work, out)
+        if code != fault:
+            break
+        if again:
+            raise MachineFault(
+                f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`, twice: a machine fault, not the"
+                " change's, so nothing more lands and nobody is evicted. Fix the machine, then land again."
+                f" The gate's last lines (log {public(str(log))}):\n"
+                + "\n".join(log.read_text(errors="replace").splitlines()[-LOG_TAIL:])
+            )
+        print(
+            f"Tree {tree}: `{command}` exited {code}, loop.md's `machine_exit`: once more on the same tree"
+        )
+        reset(work, commit)
+    if not code and (changed := run_in(work, "status", "--porcelain", "--untracked-files=all")):
+        with log.open("a") as out:
+            out.write(
+                f"\nthe gate changed the tree, so it did not run on the batch as merged:\n{changed}\n"
+            )
+        code = 1
+    print(f"Tree {tree}: `{command}` exited {code} (log {public(str(log))})")
+    if code:
+        return tree, ""
+    record = {
+        "head": commit,
+        "tree": tree,
+        "command": command,
+        "exit": 0,
+        "env": gate()[2],
+        "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "host": socket.gethostname(),
+    }
+    (where := recorded(tree, command)).parent.mkdir(parents=True, exist_ok=True)
+    where.write_text(json.dumps(record, indent=2) + "\n")
+    return tree, "run"
+
+
+def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
+    """Take a PR red alone, twice, out of the batch: back to draft, so the next land leaves it out until `land <pr>`
+    marks it ready again, and a comment holding its gate log's last LOG_TAIL lines."""
+    where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
+    print(f"{where} is red alone on {base} at {green}, twice: evicted")
+    try:
+        tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
+    except OSError:
+        tail = []
+    gh("pr", "ready", "--undo", str(number))
+    comment(
+        number,
+        f"{EVICTED}\nHead: {head}\n\n`{gate()[0]}` failed twice on it merged alone onto {base} at {green}: fix it,"
+        f" then `land {number}` marks it ready again.\n\n<details><summary>The gate's last lines</summary>\n\n````\n"
+        + "\n".join(tail)
+        + "\n````\n</details>\n",
+    )
+
+
+def merges(
+    landed: list[tuple[dict[str, Any], str, str, str]],
+    base: str,
+    tip: str,
+    work: Path,
+    loop: str | None,
+    failed: set[int],
+) -> None:
+    """Merge each PR through GitHub in the batch's order, pinned to its head (or, with loop.md's `land` section, as a
+    signed squash of the tree it lands on the commit before it), stopping at the first one GitHub refuses or leaves
+    open, then check the base ended at the gated tree: equal, publish the pass on the new tip; else (a refusal left
+    the batch partial, or someone merged meanwhile) the tip is gated here. Each landed PR gets a `Landed` comment."""
+    local, command, done = signed(loop), gate()[0], []
+    for pull, tree, gated, how in landed:
+        where, head = f"PR #{pull['number']}", pull["headRefOid"]
+        try:
+            if local:
+                tip = signed_squash(pull, local[1], (tip, tree))
+                print(f"{where} landed in {base} as {tip}, signed by a key in {local[1]}")
+            else:
+                # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
+                # repo's delete_branch_on_merge removes the remote one
+                gh("pr", "merge", str(pull["number"]), "--squash", "--match-head-commit", head)
+                # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
+                if (state := pull_request(pull["number"])["state"]) != "MERGED":
+                    raise Refused(f"GitHub left it {state}, not merged")
+                print(f"{where} merged at {head}")
+        except (subprocess.CalledProcessError, Refused) as exc:
+            why = " ".join(str(getattr(exc, "stderr", None) or exc).split())
+            print(
+                f"{where}: the merge was refused, so it and every PR after it wait for the next land: {why}"
+            )
+            failed.update(other["number"] for other, *_ in landed[len(done) :])
+            break
+        done.append((pull, tree, gated, how))
+    if not done:
+        return
+    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    actual, (_, tree, gated, _) = git("rev-parse", f"{tip}^{{tree}}").strip(), done[-1]
+    if actual == gated:
+        publish(tip, {"head": tip, "tree": actual, "command": command})
+    else:
+        numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
+        print(
+            f"{base} holds {numbers} of the batch, whose tree {actual} was never gated, so {tip} is gated now"
+            if actual == tree
+            else f"{base}'s tree is {actual} after the merges, not the {tree} they make: someone merged meanwhile,"
+            f" so {tip} is gated now"
+        )
+        reset(work, tip)
+        try:
+            if gate_batch(work, [])[1]:
+                publish(tip, {"head": tip, "tree": actual, "command": command})
+        except MachineFault as exc:  # the PRs landed: each still gets its comment
+            print(exc)
+    numbers = ", ".join(f"#{pull['number']}" for pull, *_ in done)
+    for pull, tree, gated, how in done:
+        comment(
+            pull["number"],
+            f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}\n",
+        )
+
+
+def approve(point: str, number: int, seen: str | None = None) -> int:
     """Record the owner's approval of the issue's current spec or plan, on their word: the record, the label, and
-    `needs-owner` removed. Every earlier record of the point is superseded and minimized."""
+    `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
+    the owner's label was checked against (adopted), an edit since is refused: the label never covered it."""
     issue = issue_node(number)
     holder = spec_holder(issue) if point == "spec" else headed(issue, "## Plan")
     if holder is None:
         raise Refused(f"#{number} has no `## Plan` comment to approve")
     value = version(holder)
+    if seen is not None and value != seen:
+        raise Refused(
+            f"#{number}: the {point} was edited ({value}) after the owner's `approved:{point}`: the owner adds it again"
+        )
     record = f"{point.capitalize()}: {value}\n"
     earlier = [
         (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
@@ -2037,6 +3417,26 @@ def approve(point: str, number: int) -> int:
             minimize(note["id"])
     label(number, f"approved:{point}", add=True)
     label(number, NEEDS_OWNER, add=False)
+    return 0
+
+
+def delegate(number: int) -> int:
+    """The delegated approver's `approved:merge` on a PR into a feature branch, under the owner's standing rule: the
+    label, then the record that names it the delegate's. Into the default branch, whose merge only the owner approves
+    and where a label is no go, it is refused."""
+    pull = pull_request(number)
+    if default(pull):
+        raise Refused(
+            f"PR #{number} targets {pull['baseRefName']}, the default branch: only the owner approves its merge"
+        )
+    # the label first, so the record is never older than the label it names
+    label(number, MERGE_LABEL, add=True)
+    try:
+        comment(number, f"Approved: merge\nBy: {DELEGATE}\n")
+    except subprocess.CalledProcessError:
+        # a label with no record names no one: take it off again
+        label(number, MERGE_LABEL, add=False)
+        raise
     return 0
 
 
@@ -2110,13 +3510,17 @@ def post_review(pr: int, review: dict[str, Any]) -> None:
         "--input",
         "-",
         "--silent",
-        data=json.dumps(review),
+        # unescaped, so public() finds a non-ASCII home as GitHub will decode it
+        data=public(json.dumps(review, ensure_ascii=False)),
     )
 
 
-def verdict(pr: int, report: Path) -> int:
-    """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
-    line of the diff when its line is outside it, in the review's body when its file is."""
+def parse_report(
+    report: Path,
+) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
+    """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
+    `VERDICT:`, `SATISFIED:` and `Risk:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
+    none). Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
     verdicts = [line for line in lines if line.startswith("VERDICT:")]
@@ -2135,7 +3539,12 @@ def verdict(pr: int, report: Path) -> int:
     passes = [
         found
         for line in lines
-        if (found := re.fullmatch(r"Verifier:[ \t]*(.+),[ \t]*pass[ \t]+(\d+)", line))
+        # free text after the pass number is a qualifier the review's first line carries
+        if (
+            found := re.fullmatch(
+                r"Verifier:[ \t]*(.+?),[ \t]*pass[ \t]+(\d+)\b[ \t]*[:,;]?[ \t]*(.*)", line
+            )
+        )
     ]
     if not passes:
         raise Refused(f"{report} has no `Verifier: <family>, pass <n>` line")
@@ -2151,8 +3560,24 @@ def verdict(pr: int, report: Path) -> int:
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
-    head, (family, number) = heads[-1].lower(), passes[-1].groups()
+    family, number, qualifier = passes[-1].groups()
+    closing = [verdicts[-1], satisfied[-1], judgments[-1]]
     heading = f"Verifier ({family}), pass {number}"
+    return heading, heads[-1].lower(), found, closing, qualifier
+
+
+def report_check(report: Path) -> int:
+    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
+    parse_report(report)
+    print(f"{report} reads as a verdict")
+    return 0
+
+
+def verdict(pr: int, report: Path) -> int:
+    """Post a verifier report as a PR review on the commit it reviewed: one inline comment per finding, at the nearest
+    line of the diff when its line is outside it, in the review's body when its file is."""
+    heading, head, found, closing, qualifier = parse_report(report)
+    denied(report.read_text())  # before any read of GitHub, not only at the post
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
@@ -2170,9 +3595,8 @@ def verdict(pr: int, report: Path) -> int:
         comments.append(
             {"path": path, "line": at, "side": "RIGHT", "body": f"{said}\n\n{moved}{body}"}
         )
-    summary = "\n\n".join(
-        [f"{heading} on {head[:7]}.", *outside, f"{verdicts[-1]}\n{satisfied[-1]}\n{judgments[-1]}"]
-    )
+    first = f"{heading} on {head[:7]}" + (f": {qualifier}" if qualifier else "") + "."
+    summary = "\n\n".join([first, *outside, "\n".join(closing)])
     post_review(
         pr, {"commit_id": head, "event": "COMMENT", "body": summary + "\n", "comments": comments}
     )
@@ -2184,66 +3608,307 @@ def git(*args: str) -> str:
 
 
 LOCAL_CI = ["mise", "run", "check:all"]
+# a status description's limit on GitHub, which holds the tree, the commit and the gate command (described)
+DESCRIBED = 140
 
 
-def recorded(head: str) -> Path:
-    """Where a local-ci pass on `head` is recorded: the git common dir, which every worktree of the clone shares and no
+def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict[str, str]]:
+    """loop.md's `gate` under `loop` (default LOCAL_CI): the command as written, its words, and the variables it sets
+    in front of them (`GATE_UI_TESTS=0 mise run check:all`). The command alone is the gate: it runs with every name
+    `local_ci_env` lists cleared but those it sets, so no host's ambient env changes what it ran. With `passed`, a
+    head proof's names (head_proof), each one this process's environment sets is set to that value, over the
+    command's own assignment of it, and the command returned names it, so its record and status say so."""
+    return command_line(settings(project()[1]).get("gate") or shlex.join(LOCAL_CI), "gate", passed)
+
+
+def command_line(
+    written: str, key: str, passed: list[str] | tuple[str, ...] = ()
+) -> tuple[str, list[str], dict[str, str]]:
+    """loop.md's command `key` (`gate`, `pre_land`) as written: its words, and the variables it sets in front of them,
+    each of `passed` this process's environment sets taking that value (gate). It runs with no shell, so a shell
+    operator (`&&`, `;`, `|`) is refused: the words after it would be arguments, never a command."""
+    lexer = shlex.shlex(written, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    words = list(lexer)
+    assigned = len(
+        list(
+            itertools.takewhile(
+                lambda word: re.fullmatch(r"[A-Za-z_]\w*=.*", word, re.DOTALL), words
+            )
+        )
+    )
+    if (
+        assigned == len(words)
+        or any(set(word) <= set("();<>|&") for word in words)
+        or re.fullmatch(r"\w*=.*", words[assigned], re.DOTALL)
+    ):
+        raise Refused(
+            f"loop.md's `{key}` is {written!r}: variables to set, then one command to run, with no shell operator"
+            " (put a chain of checks in one task)"
+        )
+    sets = dict(word.split("=", 1) for word in words[:assigned])
+    if caller := {name: os.environ[name] for name in passed if name in os.environ}:
+        sets |= caller
+        words = [*(f"{name}={value}" for name, value in sets.items()), *words[assigned:]]
+        assigned = len(sets)
+    return shlex.join(words), words[assigned:], sets
+
+
+def ran_gate(
+    cwd: Path | None = None, out: Any = None, passed: list[str] | tuple[str, ...] = ()
+) -> int:
+    """Run the gate (gate, with `passed`) in its environment (gate_env), in `cwd` with its output to `out` when given,
+    and return its exit; a command that isn't there is refused, naming the gate, since loop.md is hand-written."""
+    command, words, _ = gate(passed)
+    where = {"cwd": cwd, "stdout": out, "stderr": subprocess.STDOUT} if cwd else {}
+    try:
+        return subprocess.run(words, check=False, env=gate_env(passed), **where).returncode
+    except OSError as exc:
+        raise Refused(f"loop.md's `gate` {command!r} can't run: {exc}") from None
+
+
+def gate_env(passed: list[str] | tuple[str, ...] = ()) -> dict[str, str]:
+    """The environment the gate runs in: this process's, without the names `local_ci_env` lists unless the gate's
+    command sets them, or `passed` takes them from this process's (gate)."""
+    cleared, sets = set(local_ci_env()), gate(passed)[2]
+    return {name: value for name, value in os.environ.items() if name not in cleared} | sets
+
+
+def local_ci_dir() -> Path:
+    """Where local-ci keeps its records and runs: the git common dir, which every worktree of the clone shares and no
     commit carries."""
     common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
-    return common / "approvals" / "local-ci" / f"{head}.json"
+    return common / "approvals" / "local-ci"
 
 
-def run_local_ci(pr: int | None, head: str | None) -> dict[str, Any]:
-    """Run `mise run check:all` on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by commit; refuse a
-    check off the head, on a changed tree, failing, or changing the tree, recording nothing."""
+def recorded(tree: str, command: str) -> Path:
+    """Where a local-ci pass of `command` on `tree` is recorded."""
+    return local_ci_dir() / f"{tree}-{gate_key(command)}.json"
 
-    def state() -> tuple[str, str]:
-        # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
-        status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
-        # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
-        hidden = [
-            f"{line[2:]} (index flag hides its changes)\n"
-            for line in git("ls-files", "-v").splitlines()
-            if line[:1].islower() or line[:1] == "S"
-        ]
-        return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
 
-    before = state()
+def gate_key(command: str) -> str:
+    """A digest of the gate command, which names a record and stands for a command too long to publish (described)."""
+    return hashlib.sha256(command.encode()).hexdigest()[:12]
+
+
+def described(tree: str, commit: str, command: str) -> str:
+    """A published pass's status description: the tree, the commit it ran on, and the command, or its digest when the
+    command doesn't fit, so another host reads what ran and a refusal can name it."""
+    line = f"Tree {tree} on {commit[:12]}: {command}"
+    return (
+        line
+        if len(line) <= DESCRIBED
+        else f"Tree {tree} on {commit[:12]}: sha256 {gate_key(command)}"
+    )
+
+
+def tree_of(commit: str) -> str | None:
+    """The tree `commit` holds, fetching `origin` once when the clone lacks it; None when neither has it."""
+    with contextlib.suppress(subprocess.CalledProcessError):
+        return git("rev-parse", f"{commit}^{{tree}}").strip()
+    with contextlib.suppress(subprocess.CalledProcessError):
+        git("fetch", "--quiet", "origin")
+        return git("rev-parse", f"{commit}^{{tree}}").strip()
+    return None
+
+
+def checkout_state() -> tuple[str, str]:
+    """HEAD and every change in the checkout, empty when it is clean."""
+    # untracked files and submodule edits listed whatever status.showUntrackedFiles or submodule.*.ignore say
+    status = git("status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+    # status skips files whose index flag says so (assume-unchanged, set by core.ignoreStat; skip-worktree)
+    hidden = [
+        f"{line[2:]} (index flag hides its changes)\n"
+        for line in git("ls-files", "-v").splitlines()
+        if line[:1].islower() or line[:1] == "S"
+    ]
+    return git("rev-parse", "HEAD").strip(), status + "".join(hidden)
+
+
+def run_local_ci(
+    pr: int | None, head: str | None, passed: list[str] | tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """Run the gate (with `passed`, gate) on a clean checkout (at PR `pr`'s `head`, when given) and record the pass by
+    tree and command; refuse a check off the head, on a changed tree, failing, or changing the tree, recording
+    nothing."""
+    before = checkout_state()
     if head and before[0] != head:
         raise Refused(
             f"the checkout is at {before[0]}, PR #{pr}'s head is {head}: push, or check out the head"
         )
     if before[1]:
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
-    command, env = " ".join(LOCAL_CI), local_ci_env()
-    code = subprocess.run(LOCAL_CI, check=False).returncode
+    command, _, env = gate(passed)
+    code = ran_gate(passed=passed)
+    if code == settings(project()[1]).get("machine_exit"):
+        raise Refused(
+            f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): nothing recorded; fix the machine,"
+            " then run it again"
+        )
     if code:
         raise Refused(f"{command} exited {code}: nothing recorded")
-    if state() != before:
+    if checkout_state() != before:
         raise Refused(
-            f"{command} changed the checkout, so it did not run on the head as pushed:\n{state()[1]}"
+            f"{command} changed the checkout, so it did not run on the head as pushed:\n{checkout_state()[1]}"
         )
     record = {
         "head": before[0],
+        "tree": git("rev-parse", "HEAD^{tree}").strip(),
         "command": command,
         "exit": code,
         "env": env,
         "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "host": socket.gethostname(),
     }
-    where = recorded(before[0])
+    where = recorded(record["tree"], command)
     where.parent.mkdir(parents=True, exist_ok=True)
     where.write_text(json.dumps(record, indent=2) + "\n")
     return record
 
 
+DETACHED = "APPROVALS_LOCAL_CI_HEAD"
+
+
+def leads_its_session() -> bool:
+    """Whether this process leads its own session, so no caller's process group or terminal takes it down."""
+    return os.getsid(0) == os.getpid()
+
+
+def run_files(head: str) -> tuple[Path, Path, Path]:
+    """The detached local-ci run's log, pid and exit files on `head`, beside the records: a run is keyed by the commit
+    it was started on, since its tree and env are known only once it runs."""
+    where = local_ci_dir() / head
+    return where.with_suffix(".log"), where.with_suffix(".pid"), where.with_suffix(".exit")
+
+
+def since(pid: int) -> str | None:
+    """When process `pid` started, as ps prints it in the C locale (so the write and every check read the same
+    text), or None for no such process."""
+    shown = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    return shown.stdout.strip() or None
+
+
+def lives(run: dict[str, Any]) -> bool:
+    """Whether the pid file's run still lives: its pid and that process's start time, since the system hands a dead
+    run's pid to the next process it starts."""
+    now = since(run["pid"])
+    return now is not None and now == run.get("since")
+
+
+def going(started: str, exit_file: Path) -> dict[str, Any] | None:
+    """The pid file's run, while it has written no exit code and its process lives; else None."""
+    try:
+        run = json.loads(started)
+        return run if not exit_file.exists() and lives(run) else None
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def detach(argv: list[str]) -> int:
+    """Run `local-ci` again in a session of its own, stdin from /dev/null and output to the log, and follow the log,
+    exiting with its exit code, so a caller killed with its process group leaves the check to finish and record. A run
+    already going on the head is followed instead; one started with other arguments is followed to its end, then this
+    one starts."""
+    head = git("rev-parse", "HEAD").strip()
+    log, pid, exit_file = run_files(head)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        with open(pid, "a+") as claim:
+            fcntl.flock(claim, fcntl.LOCK_EX)  # two callers at once start one run
+            claim.seek(0)
+            run, started = None, going(claim.read(), exit_file)
+            if started is None:
+                exit_file.unlink(missing_ok=True)
+                with open(log, "wb") as out, open(os.devnull) as nothing:
+                    run = subprocess.Popen(
+                        [sys.executable, os.path.abspath(__file__), *argv],
+                        stdin=nothing,
+                        stdout=out,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                        env={**os.environ, DETACHED: head},
+                    )
+                started = {"pid": run.pid, "since": since(run.pid), "argv": argv}
+                claim.truncate(0)
+                claim.write(json.dumps(started))
+        code = follow(log, exit_file, started, run)
+        if started["argv"] == argv:
+            return code
+
+
+def follow(
+    log: Path, exit_file: Path, started: dict[str, Any], child: subprocess.Popen[bytes] | None
+) -> int:
+    """Print the log as it grows until the run ends; its exit code, or 1 for a run that ended without writing one."""
+    with open(log, "rb") as lines:
+        while True:
+            # a run this call started is its child: poll reaps it, where a zombie would still show in ps
+            running = child.poll() is None if child else lives(started)
+            # checked before the read, so the last read holds everything
+            ended = exit_file.exists() or not running
+            sys.stdout.buffer.write(lines.read())
+            sys.stdout.flush()
+            if ended:
+                break
+            time.sleep(0.2)
+    try:
+        return int(exit_file.read_text())
+    except (OSError, ValueError):
+        print(f"the detached local-ci run ended without an exit code: its log is {log}")
+        return 1
+
+
+def finished(head: str, code: int) -> None:
+    """The detached run's last step: its exit code, written whole, after all its output."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    _, _, exit_file = run_files(head)
+    partial = exit_file.with_suffix(".exit-partial")
+    partial.write_text(f"{code}\n")
+    os.replace(partial, exit_file)
+
+
+def local_ci_status(head: str) -> int:
+    """Say whether the detached local-ci run on `head` is running (exit 3), passed (0) or failed (1), with its log;
+    passed only when a pass on `head`'s tree under this environment is recorded."""
+    head = git("rev-parse", "--verify", f"{head}^{{commit}}").strip()
+    log, pid, exit_file = run_files(head)
+    try:
+        code = int(exit_file.read_text())
+    except (OSError, ValueError):
+        code = None
+    if code == 0 and not recorded(str(tree_of(head)), gate()[0]).exists():
+        # a run on a checkout with changes, or on another PR's head, exits 0 with no pass on this one
+        print(f"exited 0 without recording a pass on {head} under the gate's command: log {log}")
+        return 1
+    if code is not None:
+        print(f"{'passed' if code == 0 else f'failed (exit {code})'} on {head}: log {log}")
+        return 0 if code == 0 else 1
+    started = going(pid.read_text() if pid.exists() else "", exit_file)
+    if started:
+        print(f"running on {head} (pid {started['pid']}): log {log}")
+        return 3
+    if log.exists():
+        print(f"ended without an exit code on {head}: log {log}")
+    else:
+        print(f"no detached local-ci run on {head}")
+    return 1
+
+
 def local_ci_env() -> dict[str, str | None]:
-    """The value of each variable loop.md's `Local CI env:` line names, None for one unset; {} without the line."""
-    found = LOCAL_CI_ENV.search(project()[1] or "")
-    names = found[1].replace("`", " ").split() if found else []
-    if found and (not names or not all(re.fullmatch(r"[A-Za-z_]\w*", name) for name in names)):
+    """The value of each variable the policy's `local_ci_env` names, None for one unset; {} without the setting."""
+    policy = project()[1]
+    names = settings(policy).get("local_ci_env", [])
+    if bad := [name for name in names if not re.fullmatch(r"[A-Za-z_]\w*", name)]:
         raise Refused(
-            f"loop.md's `{found[0].strip()}` is not a list of variable names: write `Local CI env: NAME NAME`"
+            f"{source(policy)}'s setting `local_ci_env` names {bad[0]!r}, which is no variable name"
         )
     return {name: os.environ.get(name) for name in sorted(names)}
 
@@ -2254,45 +3919,297 @@ def env_line(env: dict[str, str | None]) -> str:
     return f"Env: {' '.join(named) or 'default'}\n"
 
 
-def reusable(head: str) -> dict[str, Any] | None:
-    """A recorded pass on exactly `head` with today's command and environment, or None. A record without `env` (0.23.1
-    wrote none) never matches, since nothing says what tier it ran."""
+def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, Any] | None:
+    """A green pass on `head`'s tree under today's gate command (with `passed`, gate), or None: this clone's record,
+    made on any commit with that tree, else one published on `head` itself (published). The record's `head` is the
+    commit the pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it
+    ran."""
+    if (held := tree_of(head)) is None:
+        return None
+    command, _, env = gate(passed)
     try:
-        record = json.loads(recorded(head).read_text())
+        record = json.loads(recorded(held, command).read_text())
     except (OSError, ValueError):
-        return None
-    # the posting path reads time and host too: a record without them is a miss, not a crash
-    if not isinstance(record, dict) or not all(
-        isinstance(record.get(key), str) for key in ("time", "host")
+        record = None
+    # the posting path reads the commit and time too: a record without them is a miss, not a crash
+    if (
+        isinstance(record, dict)
+        and all(isinstance(record.get(key), str) for key in ("head", "time"))
+        and (record.get("tree"), record.get("command"), record.get("exit"), record.get("env"))
+        == (held, command, 0, env)
     ):
-        return None
-    same = (record.get("head"), record.get("command"), record.get("exit"), record.get("env")) == (
+        return record
+    return published(head, held, command, env)
+
+
+def published(
+    head: str, held: str, command: str, env: dict[str, str] | None = None
+) -> dict[str, Any] | None:
+    """A pass of `command` (setting `env`, default the gate's) on `head` another clone published (publish), as a
+    record, or None: a `gate` status (stated) for `head`'s own tree `held` and that command (described)."""
+    found = stated(
         head,
-        " ".join(LOCAL_CI),
-        0,
-        local_ci_env(),
+        PUBLISHED,
+        lambda status, named: status["description"] == described(held, named[2], command),
     )
-    return record if same else None
+    if found is None:
+        return None
+    status, named = found
+    return {
+        "head": named[2],
+        "tree": held,
+        "command": command,
+        "exit": 0,
+        "env": gate()[2] if env is None else env,
+        "time": status["created_at"],
+        "published": True,
+    }
 
 
-def local_ci(pr: int | None) -> int:
-    """With a PR: post a pass on its head, from a recorded run on that head and command or from a run now. Without
-    one: run the check on HEAD and record it, for `local-ci <pr>` to reuse."""
+def stated(
+    head: str, context: str, wanted: Callable[[dict[str, Any], re.Match[str]], bool]
+) -> tuple[dict[str, Any], re.Match[str]] | None:
+    """The newest green status `context` on `head` whose description reads as a pass (PASSED) and is `wanted`, with
+    that reading, or None. It counts only from the account running this or a writer, since a status is the repo's to
+    write and a PR's author may hold no more than a fork. GitHub unreachable: None, so the check runs."""
+    try:
+        found = statuses(head)
+    except (subprocess.CalledProcessError, OSError, ValueError):
+        return None
+    for status in found:  # newest first
+        named = PASSED.fullmatch(status.get("description") or "")
+        login = (status.get("creator") or {}).get("login")
+        if (status.get("context"), status.get("state")) != (context, "success") or not named:
+            continue
+        if wanted(status, named) and login is not None and (login == viewer() or writer(login)):
+            return status, named
+    return None
+
+
+def head_proof(loop: str | None) -> dict[str, Any] | None:
+    """loop.md's `head_proof` (`status`, the commit status `land` requires on each head, and `env`, the names
+    `local-ci --record --head-proof` takes from the caller), or None without it."""
+    proof: dict[str, Any] | None = settings(loop).get("head_proof")
+    if proof and (
+        bad := [name for name in proof["env"] if not re.fullmatch(r"[A-Za-z_]\w*", name)]
+    ):
+        raise Refused(f"loop.md's `head_proof.env` names {bad[0]!r}, which is no variable name")
+    # a context this script or the approvals workflow posts would let a plain gate pass or a go prove the head
+    if proof and proof["status"] in {PUBLISHED, OWNER_GO, APPROVALS}:
+        raise Refused(
+            f"loop.md's `head_proof.status` is {proof['status']!r}, a status the loop already posts for another proof"
+        )
+    return proof
+
+
+def proof_line(record: dict[str, Any], names: list[str]) -> str:
+    """A head proof's status description: the tree, the commit the pass ran on, and the value of each of `names` it
+    ran under (`default` for none), so the verifier reads the tier off the head."""
+    values = " ".join(
+        f"{name}={public(record['env'][name])}" for name in names if name in record["env"]
+    )
+    # ponytail: cut at GitHub's limit, which values past 77 characters reach; a digest if a tier ever gets that long
+    return f"Tree {record['tree']} on {record['head'][:12]}: {values or 'default'}"[:DESCRIBED]
+
+
+def proved(head: str, status: str) -> bool:
+    """Whether `head` itself carries a green `status`, the head proof, naming its own tree (stated): a status on an
+    older head never counts, since a status belongs to one commit."""
+    held = tree_of(head)
+    return (
+        held is not None
+        and stated(head, status, lambda _status, named: named[1] == held) is not None
+    )
+
+
+def admitted(head: str, loop: str | None) -> str | None:
+    """The stand-in for `head`'s own local-ci pass that let it into a merge queue, `<status> status on tree <tree>`, or
+    None: loop.md's head proof (head_proof), such as a light gate's pass, green on the head for its own tree (proved).
+    It is the only stand-in, so no queue entry records one: the status on the head says it."""
+    proof = head_proof(loop)
+    if proof is None or not proved(head, proof["status"]):
+        return None
+    return f"{proof['status']} status on tree {tree_of(head)}"
+
+
+def nor_head_proof(loop: str | None) -> str:
+    """A refusal's mention of the head proof that would also have let the head in, when loop.md sets one."""
+    return ", nor its loop.md `head_proof` status" if head_proof(loop) else ""
+
+
+def elsewhere(head: str) -> str:
+    """What a refusal adds when `head`'s tree passed under another gate command: `; its tree passed under <command>`
+    for each, from this clone's records and the head's published statuses, then today's; empty when none did."""
+    if (held := tree_of(head)) is None:
+        return ""
+    command, others = gate()[0], set()
+    with contextlib.suppress(OSError):
+        for path in recorded(held, command).parent.glob(f"{held}-*.json"):
+            with contextlib.suppress(OSError, ValueError):
+                record = json.loads(path.read_text())
+                if (
+                    isinstance(record, dict)
+                    and record.get("exit") == 0
+                    and isinstance(record.get("command"), str)
+                ):
+                    others.add(record["command"])
+    with contextlib.suppress(subprocess.CalledProcessError, OSError, ValueError):
+        for status in statuses(head):
+            named = PASSED.fullmatch(status.get("description") or "")
+            if (
+                status.get("context") == PUBLISHED
+                and status.get("state") == "success"
+                and named
+                and named[1] == held
+            ):
+                others.add(named[3])
+    others -= {command, f"sha256 {gate_key(command)}"}
+    if not others:
+        return ""
+    return (
+        f"; its tree passed under `{'`, `'.join(sorted(others))}`, and the gate is now `{command}`"
+    )
+
+
+def statuses(head: str) -> list[dict[str, Any]]:
+    """The commit statuses on `head`, newest first; ponytail: the first 100, which a head reaches only by hand."""
+    out = gh("api", f"repos/{{owner}}/{{repo}}/commits/{head}/statuses?per_page=100")
+    found: list[dict[str, Any]] = json.loads(out)
+    return found
+
+
+def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = None) -> None:
+    """Publish a pass as a commit status on `head`, unless one already does: success under the context `gate`, its
+    description the tree, the commit the pass ran on and the command (described), so another clone's reusable() finds
+    it; with `proof`, loop.md's `head_proof`, under its `status` instead, the description naming the values of its
+    `env` (proof_line), which `land` reads (proved). A status, since gh's token can write one and only an account that
+    can push may (a check run needs a GitHub App). GitHub refusing or unreachable: say so, and the record stays in
+    this clone."""
+    if proof is None:
+        context, line = PUBLISHED, described(record["tree"], record["head"], record["command"])
+        if published(head, record["tree"], record["command"]):
+            return
+    else:
+        context, line = proof["status"], proof_line(record, proof["env"])
+        if stated(head, context, lambda status, _named: status["description"] == line):
+            return
+    try:
+        post_status(head, context, line)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        why = (getattr(exc, "stderr", None) or str(exc)).strip()
+        print(f"not published on GitHub, so only this clone reuses it: {why}")
+        return
+    print(f"published on {head} as the commit status `{context}`")
+
+
+def post_status(head: str, context: str, description: str, state: str = "success") -> None:
+    gh(
+        "api",
+        f"repos/{{owner}}/{{repo}}/statuses/{head}",
+        "-f",
+        f"state={state}",
+        "-f",
+        f"context={context}",
+        "-f",
+        f"description={description}",
+        "--silent",
+    )
+
+
+def reused(record: dict[str, Any]) -> str:
+    return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}, not run again."
+
+
+def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
+    """With a PR: post a pass on its head, from a recorded pass on its tree or from a run now. Without one: on a
+    clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
+    check and record nothing. Either publishes a pass this clone holds (publish). With `proof`, loop.md's
+    `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
+    published as the head proof instead."""
     if pr is None:
-        record = run_local_ci(None, None)
-        print(f"{CHECKED} on {record['head']}: recorded in {recorded(record['head'])}")
+        passed = proof["env"] if proof else ()
+        head, changes = checkout_state()
+        if changes:
+            command, code = gate(passed)[0], ran_gate(passed=passed)
+            print(
+                f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
+            )
+            return code
+        if record := reusable(head, passed):
+            print(f"{CHECKED} on {head}: {reused(record)}")
+        else:
+            record = run_local_ci(None, None, passed)
+            print(f"{CHECKED} on {head}: recorded in {recorded(record['tree'], record['command'])}")
+        if proof:
+            publish(head, record, proof)
+        elif not record.get("published"):
+            publish(head, record)
         return 0
     head = pull_request(pr)["headRefOid"]
-    record = reusable(head)
-    if record:
-        source = f"From the recorded run at {record['time']} on {record['host']}, not run again.\n"
+    if record := reusable(head):
+        source = f"{reused(record)}\n"
     else:
         record = run_local_ci(pr, head)
         source = ""
+    if not record.get("published"):
+        publish(head, record)
     comment(
         pr,
         f"{CHECKED}\nHead: {head}\nCommand: {record['command']}\n{env_line(record['env'])}{source}",
     )
+    return 0
+
+
+def brief(pr: int, priorities: Path | None, proofs: list[Path]) -> int:
+    """Print a verifier pass's brief (lead.md step 7) with its facts read from the PR, so none is a previous pass's: the
+    verifier role, the base (the merge-base with the default branch), the head, the spec, the pass (one after the
+    newest verdict review's) and its report path, from pass 2 the previous report and its head, then the priorities
+    file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. A proof log whose first line isn't the head is refused, since the
+    verifier counts a stale proof as missing and spends the pass on it."""
+    _, loop = project()
+    if isinstance(loop, Policy):
+        loop = read(toplevel() / LOOP) if (toplevel() / LOOP).exists() else None
+    pull = pull_request(pr)
+    head = pull["headRefOid"]
+    if missing := [str(log) for log in proofs if not log.is_file()]:
+        raise Refused(f"PR #{pr}: no proof log at {', '.join(missing)}")
+    # byte for byte, as lead.md's `head -1 <log> | grep -qx <head>` compares: a trailing space or CR is another line
+    if stale := [
+        str(log) for log in proofs if log.read_bytes().split(b"\n", 1)[0] != head.encode()
+    ]:
+        raise Refused(
+            f"PR #{pr}: stale proof, its first line isn't the head {head}: {', '.join(stale)}; rerun it"
+        )
+    reviewed = passes(pull)
+    if isinstance(reviewed, str):
+        raise Refused(f"PR #{pr} {reviewed}")
+    number = max((n for _, n, _ in reviewed), default=0) + 1
+    base = merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
+    issues = sorted(
+        {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
+        | set(named(pull["body"] or ""))
+    )
+    role = os.path.relpath(Path(__file__).resolve().parents[1] / "verifier.md")
+    lines = [
+        f"Review PR #{pr} as the verifier, pass {number}, following {role}.",
+        f"- Base: {base}",
+        f"- Reviewed head: {head}",
+        f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
+        f"- Report: tmp/loop/pr{pr}-v{number}.md",
+    ]
+    if reviewed:
+        newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
+        lines.append(
+            f"- Previous report: tmp/loop/pr{pr}-v{number - 1}.md, on {newest}: review the diff since that head and"
+            " rerun its repros"
+        )
+    lines += [f"- Proof log: {log} (its first line is the head)" for log in proofs]
+    if priorities is not None:
+        lines += ["", "Priorities:", priorities.read_text().rstrip()]
+    # as written, but for the blank lines around it: indentation may be a snippet's
+    if (own := section(loop or "", "Verifier brief").strip("\n")).strip():
+        lines += ["", own]
+    print("\n".join(lines))
     return 0
 
 
@@ -2302,39 +4219,96 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge"))
+    checking.add_argument("point", choices=("build", "merge", "queue"))
     checking.add_argument("pr", type=int, nargs="?")
+    checking.add_argument("--head")
+    checking.add_argument("--issue", type=int)
+    batching = commands.add_parser("batch")
+    batching.add_argument("pr", type=int)
+    batching.add_argument("--merge", required=True)
+    batching.add_argument("--batch", required=True)
+    batching.add_argument("--exit", type=int, required=True)
+    batching.add_argument("--log", type=Path, required=True)
     approving = commands.add_parser("approve")
-    approving.add_argument("point", choices=POINTS)
+    approving.add_argument("point", choices=(*POINTS, "merge"))
     approving.add_argument("number", type=int)
     # an agent never approves: a record is a person's word, and the owner's policy in loop.md covers the rest
     approving.add_argument("--by", choices=("owner",), required=True)
+    # merge only: the head the owner was shown, and their go taken back
+    approving.add_argument("--head")
+    approving.add_argument("--withdraw", action="store_true")
+    delegating = commands.add_parser("delegate")
+    delegating.add_argument("pr", type=int)
     posting = commands.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
+    reading = commands.add_parser("report")
+    reading.add_argument("report", type=Path)
     recording = commands.add_parser("local-ci")
     recording.add_argument("pr", type=int, nargs="?")
     recording.add_argument("--record", action="store_true")
+    recording.add_argument("--status", metavar="HEAD")
+    recording.add_argument("--head-proof", action="store_true")
     merging = commands.add_parser("land")
-    merging.add_argument("pr", type=int)
+    merging.add_argument("pr", type=int, nargs="?")
     merging.add_argument("--wait", action="store_true")
+    briefing = commands.add_parser("brief")
+    briefing.add_argument("pr", type=int)
+    briefing.add_argument("--priorities", type=Path)
+    briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
     args = parser.parse_args(argv)
     try:
+        if args.command == "report":  # reads a local file only, so no remote needs choosing
+            return report_check(args.report)
         one_repo()
         if args.command == "check":
-            return check(args.point, args.pr)
+            if args.point == "queue" and (args.pr is None or args.head is None):
+                raise Refused(
+                    "check queue takes a PR number and --head <sha>, the head the queue would merge"
+                )
+            if args.point != "queue" and args.head is not None:
+                raise Refused("--head goes with check queue only")
+            if args.issue is not None and (args.point != "build" or args.pr is not None):
+                raise Refused("--issue goes with check build and no PR number")
+            if args.point == "queue":
+                deprecated("check queue")
+            return check(args.point, args.pr, args.head, args.issue)
+        if args.command == "batch":
+            deprecated("batch")
+            return batch(args.pr, args.merge, args.batch, args.exit, args.log)
         if args.command == "approve":
-            return approve(args.point, args.number)
+            if args.point != "merge" and (args.head or args.withdraw):
+                raise Refused("--head and --withdraw belong to `approve merge`")
+            if args.point == "merge" and not args.head:
+                raise Refused("approve merge needs --head <sha>: the head the owner was shown")
+            return (
+                go(args.number, args.head, args.withdraw)
+                if args.point == "merge"
+                else approve(args.point, args.number)
+            )
+        if args.command == "delegate":
+            return delegate(args.pr)
         if args.command == "local-ci":
+            if args.status is not None:
+                if args.pr is not None or args.record:
+                    raise Refused("local-ci --status takes a head alone")
+                return local_ci_status(args.status)
             if (args.pr is None) != args.record:
                 raise Refused(
                     "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
                 )
-            return local_ci(args.pr)
+            proof = None
+            if args.head_proof and (proof := head_proof(project()[1])) is None:
+                raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
+            if args.head_proof and not args.record:
+                raise Refused("--head-proof goes with --record: the head proof is the checkout's")
+            return local_ci(args.pr, proof) if leads_its_session() else detach(argv)
         if args.command == "land":
             return land(args.pr, args.wait)
+        if args.command == "brief":
+            return brief(args.pr, args.priorities, args.proof)
         if args.command == "release":
             return release(args.issue)
         return verdict(args.pr, args.report)
@@ -2348,4 +4322,10 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    detached = os.environ.pop(
+        DETACHED, None
+    )  # set by detach() for the run it starts, and for no process under it
+    code = main(sys.argv[1:])
+    if detached:
+        finished(detached, code)
+    sys.exit(code)

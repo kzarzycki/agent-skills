@@ -1,6 +1,6 @@
 #!/bin/bash
 # Setup script of the agent-skills-dev Claude cloud environment, whose sessions run the cloud
-# worker's light gate, `mise run test` (docs/agents/loop.md, Cloud worker).
+# worker's light gate, `mise run test`, and its verifier passes (docs/agents/loop.md, Cloud worker).
 # It installs what the cloud image lacks and pre-warms the repo's pinned tools and package
 # caches in the session's checkout, so the environment's snapshot (taken when setup ends within
 # about 5 minutes) carries them into later sessions. Each step's seconds and exit code go to
@@ -27,6 +27,8 @@ repo=/home/user/agent-skills
 echo "setup start $(date -u +%FT%TZ) user=$(id -un) home=$HOME repo_present=$([ -d "$repo" ] && echo yes || echo no)" >> "$log"
 command -v mise >/dev/null || step mise npm install -g -s @jdxcode/mise
 step apt sh -c 'apt-get update -qq && apt-get install -y -qq openssh-client'
+# the verifier's CLI (docs/agents/loop.md, Cloud verifier), so a pass does not start by installing it
+command -v codex >/dev/null || step codex npm install -g -s @openai/codex
 cd "$repo" 2>/dev/null || { echo "FAILED: no checkout at $repo" >> "$log"; exit 0; }
 step mise-trust mise trust -q --all
 v=0.46.0; step vendir fetch https://github.com/carvel-dev/vendir/releases/download/v$v/vendir-linux-amd64 \
@@ -35,7 +37,7 @@ v=0.46.0; step vendir fetch https://github.com/carvel-dev/vendir/releases/downlo
 step mise-install mise install
 step uv-sync mise exec -- uv sync --frozen
 missing=""
-for tool in mise python uv node vendir apm ssh-keygen; do
+for tool in mise python uv node vendir apm ssh-keygen codex; do
   mise which "$tool" >/dev/null 2>&1 || command -v "$tool" >/dev/null || missing="$missing $tool"
 done
 [ -z "$missing" ] || echo "FAILED, missing:$missing" >> "$log"

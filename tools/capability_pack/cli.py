@@ -13,10 +13,15 @@ from tools.capability_pack.qualify import (
     ConfigurationError,
     PortRequiredError,
     QualificationError,
+    QualificationTimeoutError,
     qualify,
     upstream_deltas,
     validate_release_candidate,
 )
+
+# EX_CONFIG: this machine isn't ready. A step that stops on QUALIFY_TIMEOUT failed for the
+# host's load, not the change, so a loop.md naming it as machine_exit reruns, then stops.
+MACHINE_EXIT = 78
 
 
 def write_deltas(directory: Path, error: PortRequiredError) -> list[dict]:
@@ -107,6 +112,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except BreakingDriftError as error:
         print(error, file=sys.stderr)
         return 3
+    except QualificationTimeoutError as error:
+        print(error, file=sys.stderr)
+        return MACHINE_EXIT
     except (QualificationError, GitHubError, OSError, ValueError) as error:
         print(error, file=sys.stderr)
         return 4

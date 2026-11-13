@@ -10,6 +10,7 @@ exclusions:
   # Projects get docs/agents/ from the project template, not a setup skill.
   - setup-matt-pocock-skills
 owned_skills:
+  - agent-hygiene
   - audit-third-party-software
   - chief-of-staff
   - context-extractor

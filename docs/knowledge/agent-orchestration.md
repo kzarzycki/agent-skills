@@ -11,7 +11,7 @@ the mechanism for an interactive interview that must not pollute an orchestrator
 
 - **`fork`** — inherits conversation + parent tools; ignores any custom agent definition
   (no custom system prompt / skill preloads). Load needed skills from inside the fork's prompt.
-- **named custom agent** (e.g. `workflow:interviewer`) — fresh context, carries its own
+- **named custom agent** (e.g. `general-purpose`) — fresh context, carries its own
   contract + tool grants, but starts blind to the conversation.
 
 Pick fork when the delegate needs the conversation so far (prior brainstorming, briefs);

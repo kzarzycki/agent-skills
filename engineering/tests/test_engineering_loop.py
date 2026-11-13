@@ -43,7 +43,7 @@ def loop_sections() -> list[str]:
 
 def test_every_cited_loop_section_is_listed() -> None:
     sections = loop_sections()
-    assert "Approvals" in sections and "Settings" in sections
+    assert "Approvals" in sections and "Owner" in sections
     unlisted = [
         f"{path.relative_to(LOOP)}: § {cited}"
         for path in sorted(LOOP.rglob("*.md"))
@@ -101,7 +101,45 @@ def test_the_cloud_split_is_reached_only_through_its_loop_md_line() -> None:
 def test_the_verifier_waits_in_few_long_calls_and_reruns_repros_together() -> None:
     """A wait or a repro per short call re-reads the whole context each time."""
     verifier = " ".join((LOOP / "verifier.md").read_text().split())
-    assert "never short polls, since every call re-reads the whole context" in verifier
+    assert (
+        "never short polls or a sleep loop of your own, since every call re-reads the whole context"
+        in verifier
+    )
+    assert "wait-for --log <log> --pid <pid>" in verifier  # the one verb that blocks to the limit
     assert "waited on as a detached run is" in verifier  # the bare gate too
     assert "Rerun all of its repros from one script" in verifier
     assert "the diff since its head and the files it touches" in verifier
+
+
+def test_owner_questions_end_the_turn_rather_than_wait_in_a_tool() -> None:
+    """A tool that waits for the owner's answer holds the turn open, and Omnigent delivers input
+    only at turn end, so every relay and supervisor event queues behind the question (#658)."""
+    cos = " ".join((LOOP.parent / "chief-of-staff" / "SKILL.md").read_text().split())
+    lead = " ".join((LOOP / "lead.md").read_text().split())
+    assert "Ask as text at the end of your turn" in cos
+    assert "as text that ends your turn `USER NEEDED`" in lead
+    for text in (cos, lead):
+        assert "never through a tool that waits for the answer" in text
+        assert "(Claude Code's AskUserQuestion, Codex's requestUserInput)" in text
+
+
+def test_a_held_approval_prompt_is_never_routed_around() -> None:
+    """A lead read a call held for the owner's approval as a hang and made the change over REST (#696)."""
+    skill = " ".join((LOOP / "SKILL.md").read_text().split())
+    assert "A tool call held for approval is waiting for the owner, not hung" in skill
+    assert "never make its change by another route (REST, another tool, a script)" in skill
+    for role in ("lead.md", "worker.md", "verifier.md"):
+        text = " ".join((LOOP / role).read_text().split())
+        assert (
+            "A tool call held for approval waits for the owner, not a hang: never make its change"
+            " by another route, since the approval is theirs to give (SKILL.md, Owner steps park)."
+        ) in text, role
+
+
+def test_the_verifier_keeps_real_data_out_of_the_report_it_posts() -> None:
+    """The report is posted as the PR review, so real data goes in a local evidence file."""
+    verifier = " ".join((LOOP / "verifier.md").read_text().split())
+    assert "Real data you see may go in your report" not in verifier
+    assert "The report is posted as the PR review, so it holds no real data" in verifier
+    assert "local file next to the report (under `tmp/loop/`)" in verifier
+    assert "cites that file by path and says what it shows, without the values" in verifier

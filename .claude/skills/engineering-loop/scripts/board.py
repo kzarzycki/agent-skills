@@ -1,12 +1,16 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run -q --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["PyYAML==6.0.3"]
+# ///
 """Board move (engineering loop): put an issue in a column of the repo's project board.
 
-    python3 scripts/board.py <issue> <column>
-    python3 scripts/board.py column <issue>
+    uv run scripts/board.py <issue> <column>
+    uv run scripts/board.py column <issue>
 
 The columns are the loop's stages (the skill's issues.md, Board), each shown in the board column of its own name unless
-docs/agents/issue-tracker.md § Board maps it to another: one list item per mapping, the loop column then the board's,
-both in backticks (`` - `Build` is `In progress` ``), several loop columns to one board column allowed. A name that is
+the `board` section of docs/agents/issue-tracker.md's settings block maps it to another, one key per loop column
+(`Build = "In progress"`), several loop columns to one board column allowed. A name that is
 no loop column is taken as a board column. Adds the issue to the board when it is not there yet,
 then sets its Status. Ids are looked up by name on every call: GitHub changes option ids whenever a field is edited.
 Exit 1 with gh's reason or the valid columns; the labels, not the board, are an issue's state, so a failed move never
@@ -21,7 +25,6 @@ whose issue stays open for the owner's check in use (`Implements #n`), so it com
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 from typing import Any
@@ -29,7 +32,16 @@ from typing import Any
 # importing approvals.py would cache its bytecode in the installed skill folder, an untracked change there
 sys.dont_write_bytecode = True
 # the label names and the docs' reading, defined once
-from approvals import NEEDS_OWNER, READY, TRACKER, Refused, one_repo, read, section, toplevel
+from approvals import (
+    NEEDS_OWNER,
+    READY,
+    TRACKER,
+    Refused,
+    one_repo,
+    read,
+    toplevel,
+    tracker_settings,
+)
 
 # ponytail: the repo's first linked project is the board; pick by title when a second one is linked.
 LOOKUP = """query($owner: String!, $name: String!, $issue: Int!) {
@@ -102,14 +114,12 @@ def move(issue: int, column: str) -> None:
 
 # the loop's columns in stage order (issues.md, Board)
 COLUMNS = ["Intent", "Needs owner", "Ready", "Build", "Verify", "Sign-off", "Done"]
-# a § Board list item: the loop column, then the board's, each the first backticked name on its side
-MAPPED = re.compile(r"^[ \t]*[-*] [^`\n]*`([^`\n]+)`[^`\n]*`([^`\n]+)`", re.MULTILINE)
 
 
 def mapping(tracker: str | None) -> dict[str, str]:
-    """The board column of each loop column docs/agents/issue-tracker.md § Board names; a loop column it does not
+    """The board column of each loop column docs/agents/issue-tracker.md's `board` names; a loop column it does not
     name keeps its own name (callers use `.get(name, name)`)."""
-    return dict(MAPPED.findall(section(tracker or "", "Board")))
+    return tracker_settings(tracker).get("board", {}) if tracker else {}
 
 
 def tracker_file() -> str | None:

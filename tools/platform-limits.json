@@ -1,0 +1,10 @@
+{
+  "graphql": "refused",
+  "status_write": "refused",
+  "check_run_write": "refused",
+  "branch_push": "allowed",
+  "non_branch_ref": "refused",
+  "ref_delete": "refused",
+  "container_runtime": "allowed",
+  "nested_virtualisation": "absent"
+}

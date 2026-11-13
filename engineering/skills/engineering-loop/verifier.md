@@ -4,9 +4,8 @@ You review code you did not write. You make no commits or pushes, resolve no rev
 thread (resolution follows triage, which is not yours), and leave nothing behind: the
 tree ends as you found it, with `git status --porcelain` and `git diff` unchanged. The
 lead gives you the base, the reviewed head, the spec number, priorities and a
-report path, so ask for nothing. You run in the worktree you were started in, the
-lead's own or a detached one at the same head, so you see the tree the author
-tested. Read no memory (a Hindsight bank or any other store): remembered context carries
+report path, so ask for nothing. You run in the worktree you were started in, a
+detached one at the reviewed head, so you see the tree the author tested. Read no memory (a Hindsight bank or any other store): remembered context carries
 the author's assumptions into the review. Call no memory tool, and when your session shows
 recalled memories, leave them out of the review and say in the report that they were there.
 With loop.md's `Cloud worker:` line, name your evidence files for the PR (SKILL.md, Cloud worker).
@@ -36,6 +35,10 @@ yourself, keeping standards and spec as separate axes.
   say how that input arises in use (`docs/agents/loop.md` § In use). Also report a spec or design
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
+- **Siblings.** Under a correctness finding, list the sibling inputs you can see: the other
+  cases the same code handles the same way (other states, callers, boundary values), each
+  marked failing with its evidence, fine, or not run. They belong to that finding, not to the
+  verdict's counts, so the fix can cover the class in one round instead of one case a pass.
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
 - **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
   has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
@@ -55,12 +58,14 @@ yourself, keeping standards and spec as separate axes.
   report's head.
 - **A long or locked run is detached.** A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached with its pid, output and exit code
-  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; flock <lock> <cmd> > <log> 2>&1; echo "exit $?" >> <log>' >/dev/null 2>&1`
-  (Perl's `setsid`, since macOS has no `setsid` command),
-  and is waited on up to a total budget you state, in as few calls as you can: each call
-  blocks close to the tool's limit (the longest yield your harness allows on a running
-  command, or a sleep loop that checks the log for its exit line), never short polls, since
-  every call re-reads the whole context. A blocker that is only your own call timing out
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; flock <lock> <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
+  (Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
+  run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
+  log path; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
+  and is waited on up to a total budget you state, in as few calls as you can: each call is
+  `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
+  call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
+  loop of your own, since every call re-reads the whole context. A blocker that is only your own call timing out
   spends the pass on nothing, and Claude Code's low-memory reaper stops in-session
   background shells. A gate the machine allows
   by rule is the exception: run it as the bare command (Gates and repros). A queued run or
@@ -74,18 +79,27 @@ yourself, keeping standards and spec as separate axes.
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
   each result checked against the reference the spec names. Then read the server's log
   for the time you drove it; a traceback or error there is a finding even when the page
-  looked right. Real data you see may go in your report, never in anything bound for the
-  tracker. When the sandbox can't reach the instance or its log, say so.
+  looked right. The report is posted as the PR review, so it holds no real data: a figure,
+  name or record you saw on the instance goes in a local file next to the report (under
+  `tmp/loop/`), and the report cites that file by path and says what it shows, without the
+  values. When the sandbox can't reach the instance or its log, say so.
 - **Run loop.md § Verifier checklist**, when it has one.
-- **Mutation-check the new tests.** For each test that guards a behaviour the spec
-  changes, save the production change it guards as a patch beside your report
-  (`git diff <base> HEAD -- <file> > <patch>`). Undo it with `git apply -R <patch>`, run
-  the test, and redo it with `git apply <patch>`; undo and redo are symmetric, so this
-  also restores a file the change added or deleted. A test that still passes guards
-  nothing: report it as a major. Before the report, `git status --porcelain` must match what
-  it showed at the start: revert any mutation of yours still applied, and report a tree you
-  cannot clean as a finding naming its paths, since the lead's next gate and push run in it
-  (`wait` fails a host verifier that leaves a tracked change).
+- **Mutation-check the new tests.** Undo each production change the spec adds on its own
+  (one condition, branch or value), never the whole diff at once, since a whole-patch revert
+  fails the tests for the wrong reason (a flag gone) and hides a change no test covers. Edit
+  the file back to the base for that one change alone, since a diff hunk can join two
+  changes, even on one line; save the edit as a patch beside your report (`git diff --
+  <file> > <patch>`, after `git add -N` for a file you recreate), run the tests, and redo the
+  change with `git apply -R <patch>`. `git apply <patch>` undoes it again, so the patch is
+  also the repro. Run the patches with `uv run <this skill's folder>/scripts/mutate.py --test
+  '<tests>' --log <log> <patch>…` (the script queues on the host gate slot itself, so the
+  command takes no lock of its own), which applies each alone, restores the tree, stops cleanly on a signal and
+  logs the head with each patch's exit code, rather than a harness of your own; the worker
+  ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
+  major. Before the report, `git status --porcelain` must match what it showed at the start:
+  revert any mutation of yours still applied, and report a tree you cannot clean as a finding
+  naming its paths, since the lead's next gate and push run in it (`wait` fails a host
+  verifier that leaves a tracked change).
 - **Proof provenance.** Each proof log starts with `git rev-parse HEAD` and the command
   that produced it (worker.md, Report). One whose SHA isn't the reviewed head counts as a
   missing proof: report it against the claim it was meant to back, since evidence of another
@@ -101,13 +115,30 @@ yourself, keeping standards and spec as separate axes.
   itself; it changes CI permissions, secrets, branch protection or the loop's own approval
   rules; or it changes what users see in a significant way the spec did not ask for, or
   asked for only vaguely, so the owner would be surprised. loop.md § Risk criteria, where it
-  has one, adds the project's own. Anything else is low. `verifier: true` in loop.md's
-  `risk` lets a low change merge without the owner, so judge it on the diff, not on
+  has one, adds the project's own. Anything else is low. `verifier: true` in the policy's
+  `risk` (docs/agents/gatekeeper.md) lets a low change merge without the owner, so judge it on the diff, not on
   how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls.
+- **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
+  make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
+  at once, not a report: a report with no finding but `SATISFIED: no` spends a pass, can reach
+  the cap and makes the gate add `risk:high`. So does a gate or mutation run that waits for
+  the host's heavy slot past a 30-minute limit, waited on in the foreground as above. Stop the run (so its mutation can't apply after
+  you), redo any patch you undid so the tree is as you found it, and write
+  `<report>.question` asking the lead for a proof run with the brief in
+  [proof-run.md](proof-run.md). Name the gate command, the tests, each patch verbatim and
+  the commands that undo and redo it, since the lead fills the brief from the question
+  alone. The lead has the runs made off this host and answers with the head-stamped logs; a
+  verdict without them would be repeated once the logs exist.
+- **An acceptance line you did not run** through the path a user takes (the spec's acceptance
+  examples, on the instance when one is up) blocks `SATISFIED: yes`, whatever the reason:
+  mark each acceptance line run (with its evidence), failing or not run. A line not run ends
+  the turn as a run the sandbox refuses does, in `<report>.question` naming the run the lead
+  must make; `approvals.py` refuses a satisfied report with a `Not run:` line. Probing a
+  neighbouring component is context, not the run.
 - **An owner-only step** (SKILL.md, Owner steps park) stops that check: stop it, release
-  what it holds, and report it as not run with the exact owner action, since parking it is
-  the lead's.
+  what it holds, and report it as not run on a `Not run: <step>, owner action: <what>` line, since parking it is
+  the lead's. A tool call held for approval waits for the owner, not a hang: never make its change by another route, since the approval is theirs to give (SKILL.md, Owner steps park).
 - **Gates and repros:** you may run `mise run check`. Run a gate as the bare command
   (`mise run check`), with no wrapper, redirect or detach around it, and keep it running with
   your harness's own long-command or background support, waited on as a detached run is: an allow rule matches only a plain
@@ -126,8 +157,14 @@ keep these lines exact:
   pass 2` when you are the model family that wrote the diff. Give your signature as the family: what orchestrating-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
   (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
+  When your brief names your tier (`mid` or `small`, loop.md's `Verifier model:` line), write it after the
+  signature, `Verifier: codex/terra-6.1/med mid, pass 1`: `check merge` refuses a high-risk change whose newest
+  verdict names a lower tier, and reads a line without one as the default tier.
   Text after the pass number is a qualifier the posted review's first line carries, such as
   `Verifier: claude, same-family, pass 2 (merge of main)`.
+  A Gemini pass through agy gives its signature, `Verifier: agy/gemini-4-hydrogen-medium/?, pass 1`, and a
+  same-family one on the Codex fallback `Verifier: claude, same-family, pass 1 (Codex out of quota)`: `check
+  merge` reads either as a fallback and refuses it for a high-risk change.
 - Sections: the Review skill's (code-review's Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
@@ -141,6 +178,8 @@ keep these lines exact:
   worktree), then `VERDICT: <n> blocker, <n> major, <n> minor`, `SATISFIED: yes|no` and
   `Risk: low — <reason>` or `Risk: high — <reason>` (Steering, Judge the risk). The gate
   reads any word but `low`, or no line, as high, and `verdict` refuses a report without one.
+  On a delta of merges of the base alone, add `Logic change: none` when its conflict fixes
+  change no behaviour, which carries the owner's go to the head, else `Logic change: <what>`.
   The merge reads the review as covering that commit only, so a push after your review
   needs its own.
 
