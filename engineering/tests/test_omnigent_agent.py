@@ -906,6 +906,24 @@ def test_wait_keeps_waiting_through_launch_idle(
         omnigent_agent.wait(og, sid, tmp_path / "r.md")
 
 
+def test_a_not_offered_refusal_exits_with_its_code_and_names_the_next_option(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    creates: list[str] = []
+
+    class Refusing(FakeOmnigent):
+        def create(self, agent: str, title: str, *rest: object) -> str:
+            creates.append(agent)
+            raise omnigent_agent.Fail(
+                "POST /v1/sessions: HTTP 422 Unprocessable: harness not-offered on this host"
+            )
+
+    with pytest.raises(omnigent_agent.NotOffered, match="Where heavy steps run") as refused:
+        omnigent_agent.start(Refusing(), "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert refused.value.code == omnigent_agent.NOT_OFFERED == 8
+    assert creates == ["claude"]  # one create: no retry on that host, no other title tried
+
+
 def test_a_taken_title_moves_to_the_next_free_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

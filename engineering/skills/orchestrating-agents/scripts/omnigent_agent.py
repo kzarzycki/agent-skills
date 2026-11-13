@@ -39,6 +39,8 @@ exit is the wake. ``send`` answers that question in the same session, also mid-t
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
+``start`` exits 8 when the server refuses the harness as not offered by the target host: it does not retry or run locally there, and its
+message names the next placement option (engineering-loop, Where heavy steps run).
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
 it is out, delivery unconfirmed, and running ``send`` again is safe, since it finds the earlier
 copy before it posts; a failure before the post stays exit 1.
@@ -426,6 +428,8 @@ ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send fo
 # could revive, or relay could not deliver; relay left the message queued in the session
 # send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
 SENT_UNCONFIRMED = 7
+# the server refused a harness the target host does not offer (reason `not-offered` in its answer)
+NOT_OFFERED = 8
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
 BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
@@ -675,6 +679,14 @@ class Undeleted(Fail):
 
 class Queued(Fail):
     code = QUEUED
+
+
+class NotOffered(Fail):
+    """The server refused the harness for that host: it does not offer it. Taking the next placement
+    option is the caller's (engineering-loop, "Where heavy steps run"); a retry on the same host
+    would be refused again, and a local harness there is what the host declines."""
+
+    code = NOT_OFFERED
 
 
 class SentUnconfirmed(Fail):
@@ -2500,6 +2512,13 @@ def start(
                     None,
                 )
             except Fail as e:
+                if "not-offered" in str(e):
+                    raise NotOffered(
+                        f"start refused: {agent} is not offered by that host ({e}). Next option:"
+                        " the project's cloud worker or verifier from loop.md, else another host"
+                        " that offers the harness (engineering-loop, Where heavy steps run)."
+                        " Not retried here, no local fallback."
+                    ) from e
                 if not taken(e):
                     error = e
                 elif n < TITLES:
