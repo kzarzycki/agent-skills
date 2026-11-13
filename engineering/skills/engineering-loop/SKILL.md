@@ -530,7 +530,7 @@ One rule, for every project and every machine. Heavy steps (implementation, the 
 2. Else to a host that offers the harness the step needs.
 3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
 
-When a launch is refused or can't be made, take the next option on this list; an option that is only busy (capacity) is retried later, not skipped (Models). Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
+When a launch fails, for any reason (refused, no capacity, unreachable), take the next option on this list. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
 
 ## Cloud worker
 
@@ -785,7 +785,8 @@ or the owner's private network.
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded. A lead that can't read the
   family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
-  capacity is retried later on the same model (the backend's Model section). When one
+  capacity takes the next placement option (Where heavy steps run); with none left it is retried
+  later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork
   re-reads the whole transcript it copied; revive a stuck or interrupted agent rather than
