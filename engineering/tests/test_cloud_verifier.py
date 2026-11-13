@@ -440,6 +440,22 @@ def test_the_final_message_is_the_report_when_the_brief_names_no_file(checkout) 
     )  # no model named: Codex's configured default
 
 
+def test_a_final_message_linking_the_report_file_yields_it_but_a_link_outside_the_checkout_does_not(
+    checkout, tmp_path, capsys
+) -> None:
+    work, _, brief, posted, seen = checkout
+    report = "Head: x\nSATISFIED: yes\n"
+    seen["do"] = lambda: (work / "tmp/loop/pr12-v2.md").write_text(report)
+    seen["final"] = "Report: [pr12-v2.md](tmp/loop/pr12-v2.md)\n"
+    assert cv.verify(7, brief, None, None) == 0
+    assert posted == [report] and "read from tmp/loop/pr12-v2.md" in capsys.readouterr().out
+    posted.clear()
+    outside = tmp_path / "outside.md"
+    outside.write_text(report)
+    seen["final"] = f"Report: [outside.md]({outside})\n"
+    assert cv.verify(7, brief, None, None) == 1 and not posted
+
+
 def test_a_report_without_a_satisfied_line_is_not_posted(checkout) -> None:
     work, _, brief, posted, seen = checkout
     seen["final"] = "I ran out of time.\n"
