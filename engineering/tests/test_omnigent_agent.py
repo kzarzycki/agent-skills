@@ -3478,6 +3478,46 @@ def test_capacity_host_judges_another_host(
     assert "oz: load and memory not readable (no /proc/meminfo)" in capsys.readouterr().out
 
 
+def test_an_epic_burst_box_is_refused_over_its_memory_load_or_session_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(1000), loadavg="1.0 1 1")
+    argv = [*far_start("claude", "epic-t1"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1  # short of memory
+    assert "epic-t1 over capacity for 0s: load 1.0 (max 6), 1000 MB available (min 1500)" in (
+        capsys.readouterr().err
+    )
+    og.procs["far"]["/proc/meminfo"] = mem(6000)
+    og.procs["far"]["/proc/loadavg"] = "6.5 5 4"
+    assert omnigent_agent.main(argv) == 1  # over the load cap
+    assert "load 6.5 (max 6)" in capsys.readouterr().err
+    assert og.sessions == {}
+    og.procs["far"]["/proc/loadavg"] = "1.0 1 1"
+    assert omnigent_agent.main(argv) == 0 and og.sessions  # room: starts
+    capsys.readouterr()
+    og.sessions = {}
+    og.others = [  # four live sessions; an archived one doesn't count
+        {"id": f"x{i}", "host_id": "far", "status": "idle", "updated_at": i} for i in range(4)
+    ] + [{"id": "old", "host_id": "far", "status": "idle", "archived": True}]
+    assert omnigent_agent.main(argv) == 1  # a fifth is refused
+    assert "epic-t1 over capacity for 0s: 4 live sessions (max 4); load 1.0" in (
+        capsys.readouterr().err
+    )
+    assert og.sessions == {}
+    og.procs = {}  # load and memory unreadable: the session count still refuses
+    assert omnigent_agent.main(argv) == 1
+    assert "4 live sessions (max 4)" in capsys.readouterr().err
+
+
+def test_a_host_with_no_row_has_no_session_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "burst-1", meminfo=mem(6000), loadavg="1.0 1 1")
+    og.others = [{"id": f"x{i}", "host_id": "far", "status": "idle"} for i in range(9)]
+    argv = [*far_start("claude", "burst-1"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+
+
 def test_this_host_s_row_adds_its_absolute_load_and_memory_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -4523,6 +4563,9 @@ class Fleet:
     def __init__(self, **histories: list[dict]) -> None:
         self.histories, self.reads, self.inbox, self.retried = histories, [], [], []
         self.kids: dict[str, float] = {}  # when a child of each session was last updated
+        self.kin_of: dict[
+            str, list[str] | Exception
+        ] = {}  # each session's live children (or a read error)
         self.broken: dict[str, Exception] = {}
         self.offline: set[str] = set()
         self.refuse = 0
@@ -4563,6 +4606,12 @@ class Fleet:
 
     def active(self, sid: str) -> float:
         return self.kids.get(sid, 0.0)
+
+    def kin(self, sid: str) -> dict[str, float]:
+        found = self.kin_of.get(sid, [])
+        if isinstance(found, Exception):
+            raise found
+        return dict.fromkeys(found, time.time())
 
     def hosts(self) -> dict[str, str]:
         return {"h": "here"}
@@ -4971,6 +5020,22 @@ def test_the_console_labels_its_own_session_as_the_chief_of_staff(
     og.snap, og.unlabelled = {"host_id": "h"}, 1
     supervised(og, following(tmp_path), monkeypatch, 2, console=True)  # a failed write: it runs on
     assert "cos1: role label not written" in capsys.readouterr().err
+
+
+def test_the_console_labels_a_project_manager_by_its_registry_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "me1")
+    for name, labels in (
+        ("agent-skills-leads.registry", {"omni.role": "pm", "omni.repos": "agent-skills"}),
+        ("leads.registry", {"omni.role": "cos"}),
+    ):
+        registry = tmp_path / name
+        registry.write_text(f"a={tmp_path / 'a.md'}\t{tmp_path / 'a.md.brief'}\tfollow\n")
+        og = Lead(told("brief", 60))
+        og.snap = {"host_id": "h"}
+        supervised(og, registry, monkeypatch, 1, console=True)
+        assert og.labels[0] == ("me1", labels), name
 
 
 def test_a_status_line_stays_under_200_characters() -> None:
@@ -6081,6 +6146,22 @@ def test_relay_to_an_archived_session_names_its_state_and_where_its_work_continu
     assert og.posts == 0
 
 
+def test_relay_of_the_same_words_after_the_session_worked_through_tools_is_a_new_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch, "status?") == 0
+    # the session took the first copy up with tool calls and wrote no reply message
+    og.sessions[sid].append({"id": "fc", "type": "function_call"})
+    capsys.readouterr()
+    assert relay(og, sid, tmp_path, monkeypatch, "status?") == 0
+    assert capsys.readouterr().out.strip() == f"session {sid}: delivered"
+    assert (
+        og.posts == 2
+    )  # on main the second relay exits 0 with "already delivered", posting nothing
+
+
 def test_relay_of_the_same_words_after_the_session_replied_is_a_new_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7005,6 +7086,124 @@ def events_of(registry: Path) -> list[dict]:
     return [json.loads(e) for e in lines]
 
 
+WORKER = "c" * 32  # a session id a lead's STILL WORKING names: one of its own children
+COS = "d" * 32  # the chief of staff's session, which --notify names
+LEAD = "e" * 32  # a lead of the manager's, named by its id
+OTHER = "f" * 32  # a running session outside the manager's leads and children
+
+
+def manager(tmp_path: Path, wait: str, **snaps: dict) -> tuple[Path, Leads]:
+    """A followed manager, ``m``, quiet an hour with ``wait`` as its last message, its leads ``x``,
+    ``y`` and ``LEAD`` in its own registry (its line's ``leads=``) and ``WORKER`` its child;
+    ``snaps`` overrides each session's info, where every one of them is running and was updated a
+    minute ago. The registry's ``z``, an idle helper owing a report, is no lead."""
+    leads = tmp_path / "app-leads.registry"
+    leads.write_text(
+        "".join(f"{s}={tmp_path / s[:1]}.md\tfollow\n" for s in ("x", "y", LEAD)) + "z=z.md\n"
+    )
+    registry = tmp_path / "registry"
+    registry.write_text(f"m={tmp_path / 'm.md'}\tfollow\tleads={leads}\n")
+    og = Leads(m=[told("brief", 4000), ending(wait, 3600)])
+    og.kin_of["m"] = [WORKER]
+    for sid in ("m", "x", "y", WORKER, COS, LEAD, OTHER):
+        og.snaps[sid] = {"status": "running", "updated_at": time.time() - 60, **snaps.get(sid, {})}
+    return registry, og
+
+
+def stalls(og: Fleet) -> list[str]:
+    """The deadline lines posted as without --console, which --fyi post keeps."""
+    return [t.split("\n")[0] for _, t in og.inbox if t.startswith("Supervisor: m t-m: no progress")]
+
+
+@pytest.mark.parametrize(
+    "wait",
+    [
+        "STILL WORKING: waiting on my leads. Report: m.md",
+        f"STILL WORKING: waiting on {WORKER}. Report: m.md",
+        f"STILL WORKING: waiting on {LEAD}. Report: m.md",
+    ],
+)
+def test_a_quiet_waiter_whose_named_sessions_all_run_raises_no_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str
+) -> None:
+    registry, og = manager(tmp_path, wait)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
+@pytest.mark.parametrize(
+    ("wait", "snaps", "why"),
+    [
+        ("waiting on my leads", {"y": {"status": "idle"}}, "lead"),
+        ("waiting on my leads", {"y": {"archived": True}}, "lead"),
+        ("waiting on my leads", {"y": {"status": "failed"}}, "lead"),
+        ("waiting on my leads", {"y": {"updated_at": time.time() - 1300}}, "lead"),
+        ("waiting on my leads", {"y": {"updated_at": None}}, "lead"),
+        (f"waiting on {WORKER}", {WORKER: {"status": "idle"}}, WORKER),
+        (f"waiting on {LEAD}", {LEAD: {"status": "idle"}}, LEAD),
+        (f"waiting on {OTHER}", {}, OTHER),
+        ("waiting on the chief of staff for a host", {}, "chief"),
+        (f"waiting on {COS} for a host", {}, COS),
+        ("waiting on the owner's pick", {}, "owner's"),
+    ],
+)
+def test_a_quiet_waiter_on_a_session_not_moving_or_outside_its_follow_set_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, snaps: dict, why: str
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: {wait}. Report: m.md", **snaps)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({why})"]
+
+
+def test_a_quiet_waiter_on_the_chief_of_staff_raises_its_deadline_though_it_subscribes_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {COS} for a host. Report: m.md")
+    og.kin_of["m"] = [WORKER, COS]
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({COS})"]
+
+
+def test_a_quiet_waiter_on_a_session_id_when_its_children_are_unread_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md")
+    og.kin_of["m"] = omnigent_agent.Fail("GET /v1/sessions/m/child_sessions: HTTP 503")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({WORKER})"]
+    assert "m: children not read" in capsys.readouterr().err
+
+
+def test_a_quiet_waiter_on_its_leads_with_one_lead_unread_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: waiting on my leads. Report: m.md")
+    og.broken["x"] = omnigent_agent.Gone("GET /v1/sessions/x: HTTP 404")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (lead)"]
+
+
+def test_a_waiter_on_its_leads_without_a_leads_registry_or_with_one_unread_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: waiting on my leads. Report: m.md")
+    (tmp_path / "app-leads.registry").write_text("z=z.md\n")  # it follows no lead
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (lead)"]
+    og.inbox.clear()
+    registry.with_suffix(".state.json").unlink()
+    (tmp_path / "app-leads.registry").unlink()
+    (tmp_path / "app-leads.registry").mkdir()  # unreadable as a registry
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (lead)"]
+    assert "m: leads registry not read" in capsys.readouterr().err
+    registry.write_text(f"m={tmp_path / 'm.md'}\tfollow\n")
+    og.inbox.clear()
+    registry.with_suffix(".state.json").unlink()
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (lead)"]
+
+
 def test_the_nudge_and_revive_end_on_a_wait_the_supervisor_accepts() -> None:
     for text in (omnigent_agent.LEAD_NUDGE, omnigent_agent.LEAD_REVIVE):
         example = re.search(r'For example: "(STILL WORKING: [^"]+)"\.$', text)
@@ -7335,7 +7534,41 @@ def test_a_top_level_start_after_another_lead_writes_the_after_field(
     assert omnigent_agent.main([*args, "--registry", str(registry), "--after", "s9"]) == 0
     line = registry.read_text().strip()
     assert line.endswith("\tfollow\tafter=s9")
-    assert omnigent_agent.entry(line)[2:] == ([tmp_path / "a.md.brief"], False, True, "s9", False)
+    assert omnigent_agent.entry(line)[2:] == (
+        [tmp_path / "a.md.brief"],
+        False,
+        True,
+        "s9",
+        False,
+        "",
+    )
+
+
+def test_a_top_level_start_of_a_manager_writes_its_leads_registry_and_a_re_arm_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    registry, brief = tmp_path / "registry", tmp_path / "b.md"
+    brief.write_text("do X")
+    args = ["start", "claude", "t", str(brief), str(tmp_path / "a.md"), "--top-level"]
+    leads = tmp_path / "app-leads.registry"
+    assert omnigent_agent.main([*args, "--registry", str(registry), "--leads", leads.name]) == 0
+    line = registry.read_text().strip()
+    assert line.endswith(f"\tfollow\tleads={leads}")
+    assert omnigent_agent.entry(line)[2:] == (
+        [tmp_path / "a.md.brief"],
+        False,
+        True,
+        "",
+        False,
+        str(leads),
+    )
+    sid = line.partition("=")[0]
+    omnigent_agent.arm(registry, sid, tmp_path / "a.md", followed=True)
+    assert omnigent_agent.entry(registry.read_text().strip())[7] == str(leads)
+    assert omnigent_agent.main([*args[:-1], "--leads", str(leads)]) == 1  # needs --top-level
 
 
 def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer(

@@ -322,7 +322,7 @@ def worktrees(run, found, dev, procs, asks):
         locks = [lock for files in held.values() for lock in files]
         kept = [line for line in lines if not (disposable(line, path, root) or held[line])]
         # A lead may still read its report. Every ignored file, also those in a folded build/ or skills/ dir.
-        files = git(path, 'ls-files', '-z', '--others', '--ignored', '--exclude-standard')
+        files = git(path, 'ls-files', '-z', '--others')  # untracked and ignored alike
         reports = {path / name for name in (files or '').split('\0') if REPORT_DIRS & set(Path(name).parts[:-1])}
         reports |= {p for r in reports for p in r.parents if p.is_relative_to(path) and REPORT_DIRS & set(p.relative_to(path).parts)}
         fresh = sorted(REPORT_DIRS if files is None else {d for p in reports if changed(p) > time.time() - 86400
@@ -349,6 +349,7 @@ def worktrees(run, found, dev, procs, asks):
             run.say(f'skip worktree {path} ({what}): {why}')
             if not (busy or nested or fresh):
                 asks.append(f'worktree {path} ({what}): {why}')
+                ROUTES[asks[-1]] = repo
         elif run.dry:
             run.say(f'would remove worktree {path} ({what})')
         else:
@@ -356,6 +357,13 @@ def worktrees(run, found, dev, procs, asks):
             try:  # `git worktree remove` refuses untracked files; --force would delete whatever else is there
                 for lock in locks:
                     lock.unlink()
+                for line in lines:  # untracked run reports: git won't remove them, and they are no one's work
+                    if line.startswith('?? ') and disposable(line, path, root):
+                        report = path / line[3:]  # a folded directory, or a single file beside tracked ones
+                        if report.is_dir() and not report.is_symlink():
+                            shutil.rmtree(report)
+                        else:
+                            report.unlink()
             except OSError as error:
                 run.failed = True
                 run.say(f'FAIL worktree {path}: {error}')
@@ -379,6 +387,7 @@ DISPOSABLE = {'node_modules', '.venv', 'venv', '__pycache__', '.pytest_cache', '
               'build', 'dist', '.gradle', '.kotlin', '.cxx', '.next', '.turbo', 'target', 'DerivedData',
               'coverage', '.coverage', 'coverage.xml', '.testmondata', 'apm_modules', '.DS_Store', '.build',
               '.terraform', 'test-results', 'playwright-report', 'snapshot_failures'}  # `terraform init` rebuilds it; a local terraform.tfstate sits beside it, not in it
+ROUTES = {}  # a question about a repo's worktree -> that repo (owner/name), whose manager is asked
 REPORT_DIRS = {'tmp', '.bootstrap-state'}  # run reports: kept while one changed in the last day
 EVIDENCE_DIRS = {'logs', *REPORT_DIRS}  # as directories only: a file named tmp may be anything
 CACHE_TAG = b'Signature: 8a477f597d28d172789f06886806bc55'
@@ -390,6 +399,9 @@ def disposable(status_line, checkout, main=None):
     path = status_line[3:]
     parts = Path(path).parts
     dirs = set(parts if path.endswith('/') else parts[:-1])  # git marks an ignored directory with a trailing /
+    if status_line.startswith('?? '):  # untracked run reports count as ignored ones: fresh() holds back what changed lately
+        # a folded `?? tmp/`, or one file under a report dir whose tracked content (tmp/.gitkeep) keeps git from folding it
+        return bool(REPORT_DIRS & dirs)
     return status_line.startswith('!! ') and (
         bool(DISPOSABLE & set(parts)) or bool(EVIDENCE_DIRS & dirs) or path.endswith(('.pyc', '.egg-info/', '.log'))
         # a built web UI: a path suffix, so a tracked web-ui/ source dir is not matched
@@ -578,10 +590,13 @@ def failure(error):
     return f'HTTP {error.code}' if isinstance(error, urllib.error.HTTPError) else type(error).__name__
 
 
-def tell(text):
-    """Post text into the chief of staff's Omnigent session; raises when it can't.
+def tell(text, repo=None):
+    """Post text into an Omnigent session; raises when it can't.
 
-    The chief of staff may live on another server than the CLI's default (an account's default may be
+    With ``repo`` (owner/name), that repo's project manager (``omni.role=pm``, ``omni.repos`` naming the
+    repo's name or owner/name) gets it, and the chief of staff when none is live. Without, the chief of staff.
+
+    The session may live on another server than the CLI's default (an account's default may be
     another one), so each server with a login is searched until one holds it."""
     config = HOME / '.omnigent/config.yaml'
     servers = re.findall(r'^server: *(\S+)', config.read_text(), re.M) if config.exists() else []
@@ -590,39 +605,47 @@ def tell(text):
     if not tokens:
         raise RuntimeError('no Omnigent login on this account')
     missed, opener = [], urllib.request.build_opener(NoRedirect)
-    for server, token in tokens.items():
-        def api(method, path, body=None):
-            request = urllib.request.Request(server + path, method=method,
-                data=None if body is None else json.dumps(body).encode(),
-                headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
-            with opener.open(request, timeout=30) as response:
-                return json.load(response)
+    names = {repo, repo.rsplit('/', 1)[-1]} if repo else set()
 
-        try:  # anything failing before the message goes means: try the next server
-            listing = api('GET', '/v1/sessions?limit=100&sort_by=updated_at&project=' + urllib.parse.quote('Chief of staff'))
-            cos = next((s['id'] for s in listing.get('data') or []
-                        if (s.get('labels') or {}).get('omni.role') == 'cos' and not s.get('archived')), None)
-            if not cos:
-                missed.append(f'{server}: none')
+    def manages(session):
+        return bool(names & set((session.get('labels') or {}).get('omni.repos', '').split(',')))
+
+    for role in ('pm', 'cos') if repo else ('cos',):
+        for server, token in tokens.items():
+            def api(method, path, body=None):
+                request = urllib.request.Request(server + path, method=method,
+                    data=None if body is None else json.dumps(body).encode(),
+                    headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+                with opener.open(request, timeout=30) as response:
+                    return json.load(response)
+
+            try:  # anything failing before the message goes means: try the next server
+                query = '' if role == 'pm' else '&project=' + urllib.parse.quote('Chief of staff')
+                listing = api('GET', '/v1/sessions?limit=100&sort_by=updated_at' + query)
+                cos = next((s['id'] for s in listing.get('data') or []
+                            if (s.get('labels') or {}).get('omni.role') == role and not s.get('archived')
+                            and (role == 'cos' or manages(s))), None)
+                if not cos:
+                    missed.append(f'{server}: none')
+                    continue
+                if not api('GET', f'/v1/sessions/{cos}').get('runner_online', True):
+                    api('POST', f'/v1/sessions/{cos}/events', {'type': 'retry_session', 'data': {}})  # a reaped runner
+                    for _ in range(30):
+                        time.sleep(4)
+                        if api('GET', f'/v1/sessions/{cos}').get('runner_online'):
+                            break
+            except Exception as error:  # noqa: BLE001 - any failure before the message: the next server
+                missed.append(f'{server}: {failure(error)}')  # unreachable, logged out, redirected, not Omnigent
                 continue
-            if not api('GET', f'/v1/sessions/{cos}').get('runner_online', True):
-                api('POST', f'/v1/sessions/{cos}/events', {'type': 'retry_session', 'data': {}})  # a reaped runner
-                for _ in range(30):
-                    time.sleep(4)
-                    if api('GET', f'/v1/sessions/{cos}').get('runner_online'):
-                        break
-        except Exception as error:  # noqa: BLE001 - any failure before the message: the next server
-            missed.append(f'{server}: {failure(error)}')  # unreachable, logged out, redirected, not Omnigent
-            continue
-        try:
-            api('POST', f'/v1/sessions/{cos}/events', {'type': 'message', 'data': {
-                'role': 'user', 'content': [{'type': 'input_text', 'text': text}]}})
-        except urllib.error.HTTPError as error:  # the server answered with a refusal: not delivered
-            missed.append(f'{server}: message refused: {failure(error)}')
-            continue
-        except Exception as error:  # a timeout or a dropped connection may have delivered it: no second copy
-            raise RuntimeError(f'{server}: the message may not have arrived: {failure(error)}') from None
-        return f'{cos} on {server}'
+            try:
+                api('POST', f'/v1/sessions/{cos}/events', {'type': 'message', 'data': {
+                    'role': 'user', 'content': [{'type': 'input_text', 'text': text}]}})
+            except urllib.error.HTTPError as error:  # the server answered with a refusal: not delivered
+                missed.append(f'{server}: message refused: {failure(error)}')
+                continue
+            except Exception as error:  # a timeout or a dropped connection may have delivered it: no second copy
+                raise RuntimeError(f'{server}: the message may not have arrived: {failure(error)}') from None
+            return f'{cos} on {server}'
     raise RuntimeError('no chief of staff session (project "Chief of staff", label omni.role=cos): '
                        + '; '.join(missed))
 
@@ -794,16 +817,39 @@ def main():
         for line in dict.fromkeys(asks):
             run.say(f'ASK: {line}')
         fresh = []
+    routed = {}  # a repo's worktree questions go to its manager, the rest to the chief of staff
+    for line in fresh:
+        if repo := ROUTES.get(line):
+            routed.setdefault(repo, []).append(line)
+    fresh = [line for line in fresh if line not in ROUTES]
     if fresh:
         parts.append('Kept, since they may hold something wanted. Which may go?\n'
                      + '\n'.join(f'- {line}' for line in fresh[:ASK_MAX])
                      + (f'\n- and {len(fresh) - ASK_MAX} more, in the log' if len(fresh) > ASK_MAX else ''))
     code = 1 if run.failed else 2 if low else 0
-    if not parts:
+    if not parts and not routed:
         return code
-    text = f'agent-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n' + '\n\n'.join(parts)
+    header = f'agent-hygiene on {who}, for the owner to decide (log {run.log} on that account):\n\n'
+    text = header + '\n\n'.join(parts)
     if args.dry_run:
-        run.say(f'would tell the chief of staff:\n{text}')
+        for repo, lines in routed.items():
+            run.say(f'would tell the manager of {repo}:\n' + '\n'.join(lines[:ASK_MAX]))
+        if parts:
+            run.say(f'would tell the chief of staff:\n{text}')
+        return code
+    sent = set()
+    for repo, lines in routed.items():
+        body = header + 'Kept, since they may hold something wanted. Which may go?\n' + '\n'.join(
+            f'- {line}' for line in lines[:ASK_MAX]) + (f'\n- and {len(lines) - ASK_MAX} more, in the log' if len(lines) > ASK_MAX else '')
+        try:
+            run.say(f'told the manager of {repo} (session {tell(body, repo)}): {len(lines[:ASK_MAX])} questions')
+        except Exception as error:  # noqa: BLE001 - reported in the log and the exit code
+            run.say(f'FAIL telling the manager of {repo}: {error}')
+            code = 1
+        else:
+            sent.update(lines[:ASK_MAX])
+    if not parts:
+        asked_file.write_text(json.dumps(sorted(asked | sent)))
         return code
     try:
         cos = tell(text)
@@ -812,7 +858,7 @@ def main():
         return 1
     if warning:  # a message with only questions leaves the warning's clock alone
         stamp.touch()
-    asked_file.write_text(json.dumps(sorted(asked | set(fresh[:ASK_MAX]) | set(new_drift) | ({old} if old else set()))))
+    asked_file.write_text(json.dumps(sorted(asked | sent | set(fresh[:ASK_MAX]) | set(new_drift) | ({old} if old else set()))))
     run.say(f'told the chief of staff (session {cos}): {"low disk, " if warning else ""}{len(fresh[:ASK_MAX])} questions, {len(new_drift)} drift findings')
     return code
 
