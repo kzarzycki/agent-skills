@@ -6061,6 +6061,22 @@ def test_relay_rerun_after_the_copy_landed_unanswered_sends_nothing(
     assert og.posts == 1
 
 
+def test_relay_of_the_same_words_after_the_session_worked_through_tools_is_a_new_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    assert relay(og, sid, tmp_path, monkeypatch, "status?") == 0
+    # the session took the first copy up with tool calls and wrote no reply message
+    og.sessions[sid].append({"id": "fc", "type": "function_call"})
+    capsys.readouterr()
+    assert relay(og, sid, tmp_path, monkeypatch, "status?") == 0
+    assert capsys.readouterr().out.strip() == f"session {sid}: delivered"
+    assert (
+        og.posts == 2
+    )  # on main the second relay exits 0 with "already delivered", posting nothing
+
+
 def test_relay_of_the_same_words_after_the_session_replied_is_a_new_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
