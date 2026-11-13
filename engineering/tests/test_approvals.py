@@ -1535,6 +1535,8 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     def gh(*args: str, data: str | None = None) -> str:
         path = next(arg for arg in args if arg.startswith("repos/"))
         asked.append(path)
+        if path.endswith("/comments") and "body=@-" in args:  # flag()'s reason
+            return ""
         name = re.sub(r"^repos/\{owner\}/\{repo\}/pulls/(\d+)(/files)?.*", r"pull-\1\2", path)
         name = re.sub(r"^repos/\{owner\}/\{repo\}/git/trees/(\w+)\?recursive=1$", r"tree-\1", name)
         name = re.sub(r"^repos/\{owner\}/\{repo\}/(compare)/", r"\1-", name)
@@ -3311,6 +3313,8 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return "".join(f"{name}\n" for name in state["rulesets"])
         if args[1] == "repos/{owner}/{repo}/branches/main":
             return "".join(f"{name}\n" for name in state["protection"])
+        if args[1].endswith("/comments"):  # flag()'s reason
+            return ""
         raise AssertionError(args)
 
     monkeypatch.setattr(approvals, "gh", gh)
