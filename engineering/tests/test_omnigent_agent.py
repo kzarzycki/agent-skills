@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -7869,6 +7870,7 @@ def failing_lead(
         "runner lost",  # a turn whose host went away: a reboot, a restart or a lost runner
         "host rebooted",
         "cloud session x made no progress for 1800s; it is left as it is",
+        "API error (rate_limit)",  # a rate limit with no reset time: the backoff chain (#932)
     ],
 )
 def test_a_transient_provider_failure_is_revived_with_backoff_and_reported_only_at_the_cap(
@@ -7923,6 +7925,121 @@ def test_a_transient_chain_sends_no_revive_to_a_lead_running_again_and_restarts_
     retrying = state_of(registry)["leads"]["a"]["retrying"]
     assert (retrying["count"], retrying["at"] - retrying["since"]) == (1, 120)
     assert retrying["since"] == clock[0] - 60  # from its second failure, not its first
+
+
+# A usage limit fails every session alike: they park together, one probe at a time (#932).
+
+WEEKLY = "You've hit your weekly limit · resets Nov 16, 6am (UTC)"
+
+
+def limited_leads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, polls: int, lifts: int | None
+) -> tuple[Leads, Path, list[str], float]:
+    """Leads a, b and c, all failing on the weekly limit, on a clock one minute a poll. A revived
+    lead runs one poll, then fails on the limit again, or, from revive number ``lifts`` on (the
+    limit lifted), ends its turn. Returns the fleet, the registry, the leads in the order they
+    were revived, and the clock's start."""
+    clock = [time.time()]
+    start = clock[0]
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    registry = follows(tmp_path, "a", "b", "c")
+    og = Leads(**{s: [told("brief", 60), ending("STILL WORKING: building", 50)] for s in "abc"})
+    for s in "abc":
+        og.snaps[s] = {"status": "failed", "last_task_error": {"message": WEEKLY}}
+    revived: list[str] = []
+    seen = {s: 0 for s in "abc"}
+
+    def between(poll: int) -> None:
+        clock[0] += 60
+        for s in "abc":
+            snap = og.snaps[s]
+            sent = sum(
+                omnigent_agent.text_of(i) == omnigent_agent.LEAD_REVIVE for i in og.histories[s]
+            )
+            if sent > seen[s]:  # revived this poll: it runs one poll
+                seen[s] = sent
+                revived.append(s)
+                snap["status"] = "running"
+                og.histories[s].append(ending(f"working {poll}", 0))
+            elif snap["status"] == "running":
+                if lifts is not None and len(revived) >= lifts:
+                    snap["status"] = "idle"
+                    og.histories[s].append(ending("STILL WORKING: on CI", 0))
+                else:
+                    snap["status"] = "failed"
+
+    supervised(og, registry, monkeypatch, polls, between, notify="cos", console=True)
+    return og, registry, revived, start
+
+
+def test_sessions_failing_on_a_usage_limit_are_reported_once_and_kept_parked_by_a_failed_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og, registry, revived, start = limited_leads(tmp_path, monkeypatch, 12, None)
+    resets = omnigent_agent.reset_time(WEEKLY, start)
+    assert resets is not None
+    when = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(resets))
+    post = "\n".join(posted(og))
+    assert post.count("usage limit:") == 1
+    assert f"[act] usage limit: 3 sessions parked, resets {when}" in post
+    assert re.findall(r"^\[act\] .*", post, re.MULTILINE) == [  # no session reported on its own
+        f"[act] usage limit: 3 sessions parked, resets {when} (one probe revives them)"
+    ]
+    # one probe at a time: the first after 2 minutes, the next 5 minutes after the first
+    assert revived == ["a", "b"]
+    leads = state_of(registry)["leads"]
+    assert all(leads[s]["retrying"]["limit"] for s in "abc")
+    assert [e["action"] for e in events_of(registry)] == ["park"] * 5  # 3, then 2 probes
+
+
+def test_a_usage_limit_probe_that_passes_revives_every_parked_session_and_reports_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og, registry, revived, _ = limited_leads(tmp_path, monkeypatch, 14, 2)
+    assert revived == ["a", "b", "a", "c"]  # a probe failed, the next passed: the rest revived
+    post = "\n".join(posted(og))
+    assert post.count("usage limit:") == 1 and post.count("usage limit lifted:") == 1
+    assert [
+        line for line in re.findall(r"^\[act\] .*", post, re.MULTILINE) if "lifted" in line
+    ] == [
+        "[act] usage limit lifted: 3 sessions resumed (a probe's turn ended: the limit is lifted)"
+    ]
+    assert all(
+        line.startswith("[act] usage limit")
+        for line in re.findall(r"^\[act\] .*", post, re.MULTILINE)
+    )
+    assert not any("retrying" in lead for lead in state_of(registry)["leads"].values())
+
+
+@pytest.mark.parametrize(
+    ("text", "now", "resets"),
+    [
+        (WEEKLY, "2026-11-13T12:00:00+00:00", "2026-11-16T06:00:00+00:00"),
+        (WEEKLY, "2026-11-16T07:00:00+00:00", "2027-11-16T06:00:00+00:00"),  # passed: next year
+        (
+            "hit your limit · resets Jan 2, 6:30pm (Europe/Warsaw)",
+            "2026-12-30T00:00:00+00:00",
+            "2027-01-02T17:30:00+00:00",
+        ),
+        (
+            "usage limit · resets 6am (UTC)",
+            "2026-11-13T07:00:00+00:00",
+            "2026-11-14T06:00:00+00:00",
+        ),
+        (
+            "usage limit · resets 12am (UTC)",
+            "2026-11-13T07:00:00+00:00",
+            "2026-11-14T00:00:00+00:00",
+        ),
+        ("usage limit · resets Nov 16, 6am (Nowhere/Else)", "2026-11-13T07:00:00+00:00", None),
+        ("API error (rate_limit)", "2026-11-13T07:00:00+00:00", None),
+    ],
+)
+def test_a_usage_limits_reset_time_parses_to_the_next_such_utc_instant(
+    text: str, now: str, resets: str | None
+) -> None:
+    at = omnigent_agent.reset_time(text, datetime.fromisoformat(now).timestamp())
+    assert at == (resets and datetime.fromisoformat(resets).timestamp())
 
 
 @pytest.mark.parametrize("runner", ["offline", "revive fails", "online"])

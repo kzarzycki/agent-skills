@@ -194,12 +194,13 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 # A Claude worker or verifier gets only the built-in tools its role calls and no user MCP servers,
@@ -310,6 +311,14 @@ LEAD_WAKE = (
     "Supervisor: the time your STILL WORKING named, {time}, has passed. Check what you wait on and"
     " carry on, then end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
 )
+# A failure whose text matches one of these is a usage limit: the account behind every session
+# ran out, so every session fails alike until it resets (at the time the text may print) or the
+# owner resets it early. Each is transient too, but parked with the others rather than revived on
+# its own: one probe revive at a time, all revived once it succeeds, and one report for them all.
+USAGE_LIMIT_ERRORS = (
+    r"\bhit your\b.{0,40}?\blimit",  # "You've hit your weekly limit · resets Nov 16, 6am (UTC)"
+    r"\busage limit",
+)
 # A failure whose text matches one of these is a transient provider error, which clears when the
 # provider recovers: the supervisor revives it again after each backoff (minutes, the last
 # repeated) until the next revive would fall past the cap, and only then reports it. A false
@@ -322,15 +331,57 @@ TRANSIENT_ERRORS = (
     r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
     r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
     r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+    r"\brate_limit",  # a provider's rate limit: it clears within minutes, per session
+    *USAGE_LIMIT_ERRORS,
 )
 TRANSIENT_FAILURE = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
+USAGE_LIMIT = re.compile("|".join(USAGE_LIMIT_ERRORS), re.IGNORECASE)
 BACKOFF_MINUTES = (2, 5, 10, 20)
 RETRY_CAP_SECONDS = 2 * 3600.0
+LIMIT_MARGIN_SECONDS = 3600.0  # past a usage limit's printed reset, how long its probes go on
+RESETS = re.compile(
+    r"\bresets\s+(?:(?P<month>[a-z]{3})[a-z]*\.?\s+(?P<day>\d{1,2}),?\s+)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d\d))?\s*(?P<half>[ap]m)\s*\((?P<zone>[^)]+)\)",
+    re.IGNORECASE,
+)
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 
 def backoff(count: int) -> float:
     """The seconds before the revive after ``count`` earlier ones in a transient chain."""
     return BACKOFF_MINUTES[min(count, len(BACKOFF_MINUTES) - 1)] * 60.0
+
+
+def reset_time(text: str, now: float) -> float | None:
+    """The instant (epoch seconds) a usage limit's ``resets Nov 16, 6am (UTC)`` names: the first
+    one after ``now``, so a date with no year rolls into the next year, and a time with no date
+    (``resets 6:30pm (Europe/Warsaw)``) into the next day. ``None`` when ``text`` names none, or
+    names a zone or date that does not exist."""
+    match = RESETS.search(text)
+    if not match:
+        return None
+    try:
+        zone = ZoneInfo(match["zone"].strip())
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+    hour = int(match["hour"]) % 12 + 12 * (match["half"].lower() == "pm")
+    minute = int(match["minute"] or 0)
+    today = datetime.fromtimestamp(now, zone)
+    if match["month"]:
+        if match["month"].lower() not in MONTHS:
+            return None
+        month, day = MONTHS.index(match["month"].lower()) + 1, int(match["day"])
+        days = [(year, month, day) for year in (today.year, today.year + 1)]
+    else:
+        days = [(d.year, d.month, d.day) for d in (today, today + timedelta(days=1))]
+    for year, month, day in days:
+        try:
+            at = datetime(year, month, day, hour, minute, tzinfo=zone).timestamp()
+        except ValueError:  # Feb 30, or Feb 29 in a year without one
+            continue
+        if at > now:
+            return at
+    return None
 
 
 LEAD_REVIVE = (
@@ -4161,8 +4212,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
-    ``revived`` once, a failure that is a ``transient`` provider error and whether its next
-    backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
+    ``revived`` once, a failure that is a ``transient`` provider error, whether that is a usage
+    ``limit`` (account-wide), and whether its next backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
@@ -4171,7 +4222,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     quiet end nudges; ``unsure`` acts.
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
-    wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``done``
+    wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``park`` (a usage limit:
+    join the parked sessions, which one probe at a time revives), ``done``
     (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
@@ -4194,11 +4246,15 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if kind == "failed":
         if event.get("transient"):
             if event.get("capped"):
+                if event.get("limit"):
+                    return "rule", "act", "a usage limit, still failing past its reset or 2h"
                 return (
                     "rule",
                     "act",
                     "a transient provider error, still failing after 2h of revives",
                 )
+            if event.get("limit"):
+                return "rule", "park", "a usage limit: parked with the others until a probe passes"
             return "rule", "retry", "a transient provider error: revive it after a backoff"
         if event.get("revived"):
             return "rule", "act", "failed again after its revive"
@@ -4610,6 +4666,10 @@ def supervise_registry(
         pending = info.get("pending_elicitations") or []
         found = standing(decisions) if decisions else ""
         retrying, now = lead.get("retrying") or {}, time.time()
+        error = lead.get("error") or line
+        resets = reset_time(error, now) if USAGE_LIMIT.search(error) else None
+        # a usage limit with a printed reset goes on until that reset plus a margin, not 2h
+        cap = resets + LIMIT_MARGIN_SECONDS - now if resets else RETRY_CAP_SECONDS
         event = {
             "kind": kind,
             "line": line,
@@ -4620,9 +4680,12 @@ def supervise_registry(
             "nudged": lead.get("nudged_at") is not None
             and lead.get("nudged_at") == lead.get("progress_at"),
             "revived": bool(lead.get("revives")),
-            "transient": bool(TRANSIENT_FAILURE.search(lead.get("error") or line)),
-            "capped": now + backoff(retrying.get("count", 0)) - retrying.get("since", now)
-            > RETRY_CAP_SECONDS,
+            "transient": bool(TRANSIENT_FAILURE.search(error)),
+            "limit": bool(USAGE_LIMIT.search(error)),
+            # the next revive would fall past the cap: 2h from the chain's start, or the reset
+            "capped": backoff(retrying.get("count", 0))
+            + (0.0 if resets else now - retrying.get("since", now))
+            > cap,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
             "parked": parked_before(og, sid, items, said[-1] if said else None),
@@ -4676,6 +4739,17 @@ def supervise_registry(
                 "since": retrying.get("since", now),
                 "at": now + backoff(count),
                 "event": eid,
+            }
+        elif action == "park":  # ``limits`` reports the parked set once and sends its probes
+            count, at = retrying.get("count", 0), now + backoff(retrying.get("count", 0))
+            lead["retrying"] = {
+                "count": count + 1,
+                "since": retrying.get("since", now),
+                "at": min(at, resets) if resets else at,  # at the printed reset, probe at once
+                "event": eid,
+                "limit": True,
+                "resets": resets,
+                "told": retrying.get("told", False),
             }
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
@@ -4892,6 +4966,8 @@ def supervise_registry(
         if console:
             from_report(sid, lead, items)
         if lead["state"] == "idle":  # a turn ended without failing: the provider is back
+            if (lead.get("retrying") or {}).get("told"):  # a usage limit lifted: ``limits``
+                lead["lifted"] = True
             lead.pop("retrying", None)
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
             # a new failure or prompt, also with the same error: its own event, kept on restart
@@ -5163,8 +5239,8 @@ def supervise_registry(
         """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
         the same intent as the first revive; none when the lead no longer reads failed."""
         retrying = lead.get("retrying") or {}
-        if "at" not in retrying or time.time() < retrying["at"]:
-            return
+        if retrying.get("limit") or "at" not in retrying or time.time() < retrying["at"]:
+            return  # a usage limit's revive is ``limits``' probe
 
         def send() -> None:
             del retrying["at"]
@@ -5174,6 +5250,67 @@ def supervise_registry(
                 act_on(retrying["event"], [(sid, "revive", LEAD_REVIVE)])
 
         undoing(send)
+
+    def limits() -> None:
+        """The usage-limit sessions as one: the leads parked on a usage limit (``retrying.limit``)
+        are reported in one line once, and a lead parked after it joins them unreported. When the
+        earliest parked ``at`` passes (a backoff, or the printed reset) one of them is revived as a
+        probe; a probe failing on the limit again parks once more. Once a told lead's turn ends
+        (``lifted``: the probe passed, or someone revived it), every parked lead is revived and
+        that is reported in one line."""
+        now, leads = time.time(), state["leads"]
+        parked = {s: lead for s, lead in leads.items() if (lead.get("retrying") or {}).get("limit")}
+        lifted = [s for s, lead in leads.items() if lead.pop("lifted", False)]
+        if lifted:
+            for lead in parked.values():
+                lead.pop("retrying")
+            n = len(lifted) + len(parked)
+            eid = f"limit:resumed:{now:.0f}"
+            line = f"usage limit lifted: {n} session{'s' * (n > 1)} resumed"
+            queue(eid, lifted[0], "act", line, "a probe's turn ended: the limit is lifted")
+            print(stamp(f"{eid}: rule: revive ({line})"), flush=True)
+            act_on(
+                eid,
+                [
+                    (s, "revive", LEAD_REVIVE)
+                    for s, lead in parked.items()
+                    if lead.get("state") == "failed"
+                ],
+            )
+            return
+        if not parked:
+            return
+        fresh = [lead["retrying"] for lead in parked.values() if not lead["retrying"]["told"]]
+        if len(fresh) == len(parked):  # none told yet: the one report, naming the earliest reset
+            resets = [r["resets"] for r in fresh if r.get("resets")]
+            when = (
+                time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(min(resets)))
+                if resets
+                else "unknown"
+            )
+            n, first = len(parked), next(iter(parked))
+            line = f"usage limit: {n} session{'s' * (n > 1)} parked, resets {when}"
+            queue(f"limit:parked:{now:.0f}", first, "act", line, "one probe revives them")
+        for retrying in fresh:
+            retrying["told"] = True
+        probing = [r for r in (lead["retrying"] for lead in parked.values()) if "probe" in r]
+        if any(now - r["probe"] < backoff(len(BACKOFF_MINUTES)) for r in probing):
+            return  # a probe's revive runs: its turn ends (lifted) or fails (parked again)
+        waiting = [(lead["retrying"].get("at", now), s) for s, lead in parked.items()]
+        at, sid = min(waiting)
+        if now < at or parked[sid].get("state") != "failed":
+            return
+        retrying = parked[sid]["retrying"]
+        after = now + backoff(retrying["count"])
+        resets = [r["resets"] for r in (lead["retrying"] for lead in parked.values())]
+        after = min([after, *(r for r in resets if r and r > now)])
+        for lead in parked.values():  # the next probe: after this one's backoff, or at the reset
+            lead["retrying"]["at"] = max(lead["retrying"].get("at", now), after)
+        retrying.update(probe=now)
+        retrying.pop("at", None)
+        why = f"a usage limit: probe {retrying['count']} of {len(parked)} parked"
+        print(stamp(f"{retrying['event']}: rule: revive ({why})"), flush=True)
+        act_on(retrying["event"], [(sid, "revive", LEAD_REVIVE)])
 
     while True:
         flush()
@@ -5260,6 +5397,12 @@ def supervise_registry(
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
                     state[part] = {s: v for s, v in state[part].items() if s in owed}
+            try:
+                undoing(limits)
+            except Exception as e:  # noqa: BLE001 - never fatal; settled again next poll
+                log("limits", f"usage limit not settled: {reason(e)}")
+            else:
+                log("limits", None)
             try:
                 undoing(deliver)
             except Exception as e:  # noqa: BLE001 - never fatal; delivered at a later poll
