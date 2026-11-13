@@ -3509,7 +3509,18 @@ def lands(
             ).strip()
             git_in(origin, "update-ref", "refs/heads/main", squash, tip)
             pulls[number]["state"] = "MERGED"
+            state.setdefault("squashes", {})[number] = squash
             return ""
+        if args[0] == "api" and re.fullmatch(r"repos/\{owner\}/\{repo\}/pulls/\d+", args[1]):
+            # the PR as REST reads it, which land re-reads after a failed merge call (#923)
+            number = int(args[1].rsplit("/", 1)[1])
+            return json.dumps(
+                {
+                    "merged": pulls[number]["state"] == "MERGED",
+                    "head": {"sha": pulls[number]["headRefOid"]},
+                    "merge_commit_sha": state.get("squashes", {}).get(number),
+                }
+            )
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:

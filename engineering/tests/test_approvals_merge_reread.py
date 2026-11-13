@@ -39,27 +39,18 @@ def test_a_merge_call_failing_after_github_merged_lands_and_any_other_failure_is
     merged at a head other than the pinned one, or fails itself."""
     heads = {number: lands["open"](number, {f"{number}.txt": f"{number}\n"}) for number in (7, 8)}
     fake = approvals.gh
-    merges: dict[int, str] = {}
 
     def gh(*args: str, data: str | None = None) -> str:
-        if args[:2] == ("pr", "merge"):
-            if args[2] == "7":
-                fake(*args, data=data)
-                merges[7] = lands["main"]()
-                raise subprocess.CalledProcessError(1, args, stderr="unexpected EOF")
+        if args[:3] == ("pr", "merge", "7"):
+            fake(*args, data=data)
+            raise subprocess.CalledProcessError(1, args, stderr="unexpected EOF")
+        if args[:3] == ("pr", "merge", "8"):
             raise subprocess.CalledProcessError(1, args, stderr=REFUSED)
-        if args[0] == "api" and "/pulls/" in args[1]:
-            number = int(args[1].rsplit("/", 1)[1])
-            pull = approvals.pull_request(number)
-            if number == 8 and reread == "fails":
-                raise subprocess.CalledProcessError(1, args, stderr="HTTP 502")
-            other = number == 8 and reread == "another head"
+        if args[:2] == ("api", "repos/{owner}/{repo}/pulls/8") and reread == "fails":
+            raise subprocess.CalledProcessError(1, args, stderr="HTTP 502")
+        if args[:2] == ("api", "repos/{owner}/{repo}/pulls/8") and reread == "another head":
             return json.dumps(
-                {
-                    "merged": pull["state"] == "MERGED" or other,
-                    "head": {"sha": "0" * 40 if other else pull["headRefOid"]},
-                    "merge_commit_sha": merges.get(number),
-                }
+                {"merged": True, "head": {"sha": "0" * 40}, "merge_commit_sha": "1" * 40}
             )
         return fake(*args, data=data)
 
@@ -67,7 +58,8 @@ def test_a_merge_call_failing_after_github_merged_lands_and_any_other_failure_is
     code, lines = lands["land"]()
     assert code == 1, lines
     assert (
-        f"PR #7: the merge call failed, but the PR is merged at {heads[7]} as {merges[7]}" in lines
+        f"PR #7: the merge call failed, but the PR is merged at {heads[7]} as {lands['squashes'][7]}"
+        in lines
     )
     assert not any(line.startswith("PR #7: the merge was refused") for line in lines)
     assert any(
