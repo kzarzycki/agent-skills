@@ -253,6 +253,9 @@ TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right no
 # them without `owner=True`, so an agent whose call waits on the owner can't make it over REST.
 APPROVAL_GATED = re.compile(r"/v1/(scheduled-tasks|policies|sessions/[^/]+/policies)(/|\?|$)")
 EMPTY_SPAN = re.compile(r"(?<!`)``(?!`)")  # a name an unquoted heredoc ran as a command
+# An RST literal (``-``): text with no space after the opening pair or before the closing one,
+# so it is not the empty pair a heredoc leaves, which is followed by the sentence's own spaces.
+RST_LITERAL = re.compile(r"(?<!`)``(?=[^\s`])[^`\n]*(?<=[^\s`])``(?!`)")
 RUNNER_LOGS = Path.home() / ".omnigent" / "logs" / "runner"
 # Both nudges open with NO_REPORT, so OWN_LINES finds either however the rest is worded.
 NO_REPORT = "Your turn ended without the report."
@@ -2220,7 +2223,8 @@ def start(
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
-    session on another host or in the cloud is not held back by this host's load. ``files`` (local
+    session on another host or in the cloud is held to the capacity of the host it lands on
+    (``host_id``, else this one) since #849, not to this host's load. ``files`` (local
     paths, for a session on another host) are written beside ``report`` on that host through the
     session's file API before its brief is sent, so it finds them when it starts."""
     harness = agent if agent in AGENTS else og.harness(agent)
@@ -2296,7 +2300,8 @@ def start(
             raise Fail(f"{name} over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
         print(f"{name} over capacity, waiting: {room[1]}", file=sys.stderr)
         time.sleep(POLL_SECONDS * 6)
-    if span := EMPTY_SPAN.search(brief):
+    # a literal holds no newline, so blanking it leaves the line number below right
+    if span := EMPTY_SPAN.search(RST_LITERAL.sub(" ", brief)):
         line = brief[: span.start()].count("\n") + 1
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
