@@ -707,7 +707,11 @@ class FakeCloud:
 
     def frame(self, obj: dict) -> bytes:
         data = json.dumps(obj).encode()
-        return b"\x81" + (bytes([len(data)]) if len(data) < 126 else b"\x7e" + len(data).to_bytes(2, "big")) + data
+        return (
+            b"\x81"
+            + (bytes([len(data)]) if len(data) < 126 else b"\x7e" + len(data).to_bytes(2, "big"))
+            + data
+        )
 
     def read(self, conn: socket.socket, buf: bytearray) -> dict:
         def need(n: int) -> bytes:
@@ -729,9 +733,13 @@ class FakeCloud:
         while b"\r\n\r\n" not in head:
             head += conn.recv(4096)
         text = head.decode()
-        key = next(x.split(": ")[1] for x in text.split("\r\n") if x.startswith("Sec-WebSocket-Key"))
+        key = next(
+            x.split(": ")[1] for x in text.split("\r\n") if x.startswith("Sec-WebSocket-Key")
+        )
         self.proto = next(x for x in text.split("\r\n") if x.startswith("Sec-WebSocket-Protocol"))
-        accept = _b64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+        accept = _b64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+        ).decode()
         conn.sendall(
             f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n".encode()
         )
@@ -739,7 +747,7 @@ class FakeCloud:
         while True:
             try:
                 msg = self.read(conn, buf)
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 return
             method = msg.get("method")
             self.seen.append(method)
@@ -750,9 +758,19 @@ class FakeCloud:
                 result = {"thread": {"id": "t1", "environments": [{"environmentId": "e1"}]}}
             elif method == "command/exec":
                 cmd = msg["params"]["command"][-1]
-                result = {"exitCode": 0, "stdout": (self.question if cmd.endswith(".question") else self.report) if cmd.startswith("cat ") else "/home/agent/pr1\n", "stderr": ""}
+                result = {
+                    "exitCode": 0,
+                    "stdout": (self.question if cmd.endswith(".question") else self.report)
+                    if cmd.startswith("cat ")
+                    else "/home/agent/pr1\n",
+                    "stderr": "",
+                }
             elif method == "thread/items/list":
-                result = {"data": [{"turnId": "u", "item": {"type": "agentMessage", "text": "final message"}}]}
+                result = {
+                    "data": [
+                        {"turnId": "u", "item": {"type": "agentMessage", "text": "final message"}}
+                    ]
+                }
             conn.sendall(self.frame({"id": msg["id"], "result": result}))
             if method == "turn/addUserMessage":
                 conn.sendall(self.frame({"method": "turn/completed", "params": {}}))
@@ -763,27 +781,54 @@ def route_1b(tmp_path, monkeypatch):
     token = jwt(5)
     home = tmp_path / "codex"
     home.mkdir()
-    (home / "auth.json").write_text(json.dumps(login(5) | {"tokens": {"access_token": token, "refresh_token": "r"}}))
+    (home / "auth.json").write_text(
+        json.dumps(login(5) | {"tokens": {"access_token": token, "refresh_token": "r"}})
+    )
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setattr(cv, "USAGE_URL", "http://127.0.0.1:9/")
     real = cv.run
     monkeypatch.setattr(
-        cv, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "abc123 o/r\n", "") if a[:3] == ("gh", "pr", "view") else real(*a, **k)
+        cv,
+        "run",
+        lambda *a, **k: (
+            subprocess.CompletedProcess(a, 0, "abc123 o/r\n", "")
+            if a[:3] == ("gh", "pr", "view")
+            else real(*a, **k)
+        ),
     )
     brief = tmp_path / "brief.md"
     brief.write_text(f"Review.\n- Report: {tmp_path}/out/pr1-v1.md\n")
     return token, brief, tmp_path / "out" / "pr1-v1.md"
 
 
-def test_a_thread_pass_writes_the_report_read_from_the_vm_and_no_token_is_printed(route_1b, monkeypatch, capsys) -> None:
+def test_a_thread_pass_writes_the_report_read_from_the_vm_and_no_token_is_printed(
+    route_1b, monkeypatch, capsys
+) -> None:
     token, brief, out = route_1b
     fake = FakeCloud("Head: abc123\nVERDICT: 0 blocker\nSATISFIED: yes\n")
     monkeypatch.setattr(cv, "WS_URL", fake.url)
-    code = cv.main(["thread", "--pr", "1", "--brief", str(brief), "--model", "gpt-6.1-terra", "--effort", "medium"])
+    code = cv.main(
+        [
+            "thread",
+            "--pr",
+            "1",
+            "--brief",
+            str(brief),
+            "--model",
+            "gpt-6.1-terra",
+            "--effort",
+            "medium",
+        ]
+    )
     shown = capsys.readouterr()
     assert code == 0
-    assert out.read_text().startswith("Verifier: codex/terra-6.1/med, pass 1") and "SATISFIED: yes" in out.read_text()
-    assert token in fake.proto and token not in shown.out + shown.err  # the login goes to the endpoint only
+    assert (
+        out.read_text().startswith("Verifier: codex/terra-6.1/med, pass 1")
+        and "SATISFIED: yes" in out.read_text()
+    )
+    assert (
+        token in fake.proto and token not in shown.out + shown.err
+    )  # the login goes to the endpoint only
     assert fake.seen.count("command/exec") == 2 and "turn/addUserMessage" in fake.seen
 
 
@@ -794,7 +839,9 @@ def test_a_thread_pass_without_a_satisfied_line_writes_no_report(route_1b, monke
     assert not out.exists()
 
 
-def test_a_dead_endpoint_fails_closed_naming_the_other_routes(route_1b, monkeypatch, capsys) -> None:
+def test_a_dead_endpoint_fails_closed_naming_the_other_routes(
+    route_1b, monkeypatch, capsys
+) -> None:
     _, brief, out = route_1b
     monkeypatch.setattr(cv, "WS_URL", "ws://127.0.0.1:9/")
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
@@ -802,7 +849,9 @@ def test_a_dead_endpoint_fails_closed_naming_the_other_routes(route_1b, monkeypa
     assert not out.exists()
 
 
-def test_a_verifier_that_stops_on_a_question_gets_it_written_and_exit_3(route_1b, monkeypatch) -> None:
+def test_a_verifier_that_stops_on_a_question_gets_it_written_and_exit_3(
+    route_1b, monkeypatch
+) -> None:
     _, brief, out = route_1b
     monkeypatch.setattr(cv, "WS_URL", FakeCloud("", "# a question\nPlease run X").url)
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 3

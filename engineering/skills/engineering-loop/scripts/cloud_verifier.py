@@ -76,9 +76,9 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import ssl
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -547,6 +547,7 @@ def post(pr: int, body: str) -> str:
     )
     return posted.stdout.strip()
 
+
 # ── host: a Codex Cloud thread as the verifier's machine (route 1b) ───────────────────────────────────────────────
 # ponytail: the endpoint, its subprotocol login and the cloud-only fields of `thread/start` are read from the ChatGPT
 # web app (docs/knowledge/codex-verifier-in-the-cloud.md, route 1b), so they can change without notice. Every
@@ -566,8 +567,14 @@ class Socket:
 
     def __init__(self, url: str, token: str) -> None:
         u = urllib.parse.urlparse(url)
-        raw = socket.create_connection((u.hostname, u.port or (443 if u.scheme == "wss" else 80)), timeout=60)
-        self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=u.hostname) if u.scheme == "wss" else raw
+        raw = socket.create_connection(
+            (u.hostname, u.port or (443 if u.scheme == "wss" else 80)), timeout=60
+        )
+        self.sock = (
+            ssl.create_default_context().wrap_socket(raw, server_hostname=u.hostname)
+            if u.scheme == "wss"
+            else raw
+        )
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall(
             (
@@ -600,20 +607,36 @@ class Socket:
         data = json.dumps(obj).encode()
         mask = os.urandom(4)
         n = len(data)
-        size = bytes([0x80 | n]) if n < 126 else b"\xfe" + n.to_bytes(2, "big") if n < 65536 else b"\xff" + n.to_bytes(8, "big")
-        self.sock.sendall(b"\x81" + size + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+        size = (
+            bytes([0x80 | n])
+            if n < 126
+            else b"\xfe" + n.to_bytes(2, "big")
+            if n < 65536
+            else b"\xff" + n.to_bytes(8, "big")
+        )
+        self.sock.sendall(
+            b"\x81" + size + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        )
 
     def recv(self) -> dict:
         text = b""
         while True:
             b0, b1 = self.need(2)
             n = b1 & 0x7F
-            n = int.from_bytes(self.need(2), "big") if n == 126 else int.from_bytes(self.need(8), "big") if n == 127 else n
+            n = (
+                int.from_bytes(self.need(2), "big")
+                if n == 126
+                else int.from_bytes(self.need(8), "big")
+                if n == 127
+                else n
+            )
             data = self.need(n)
             op = b0 & 0x0F
             if op == 8:
                 raise Unusable("the endpoint closed the connection")
-            if op == 9:  # ping: answer with the same bytes (a client frame is masked; a zero mask is a valid one)
+            if (
+                op == 9
+            ):  # ping: answer with the same bytes (a client frame is masked; a zero mask is a valid one)
                 self.sock.sendall(b"\x8a" + bytes([0x80 | len(data)]) + b"\0\0\0\0" + data)
             elif op in (0, 1):
                 text += data
@@ -683,21 +706,35 @@ def thread_start(rpc: Rpc, model: str | None, effort: str | None) -> tuple[str, 
     cfg = {"model_reasoning_effort": effort} if effort else {}
     got = rpc.call(
         "thread/start",
-        {"model": model, "config": cfg, "sandbox": "danger-full-access", "approvalPolicy": "never", "serviceName": "codex_cloud", "environments": [{"environmentConfigId": None}]},
+        {
+            "model": model,
+            "config": cfg,
+            "sandbox": "danger-full-access",
+            "approvalPolicy": "never",
+            "serviceName": "codex_cloud",
+            "environments": [{"environmentConfigId": None}],
+        },
     )
     try:
         thread = got["thread"]["id"]
     except (KeyError, TypeError) as e:
         raise Unusable(f"thread/start answered without a thread id: {str(got)[:200]}") from e
-    return thread, next(iter(got["thread"].get("environments") or [{}]), {}).get("environmentId", "")
+    return thread, next(iter(got["thread"].get("environments") or [{}]), {}).get(
+        "environmentId", ""
+    )
 
 
 def thread_exec(rpc: Rpc, thread: str, env: str, command: str) -> tuple[int, str]:
-    got = rpc.call("command/exec", {"threadId": thread, "environmentId": env, "command": ["bash", "-lc", command]})
+    got = rpc.call(
+        "command/exec",
+        {"threadId": thread, "environmentId": env, "command": ["bash", "-lc", command]},
+    )
     return int(got.get("exitCode", 1)), (got.get("stdout") or "") + (got.get("stderr") or "")
 
 
-def thread_turn(rpc: Rpc, thread: str, text: str, model: str | None, effort: str | None, timeout: float) -> str:
+def thread_turn(
+    rpc: Rpc, thread: str, text: str, model: str | None, effort: str | None, timeout: float
+) -> str:
     """Send a turn and return the thread's final message once the turn completes."""
     rpc.call(
         "turn/addUserMessage",
@@ -707,18 +744,36 @@ def thread_turn(rpc: Rpc, thread: str, text: str, model: str | None, effort: str
             "input": [{"type": "text", "text": text}],
             "model": model,
             "approvalPolicy": "never",
-            "sandboxPolicy": {"type": "dangerFullAccess"},  # the thread's VM is the sandbox; a verifier needs Docker and writes
-            "collaborationMode": {"mode": "default", "settings": {"model": model, "reasoning_effort": effort}},
+            "sandboxPolicy": {
+                "type": "dangerFullAccess"
+            },  # the thread's VM is the sandbox; a verifier needs Docker and writes
+            "collaborationMode": {
+                "mode": "default",
+                "settings": {"model": model, "reasoning_effort": effort},
+            },
         },
     )
     rpc.until("turn/completed", timeout)
     rpc.notes.clear()
-    items = rpc.call("thread/items/list", {"threadId": thread, "limit": 20, "sortDirection": "desc"}).get("data") or []
-    return next((x["item"].get("text") or "" for x in items if x["item"].get("type") == "agentMessage"), "")
+    items = (
+        rpc.call(
+            "thread/items/list", {"threadId": thread, "limit": 20, "sortDirection": "desc"}
+        ).get("data")
+        or []
+    )
+    return next(
+        (x["item"].get("text") or "" for x in items if x["item"].get("type") == "agentMessage"), ""
+    )
 
 
 def thread_verify(
-    pr: int, brief_file: Path, model: str | None, effort: str | None, thread: str | None, env: str, pending_head: str | None = None
+    pr: int,
+    brief_file: Path,
+    model: str | None,
+    effort: str | None,
+    thread: str | None,
+    env: str,
+    pending_head: str | None = None,
 ) -> int:
     """One pass on a Codex Cloud thread: clone the PR head (a later pass reuses the thread's checkout), run the brief,
     read the report back from the thread's checkout, else take its final message, and write it at the brief's path."""
@@ -730,11 +785,21 @@ def thread_verify(
     if not thread:
         thread, env = thread_start(rpc, model, effort)
         print(f"thread {thread} env {env}")
-    head = run("gh", "pr", "view", str(pr), "--json", "headRefOid,headRepository,headRepositoryOwner", "--jq",
-               '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name').stdout.split()
+    head = run(
+        "gh",
+        "pr",
+        "view",
+        str(pr),
+        "--json",
+        "headRefOid,headRepository,headRepositoryOwner",
+        "--jq",
+        '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name',
+    ).stdout.split()
     head[0] = pending_head or head[0]
     code, said = thread_exec(
-        rpc, thread, env,
+        rpc,
+        thread,
+        env,
         f"cd ~ && (test -d pr{pr} || gh repo clone {head[1]} pr{pr} -- -q) && cd pr{pr} "
         f"&& git fetch -q origin {head[0]} && git checkout -q --detach {head[0]} && mkdir -p tmp/loop && pwd",
     )
@@ -742,7 +807,12 @@ def thread_verify(
         raise Unusable(f"the checkout of {head[0]} in the thread's VM failed: {said[-300:]}")
     checkout = said.strip().splitlines()[-1]
     final = thread_turn(
-        rpc, thread, f"Your checkout is {checkout}, at the PR's head. Run from it.\n\n{brief}", model, effort, 3600,
+        rpc,
+        thread,
+        f"Your checkout is {checkout}, at the PR's head. Run from it.\n\n{brief}",
+        model,
+        effort,
+        3600,
     )
     body = ""
     if out:
@@ -750,8 +820,12 @@ def thread_verify(
         body = body if not code else ""
     body = body.strip() or final.strip()
     print(f"quota after: {quota(token)}")
-    if out and "SATISFIED:" not in body:  # a verifier that stops on a question writes `<report>.question` (verifier.md)
-        code, asked = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out) + '.question')}")
+    if (
+        out and "SATISFIED:" not in body
+    ):  # a verifier that stops on a question writes `<report>.question` (verifier.md)
+        code, asked = thread_exec(
+            rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out) + '.question')}"
+        )
         if not code and asked.strip():
             out.parent.mkdir(parents=True, exist_ok=True)
             question = out.with_name(out.name + ".question")
@@ -759,12 +833,20 @@ def thread_verify(
             print(question)
             return 3
     if "SATISFIED:" not in body:
-        print(f"the verifier wrote no report with a SATISFIED: line; its last message: {final.strip()[-500:]}", file=sys.stderr)
+        print(
+            f"the verifier wrote no report with a SATISFIED: line; its last message: {final.strip()[-500:]}",
+            file=sys.stderr,
+        )
         return 1
     target = out or Path(f"tmp/loop/pr{pr}-thread.md")
     target.parent.mkdir(parents=True, exist_ok=True)
-    body = re.sub(r"\A\s*Verifier:[^\n]*\n", "", body)  # the signature is the command line's, not the model's own claim
-    target.write_text(f"Verifier: {signature(model, effort)}, pass {(re.search(r'pass (\d+)', brief) or [0, 1])[1]}\n\n{body.strip()}\n")
+    body = re.sub(
+        r"\A\s*Verifier:[^\n]*\n", "", body
+    )  # the signature is the command line's, not the model's own claim
+    nth = re.search(r"pass (\d+)", brief)
+    target.write_text(
+        f"Verifier: {signature(model, effort)}, pass {nth[1] if nth else 1}\n\n{body.strip()}\n"
+    )
     print(target)
     return 0
 
@@ -807,15 +889,22 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--model")
     v.add_argument("--effort")
     t = sub.add_parser(
-        "thread", help="run a Codex verifier pass on a Codex Cloud thread, driven from this host (route 1b)"
+        "thread",
+        help="run a Codex verifier pass on a Codex Cloud thread, driven from this host (route 1b)",
     )
     t.add_argument("--pr", type=int, required=True)
     t.add_argument("--brief", type=Path, required=True)
     t.add_argument("--model")
     t.add_argument("--effort")
-    t.add_argument("--thread", help="a thread a pass before it started: the later pass runs on its machine")
-    t.add_argument("--head", help="check out this commit instead of the PR's head (a pass on an earlier head)")
-    t.add_argument("--env", default="", help="that thread's environment id, printed by its first pass")
+    t.add_argument(
+        "--thread", help="a thread a pass before it started: the later pass runs on its machine"
+    )
+    t.add_argument(
+        "--head", help="check out this commit instead of the PR's head (a pass on an earlier head)"
+    )
+    t.add_argument(
+        "--env", default="", help="that thread's environment id, printed by its first pass"
+    )
     args = parser.parse_args(argv)
     try:
         if args.command == "login":
@@ -823,10 +912,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "seed":
             return seed(args.env, args.min_days, args.host_min_days, args.host_refresh_days)
         if args.command == "thread":
-            return thread_verify(args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head)
+            return thread_verify(
+                args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head
+            )
         return verify(args.pr, args.brief, args.model, args.effort)
     except Refused as e:
-        print(f"cloud_verifier: {e}" + (" (use route 2 or the host verifier)" if isinstance(e, Unusable) else ""), file=sys.stderr)
+        print(
+            f"cloud_verifier: {e}"
+            + (" (use route 2 or the host verifier)" if isinstance(e, Unusable) else ""),
+            file=sys.stderr,
+        )
         return 2
 
 
