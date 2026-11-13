@@ -156,6 +156,8 @@ def bare(tmp_path: Path) -> Path:
     git("checkout", "-q", "main", cwd=seed)
     remote = tmp_path / "remote.git"
     git("clone", "-q", "--bare", str(seed), str(remote), cwd=tmp_path)
+    git("update-ref", "refs/pull/7/head", "pr-branch", cwd=remote)  # as GitHub keeps it, forks too
+    git("update-ref", "refs/heads/main", "main", cwd=remote)
     return remote
 
 
@@ -189,7 +191,9 @@ def test_a_clone_without_a_pin_is_refused_naming_the_helper(tmp_path: Path, bare
 def test_start_for_a_pr_moves_a_launch_dirs_head_but_never_a_checkouts(
     tmp_path: Path, bare: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(omnigent_agent, "pr_branch", lambda pr: "pr-branch")  # PR 7's head
+    monkeypatch.setattr(
+        omnigent_agent, "pr_branch", lambda pr, workspace: "pr-branch"
+    )  # PR 7's head
     dest = tmp_path / "launch"
     omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest)
     omnigent_agent.move_head(dest, 7)
@@ -208,7 +212,9 @@ def test_start_pr_on_a_cloud_agent_moves_the_launch_dir_head_and_leaves_a_checko
     og = FakeOmnigent()
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    monkeypatch.setattr(omnigent_agent, "pr_branch", lambda pr: "pr-branch")  # PR 7's head
+    monkeypatch.setattr(
+        omnigent_agent, "pr_branch", lambda pr, workspace: "pr-branch"
+    )  # PR 7's head
     dest, full = tmp_path / "launch", tmp_path / "full"
     omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest)
     git("clone", "-q", f"file://{bare}", str(full), cwd=tmp_path)
@@ -230,3 +236,16 @@ def test_start_pr_on_a_cloud_agent_moves_the_launch_dir_head_and_leaves_a_checko
     assert git("symbolic-ref", "HEAD", cwd=dest) == "refs/heads/pr-branch"
     assert not (dest / "b.txt").exists()
     assert git("symbolic-ref", "HEAD", cwd=full) == "refs/heads/main"
+
+
+def test_a_fork_pr_head_moves_a_launch_dir_through_the_pr_ref_not_a_same_named_origin_branch(
+    tmp_path: Path, bare: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git("update-ref", "refs/pull/8/head", "pr-branch", cwd=bare)  # a fork's head: no origin branch
+    git("update-ref", "refs/heads/fork-branch", "main", cwd=bare)  # an unrelated same-named one
+    monkeypatch.setattr(omnigent_agent, "pr_branch", lambda pr, workspace: "fork-branch")
+    dest = tmp_path / "launch"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest)
+    omnigent_agent.move_head(dest, 8)
+    assert git("symbolic-ref", "HEAD", cwd=dest) == "refs/heads/fork-branch"
+    assert git("rev-parse", "HEAD", cwd=dest) == git("rev-parse", "pr-branch", cwd=bare)

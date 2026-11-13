@@ -2241,7 +2241,9 @@ def launch_dir(
 def move_head(workspace: Path, pr: int) -> None:
     """Point a launch dir's HEAD at PR ``pr``'s head branch (fetched from origin when needed) without checking
     files out, so a cloud session starts on it. A directory with a working tree (it has an index)
-    is left alone: moving its HEAD under its files would corrupt it."""
+    is left alone: moving its HEAD under its files would corrupt it. It runs git where the launch dir
+    is, so a ``start`` for a workspace on another host (``remote``) leaves it: ponytail: run it on
+    the host that holds the launch dir, as that host's own ``start``; upgrade: a host-side verb."""
     index = subprocess.run(
         ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-path", "index"],
         capture_output=True,
@@ -2250,10 +2252,11 @@ def move_head(workspace: Path, pr: int) -> None:
     ).stdout.strip()
     if not index or Path(index).exists():
         return
-    branch = pr_branch(pr)
+    branch = pr_branch(pr, workspace)
     for cmd in (
-        ["fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
-        ["update-ref", f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"],
+        # the PR's own ref, which a fork's branch has too and a same-named origin branch can't shadow
+        ["fetch", "-q", "origin", f"+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"],
+        ["update-ref", f"refs/heads/{branch}", f"refs/remotes/origin/pr/{pr}"],
         ["symbolic-ref", "HEAD", f"refs/heads/{branch}"],
     ):
         done = subprocess.run(
@@ -2263,10 +2266,11 @@ def move_head(workspace: Path, pr: int) -> None:
             raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
 
 
-def pr_branch(pr: int) -> str:
-    """The head branch of PR ``pr``."""
+def pr_branch(pr: int, workspace: Path) -> str:
+    """The head branch name of PR ``pr`` in the repository ``workspace`` is a clone of."""
     out = subprocess.run(
         ["gh", "pr", "view", str(pr), "--json", "headRefName", "-q", ".headRefName"],
+        cwd=workspace,
         capture_output=True,
         text=True,
         check=False,
