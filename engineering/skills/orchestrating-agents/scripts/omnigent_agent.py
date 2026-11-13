@@ -2045,6 +2045,9 @@ EFFORTS = {
     "codex-native": None,
 }
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
+# the verifier's routes (`--verifier-route`): the default stays Codex, the other two are its fallback when it refuses
+VERIFIER_ROUTES = ("codex", "gemini", "claude")
+GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
 SETTINGS = Path(".claude") / "settings.local.json"
 
@@ -2134,7 +2137,7 @@ def signature(harness: str, model: str | None, effort: str | None = None) -> str
     started with, as the server recorded it (``model_override``, ``reasoning_effort``); ``running_signature`` reads
     the rest once it runs."""
     name = next(
-        (n for key, n in (("claude", "cc"), ("codex", "codex"), ("omp", "omp")) if key in harness),
+        (n for key, n in (("claude", "cc"), ("codex", "codex"), ("omp", "omp"), ("antigravity", "agy")) if key in harness),
         "?",
     )
     short = re.sub(r"^(claude|gpt)-", "", model or "")
@@ -2307,6 +2310,9 @@ def start(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
     by_file = briefed_by_file(og, agent, host_id)
+    # agy on another host takes the same short message: its render check reads the pasted brief's
+    # first line, which a long paste scrolls away, so the brief goes to a file on that host
+    far_file = agy and not by_file and bool(host_id and host_id != og.host_id)
     # a cloud VM or another host has its own cores, and a top-level lead caps its own children
     lock = heavy_lock() if by_file and not top_level else ""
     # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
@@ -2329,7 +2335,7 @@ def start(
     def message(full: str) -> str:
         # Omnigent labels a child by a model summary of this first message, not by its title, so
         # the title leads: a generic line gets labels like "Read Brief and Execute".
-        if not by_file:
+        if not (by_file or far_file):
             # A file here is not on that host, nor where a non-native agent runs its tools (a
             # cloud VM); inline, a Claude lead may read it as pasted text and ask its starter for a
             # go-ahead.
@@ -2430,6 +2436,8 @@ def start(
             brief_file.parent.mkdir(parents=True, exist_ok=True)
             brief_file.write_text(full)
         try:
+            if far_file:
+                file_write(og, sid, brief_file, full, True)
             for local in files or []:  # before the brief, which names them
                 file_write(og, sid, report.parent / local.name, local.read_text(), True)
         except Fail as e:
@@ -3426,6 +3434,27 @@ def bring_home(og: Omnigent, sid: str, report: Path) -> Path:
     home.parent.mkdir(parents=True, exist_ok=True)
     home.write_text(og.read_file(sid, str(report)))
     return home.resolve()
+
+
+def apply_route(args: argparse.Namespace) -> None:
+    """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
+    agy needs to run unattended) and `claude` a fresh Claude session of another model than the author's, marked
+    same-family. Refused where the route can't run, naming the fix, since a verifier started wrong costs a pass."""
+    if args.verifier_route == "gemini":
+        if not args.host:
+            raise Fail("--verifier-route gemini runs agy on a host that has it logged in: pass --host")
+        args.agent = GEMINI_AGENT
+        args.permission_mode = args.permission_mode or BYPASS
+        return
+    args.agent = "claude"
+    args.same_family = True
+    if not args.model:
+        raise Fail("--verifier-route claude names its model: pass --model, other than the author's")
+    if args.author_model and args.model == args.author_model:
+        raise Fail(
+            f"--verifier-route claude would verify {args.author_model}'s diff with the same model:"
+            " pass a different --model"
+        )
 
 
 def reviews(role: str | None) -> bool:
@@ -5033,6 +5062,19 @@ def main(argv: list[str] | None = None) -> int:
             help="model family that wrote the diff; a verifier of the same family needs --same-family",
         )
         p.add_argument(
+            "--verifier-route",
+            choices=VERIFIER_ROUTES,
+            default=os.environ.get("OMNIGENT_VERIFIER_ROUTE", "codex"),
+            help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
+            " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
+            " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
+            " The two fallbacks are for a Codex refusal, never for a high-risk change",
+        )
+        p.add_argument(
+            "--author-model",
+            help="the model that wrote the diff: --verifier-route claude refuses to verify it with the same one",
+        )
+        p.add_argument(
             "--same-family",
             action="store_true",
             help="verify with the author's own family when the other is unavailable; the PR body says so",
@@ -5444,6 +5486,8 @@ def main(argv: list[str] | None = None) -> int:
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
         verifier = args.cmd in ("run", "start") and reviews(args.role)
+        if verifier and args.verifier_route != "codex":
+            apply_route(args)
         if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
             args.pr = None
         if verifier and args.host:

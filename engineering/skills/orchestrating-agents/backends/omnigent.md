@@ -134,7 +134,7 @@ command, and its only other mode skips them all, so `start` refuses it a `--role
 `--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
 `--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
 in the model of its own settings (`Gemini 3.8 Flash (Low)`), which Omnigent copies into each
-session, so the launcher passes none. An unknown name fails before a session is created.
+session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of another `--model` than `--author-model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>`: the preamble then has it post its report as one comment
