@@ -4509,6 +4509,12 @@ class Fleet:
         self.stats: list[str] = []  # each modified read
         self.pages = 0  # history pages read back
         self.host_id = "h"  # this host
+        self.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}  # an agent's, by its name
+
+    def harness(self, agent: str) -> str:
+        if agent not in self.harnesses:
+            raise omnigent_agent.Fail(f"agent {agent} not registered")
+        return self.harnesses[agent]
 
     def read_file(self, sid: str, path: str) -> str:
         if path not in self.files:
@@ -5078,6 +5084,24 @@ def test_a_report_being_written_is_progress_once_the_lead_is_due(
         assert state_of(registry)["leads"]["a"]["progress_at"] == og.written[report]
 
 
+# A claude-cloud session's record as the server gives it: its own harness is the transport, and the
+# cloud harness is its agent's (#706).
+CLOUD_RECORD = {"harness": "acp", "agent_name": "claude-cloud", "agent_id": "agt_cloud"}
+
+
+def test_a_due_cloud_lead_never_stats_its_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its file stays in the VM: a stat here would read a stale host file, or fail (#706)."""
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+    og.snap = {"status": "running", **CLOUD_RECORD}
+    og.written[str(tmp_path / "a.md")] = time.time() - 100  # a host file would read as progress
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
+    assert og.stats == []
+    assert [p.split("\n")[0] for p in fyis(og)] == ["Supervisor: a t-a: no progress 60m (merge)"]
+
+
 def test_a_lead_not_yet_due_has_its_report_left_unread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5556,6 +5580,34 @@ def test_a_failed_read_stands_for_routing_too_and_the_quiet_end_acts_without_rea
     assert state_of(registry)["leads"]["a"]["wait"] == "unknown"
     [ended] = [e for e in events_of(registry) if e["kind"] == "ended"]
     assert ended["action"] == "act" and "not read" in ended["why"]
+
+
+def test_a_cloud_lead_routes_on_its_last_message_and_reads_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its report file stays in the VM: the ending and wait come from the message (#706)."""
+    registry, og, reads = path_only_lead(tmp_path, "DONE: a host file the cloud never wrote")
+    og.snap = dict(CLOUD_RECORD)
+    text = "# R\n\n> DONE: an old line, quoted\n\nSTILL WORKING: waiting on the verifier.\n"
+    og.histories["a"].append(ending(text, 1))
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    lead = state_of(registry)["leads"]["a"]
+    assert lead["cloud"] and lead["ending"] is None and lead["wait"] == "verifier"
+    assert (
+        lead["report_read"]["head"].startswith("STILL WORKING") and not lead["report_read"]["error"]
+    )
+    assert reads == [] and str(tmp_path / "a.md") not in og.stats
+
+
+def test_a_cloud_lead_whose_last_message_is_only_a_path_stays_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og, reads = path_only_lead(tmp_path, "DONE: merged")
+    og.snap = dict(CLOUD_RECORD)
+    supervised(og, registry, monkeypatch, 2, notify="cos", console=True)
+    lead = state_of(registry)["leads"]["a"]
+    assert reads == [] and lead["wait"] == "unknown" and lead["report_read"]["head"] is None
+    assert "stays in its VM" in lead["report_read"]["error"]
 
 
 def test_without_console_a_path_only_lead_is_not_read(
@@ -6534,7 +6586,7 @@ def test_report_reads_a_relative_path_in_the_workspace_without_base(
 ) -> None:
     seen = serve_files(monkeypatch, {f"{FS}/tmp/r.md?limit=1000": {"content": "hi"}})
     assert omnigent_agent.main(["report", "s9", "tmp/r.md"]) == 0
-    assert seen == [f"{FS}/tmp/r.md?limit=1000"]
+    assert seen == ["/v1/sessions/s9", f"{FS}/tmp/r.md?limit=1000"]  # its record names no cloud
 
 
 def test_report_reads_an_absolute_path_inside_the_workspace_relative_to_it(
@@ -6547,7 +6599,8 @@ def test_report_reads_an_absolute_path_inside_the_workspace_relative_to_it(
     }
     seen = serve_files(monkeypatch, files)
     assert omnigent_agent.main(["report", "s9", "/Users/k/ws/tmp/r.md"]) == 0
-    assert seen == ["/v1/sessions/s9", f"{FS}/tmp/r.md?limit=1000"]
+    # the record twice: report's look for a cloud harness, then the read's for the workspace
+    assert seen == ["/v1/sessions/s9", "/v1/sessions/s9", f"{FS}/tmp/r.md?limit=1000"]
     assert (
         omnigent_agent.main(["report", "s9", "/Users/k/wsx/r.md"]) == 4
     )  # a sibling stays absolute
@@ -8520,6 +8573,392 @@ def test_the_cloud_preamble_forbids_a_question_tool_a_page_and_a_session_link() 
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
     assert "co-author line only, with no session link, since the commit reaches a" in preamble
+
+
+class CloudFake(FakeOmnigent):
+    """Sessions of ``claude-cloud``, whose record names the agent (``CLOUD_RECORD``), not its
+    harness."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
+        self.puts = []
+
+    def info(self, sid: str) -> dict:
+        info = {**super().info(sid), **CLOUD_RECORD}
+        return {**info, "host_id": self.hosts_of.get(sid, self.host_id)}
+
+    def filesystem(self, sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+        self.puts.append((sid, path, method, body))  # a write on the session's host
+        return {}
+
+    def modified(self, sid: str, path: str) -> float:
+        raise omnigent_agent.Gone(f"{path}: not found")  # no question, no report on that host
+
+    puts: list[tuple[str, str, str, object]]
+
+
+CLOUD_REPORT = (
+    "DONE: merged #5. Report: r.md\n\n# Report\n\n> STILL WORKING: an old line, quoted\nGates: 0"
+)
+
+
+@pytest.mark.parametrize(("top_level", "pr"), [(True, None), (False, None), (True, 7), (False, 7)])
+def test_every_cloud_preamble_keeps_out_of_git_and_one_without_pr_reports_in_its_last_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, top_level: bool, pr: int | None
+) -> None:
+    """A fresh clone's untracked report tempts a write to .git/info/exclude, which prompts (#706)."""
+    monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+    og = CloudFake()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", report, None, 0, top_level=top_level, pr=pr
+    )
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "never write under `.git/`" in brief and "`tmp/loop/` is scratch" in brief
+    assert brief.endswith("never committed.\n\ndo X")
+    if pr:
+        assert "comment on PR #7" in brief and "your last message" not in brief
+        return
+    assert "your final report is" in brief and "last message" in brief
+    assert f"writes to {report}" in brief or f"writes it to {report}" in brief
+    assert "reply with only the report path" not in brief and ".question" not in brief
+    assert "Write your final report to" not in brief
+    if top_level:
+        assert "opening with its ending line" in brief and f"Report: {report}`" in brief
+
+
+def test_a_host_session_s_preamble_is_unchanged(tmp_path: Path) -> None:
+    for top_level in (False, True):
+        og = FakeOmnigent()
+        report = tmp_path / f"{top_level}.md"
+        omnigent_agent.start(og, "claude", "t", "do X", report, None, 0, top_level=top_level)
+        text = omnigent_agent.brief_of(report).read_text()
+        assert f"Write your final report to {report}" in text and ".git/" not in text
+
+
+def test_wait_writes_a_cloud_session_s_last_message_to_the_report_path(tmp_path: Path) -> None:
+    """Its report file stays in the VM, which no file API reaches: the message is the report."""
+    og = CloudFake(reply=CLOUD_REPORT)
+    report = tmp_path / "loop" / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, top_level=True)
+    assert omnigent_agent.wait(og, sid, report) == str(report)
+    assert report.read_text() == CLOUD_REPORT + "\n"
+    assert og.posts == 1  # no nudge
+
+
+def test_a_cloud_report_file_already_on_the_host_never_counts(tmp_path: Path) -> None:
+    og = CloudFake(reply="still going")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0, top_level=True)
+    report.write_text("DONE: an old report\n")
+    og.sessions[sid].append(said("assistant", CLOUD_REPORT, "late"))
+    assert omnigent_agent.wait(og, sid, report) == str(report)
+    assert report.read_text() == CLOUD_REPORT + "\n"
+
+
+def test_a_cloud_turn_ending_on_only_a_path_is_nudged_to_reply_with_the_report(
+    tmp_path: Path,
+) -> None:
+    og = CloudFake(reply="tmp/loop/r.md")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    with pytest.raises(omnigent_agent.Fail, match="ended \\(idle\\) without"):
+        omnigent_agent.wait(og, sid, report)
+    nudge = omnigent_agent.text_of(og.sessions[sid][-2])
+    assert nudge == omnigent_agent.CLOUD_NUDGE and "full report" in nudge
+    assert not report.exists()
+
+
+def test_a_failed_cloud_turn_is_no_report_whatever_it_said(tmp_path: Path) -> None:
+    og = CloudFake(reply="REPORT\nStep 1 of 3 done.", status="failed")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    with pytest.raises(omnigent_agent.Fail, match="ended \\(failed\\)"):
+        omnigent_agent.wait(og, sid, report)
+    assert not report.exists()
+
+
+def test_a_cloud_lead_on_another_host_has_its_report_written_on_that_host(tmp_path: Path) -> None:
+    og = CloudFake(reply=CLOUD_REPORT)
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", report, None, 0, top_level=True, host_id="far"
+    )
+    assert omnigent_agent.wait(og, sid, report) == str(report)
+    assert og.puts == [(sid, str(report), "PUT", {"content": CLOUD_REPORT + "\n"})]
+    assert not report.exists()
+
+
+def test_a_cloud_session_s_report_ignores_its_seed_workspace_s_tracked_changes(
+    tmp_path: Path,
+) -> None:
+    """The VM works on its own clone: an edit in the host's seed checkout is none of its doing."""
+    ws = tmp_path / "ws"
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(ws)]
+    subprocess.run(["git", "init", "-q", str(ws)], check=True)
+    (ws / "f.txt").write_text("a\n")
+    subprocess.run([*git, "add", "f.txt"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "i"], check=True)
+    (ws / "f.txt").write_text("b\n")
+    og = CloudFake(reply=CLOUD_REPORT)
+    report = ws / "tmp" / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", report, None, 0, top_level=True, workspace=str(ws)
+    )
+    assert omnigent_agent.wait(og, sid, report, baseline=[]) == str(report)
+
+
+def test_report_writes_a_relative_path_in_the_cloud_session_s_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ws, elsewhere = tmp_path / "ws", tmp_path / "cwd"
+    ws.mkdir(), elsewhere.mkdir()
+    og = CloudFake(reply=CLOUD_REPORT)
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", ws / "x.md", None, 0, workspace=str(ws)
+    )
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(elsewhere)
+    assert omnigent_agent.main(["report", sid, "tmp/loop/r.md"]) == 0
+    assert (ws / "tmp/loop/r.md").read_text() == CLOUD_REPORT + "\n"
+    assert not (elsewhere / "tmp").exists()
+
+
+def test_report_writes_a_far_cloud_session_s_report_on_its_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = CloudFake(reply=CLOUD_REPORT)
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", tmp_path / "x.md", None, 0, top_level=True, host_id="far"
+    )
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["report", sid, "/far/r.md"]) == 0
+    assert og.puts == [(sid, "/far/r.md", "PUT", {"content": CLOUD_REPORT + "\n"})]
+
+
+def test_report_reads_the_file_while_a_cloud_session_s_last_message_is_a_new_instruction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = CloudFake(reply=CLOUD_REPORT)
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "x.md", None, 0)
+    og.sessions[sid].append(said("user", "a follow-up, not answered yet", "u"))
+    og.read_file = lambda s, p: "the file"  # type: ignore[attr-defined]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    path = tmp_path / "r.md"
+    assert omnigent_agent.main(["report", sid, str(path)]) == 0
+    assert capsys.readouterr().out == "the file\n" and not path.exists()
+
+
+def test_report_writes_a_cloud_session_s_last_message_to_the_path_and_prints_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = CloudFake(reply=CLOUD_REPORT)
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "x.md", None, 0)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    path = tmp_path / "out" / "r.md"
+    assert omnigent_agent.main(["report", sid, str(path)]) == 0
+    assert path.read_text() == CLOUD_REPORT + "\n"
+    assert capsys.readouterr().out == CLOUD_REPORT + "\n"
+
+
+def test_a_cloud_session_is_known_by_its_agent_s_harness_not_its_record_s() -> None:
+    """The record's ``harness`` is the transport, ``acp``: only the agent has the cloud one (#706)."""
+    og = CloudFake()
+    assert omnigent_agent.cloud_session(og, CLOUD_RECORD)
+    assert omnigent_agent.cloud_session(og, {"harness": "acp", "agent_id": "claude-cloud"})
+    assert not omnigent_agent.cloud_session(og, {"harness": omnigent_agent.CLOUD_HARNESS})
+    assert not omnigent_agent.cloud_session(og, {"harness": "acp", "agent_name": "claude"})
+    fleet = Fleet()  # an agent that can't be looked up is no cloud one
+    assert not omnigent_agent.cloud_session(fleet, {"agent_name": "gone"})
+
+
+def test_an_agent_s_harness_is_looked_up_once() -> None:
+    """``wait`` and the supervisor ask it at every look: one agent listing per name, not per poll."""
+    og = object.__new__(omnigent_agent.Omnigent)
+    looked: list[str] = []
+    og.agent = lambda name: looked.append(name) or {"harness": "acp:claude-cloud"}  # type: ignore[method-assign]
+    assert og.harness("claude-cloud") == og.harness("claude-cloud") == "acp:claude-cloud"
+    assert looked == ["claude-cloud"]
+
+
+@pytest.mark.parametrize(
+    "last",
+    [
+        "Committing the fix...",
+        "Which option should I choose?",
+        "Gates: 0\nDONE: merged. Report: r.md",  # a lead's ending closes a turn, never a report
+        "REPORT",  # the marker and nothing after it
+        "tmp/loop/r.md",
+    ],
+)
+def test_a_cloud_turn_ending_on_an_unmarked_message_is_nudged_not_taken(
+    tmp_path: Path, last: str
+) -> None:
+    """A turn ending is no proof the task is done: only a marked message is the report (#706)."""
+    og = CloudFake(reply=last)
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    with pytest.raises(omnigent_agent.Fail, match="ended \\(idle\\) without"):
+        omnigent_agent.wait(og, sid, report)
+    assert omnigent_agent.text_of(og.sessions[sid][-2]) == omnigent_agent.CLOUD_NUDGE
+    assert not report.exists() and not omnigent_agent.question_of(report).exists()
+
+
+def test_a_marked_message_is_a_cloud_reply_only_as_the_session_s_own_last() -> None:
+    """A brief or a relayed message that quotes the marker is no report."""
+    mine = said("assistant", "REPORT\nGates: 0", "1")
+    assert omnigent_agent.cloud_reply([mine]) == ("report", "Gates: 0\n")
+    assert omnigent_agent.cloud_reply([mine, said("user", "REPORT\nGates: 0", "2")]) is None
+
+
+def test_a_cloud_child_s_report_follows_its_report_line(tmp_path: Path) -> None:
+    og = CloudFake(reply="**REPORT**\n\n# Report\n\nGates: 0")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    assert omnigent_agent.wait(og, sid, report) == str(report)
+    assert report.read_text() == "# Report\n\nGates: 0\n"
+
+
+def test_a_cloud_child_s_question_is_asked_beside_its_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """As a host child's ``<report>.question``: exit 3, the question written beside the report."""
+    og = CloudFake(reply="QUESTION\nWhich option should I choose: A or B?")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    assert omnigent_agent.main(["wait", sid, str(report)]) == omnigent_agent.ASKED
+    question = omnigent_agent.question_of(report)
+    assert question.read_text() == "Which option should I choose: A or B?\n"
+    out = capsys.readouterr()
+    assert str(question) in out.out + out.err
+    assert not report.exists() and og.posts == 1  # no nudge
+
+
+def test_a_far_cloud_child_s_question_is_written_on_its_host(tmp_path: Path) -> None:
+    og = CloudFake(reply="QUESTION\nA or B?")
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, "claude-cloud", "t", "do X", report, None, 0, top_level=True, host_id="far"
+    )
+    with pytest.raises(omnigent_agent.Asked):
+        omnigent_agent.wait(og, sid, report)
+    assert og.puts == [(sid, f"{report}.question", "PUT", {"content": "A or B?\n"})]
+
+
+def test_report_takes_no_unmarked_cloud_message_as_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = CloudFake(reply="REPORT\nGates: 0")
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "x.md", None, 0)
+    og.read_file = lambda s, p: "the file"  # type: ignore[attr-defined]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    path = tmp_path / "r.md"
+    assert omnigent_agent.main(["report", sid, str(path)]) == 0
+    assert capsys.readouterr().out == "Gates: 0\n" and path.read_text() == "Gates: 0\n"
+    for later in ("Committing the fix...", "QUESTION\nA or B?"):  # a progress line, a question
+        path.unlink(missing_ok=True)
+        og.sessions[sid].append(said("assistant", later, later))
+        assert omnigent_agent.main(["report", sid, str(path)]) == 0
+        assert capsys.readouterr().out == "the file\n" and not path.exists()
+
+
+def test_a_cloud_child_s_preamble_names_its_report_and_question_lines(tmp_path: Path) -> None:
+    og = CloudFake()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    assert "a first line `REPORT`, then the full report" in brief
+    assert "a first line `QUESTION`, then the question" in brief
+    assert "read as unfinished and nudged" in brief
+
+
+class CloudOwing(Owing):
+    """``Owing``'s session, a ``claude-cloud`` one on this host."""
+
+    host_id = "h"
+
+    def info(self, sid: str) -> dict:
+        return {**super().info(sid), **CLOUD_RECORD, "host_id": "h"}
+
+    def harness(self, agent: str) -> str:
+        return omnigent_agent.CLOUD_HARNESS if agent == "claude-cloud" else ""
+
+
+def test_the_supervisor_takes_a_cloud_child_s_report_from_its_marked_last_message(
+    tmp_path: Path,
+) -> None:
+    """Its file stays in the VM: the supervisor reads no file and writes the message (#706)."""
+    report = tmp_path / "r.md"
+    history = [told("brief", 120), ending("REPORT\nGates: 0", 60)]
+    og = CloudOwing(history, {"status": "running"}, {"status": "idle"})
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == "" and not report.exists()  # still in its turn: it may say more
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == f"a coord: report written: {report}"
+    assert report.read_text() == "Gates: 0\n"
+
+
+def test_the_supervisor_takes_a_cloud_verifier_s_report_only_with_its_verdict(
+    tmp_path: Path,
+) -> None:
+    """A verifier's marked reply without its ``SATISFIED:`` line is no report, as a host file
+    without one isn't (#706)."""
+    report = tmp_path / "r.md"
+    og = CloudOwing(
+        [told("brief", 120), ending("REPORT\nStill running checks.", 60)], {"status": "idle"}
+    )
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print, verdict=True)
+    assert "report written" not in event and not report.exists()
+    og = CloudOwing(
+        [told("brief", 120), ending("REPORT\nVERDICT: 0\nSATISFIED: yes", 60)], {"status": "idle"}
+    )
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print, verdict=True)
+    assert event == f"a coord: report written: {report}"
+
+
+@pytest.mark.parametrize("reply", ["REPORT\nStill running checks.", "DONE: checks still running"])
+def test_wait_takes_a_cloud_verifier_s_reply_only_with_its_verdict(
+    tmp_path: Path, reply: str
+) -> None:
+    og = CloudFake(reply=reply)
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    with pytest.raises(omnigent_agent.Fail, match="ended \\(idle\\) without"):
+        omnigent_agent.wait(og, sid, report, verdict=True)
+    assert not report.exists()
+
+
+def test_the_supervisor_ignores_a_stale_host_file_of_a_cloud_child(tmp_path: Path) -> None:
+    report = tmp_path / "r.md"
+    report.write_text("an old report, newer than the brief")
+    og = CloudOwing([told("brief", 120), ending("Committing the fix...", 60)], {"status": "idle"})
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == "" and og.sent == []
+
+
+def test_the_supervisor_routes_a_cloud_child_s_marked_question(tmp_path: Path) -> None:
+    report = tmp_path / "r.md"
+    og = CloudOwing([told("brief", 120), ending("QUESTION\nA or B?", 60)], {"status": "idle"})
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    question = omnigent_agent.question_of(report)
+    assert event == f"a coord: asked: {question}" and question.read_text() == "A or B?\n"
+
+
+def test_the_supervisor_never_sends_a_cloud_child_the_file_path_lines(tmp_path: Path) -> None:
+    """Its resume and revive lines name no report file: it can't write one the host reads."""
+    report = tmp_path / "r.md"
+    og = CloudOwing(
+        [told("brief", 4000), ending("Committing the fix...", 3900)], {"status": "idle"}
+    )
+    event, _ = omnigent_agent.check(og, "a", report, 3600, {}, set(), print)
+    assert event == "" and og.sent == [omnigent_agent.CLOUD_NUDGE]
+    og = CloudOwing([told("brief", 60)], {"runner_online": False}, {"runner_online": True}, {})
+    unsent: set[str] = set()
+    omnigent_agent.check(og, "a", report, 3600, {}, unsent, print)
+    omnigent_agent.check(og, "a", report, 3600, {}, unsent, print)
+    assert og.retried == ["a"] and og.sent and all(str(report) not in m for m in og.sent)
 
 
 def test_the_cloud_preamble_asks_for_a_demo_line_and_the_gate_record(
