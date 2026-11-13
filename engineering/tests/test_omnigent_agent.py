@@ -6063,7 +6063,9 @@ def test_relay_of_the_same_words_after_the_session_worked_through_tools_is_a_new
     capsys.readouterr()
     assert relay(og, sid, tmp_path, monkeypatch, "status?") == 0
     assert capsys.readouterr().out.strip() == f"session {sid}: delivered"
-    assert og.posts == 2  # on main the second relay exits 0 with "already delivered", posting nothing
+    assert (
+        og.posts == 2
+    )  # on main the second relay exits 0 with "already delivered", posting nothing
 
 
 def test_relay_of_the_same_words_after_the_session_replied_is_a_new_message(
