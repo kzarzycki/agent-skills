@@ -289,11 +289,18 @@ def test_a_fresh_run_loads_board_py_and_reads_and_sets_the_field_through_gh(tmp_
     gh.chmod(0o755)
     calls = tmp_path / "calls"
     code = (
-        f"import sys; sys.path.insert(0, {str(SCRIPTS)!r}); import approvals\n"
+        # as a run starts it: the script's folder on the path, the module under a name other than `approvals`
+        "import importlib.util, sys\n"
+        f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+        f"spec = importlib.util.spec_from_file_location('run', {str(SCRIPTS / 'approvals.py')!r})\n"
+        "approvals = sys.modules['run'] = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(approvals)\n"
         "pull = {'number': 7, 'labels': {'nodes': [{'name': 'risk:high'}]}}\n"
         "shown = approvals.board_risk(7)\n"
         "print(shown[1])\n"
         "print(approvals.boarded(pull, None, shown))\n"
+        # board.py reads the running module, not a second copy of it
+        "print(sys.modules['approvals'] is approvals)\n"
     )
     env = {
         **os.environ,
@@ -308,7 +315,7 @@ def test_a_fresh_run_loads_board_py_and_reads_and_sets_the_field_through_gh(tmp_
         cwd=tmp_path,
         check=False,
     )
-    assert (run.returncode, run.stdout, run.stderr) == (0, "Medium\n[]\n", "")
+    assert (run.returncode, run.stdout, run.stderr) == (0, "Medium\n[]\nTrue\n", "")
     queries = [
         next(a for a in json.loads(line) if a.startswith("query="))
         for line in calls.read_text().splitlines()
