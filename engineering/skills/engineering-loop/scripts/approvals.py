@@ -101,7 +101,7 @@ repository's default branch, as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
 tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
-with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid, the host, the PR
+with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid, the PR
 it lands (`land <pr>`'s, none for a bare `land`) and a random value (so two lands in the same second never make the same
 commit), and its commit date is its age. A land pushes a `held` child of a `free` tip (or the first lock commit, with no
 parent, where the branch is missing), leased on that tip with `--force-with-lease`, so of two lands from one tip one
