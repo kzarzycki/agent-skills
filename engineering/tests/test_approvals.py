@@ -490,6 +490,64 @@ def test_check_build_before_the_pr_judges_the_issue(
     assert build()[0] == 1
     assert build("7", "--issue", "2") == (1, ["--issue goes with check build and no PR number"])
 
+    # a positional number no PR has is the issue, printing what --issue prints; a PR's number is unchanged
+    def pull_request(n: int) -> dict[str, Any]:
+        if n != 5:
+            raise subprocess.CalledProcessError(
+                1, ["gh"], stderr=f"Could not resolve to a PullRequest with the number of {n}"
+            )
+        return {"number": 5, "labels": {"nodes": []}}
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request)
+    monkeypatch.setattr(approvals, "gated", lambda *a: (["gated"], []))
+    assert build("2") == build("--issue", "2") == (1, unapproved)
+    assert build("3") == build("--issue", "3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert build("5") == (1, ["gated"])
+
+    # where GraphQL answers 403, the REST fallback says a number no PR has is "Not Found": still the issue's
+    def gh(*args: str, data: str | None = None) -> str:
+        if args[:2] == ("api", "graphql"):
+            raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: HTTP 403: Forbidden")
+        assert args in {
+            ("api", "repos/{owner}/{repo}/pulls/2"),
+            ("api", "repos/{owner}/{repo}/pulls/3"),
+        }
+        raise subprocess.CalledProcessError(1, ["gh", *args], stderr="gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request_of_record)
+    monkeypatch.setattr(approvals, "gh", gh)
+    monkeypatch.setattr(approvals, "_rest_only", False)
+    assert build("2") == build("--issue", "2") == (1, unapproved)
+    assert build("3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert approvals._rest_only
+
+
+pull_request_of_record = approvals.pull_request
+
+
+@pytest.mark.parametrize(
+    "missing", ["Could not resolve to a PullRequest with the number of 3", "Not Found"]
+)
+@pytest.mark.parametrize("point", [["merge", "3"], ["queue", "3", "--head", "abc"]])
+def test_check_merge_and_queue_of_a_number_no_pr_has_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    point: list[str],
+    missing: str,
+) -> None:
+    """Only `check build` reads a number no PR has as the issue: `check merge` and `check queue` fail on the lookup,
+    since there is no PR to merge or queue, though #3's spec is approved."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    monkeypatch.setattr(approvals, "issue_node", lambda n: approved(n, "kind:chore", "area:agents"))
+    monkeypatch.setattr(approvals, "unbuilt", lambda *a: pytest.fail("judged the issue"))
+
+    def pull_request(n: int) -> dict[str, Any]:
+        raise subprocess.CalledProcessError(1, ["gh"], stderr=f"gh: {missing}")
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request)
+    assert approvals.main(["check", *point]) == 1
+    assert capsys.readouterr().out.splitlines() == [f"gh: {missing}"]
+
 
 def test_every_closing_issue_specced_lands() -> None:
     assert (
