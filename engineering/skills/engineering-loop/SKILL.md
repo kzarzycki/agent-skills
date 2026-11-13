@@ -569,9 +569,9 @@ or the owner's private network.
   lead posts it with the verdict as assets of a prerelease linked from a PR comment, the way
   the `demo` skill posts videos, so the worker fixes a failure from its diagnostics without
   the host.
-- **Control flow is the lead's own.** It starts the worker with `run --pr --keep` (from a
+- **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
-  `wait --pr --keep`), follows its turn end, and sends a fix list or a failing log, naming the
+  `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the
   review or comment to read, to that kept worker with `send --pr` while it is still there,
   since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
   else as a fresh `run --pr`. Nothing in

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep] [--notify]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep|--no-keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
-    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep] [--notify]
+    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
@@ -15,7 +15,7 @@
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
-    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force]
+    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force] [--merged [--pr N]]
     python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
@@ -140,8 +140,12 @@ child, arms nothing and subscribes that lead, since its helper is the lead's to 
 return the report or a question; ``reap`` drops the line of each session it finishes, before
 finishing it, so the supervisor posts no ``archived`` for a finish its notified session ran.
 ``run`` and ``wait`` finish the session whose report or verdict they return, not one that asked a
-question, nor one given ``--keep``, which a fix round then reaches with ``send``; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
-the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
+question, nor one given ``--keep``, nor a worker given ``--pr`` unless ``--no-keep`` (``--keep`` stays accepted):
+a fix round or the next verifier pass reaches a kept worker with ``send``, warm, where a fresh one repeats its setup.
+``start --pr`` labels the worker ``omni.pr=<n>``. ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
+the rest, exiting 1 when a finish failed; it keeps a ``--pr`` worker while its PR is open with no ``SATISFIED: yes`` verifier
+review on its head, saying why, and finishes it once the PR is merged or closed or that verdict is in; ``reap --merged [--pr N]``
+also finishes every live ``--pr`` worker whose PR is merged or closed (``approvals.py land`` runs it for each PR it merged); it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
 session. A session running with no new history item for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
 command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
@@ -231,6 +235,8 @@ DEFAULT_MODELS = {"claude-cloud": "sonnet"}
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
+# the label start puts on a --pr worker: the PR whose landing, or whose satisfied verdict, ends it
+PR_LABEL = "omni.pr"
 RUNNING = {"running", "launching", "queued", "starting"}
 POLL_SECONDS = 5.0
 TOKEN_SECONDS = 30.0
@@ -2652,6 +2658,14 @@ def start(
         except Fail as e:  # the session is there, so a brief signed "?" beats none
             took = {}
             print(f"no session record read back for {sid} ({e}): it signs ?", file=sys.stderr)
+        if pr and not reviews(role):  # the PR `reap` reads to know when this worker is done
+            try:
+                og.label(sid, {PR_LABEL: str(pr)})
+            except Fail as e:
+                print(
+                    f"{sid} not labelled with PR #{pr} ({e}): reap keeps it by name only",
+                    file=sys.stderr,
+                )
         sig = signature(harness, took.get("model_override"), took.get("reasoning_effort"))
         full = f"AGENT_SIGNATURE={sig}\n" + body
         text = message(full)
@@ -3397,12 +3411,49 @@ def merged_since(repo: str, old: str, new: str) -> str:
     return ", ".join(prs) or f"no PR named in its {n} commit{'s' * (n != 1)}"
 
 
+def pr_hold(pr: int, verdict: bool = True) -> str | None:
+    """Why a worker of PR ``pr`` is still needed: the PR is open and, with ``verdict``, no verifier
+    review of its head says ``SATISFIED: yes`` (the newest one on that head decides); None once it is
+    not. A PR that can't be read keeps the worker, saying so."""
+    try:
+        data = json.loads(gh("pr", "view", str(pr), "--json", "state,headRefOid,reviews"))
+    except (Fail, ValueError) as e:
+        return f"PR #{pr} not read ({e})"
+    if data.get("state") != "OPEN":
+        return None
+    if verdict:
+        head = str(data.get("headRefOid") or "")
+        newest = [
+            r
+            for r in (data.get("reviews") or [])
+            if str(r.get("body") or "").startswith("Verifier (")
+            and (r.get("commit") or {}).get("oid") == head
+        ]
+        if newest and (m := VERDICT.search(str(newest[-1].get("body")))) and m[1] == "yes":
+            return None
+    return f"PR #{pr} is open" + (" with no satisfied verdict on its head" if verdict else "")
+
+
+def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
+    """The live sessions labelled with a PR (``PR_LABEL``), of PR ``pr`` when given."""
+    page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
+    return [
+        str(s["id"])
+        for s in page.get("data", [])
+        if not s.get("archived")
+        and (n := (s.get("labels") or {}).get(PR_LABEL))
+        and (pr is None or str(n) == str(pr))
+    ]
+
+
 def reap(
     og: Omnigent,
     sessions: list[str],
     parent: str | None = None,
     registry: Path | None = None,
     force: bool = False,
+    merged: bool = False,
+    pr: int | None = None,
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
@@ -3415,9 +3466,16 @@ def reap(
 
     ``force`` also finishes a stuck session (``stuck_minutes``): it stops the turn first, then
     archives it, and names the session's workspace, since a dead run can leave a patch applied
-    there. A running session that is not stuck stays kept, and the line says so."""
+    there. A running session that is not stuck stays kept, and the line says so.
+
+    A ``--pr`` worker (labelled ``PR_LABEL``) is kept while its PR is open with no satisfied verifier
+    verdict on its head, since a fix round or the next pass reaches it warm; it is finished once the
+    PR is merged or closed or that verdict is in. ``merged`` also takes every live worker of a
+    PR (``pr``'s, when given), finishing those whose PR is merged or closed and leaving the open ones."""
     lines, failed = [], False
-    for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
+    held: dict[int, str | None] = {}
+    named = pr_workers(og, pr) if merged else []
+    for sid in dict.fromkeys(sessions + (og.children(parent) if parent else []) + named):
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
@@ -3448,6 +3506,15 @@ def reap(
             note = " (running with recent activity, not stuck)" if force and busy == status else ""
             lines.append(f"{sid} {info.get('title') or ''}: kept ({busy}){note}")
             continue
+        if n := (info.get("labels") or {}).get(PR_LABEL):
+            if pr is not None and str(n) != str(pr):
+                continue
+            if str(n).isdigit():
+                if int(n) not in held:
+                    held[int(n)] = pr_hold(int(n), verdict=not merged)
+                if why := held[int(n)]:
+                    lines.append(f"{sid} {info.get('title') or ''}: kept ({why})")
+                    continue
         # ponytail: a supervisor that read the registry just before this drop can still post
         # `archived` once, and a finish that then fails leaves the session unfollowed; reap again.
         arm_quietly(registry, sid)
@@ -5452,6 +5519,12 @@ def text_or_file(arg: str) -> tuple[str, Path | None]:
         raise error from e
 
 
+def keeps(args: argparse.Namespace, verifier: bool) -> bool:
+    """Whether ``run`` or ``wait`` leaves the session open once it returns: ``--keep``, or a worker
+    started with ``--pr`` unless ``--no-keep`` (a verifier ends with its verdict)."""
+    return bool(args.keep or (args.pr and not verifier and not args.no_keep))
+
+
 def archive_delivered(og: Omnigent, sid: str) -> None:
     """Finish a session whose report or verdict came back (``Omnigent.archive``): its agent process
     frees the runner's file descriptors. A failed finish is reported, not fatal."""
@@ -5865,6 +5938,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         action="store_true",
         help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS)",
     )
+    p.add_argument(
+        "--merged",
+        action="store_true",
+        help="also finish every kept --pr worker whose PR is merged or closed",
+    )
+    p.add_argument("--pr", type=int, help="with --merged, only the workers of this PR")
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -5967,7 +6046,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             p.add_argument(
                 "--keep",
                 action="store_true",
-                help="leave the session open once its report is in, for a fix round to reach it",
+                help="leave the session open once its report is in (the default with --pr)",
+            )
+            p.add_argument(
+                "--no-keep",
+                action="store_true",
+                help="finish a --pr worker's session once its report is in, not keep it",
             )
         if p.prog.split()[-1] in ("send", "wait"):
             p.add_argument(
@@ -6169,9 +6253,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print("\n".join(watch(og, args.sessions, args.children, args.timeout)))
             return 0
         if args.cmd == "reap":
-            if not args.sessions and not args.children:
-                raise Fail("reap needs a session or --children <parent>")
-            lines, failed = reap(og, args.sessions, args.children, args.registry, args.force)
+            if not args.sessions and not args.children and not args.merged:
+                raise Fail("reap needs a session, --children <parent> or --merged")
+            lines, failed = reap(
+                og, args.sessions, args.children, args.registry, args.force, args.merged, args.pr
+            )
             print("\n".join(lines))
             return 1 if failed else 0
         if args.cmd == "supervise":
@@ -6200,7 +6286,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             print(bring_home(og, args.session, report) if far and args.verdict else got)
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
-            if not args.keep:
+            if not keeps(args, args.verdict):
                 archive_delivered(og, args.session)
             return 0
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
@@ -6411,7 +6497,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 wait(og, sid, report, args.timeout, verifier, launched, args.pr, baseline, launch)
             )
             arm_quietly(registry, sid)
-            if not args.keep:
+            if not keeps(args, verifier):
                 archive_delivered(og, sid)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")

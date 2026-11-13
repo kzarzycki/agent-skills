@@ -153,7 +153,8 @@ before its PR opened). A refused delete is said and never fails the landing.
 Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
 which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
 `Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
-and the tree it passed on, and `Batch:` the PRs landed together.
+and the tree it passed on, and `Batch:` the PRs landed together. Each PR it merged then has its kept `--pr` worker sessions finished
+(orchestrating-agents' `omnigent_agent.py reap --merged --pr <n>`); a failure there is a printed line.
 6. Red: it lands one PR at a time instead, each merged onto the last green commit and gated alone (a one-PR batch's red run counts as its first run alone). A PR red alone is
 gated once more (green then is a flake, and it lands), then evicted: back to draft, so later batches leave it out until
 `land <pr>` marks it ready again, and a comment holding its log's last 30 lines. When the first PR alone is red twice,
@@ -4640,6 +4641,33 @@ def merges(
             pull["number"],
             f"Landed\nBase: {tip}\nTree: {tree}\nGate: {command}, {how} on {gated}\nBatch: {numbers}\n",
         )
+        archive_workers(pull["number"])
+
+
+def archive_workers(number: int) -> None:
+    """Finish the kept `--pr` worker sessions of PR #number, which merged: orchestrating-agents'
+    `omnigent_agent.py reap --merged --pr <n>`. A failure, or a checkout without that skill, is a printed
+    line only, since the PR has landed and a session left open is the next `reap`'s."""
+    script = Path(__file__).resolve().parents[2] / "orchestrating-agents/scripts/omnigent_agent.py"
+    if not script.is_file():
+        print(f"PR #{number}: no worker sessions finished: {script.name} is not installed")
+        return
+    try:
+        done = subprocess.run(
+            [sys.executable, str(script), "reap", "--merged", "--pr", str(number)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"PR #{number}: worker sessions not finished: {exc}")
+        return
+    if done.returncode:
+        said = " ".join((done.stderr or done.stdout).split())
+        print(f"PR #{number}: worker sessions not finished (exit {done.returncode}): {said}")
+    else:
+        print(f"PR #{number}: worker sessions: {' '.join(done.stdout.split()) or 'none kept'}")
 
 
 def approve(point: str, number: int, seen: str | None = None) -> int:

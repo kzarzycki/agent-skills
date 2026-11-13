@@ -58,6 +58,7 @@ class FakeOmnigent:
         self.kids: list[str] = []  # sub-agents children() lists
         self.tasks: list[dict] = []  # background tasks info() reports
         self.interrupted: list[str] = []
+        self.labels: dict[str, dict[str, str]] = {}  # each session's labels
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
@@ -237,6 +238,8 @@ class FakeOmnigent:
             info["background_tasks"] = self.tasks
         info["model_override"] = self.overrides.get(sid)
         info["reasoning_effort"] = self.efforts.get(sid)
+        if sid in self.labels:
+            info["labels"] = self.labels[sid]
         if sid in self.roots:
             info["root_conversation_id"] = self.roots[sid]
         if sid in self.archived:
@@ -256,6 +259,9 @@ class FakeOmnigent:
 
     def children(self, sid: str) -> list[str]:
         return list(self.kids)
+
+    def label(self, sid: str, labels: dict[str, str]) -> None:
+        self.labels.setdefault(sid, {}).update(labels)
 
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
@@ -3444,8 +3450,8 @@ def test_wait_keep_leaves_a_delivered_worker_open_for_a_relay(
     monkeypatch.chdir(tmp_path)
     relay = ["relay", "fix the finding", "--confirm-seconds", "0"]
     for title, keep, archived, code in (
-        ("t0", ["--keep"], [], 0),
-        ("t1", [], ["s1"], omnigent_agent.GONE),
+        ("t0", [], [], 0),
+        ("t1", ["--no-keep"], ["s1"], omnigent_agent.GONE),
     ):
         sid, _ = omnigent_agent.start(
             og, "claude-cloud", title, "do X", tmp_path / "r", None, 0, pr=7
@@ -3469,7 +3475,7 @@ def test_run_keep_leaves_a_delivered_worker_open_for_a_relay(
     fake_gh(monkeypatch, {"42": on_pr(7, "done")})
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("do X")
-    for title, keep, archived in (("t0", ["--keep"], []), ("t1", [], ["s1"])):
+    for title, keep, archived in (("t0", [], []), ("t1", ["--no-keep"], ["s1"])):
         argv = ["run", "claude-cloud", title, "b.md", f"{title}.md", "--pr", "7", *keep]
         assert omnigent_agent.main([*argv, "--confirm-seconds", "0"]) == 0
         assert og.archived == archived
