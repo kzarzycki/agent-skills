@@ -309,17 +309,13 @@ LEAD_WAKE = (
 # provider recovers: the supervisor revives it again after each backoff (minutes, the last
 # repeated) until the next revive would fall past the cap, and only then reports it. A false
 # match costs revives, never a report: the cap still reports it.
-TRANSIENT = re.compile(
-    "|".join(
-        (
-            r"authentication_failed",  # an auth outage on the provider's side, not a bad key
-            r"Attention Required",  # a Cloudflare challenge page (a 403)
-            r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
-            r"overloaded",
-        )
-    ),
-    re.IGNORECASE,
+TRANSIENT_ERRORS = (
+    r"authentication_failed",  # an auth outage on the provider's side, not a bad key
+    r"Attention Required",  # a Cloudflare challenge page (a 403)
+    r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
+    r"overloaded",
 )
+TRANSIENT = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
 BACKOFF_MINUTES = (2, 5, 10, 20)
 RETRY_CAP_SECONDS = 2 * 3600.0
 
