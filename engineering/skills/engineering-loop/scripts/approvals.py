@@ -3858,8 +3858,8 @@ def lock_name(base: str) -> str:
 
 def lock_commit(title: str, parent: str | None, pr: int | None = None) -> str:
     """A landing lock commit: the empty tree, `title` (HELD or FREE) with [skip ci], `parent` the tip it moves on from,
-    and in its body the pid, the host and the PR `pr` it lands last (so a waiting land knows which host to check, and
-    reads the lock as released once that PR merged: released), then a random value, since two lands in the same
+    and in its body the pid and the PR `pr` it lands last (so a waiting land reads the lock as released once that PR
+    merged: released; no hostname goes on the public branch), then a random value, since two lands in the same
     second, under one identity, would otherwise build one commit, and the second push of it would succeed as a no-op.
     Its commit date is its age."""
     empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
@@ -3868,8 +3868,7 @@ def lock_commit(title: str, parent: str | None, pr: int | None = None) -> str:
         "commit-tree",
         *(["-p", parent] if parent else []),
         "-m",
-        f"{title} [skip ci]\n\npid {os.getpid()}, host {socket.gethostname()}{landing},"
-        f" nonce {os.urandom(8).hex()}",
+        f"{title} [skip ci]\n\npid {os.getpid()}{landing}, nonce {os.urandom(8).hex()}",
         empty,
     ).strip()
 

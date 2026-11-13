@@ -4260,7 +4260,7 @@ def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_w
     assert lands["lock"]() == winner[-1]
     assert git_in(lands["origin"], "rev-parse", f"{winner[-1]}^").strip() == free
     assert lines[-1].startswith(
-        f"another land holds the landing lock {NAME} (pid {os.getpid()}, host {socket.gethostname()}),"
+        f"another land holds the landing lock {NAME} (pid {os.getpid()}),"
         " taken 0 minutes ago ("
     )
 
@@ -4337,8 +4337,7 @@ def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_g
     commits = [ids.split() for ids, _ in tips]
     assert [rest for _, *rest in commits] == [[c[0]] for c in commits[1:]] + [[]]
     body = git_in(lands["origin"], "log", "-1", "--format=%b", f"{REF}~1").strip()
-    host = re.escape(socket.gethostname())
-    assert re.fullmatch(rf"pid {os.getpid()}, host {host}, PR #8, nonce [0-9a-f]{{16}}", body)
+    assert re.fullmatch(rf"pid {os.getpid()}, PR #8, nonce [0-9a-f]{{16}}", body)
     assert lands["lock"]() == ""
 
 

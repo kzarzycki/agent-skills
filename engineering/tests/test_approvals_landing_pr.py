@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import socket
 import subprocess
 from datetime import UTC, datetime
 from typing import Any
@@ -69,11 +68,11 @@ def test_a_held_lock_naming_a_pr_merged_into_the_base_is_taken_at_once(
         "merged_pull",
         lambda n: {"merged": True, "merge_commit_sha": done} if n == 5 else None,
     )
-    dead = held_by(lands, "pid 1, host elsewhere, PR #5, nonce 00")
+    dead = held_by(lands, "pid 1, PR #5, nonce 00")
     code, lines = lands["land"]("7")
     assert code == 0, lines
     assert lines[0] == (
-        f"the landing lock {NAME} (pid 1, host elsewhere, PR #5) is released: PR #5 merged into main"
+        f"the landing lock {NAME} (pid 1, PR #5) is released: PR #5 merged into main"
         f" as {done}: broken"
     )
     assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
@@ -87,11 +86,11 @@ def test_a_held_lock_naming_an_open_pr_is_waited_on(
     lands["open"](7, {"7.txt": "7\n"})
     asked: list[int] = []
     monkeypatch.setattr(approvals, "merged_pull", lambda n: asked.append(n))
-    held = held_by(lands, "pid 1, host elsewhere, PR #5, nonce 00")
+    held = held_by(lands, "pid 1, PR #5, nonce 00")
     code, lines = lands["land"]("7")
     assert (code, asked) == (approvals.WAITING, [5])
     assert lines[0].startswith(
-        f"another land holds the landing lock {NAME} (pid 1, host elsewhere, PR #5), taken 10 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid 1, PR #5), taken 10 minutes ago ("
     )
     assert (lands["lock"](), lands["merged"]()) == (held, [])
 
@@ -105,7 +104,7 @@ def test_a_held_lock_naming_a_merged_pr_the_base_lacks_is_waited_on(
     monkeypatch.setattr(
         approvals, "merged_pull", lambda _n: {"merged": True, "merge_commit_sha": elsewhere}
     )
-    held = held_by(lands, "pid 1, host elsewhere, PR #5, nonce 00")
+    held = held_by(lands, "pid 1, PR #5, nonce 00")
     code, lines = lands["land"]("7", "--only")
     assert code == approvals.WAITING, lines
     assert (lands["lock"](), lands["merged"]()) == (held, [])
@@ -120,7 +119,7 @@ def test_a_held_lock_whose_pr_github_cannot_read_is_waited_on(
         raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
 
     monkeypatch.setattr(approvals, "merged_pull", failing)
-    held = held_by(lands, "pid 1, host elsewhere, PR #5, nonce 00")
+    held = held_by(lands, "pid 1, PR #5, nonce 00")
     assert lands["land"]("7")[0] == approvals.WAITING
     assert lands["lock"]() == held
 
@@ -154,7 +153,7 @@ def test_a_named_pr_past_two_hours_is_broken_as_stale_whatever_github_says(
     """The ceiling stays for a holder that died before its merge."""
     lands["open"](7, {"7.txt": "7\n"})
     monkeypatch.setattr(approvals, "merged_pull", lambda _n: None)
-    held_by(lands, "pid 1, host elsewhere, PR #5, nonce 00", 3 * 60 * 60)
+    held_by(lands, "pid 1, PR #5, nonce 00", 3 * 60 * 60)
     code, lines = lands["land"]("7")
     assert (code, lines[0]) == (
         0,
@@ -171,27 +170,27 @@ def lock_bodies(lands: dict[str, Any]) -> list[str]:
     ]
 
 
-def test_a_land_names_its_host_and_pr_and_moves_the_lock_to_its_batchs_last_pr_before_merging(
+def test_a_land_names_its_pr_and_moves_the_lock_to_its_batchs_last_pr_before_merging(
     lands: dict[str, Any],
 ) -> None:
     """A batch merges oldest first: the lock names its last PR, so it reads released only once all of them merged."""
     lands["open"](7, {"7.txt": "7\n"})
     lands["open"](8, {"8.txt": "8\n"})
-    host, pid = socket.gethostname(), os.getpid()
+    pid = os.getpid()
     assert lands["land"]("7")[0] == 0
     assert lands["merged"]() == ["7", "8"]
     assert lock_bodies(lands) == [
-        f"held: pid {pid}, host {host}, PR #7",
-        f"held: pid {pid}, host {host}, PR #8",
-        f"free: pid {pid}, host {host}",
+        f"held: pid {pid}, PR #7",
+        f"held: pid {pid}, PR #8",
+        f"free: pid {pid}",
     ]
     # a land naming no PR takes the lock naming none, the old format, until its batch is known
     lands["open"](9, {"9.txt": "9\n"})
     assert lands["land"]()[0] == 0
     assert lock_bodies(lands)[3:] == [
-        f"held: pid {pid}, host {host}",
-        f"held: pid {pid}, host {host}, PR #9",
-        f"free: pid {pid}, host {host}",
+        f"held: pid {pid}",
+        f"held: pid {pid}, PR #9",
+        f"free: pid {pid}",
     ]
 
 
@@ -205,7 +204,7 @@ def test_a_land_whose_lock_was_broken_before_its_merges_merges_nothing_and_leave
 
     def taken_meanwhile(*args: Any) -> Any:
         landed = batch(*args)
-        theirs.append(held_by(lands, "pid 2, host other, nonce 00", 0))
+        theirs.append(held_by(lands, "pid 2, nonce 00", 0))
         return landed
 
     monkeypatch.setattr(approvals, "merge_batch", taken_meanwhile)
