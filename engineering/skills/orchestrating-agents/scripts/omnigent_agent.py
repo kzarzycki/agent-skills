@@ -1131,13 +1131,12 @@ class Omnigent:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
         return [str(c["id"]) for c in page.get("data", [])]
 
-    def active(self, sid: str) -> float:
-        """When any live child of ``sid`` (archived ones are not listed), or a live session it
-        subscribes to, was last updated, else 0. The subscriptions are its top-level helpers, a
-        cloud worker for one, which are no children. Not ``busy``: a child whose turn end was lost
-        stays busy for good."""
+    def kin(self, sid: str) -> dict[str, float]:
+        """``sid``'s live children (archived ones are not listed) and the live sessions it
+        subscribes to, each with when it was last updated. The subscriptions are its top-level
+        helpers, a cloud worker for one, which are no children."""
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
-        times = [float(c.get("updated_at") or 0) for c in page.get("data", [])]
+        found = {str(c["id"]): float(c.get("updated_at") or 0) for c in page.get("data", [])}
         try:  # ponytail: the first page of subscriptions; a lead holds a handful
             subscribed = self.call("GET", f"/v1/sessions/{sid}/subscriptions").get("data", [])
         except Fail:  # an Omnigent without subscriptions: the children alone, as before
@@ -1148,8 +1147,13 @@ class Omnigent:
             except Fail:  # Gone too
                 continue  # deleted, or unreadable this poll: counts for nothing
             if not info.get("archived"):
-                times.append(float(info.get("updated_at") or 0))
-        return max(times, default=0.0)
+                found[str(helper["session_id"])] = float(info.get("updated_at") or 0)
+        return found
+
+    def active(self, sid: str) -> float:
+        """When any of ``sid``'s ``kin`` was last updated, else 0. Not ``busy``: a child whose
+        turn end was lost stays busy for good."""
+        return max(self.kin(sid).values(), default=0.0)
 
 
 def checkout_root(workspace: str) -> str:
@@ -4568,23 +4572,35 @@ def supervise_registry(
 
     def moving(sid: str, lead: dict) -> bool:
         """Whether every session ``sid``'s wait names is running: not archived, its status running
-        and its ``updated_at`` within ``DEADLINE_SECONDS``. A wait names a full session id, or, for
-        a manager (its line's ``leads=`` registry), its leads as a group: the leads that registry
-        follows. A wait on anything else (the notified session, the owner, a word), a named
-        session that is idle, ended or not read, and a registry not read, are False: the deadline
-        is raised as without it."""
+        and its ``updated_at`` within ``DEADLINE_SECONDS``. A wait names a full session id in
+        ``sid``'s follow set: one of its leads (the sessions its line's ``leads=`` registry
+        follows) or of its ``kin`` (its live children and subscriptions, a lead's worker), or, for
+        a manager, its leads as a group. A wait on anything else (the notified session, a session
+        outside its follow set, the owner, a word), a named session that is idle, ended or not
+        read, and a registry or kin not read, are False: the deadline is raised as without it."""
         wait = lead["wait"]
-        if re.fullmatch(r"[0-9a-f]{32}", wait) and wait != notify:
-            named = [wait]
-        elif wait == "lead" and lead.get("leads"):
-            try:
-                named = [s for s, owes in registered(Path(lead["leads"]))[0].items() if owes[3]]
-            except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
-                log(("leads", sid), f"{sid}: leads registry not read: {reason(e)}")
-                return False
-            log(("leads", sid), None)
-        else:
+        if wait == notify or not (
+            re.fullmatch(r"[0-9a-f]{32}", wait) or (wait == "lead" and lead.get("leads"))
+        ):
             return False
+        try:
+            owed = registered(Path(lead["leads"]))[0] if lead.get("leads") else {}
+            followed = [s for s, owes in owed.items() if owes[3]]
+        except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
+            log(("leads", sid), f"{sid}: leads registry not read: {reason(e)}")
+            return False
+        log(("leads", sid), None)
+        if wait == "lead":
+            named = followed
+        elif wait in followed:
+            named = [wait]
+        else:  # not one of its leads: one of its own children or subscriptions, else outside
+            try:
+                named = [wait] if wait in og.kin(sid) else []
+            except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
+                log(("kin", sid), f"{sid}: children not read: {reason(e)}")
+                return False
+            log(("kin", sid), None)
         for other in named:
             try:
                 info = og.info(other)

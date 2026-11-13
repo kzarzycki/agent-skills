@@ -4269,6 +4269,9 @@ class Fleet:
     def __init__(self, **histories: list[dict]) -> None:
         self.histories, self.reads, self.inbox, self.retried = histories, [], [], []
         self.kids: dict[str, float] = {}  # when a child of each session was last updated
+        self.kin_of: dict[
+            str, list[str] | Exception
+        ] = {}  # each session's live children (or a read error)
         self.broken: dict[str, Exception] = {}
         self.offline: set[str] = set()
         self.refuse = 0
@@ -4303,6 +4306,12 @@ class Fleet:
 
     def active(self, sid: str) -> float:
         return self.kids.get(sid, 0.0)
+
+    def kin(self, sid: str) -> dict[str, float]:
+        found = self.kin_of.get(sid, [])
+        if isinstance(found, Exception):
+            raise found
+        return dict.fromkeys(found, time.time())
 
     def hosts(self) -> dict[str, str]:
         return {"h": "here"}
@@ -6676,21 +6685,26 @@ def events_of(registry: Path) -> list[dict]:
     return [json.loads(e) for e in lines]
 
 
-WORKER = "c" * 32  # a session id a lead's STILL WORKING names
+WORKER = "c" * 32  # a session id a lead's STILL WORKING names: one of its own children
 COS = "d" * 32  # the chief of staff's session, which --notify names
+LEAD = "e" * 32  # a lead of the manager's, named by its id
+OTHER = "f" * 32  # a running session outside the manager's leads and children
 
 
 def manager(tmp_path: Path, wait: str, **snaps: dict) -> tuple[Path, Leads]:
-    """A followed manager, ``m``, quiet an hour with ``wait`` as its last message, its leads ``x``
-    and ``y`` in its own registry (its line's ``leads=``); ``snaps`` overrides each session's info,
-    where every one of them is running and was updated a minute ago. The registry's ``z``, an idle
-    helper owing a report, is no lead."""
+    """A followed manager, ``m``, quiet an hour with ``wait`` as its last message, its leads ``x``,
+    ``y`` and ``LEAD`` in its own registry (its line's ``leads=``) and ``WORKER`` its child;
+    ``snaps`` overrides each session's info, where every one of them is running and was updated a
+    minute ago. The registry's ``z``, an idle helper owing a report, is no lead."""
     leads = tmp_path / "app-leads.registry"
-    leads.write_text("".join(f"{s}={tmp_path / s}.md\tfollow\n" for s in "xy") + "z=z.md\n")
+    leads.write_text(
+        "".join(f"{s}={tmp_path / s[:1]}.md\tfollow\n" for s in ("x", "y", LEAD)) + "z=z.md\n"
+    )
     registry = tmp_path / "registry"
     registry.write_text(f"m={tmp_path / 'm.md'}\tfollow\tleads={leads}\n")
     og = Leads(m=[told("brief", 4000), ending(wait, 3600)])
-    for sid in ("m", "x", "y", WORKER, COS):
+    og.kin_of["m"] = [WORKER]
+    for sid in ("m", "x", "y", WORKER, COS, LEAD, OTHER):
         og.snaps[sid] = {"status": "running", "updated_at": time.time() - 60, **snaps.get(sid, {})}
     return registry, og
 
@@ -6705,6 +6719,7 @@ def stalls(og: Fleet) -> list[str]:
     [
         "STILL WORKING: waiting on my leads. Report: m.md",
         f"STILL WORKING: waiting on {WORKER}. Report: m.md",
+        f"STILL WORKING: waiting on {LEAD}. Report: m.md",
     ],
 )
 def test_a_quiet_waiter_whose_named_sessions_all_run_raises_no_deadline(
@@ -6724,6 +6739,8 @@ def test_a_quiet_waiter_whose_named_sessions_all_run_raises_no_deadline(
         ("waiting on my leads", {"y": {"updated_at": time.time() - 1300}}, "lead"),
         ("waiting on my leads", {"y": {"updated_at": None}}, "lead"),
         (f"waiting on {WORKER}", {WORKER: {"status": "idle"}}, WORKER),
+        (f"waiting on {LEAD}", {LEAD: {"status": "idle"}}, LEAD),
+        (f"waiting on {OTHER}", {}, OTHER),
         ("waiting on the chief of staff for a host", {}, "chief"),
         (f"waiting on {COS} for a host", {}, COS),
         ("waiting on the owner's pick", {}, "owner's"),
@@ -6735,6 +6752,25 @@ def test_a_quiet_waiter_on_a_session_not_moving_or_outside_its_follow_set_raises
     registry, og = manager(tmp_path, f"STILL WORKING: {wait}. Report: m.md", **snaps)
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({why})"]
+
+
+def test_a_quiet_waiter_on_the_chief_of_staff_raises_its_deadline_though_it_subscribes_to_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {COS} for a host. Report: m.md")
+    og.kin_of["m"] = [WORKER, COS]
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({COS})"]
+
+
+def test_a_quiet_waiter_on_a_session_id_when_its_children_are_unread_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: waiting on {WORKER}. Report: m.md")
+    og.kin_of["m"] = omnigent_agent.Fail("GET /v1/sessions/m/child_sessions: HTTP 503")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({WORKER})"]
+    assert "m: children not read" in capsys.readouterr().err
 
 
 def test_a_quiet_waiter_on_its_leads_with_one_lead_unread_raises_its_deadline(
