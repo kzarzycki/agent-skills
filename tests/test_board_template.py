@@ -42,5 +42,7 @@ def test_every_shell_block_of_the_template_parses() -> None:
     blocks = re.findall(r"^```bash\n(.*?)^```", SETUP, re.DOTALL | re.MULTILINE)
     assert any('name:"Risk"' in block for block in blocks)
     for block in blocks:
-        parsed = subprocess.run(["bash", "-n"], input=block, capture_output=True, text=True)
+        parsed = subprocess.run(
+            ["bash", "-n"], input=block, capture_output=True, text=True, check=False
+        )
         assert parsed.returncode == 0, (parsed.stderr, block)
