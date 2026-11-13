@@ -230,7 +230,7 @@ design, wireframes included for a UI, and delegate the rest.
        (Rules for every role, Revert first);
      - a merge GitHub refused: as the bullet below says.
      Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
-     or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
+     (one whose PR already merged is broken at once) or of pending required checks. With gatekeeper.md's `land` section it squashes, signs and pushes
      each PR from your checkout instead, so run it where the signing key is. GitHub deletes the
      head branch (the repository's `delete_branch_on_merge`, which `setup:github` sets). Never
      mark a PR ready or merge it by hand (`gh pr ready`, `gh pr merge`), because `land` is what

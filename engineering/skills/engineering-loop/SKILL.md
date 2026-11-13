@@ -435,8 +435,9 @@ that moved costs one gate, not a merge, a gate and a verdict per PR, and no PR l
 it was never gated on:
 - It takes a lock any host sees, the branch `loop-landing/<base>` on `origin`, so two lands never
   run at once; it only moves forward, so a host that may only create and fast-forward branches
-  (a cloud session) takes and releases it too. A lock older than 2 hours was left by a land
-  that died and is broken.
+  (a cloud session) takes and releases it too. The lock names the last PR its land
+  merges, so a lock whose PR is merged and in the base was left by a land that died after its
+  merges and is broken at once; one older than 2 hours (a land that died before them) is broken too.
 - The candidates are every ready PR into the base whose `check merge` proofs hold, but the CI
   wait, with the owner's go where the change is high risk and the base's required checks
   green. `land <pr>` marks that PR ready first, never on a missing proof, since ready starts CI.
