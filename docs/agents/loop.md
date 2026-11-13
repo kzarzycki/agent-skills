@@ -16,24 +16,6 @@ Lead autocompact: 150k
 A lead re-reads its whole context every turn, so a smaller window costs less per turn; its notes
 file carries the run's state across a compaction. Raise or remove the line if leads lose track.
 
-## Settings
-
-```yaml
-spec:
-  auto: true
-
-loop:
-  gate: QUALIFY_TIMEOUT=900 mise run check   # the merge check CI runs; qualify's timeouts at 900 s on a shared host
-  machine_exit: 78   # qualify exits 78 when a step stops on QUALIFY_TIMEOUT: the host's load, not the change
-
-risk:
-  verifier: true
-  paths:
-    - .github/**
-    - CODEOWNERS
-    - docs/agents/loop.md
-```
-
 ## Approvals
 
 Specs and merges are approved by policy, so work doesn't stop on them; the owner sees only
