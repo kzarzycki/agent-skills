@@ -10667,3 +10667,47 @@ def test_a_pr_or_issue_reference_after_waiting_on_is_a_named_wait() -> None:
         wait_of("STILL WORKING: waiting on the/repo#12") == "the/repo#12"
     )  # an owner named like a pronoun
     assert wait_of("STILL WORKING: on it") == "unknown"
+
+
+# --- a question card a session posts to its user is not an act for the parent (#920) ---
+
+
+def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card (``policy_name`` ``sys_ask_user_question``) returns at once and its user answers it in
+    their Inbox: the session is not blocked, and the card is one record line per question id."""
+    registry = following(tmp_path)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 50))
+    card = {
+        "elicitation_id": "q1",
+        "params": {
+            "policy_name": "sys_ask_user_question",
+            "ask_user_question": {"questions": [{"question": "Which base?"}]},
+            "message": "Which base?",
+        },
+    }
+    harness = {
+        "elicitation_id": "e2",
+        "params": {
+            "policy_name": "claude_native_permission",
+            "ask_user_question": {"questions": [{"question": "Go?"}]},
+            "message": "Go?",
+        },
+    }
+    og.snap = {"status": "running", "pending_elicitations": [card]}
+    states: list[str] = []
+
+    def later(poll: int) -> None:
+        states.append(state_of(registry)["leads"]["a"]["state"])
+        if poll == 3:
+            og.snap = {"status": "running", "pending_elicitations": [card, harness]}
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    assert states[:3] == ["running"] * 3  # the card alone blocks nothing
+    routed = [(e["kind"], e["action"], e["line"]) for e in events_of(registry)]
+    assert routed[0] == ("asked", "record", "a: asked its user: Which base?")
+    assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
+    assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
+    assert not any("Which base?" in p for p in posted(og))
