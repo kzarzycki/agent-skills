@@ -80,3 +80,11 @@ def test_the_delegates_go_leaves_needs_owner_on_the_pr(
     monkeypatch.setattr(approvals, "comment", lambda _n, _body: None)
     assert approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "delegate"]) == 0
     assert (7, "needs-owner", False) not in added
+
+
+def test_needs_owner_on_the_pr_holds_its_merge_never_its_build(lands: dict[str, Any]) -> None:
+    lands["open"](7, {"7.txt": "7\n"}, labels=("needs-owner",))
+    pr = lands["pulls"][7]
+    tracker, loop = approvals.project()
+    assert HELD in approvals.gated("merge", pr, tracker, loop)[0]
+    assert HELD not in approvals.gated("build", pr, tracker, loop)[0]
