@@ -67,7 +67,7 @@ design, wireframes included for a UI, and delegate the rest.
    that closes the spec (`Implements` where the owner signs it off, SKILL.md, Approvals and
    proof) with the branch's first push, made when you cut it (an empty commit when nothing
    is written yet), since the open PR is the claim another lead's search finds
-   (github.md, Review trail; board: `Build`), and run `mise run loop:approvals build <pr>`: build only once it exits 0. On
+   (github.md, Review trail; board: `Build`), and run `uv run <this skill's folder>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model of each agent, and every worktree and
@@ -113,7 +113,9 @@ design, wireframes included for a UI, and delegate the rest.
    proof the spec's acceptance needs whose log names another commit, since the verifier
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Then start the verifier on that pushed
+   prints the ones to rerun. Where loop.md places the verifier in the worker's VM, the pass runs there
+   instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
+   brief already in that checkout. Otherwise start the verifier on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
    yours while it reviews and no commit of yours moves the head under review. Copy into its

@@ -190,6 +190,11 @@ and ends each commit message with the co-author line and no session link, since 
 reaches a public repository. A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
+Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, also says
+never to write under `.git/`, since a write there waits on a permission prompt nobody in the
+cloud answers, and that `tmp/loop/` is scratch, never committed: a fresh clone lacks the host's
+`.git/info/exclude`, so the project's own `.gitignore` names `tmp/loop/`, and a session that
+sees its report untracked has nothing to "fix".
 
 **Author family.** `--author <claude|codex>` names the family that wrote what the child
 reviews. When it matches the child's own family the script refuses unless `--same-family`
@@ -341,6 +346,23 @@ than in a question file, and it writes its final report to the path. How it asks
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
+
+A cloud session started without `--pr` (`claude-cloud`, a lead or not) keeps its report file
+in its VM, which no file API here reaches, so its preamble has it reply with the full report as
+its last message, marked: a lead's opens with its ending line (`DONE:`, `USER NEEDED:`,
+`STILL WORKING:`, `PARKED:`), a child's with a first line `REPORT`, and a child's question with a
+first line `QUESTION`. A turn can end on a progress line ("Committing the fix...") or an unmarked
+question, so only a marked last message counts. `wait` writes a marked report to the report path
+(on the session's host), a file already there never counting, and a marked question to
+`<report>.question`, exiting 3 as for a host child's question; any other turn end gets a nudge to
+reply with the marked report. `report <session> [<path>]` prints a marked report and writes it to
+the path, else reads the file as for a host session. The supervisor's per-child look takes a
+cloud child's report or question from its marked last message by the same rule, reads no file
+for it, and sends it a resume and revive line that names no file path. It takes a followed cloud
+lead's ending and wait from the `report_head` of its last message and reads no file, and its post
+shows that head as the report's. A session is a cloud one when its agent's harness is
+`acp:claude-cloud` (its record's `agent_name`, else `agent_id`; looked up once per agent), since
+the record's own `harness` is the transport, `acp`. A host session keeps the file.
 
 `--host <name|id>` starts the lead on another Omnigent host (`GET /v1/hosts` lists them).
 It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a host other
