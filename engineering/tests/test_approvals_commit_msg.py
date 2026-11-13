@@ -25,13 +25,17 @@ CO_AUTHOR = "Co-Authored-By: Claude <noreply@anthropic.com>"
 LINKED = f"Fix the parser\n\nKeep the last field.\n\n{CO_AUTHOR}\nClaude-Session: https://example.com/s\n"
 
 
-def test_the_hook_leaves_the_co_author_line_and_folds_the_blank_lines_as_land_does(tmp_path: Path) -> None:
+def test_the_hook_leaves_the_co_author_line_and_folds_the_blank_lines_as_land_does(
+    tmp_path: Path,
+) -> None:
     """A commit through git with the hook installed keeps its co-author line and loses the link; the blank lines
     fold the way land's unlinked() folds them."""
     hooks = tmp_path / "hooks"
     hooks.mkdir()
     hook = hooks / "commit-msg"
-    hook.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{SCRIPTS / "approvals.py"}" commit-msg "$1"\n')
+    hook.write_text(
+        f'#!/bin/sh\nexec "{sys.executable}" "{SCRIPTS / "approvals.py"}" commit-msg "$1"\n'
+    )
     hook.chmod(0o755)
     repo = tmp_path / "repo"
     repo.mkdir()
