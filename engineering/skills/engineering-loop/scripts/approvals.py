@@ -22,6 +22,7 @@
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
+    uv run scripts/approvals.py commit-msg <file>          # a commit-msg hook: drop `Claude-Session:` lines from it
 
 Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
 `## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
@@ -4472,6 +4473,16 @@ def unlinked(text: str) -> str:
     return re.sub(r"\n*(?:\0(?:\n|$))+\n*", fold, marked).strip()
 
 
+def commit_msg(message: Path) -> int:
+    """The commit-msg hook: the message file less every `Claude-Session:` line, as unlinked() folds them for land, so a
+    cloud session's branch commits carry no link either, since a public repo publishes them; a message with none is
+    left as written."""
+    text = message.read_text()
+    if SESSION_LINE.search(text):
+        message.write_text(unlinked(text) + "\n")
+    return 0
+
+
 def land_body(pull: dict[str, Any]) -> str | None:
     """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
     `Claude-Session:` line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
@@ -5837,10 +5848,14 @@ def main(argv: list[str]) -> int:
     briefing.add_argument("--proof", type=Path, action="append", default=[])
     releasing = commands.add_parser("release")
     releasing.add_argument("issue", type=int)
+    hooking = commands.add_parser("commit-msg")
+    hooking.add_argument("message", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "report":  # reads a local file only, so no remote needs choosing
             return report_check(args.report)
+        if args.command == "commit-msg":  # the same: git hands the hook its message file
+            return commit_msg(args.message)
         one_repo()
         if args.command == "check":
             if args.point == "queue" and (args.pr is None or args.head is None):
