@@ -2371,6 +2371,42 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     return found
 
 
+def unforced(pull: dict[str, Any]) -> str | None:
+    """The line check merge and brief print when every commit since the newest verdict's commit is a merge of the
+    base (base_merges) and land posted no CONFLICTS comment naming a head that walk passes, so nothing forced the
+    merge: land merges each head onto the base itself and gates that, and the merge only costs a gate and a verifier
+    pass. None otherwise, a head or base tip that one fetch (fetched, in base_merges) cannot bring included, since the
+    line is advice and blocks nothing."""
+    verdicts = passes(pull)
+    if isinstance(verdicts, str) or not verdicts or not (verified := verdicts[-1][0]):
+        return None
+    if verified == pull["headRefOid"].lower():
+        return None
+    walked = base_merges(pull, verified)
+    if isinstance(walked, str):
+        return None
+    earlier = {first for _, first, _ in walked}
+    try:
+        found = notes(pull)
+    except Refused:
+        return None
+    # as land writes it (merged_onto), by an account whose word counts, since anyone can comment on a public repo
+    if any(
+        note["body"].startswith(CONFLICTS)
+        and trusted(pull, note)
+        and earlier
+        & {
+            line[len("Head: ") :].strip().lower()
+            for line in note["body"].splitlines()
+            if line.startswith("Head: ")
+        }
+        for note in found
+    ):
+        return None
+    base = pull["baseRefName"]
+    return f"unforced merge of {base}: land merges heads itself (lead.md step 8); this pass is avoidable"
+
+
 def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
     """Whether the PR's head carries the proofs of `verified`, the newest verdict's commit (carried), printing the
     lines that say so, or where loop.md opts in, why it carries nothing."""
@@ -3757,7 +3793,11 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
         if point == "merge" and not found and not waiting and risk(pull, issues, loop)
         else []
     )
-    for line in holds(pull, issues, loop) + found + waiting + after + used:
+    # advice, so it prints whatever else holds the merge and changes no exit code
+    advice = (
+        [f"PR #{pull['number']}: {said}"] if point == "merge" and (said := unforced(pull)) else []
+    )
+    for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
 
@@ -5778,6 +5818,8 @@ def brief(pr: int, priorities: Path | None, proofs: list[Path], far: Path | None
         f"- Proof log: {loop_dir / log.name if far else log} (its first line is the head)"
         for log in proofs
     ]
+    if line := unforced(pull):
+        lines.append(f"- Note: {line}")
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]
     # as written, but for the blank lines around it: indentation may be a snippet's
