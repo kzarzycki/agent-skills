@@ -4441,7 +4441,15 @@ def gate_batch(work: Path, pulls: list[dict[str, Any]]) -> tuple[str, str]:
             done = run_steps(
                 commit,
                 tree,
-                lambda: run_in(work, "status", "--porcelain", "--untracked-files=all"),
+                lambda: (
+                    head_moved(
+                        commit,
+                        tree,
+                        run_in(work, "rev-parse", "HEAD"),
+                        run_in(work, "rev-parse", "HEAD^{tree}"),
+                    )
+                    or run_in(work, "status", "--porcelain", "--untracked-files=all")
+                ),
                 work,
                 out,
             )
@@ -4493,7 +4501,7 @@ def landed_pass(tip: str, tree: str) -> dict[str, Any]:
             | {key: found[key] for key in TIMED if isinstance(found.get(key), int)}
             | step_field(step)
         )
-    if len(plan) == 1 and plan[0]["name"] == WHOLE:
+    if plan[0]["legacy"]:
         return steps[0]
     return {"head": tip, "tree": tree, "command": gate()[0], "env": gate()[2], "steps": steps}
 
@@ -4964,21 +4972,32 @@ def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict
     )
 
 
-# the one step of a gate without `gate_steps`, its whole command
+# the name the one step of a gate without `gate_steps` is shown by; it is that gate by its `legacy` flag, never by this
+# name, which a project's `gate_steps` may give a step too
 WHOLE = "gate"
 
 
 def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
     """The gate's steps, in order, each `name`, `command` (as gate() reads one, with `passed`), `words`, `sets` and
     `where` (`any`, or `host`: never run in a cloud session): loop.md's `gate_steps`, else the one `gate` command as
-    the step WHOLE, `any`. Each step's pass is recorded and reused by itself, keyed by its tree and command (recorded),
+    the step WHOLE, `any`, flagged `legacy`, which records, publishes and prints as the one gate always did (a plan
+    from `gate_steps` is stepped whatever its names or length: its steps are not `legacy`). Each step's pass is recorded and reused by itself, keyed by its tree and command (recorded),
     so a step that passed on a tree anywhere is not run again; a project without `gate_steps` keeps one record. A
     policy setting both is refused, since two sources of the gate would drift."""
     loop = settings(project()[1])
     written = loop.get("gate_steps")
     if not written:
         command, words, sets = gate(passed)
-        return [{"name": WHOLE, "command": command, "words": words, "sets": sets, "where": "any"}]
+        return [
+            {
+                "name": WHOLE,
+                "command": command,
+                "words": words,
+                "sets": sets,
+                "where": "any",
+                "legacy": True,
+            }
+        ]
     if loop.get("gate"):
         raise Refused(
             f"{source(project()[1])} sets both `gate` and `gate_steps`: keep `gate_steps`, the gate's steps, and"
@@ -4994,6 +5013,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "words": words,
                 "sets": sets,
                 "where": step["where"],
+                "legacy": False,
             }
         )
     return plan
@@ -5063,7 +5083,7 @@ def ran_step(
                 step["words"], check=False, env=gate_env(step) | {SLOT_HELD: slot}, **where
             ).returncode
         except OSError as exc:
-            what = "gate" if step["name"] == WHOLE else f"gate step `{step['name']}`"
+            what = "gate" if step["legacy"] else f"gate step `{step['name']}`"
             raise Refused(f"loop.md's {what} {step['command']!r} can't run: {exc}") from None
         return code, round(time.monotonic() - began), waited
 
@@ -5251,20 +5271,18 @@ def run_local_ci(
         raise Refused(f"the tree has changes, so the check would not run on the head:\n{before[1]}")
     deepened(pr)
     tree = git("rev-parse", "HEAD^{tree}").strip()
-    done = run_steps(
-        before[0],
-        tree,
-        lambda: "" if (now := checkout_state()) == before else now[1],
-        passed=passed,
-    )
+
+    def changes() -> str:
+        now = checkout_state()
+        return head_moved(before[0], tree, now[0], git("rev-parse", "HEAD^{tree}").strip()) or (
+            "" if now == before else now[1]
+        )
+
+    done = run_steps(before[0], tree, changes, passed=passed)
     code, step = done["code"], done["step"]
     if step is not None:
         command = step["command"]
-        nothing = (
-            "nothing recorded"
-            if step["name"] == WHOLE
-            else f"nothing recorded for `{step['name']}`"
-        )
+        nothing = "nothing recorded" if step["legacy"] else f"nothing recorded for `{step['name']}`"
         if code == settings(project()[1]).get("machine_exit"):
             raise Refused(
                 f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): {nothing}; fix the machine,"
@@ -5303,7 +5321,7 @@ def run_steps(
     }
     for step in gate_plan(passed):
         # a gate without `gate_steps` says nothing more than it did: its one step is the gate
-        say = print if step["name"] != WHOLE else (lambda *_a, **_k: None)
+        say = print if not step["legacy"] else (lambda *_a, **_k: None)
         if (found := step_pass(commit, tree, step)) is not None:
             say(f"{step['name']}: passed on tree {tree} before, reused from {origin_of(found)}")
             done["records"].append(found)
@@ -5337,6 +5355,14 @@ def run_steps(
     return done
 
 
+def head_moved(commit: str, tree: str, now: str, now_tree: str) -> str:
+    """What a gate step did to where the run stands, empty when nothing: HEAD at another commit, or another tree, clean
+    or not, means the step's pass would be recorded for `tree` though the steps after it run on another (run_steps)."""
+    if (now, now_tree) == (commit, tree):
+        return ""
+    return f"HEAD moved during the gate: it is {now} (tree {now_tree}), not {commit} (tree {tree})"
+
+
 def stored(record: dict[str, Any]) -> None:
     """Write a pass this clone ran to its record file (recorded)."""
     where = recorded(record["tree"], record["command"])
@@ -5356,7 +5382,7 @@ def whole(found: list[dict[str, Any]], passed: list[str] | tuple[str, ...] = ())
     exit, time, seconds and slot_wait_seconds), the newest step's commit and time, the seconds summed, and `steps`,
     each step's record. Nothing writes it: each step's record is the stored and published pass."""
     plan = gate_plan(passed)
-    if len(plan) == 1 and plan[0]["name"] == WHOLE:
+    if plan[0]["legacy"]:
         return found[0] if found else {}
     command, _, env = gate(passed)
     newest = max(found, key=lambda record: record["time"]) if found else {}
@@ -5564,7 +5590,7 @@ def reusable(
     found = []
     for step in gate_plan(passed):
         if (record := step_pass(head, held, step, why)) is None:
-            if why is not None and step["name"] != WHOLE:
+            if why is not None and not step["legacy"]:
                 why.append(
                     f"the gate step `{step['name']}` ({step['command']}) has no pass on tree {held}"
                 )
@@ -5602,7 +5628,7 @@ def step_pass(
 
 def step_field(step: dict[str, Any]) -> dict[str, str]:
     """A gate step's record's `step` field, its name; none for the one step of a gate without `gate_steps`."""
-    return {} if step["name"] == WHOLE else {"step": step["name"]}
+    return {} if step["legacy"] else {"step": step["name"]}
 
 
 def published(
@@ -5994,7 +6020,7 @@ def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
     lines = []
     for step in gate_plan():
         command, env = step["command"], step["sets"]
-        said = "" if step["name"] == WHOLE else f"step `{step['name']}`: "
+        said = "" if step["legacy"] else f"step `{step['name']}`: "
         ref = RECORD_BRANCH.format(record_name(held, command))
         found = []
         try:

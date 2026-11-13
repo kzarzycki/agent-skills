@@ -32,9 +32,12 @@ from approvals_harness import (
 # the real record branch functions, which the `refs` fixture fakes for every test
 RECORD_REF, PUSH_RECORD = approvals.record_ref, approvals.push_record
 
-STEP = """import pathlib, sys
+STEP = """import pathlib, subprocess, sys
 name, runs = sys.argv[1], pathlib.Path(sys.argv[2])
 runs.open("a").write(name + "\\n")
+switch = runs.parent / f"switch-{name}"
+if switch.exists():
+    subprocess.run(["git", "checkout", "-q", switch.read_text().strip()], check=True)
 sys.exit(1 if (runs.parent / f"fail-{name}").exists() else 0)
 """
 
@@ -72,6 +75,7 @@ def steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         tree=git_in(repo, "rev-parse", "HEAD^{tree}").strip(),
         commands=commands,
         fail=lambda name: (tmp_path / f"fail-{name}").touch(),
+        switch=lambda name, commit: (tmp_path / f"switch-{name}").write_text(commit),
         mend=lambda name: (tmp_path / f"fail-{name}").unlink(),
         ran=lambda: runs.read_text().split() if runs.exists() else [],
         set_policy=lambda text: state.update(policy=text),
@@ -399,3 +403,84 @@ def test_a_pushed_record_carries_its_seconds_and_a_record_pushed_before_them_sti
     approvals.push_record(record | {"command": "true", "seconds": 1008, "slot_wait_seconds": 1688})
     new = approvals.record_ref(tree, "true", {})
     assert new is not None and (new["seconds"], new["slot_wait_seconds"]) == (1008, 1688)
+
+
+def stepped(*rows: tuple[str, str]) -> str:
+    """A policy whose `gate_steps` are these (name, where) rows, each running the fixture's step script as `lint`."""
+    return gatekeeper_md(
+        "loop:\n  gate_steps:\n"
+        + "".join(
+            f"    - name: {name}\n      command: {{lint}} {name}\n      where: {where}\n"
+            for name, where in rows
+        )
+    )
+
+
+def test_a_lone_host_step_named_gate_is_a_step_left_in_a_cloud_session(
+    steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S1: a step named `gate` is a step, not the legacy gate: alone and `where: host`, a cloud `--record` leaves it
+    and says so, rather than reading the missing pass as the one gate's."""
+    steps["set_policy"](stepped(("gate", "host")).replace("{lint}", steps["commands"]["lint"]))
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert steps["ran"]() == []
+    assert "`gate` runs only on a host" in capsys.readouterr().out
+
+
+def test_steps_named_gate_or_alone_record_and_print_as_steps(
+    steps: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """S1: with several steps, one named `gate` records its `step` and prints its line like the others, and a reused
+    pass says each step; a stepped plan of one step does too."""
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: posted.append(body))
+    lint = steps["commands"]["lint"]
+    for rows in ((("gate", "any"), ("unit", "any")), (("only", "any"),)):
+        steps["set_policy"](stepped(*rows).replace("{lint}", lint))
+        capsys.readouterr()
+        assert approvals.main(["local-ci", "--record"]) == 0
+        out = capsys.readouterr().out
+        for name, _ in rows:
+            assert f"{name}: passed in " in out
+            record = json.loads(approvals.recorded(steps["tree"], f"{lint} {name}").read_text())
+            assert record["step"] == name
+        assert approvals.main(["local-ci", "7"]) == 0
+        assert all(f"`{name}` from the pass recorded on" in posted[-1] for name, _ in rows)
+
+
+def other_commit(steps: dict[str, Any]) -> str:
+    """A commit of the same tree as the head, beside it: a checkout switched to it is clean and holds the tree, so
+    only HEAD tells the switch."""
+    repo = steps["repo"]
+    git_in(repo, "commit", "-q", "--allow-empty", "-m", "beside")
+    other = git_in(repo, "rev-parse", "HEAD").strip()
+    git_in(repo, "checkout", "-q", steps["head"])
+    return other
+
+
+def test_a_clean_head_switch_between_steps_fails_local_ci_and_records_nothing_after_it(
+    steps: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """C1: `lint` checks out another commit, clean, of the same tree: the step fails saying the checkout changed, and
+    neither it nor `unit`, which would run on the other commit, is recorded for the head's tree."""
+    other = other_commit(steps)
+    steps["switch"]("lint", other)
+    assert approvals.main(["local-ci", "--record"]) == 1
+    out = capsys.readouterr().out
+    assert "changed the checkout" in out and f"HEAD moved during the gate: it is {other}" in out
+    assert steps["ran"]() == ["lint"]
+    assert local_record(steps, "lint") is None and local_record(steps, "unit") is None
+
+
+def test_a_clean_head_switch_between_steps_fails_lands_batch_gate(steps: dict[str, Any]) -> None:
+    """C1: land's batch runner reads HEAD too, not only the status: the same switch leaves the tree red there."""
+    other = other_commit(steps)
+    steps["switch"]("lint", other)
+    assert approvals.gate_batch(steps["repo"], []) == (steps["tree"], "")
+    assert steps["ran"]() == ["lint"]
+    assert local_record(steps, "lint") is None
+    log = (steps["repo"].parent / f"{steps['tree']}.log").read_text()
+    assert f"HEAD moved during the gate: it is {other}" in log
