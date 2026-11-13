@@ -246,6 +246,9 @@ design, wireframes included for a UI, and delegate the rest.
      never after another PR's merge. Whichever runs first takes the lock and lands every
      landable PR in one batch; the others wait for the lock and find their PR merged (exit 0)
      or land what is left. Host load is no reason to serialize: one gate covers the batch.
+   - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
+     go on a head), which the owner's `approve merge --by owner` removes: a question card
+     alone holds nothing, since `land` batches every PR that is ready.
    - A check red after ready: `gh pr ready --undo`, then start a worker in the same worktree
      with the failing log as its brief, rather than fixing it yourself. It fixes the check,
      runs `mise run check` and pushes; a fresh verifier (step 7) reviews only the change

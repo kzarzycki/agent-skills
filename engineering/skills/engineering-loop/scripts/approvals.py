@@ -46,6 +46,8 @@ the PR its issues' assignees, reporting a refusal and carrying on. `release` rem
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
+`check merge` also fails a PR that itself carries `needs-owner` (`#<n> waits for the owner (needs-owner)`), so `land`
+never takes it, alone or in a batch, until the owner's go on its head (`approve merge --by owner`) removes the label.
 `check merge` adds the PR's, whose absence fails (exit 1): the `## Evidence` section of its body; the keyword linking
 each issue, where loop.md has a `signoff` rule (below); the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
@@ -2720,6 +2722,10 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
         post_status(head, OWNER_GO, f"The owner's go on {head[:12]}")
     comment(number, f"{VOICED[by]}\nApproved: merge\nBy: {by}\nHead: {head}\n")
     print(f"PR #{number}: {who}'s go is on {head}{DELEGATED if by == DELEGATE else ''}")
+    if by != DELEGATE and NEEDS_OWNER in names(pull):
+        # the owner's go names this PR, so the hold it waited on is theirs to lift; the delegate's never is
+        label(number, NEEDS_OWNER, add=False)
+        print(f"PR #{number}: `{NEEDS_OWNER}` removed, since the owner's go names it")
     return 0
 
 
@@ -3731,8 +3737,15 @@ def gated(
     point: str, pull: dict[str, Any], tracker: str | None, loop: str | None
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Every missing proof at `point`, and the issues the PR names (none for an exact revert, which needs no spec: risk()
-    reads its issues from `named` and the reverted PR's risk from `reverted` instead)."""
+    reads its issues from `named` and the reverted PR's risk from `reverted` instead). At merge, a PR that itself carries
+    `needs-owner` waits for the owner, so no batch takes a PR held for their go."""
+    held = (
+        [f"#{pull['number']} waits for the owner ({NEEDS_OWNER})"]
+        if point == "merge" and NEEDS_OWNER in names(pull)
+        else []
+    )
     revert, found = reverts(pull)
+    found = held + found
     if revert:
         pull["named"], pull["reverted"] = closing_issues(pull), reverted(revert)
         return found + proofs(point, pull, [], loop, revert), []
