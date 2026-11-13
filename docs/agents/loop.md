@@ -45,8 +45,19 @@ branch's merge to main waits for the owner.
 
 Cloud worker: claude-cloud, gate test
 
-Workers run in an environment that holds no secrets, so their compute leaves the owner's
-machines. The live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`) need
+Cloud verifier: worker session
+
+Workers run in an environment that holds one secret, so their compute leaves the owner's
+machines: a ChatGPT access token for the verifier, which lasts up to 10 days and carries no
+refresh token, so a session can run Codex but cannot renew or replace the login. The verifier
+of a cloud worker's PR runs in that worker's kept session, on its checkout and build
+(SKILL.md, Verifier in the worker's VM). Before starting a worker, run
+`engineering/skills/engineering-loop/scripts/cloud_verifier.py seed`: it renews the stored
+login when under 5 days are left, puts the copy into the environment and allows the hosts
+Codex needs there: `chatgpt.com`, `*.chatgpt.com`, `auth.openai.com` and `api.openai.com`.
+When it says the login is gone, the owner runs its `login` once.
+
+The live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`) need
 logged-in harnesses and Omnigent, so they stay with the host lead. A cloud session clones the
 pushed branch, so push before starting a worker. `.claude/cloud-setup.sh` is the
 environment's setup script; the environment keeps its own copy, so apply a change with
