@@ -547,10 +547,12 @@ or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
-  PR branch, the full gate (`mise run
+  PR branch, the full gate where it runs (below), the instance, the verdict's post, thread
+  resolution, `land` and acceptance. The full gate (`mise run
   check`, or `local-ci --record` with `ci: false`; on a fix round started detached beside the
-  next verifier, lead.md step 7), the instance, the verdict's post, thread
-  resolution, `land` and acceptance. The worker codes and compiles, runs `mise run <task>`,
+  next verifier, lead.md step 7) runs by default in the worker's VM, on its checkout and build,
+  and on a host only where `Placement:` names one or the VM can't run it; the host's
+  `local-ci <pr>`, `check merge` and `land` reuse its recorded pass either way. The worker codes and compiles, runs `mise run <task>`,
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
