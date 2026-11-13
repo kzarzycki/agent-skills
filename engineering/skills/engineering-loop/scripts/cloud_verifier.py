@@ -4,7 +4,7 @@
 On the host that starts cloud sessions:
 
     python3 scripts/cloud_verifier.py login            # once: a device login into a Codex home kept only for seeding
-    python3 scripts/cloud_verifier.py seed [--env ID]  # before starting a session whose VM will verify
+    python3 scripts/cloud_verifier.py seed [--env ID]...  # before starting a session whose VM will verify
 
 In the VM, from the checkout:
 
@@ -15,15 +15,23 @@ In the VM, from the checkout:
 
 `seed` stores a copy of a Codex login in the cloud environment, as the variable CODEX_AUTH_JSON (base64). It takes
 the host's own login (`$CODEX_HOME`, else `~/.codex/auth.json`) when that is a ChatGPT login whose access token has
-at least `--host-min-days` (default 1) left: the file is only read, never written or refreshed, and the copy has no
-refresh token, so the host's login is never rotated out from under it. Otherwise it uses the seed home's login and,
+at least `--host-min-days` (default 1) left. When it has under `--host-refresh-days` left (default 3), it is first
+refreshed in place, the way the Codex CLI does it, and written back to the host's `auth.json` in one atomic replace:
+Codex processes on the host re-read that file before their own refresh and after a 401, and the CLI refreshes only
+within 5 minutes of expiry, so a refresh days earlier never races one. A refused refresh exits 2, naming the host
+login and `codex login` to run. Otherwise the host file is only read. Without a host login to use it uses the seed home's login and,
 when its access token has under `--min-days` left (default 5 of its 10), refreshes it the way the Codex CLI does and
-writes the new tokens back to the seed home. Either copy carries no refresh token, so no VM can rotate a login, and
-a VM whose copy has expired fails with a 401 instead of breaking the login for the others. It also adds OpenAI's hosts to the environment's allowed hosts. The environment is `--env`, else the
-checkout's `.claude/settings.local.json` pin (`remote.defaultEnvironmentId`), read from the main checkout when run
-in a worktree. A variable is set when a session starts, so seed before starting the session. Exit 2 means no login can be
-seeded: its text names the host login and the seed home's, each missing or too short, and the owner runs `login`
-(or `codex login` on the host) again.
+writes the new tokens back to the seed home, never to the host's file, however the two homes alias. Either copy carries no refresh token, so no VM can rotate a login, and
+a VM whose copy has expired fails with a 401 instead of breaking the login for the others. It also adds OpenAI's hosts to the environment's allowed hosts. The environment is `--env`, given once per
+environment to seed several in one run, else the checkout's `.claude/settings.local.json` pin
+(`remote.defaultEnvironmentId`), read from the main checkout when run in a worktree. A variable is set when a session
+starts, so seed before starting the session. Exit 2 means no login can be seeded: its text names the host login and
+the seed home's, each missing or too short, or the refused refresh, and the owner runs `login` (or `codex login` on
+the host) again. Exit 1 means an environment could not be seeded: each is still tried, and the failed ones are named.
+
+To keep the host login and every environment fresh without the owner, run `seed --env A --env B` every 2 days as an
+Omnigent scheduled task on the host that holds the login, on a small model, keeping the run (`sys_session_keep`)
+when it exits non-zero, so a failure surfaces while the login still has days left.
 
 `verify` installs the Codex CLI when the VM lacks it, writes the seeded login to `~/.codex/auth.json` when Codex is
 not logged in, and refuses a tree with uncommitted changes, since a verifier reviews a pushed head only (files in the
@@ -129,8 +137,11 @@ def login() -> int:
     ).returncode
 
 
-def refreshed(auth: dict) -> dict:
-    """The login with new tokens from OpenAI's auth service, as the Codex CLI's refresh makes them."""
+def refreshed(
+    auth: dict, who: str = "the seed login", fix: str = "run `cloud_verifier.py login`"
+) -> dict:
+    """The login with new tokens from OpenAI's auth service, as the Codex CLI's refresh makes them; a refusal names
+    `who` was refused and the `fix`."""
     try:
         new = post_json(
             REFRESH_URL,
@@ -148,9 +159,7 @@ def refreshed(auth: dict) -> dict:
         except ValueError:
             code = None
         code = code.get("code") if isinstance(code, dict) else code
-        raise Refused(
-            f"the seed login's refresh was refused (HTTP {e.code}, {code}): run `cloud_verifier.py login`"
-        )
+        raise Refused(f"the refresh of {who} was refused (HTTP {e.code}, {code}): {fix}")
     tokens = {**auth["tokens"], **{k: v for k, v in new.items() if k in auth["tokens"] and v}}
     return {
         **auth,
@@ -209,8 +218,19 @@ def host_home() -> Path:
     return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
 
 
+def replace_login(path: Path, auth: dict) -> None:
+    """Write the login to `path` in one step: a `.tmp` beside it, mode 0600, then a replace, so a reader sees the old
+    login or the new one, never half of one, and the new refresh token replaces the spent one at once."""
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)  # a `.tmp` left by an earlier run keeps its mode through O_CREAT
+    with os.fdopen(fd, "w") as out:
+        out.write(json.dumps(auth, indent=2))
+    tmp.replace(path)
+
+
 def host_login() -> tuple[dict | None, str]:
-    """The host's own Codex login and, when it can't be used, why: a ChatGPT login with an access token. Read only."""
+    """The host's own Codex login and, when it can't be used, why: a ChatGPT login with an access token."""
     path = host_home() / "auth.json"
     if not path.exists():
         return None, f"no host login at {path}"
@@ -234,18 +254,39 @@ def seed_login(min_days: float) -> dict:
         )
     if expires_at(auth["tokens"]["access_token"]) - time.time() < min_days * 86400:
         auth = refreshed(auth)
-        tmp = path.with_suffix(".tmp")
-        tmp.touch(mode=0o600)
-        tmp.write_text(json.dumps(auth, indent=2))
-        tmp.replace(path)  # the new refresh token replaces the spent one in one step
+        replace_login(path, auth)
         print("refreshed the seed login")
     return auth
 
 
-def seed(env: str | None, min_days: float, host_min_days: float = 1) -> int:
+def days_left(auth: dict) -> float:
+    return (expires_at(auth["tokens"]["access_token"]) - time.time()) / 86400
+
+
+def seed(
+    envs: list[str] | None,
+    min_days: float,
+    host_min_days: float = 1,
+    host_refresh_days: float = 3,
+) -> int:
     auth, where = host_login()
+    if auth and days_left(auth) < host_refresh_days and not auth["tokens"].get("refresh_token"):
+        # a scheduled run must not pass quietly on a login it cannot renew: fail while days remain
+        raise Refused(
+            f"the host login at {where} has under {host_refresh_days:g} days left and no refresh"
+            " token to renew it: run `codex login` on this host, then seed again"
+        )
+    if auth and days_left(auth) < host_refresh_days:
+        # the one deliberate write of the host's file: Codex on this host re-reads it before its own refresh
+        auth = refreshed(
+            auth,
+            f"the host login at {where}",
+            "run `codex login` on this host, then seed again",
+        )
+        replace_login(Path(where), auth)
+        print(f"refreshed the host login at {where}")
     if auth and expires_at(auth["tokens"]["access_token"]) - time.time() >= host_min_days * 86400:
-        print("using the host's Codex login (read only, no refresh token stored)")
+        print("using the host's Codex login (no refresh token stored)")
     else:
         if auth:
             where = f"the host login at {where} has under {host_min_days:g} days left"
@@ -256,8 +297,26 @@ def seed(env: str | None, min_days: float, host_min_days: float = 1) -> int:
             auth = seed_login(min_days)
         except Refused as e:
             raise Refused(f"no usable Codex login: {where}; and {e}")
-    env = env or pinned_environment()
     headers = claude_headers()
+    failed = []
+    for env in envs or [pinned_environment()]:
+        try:
+            store(env, auth, headers)
+        except (
+            Refused,
+            OSError,
+            ValueError,
+            KeyError,
+        ) as e:  # the next environment is still seeded
+            print(f"cloud_verifier: seeding {env} failed: {e}", file=sys.stderr)
+            failed.append(env)
+    if failed:
+        print(f"cloud_verifier: not seeded: {', '.join(failed)}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def store(env: str, auth: dict, headers: dict) -> None:
+    """Put the login's reader copy and OpenAI's hosts into one cloud environment."""
     url = f"{CLAUDE_API}/v1/environment_providers/{env}"
     current = post_json(url, None, headers)
     config = current["config"]
@@ -272,9 +331,9 @@ def seed(env: str | None, min_days: float, host_min_days: float = 1) -> int:
         {"name": current["name"], "description": current.get("description", ""), "config": config},
         headers,
     )
-    days = (expires_at(auth["tokens"]["access_token"]) - time.time()) / 86400
-    print(f"seeded {current['name']} ({env}): the login there lasts {days:.1f} more days")
-    return 0
+    print(
+        f"seeded {current['name']} ({env}): the login there lasts {days_left(auth):.1f} more days"
+    )
 
 
 # ── VM: verify ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -482,7 +541,11 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser(
         "seed", help="refresh the seed login and store a copy in the cloud environment (host)"
     )
-    s.add_argument("--env", help="environment id; default: the checkout's pinned one")
+    s.add_argument(
+        "--env",
+        action="append",
+        help="environment id, once per environment; default: the checkout's pinned one",
+    )
     s.add_argument(
         "--min-days",
         type=float,
@@ -494,6 +557,12 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=1,
         help="use the host's own login when its access token has at least this many days left",
+    )
+    s.add_argument(
+        "--host-refresh-days",
+        type=float,
+        default=3,
+        help="refresh the host's own login in place when its access token has fewer days left",
     )
     v = sub.add_parser(
         "verify", help="run a Codex verifier pass on the PR and post its report (VM)"
@@ -507,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "login":
             return login()
         if args.command == "seed":
-            return seed(args.env, args.min_days, args.host_min_days)
+            return seed(args.env, args.min_days, args.host_min_days, args.host_refresh_days)
         return verify(args.pr, args.brief, args.model, args.effort)
     except Refused as e:
         print(f"cloud_verifier: {e}", file=sys.stderr)
