@@ -2202,8 +2202,8 @@ def start(
             raise Fail(f"{name} over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
         print(f"{name} over capacity, waiting: {room[1]}", file=sys.stderr)
         time.sleep(POLL_SECONDS * 6)
-    # literals blanked to the same length, so the line number below still counts the brief's own
-    if span := EMPTY_SPAN.search(RST_LITERAL.sub(lambda m: " " * len(m[0]), brief)):
+    # a literal holds no newline, so blanking it leaves the line number below right
+    if span := EMPTY_SPAN.search(RST_LITERAL.sub(" ", brief)):
         line = brief[: span.start()].count("\n") + 1
         raise Fail(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
