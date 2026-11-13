@@ -383,8 +383,8 @@ that `wait --pr <n>` writes the PR comment to.
 the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
 <report>`, where `<clone>` is an absolute path there holding a clone of the repo and the report
 is under its `tmp/loop/`. Its `--pr` names the PR it reviews, not a report channel: it writes its
-report file as any child does. With a `Verifier hosts: <name>, <name>` line in the project's
-`docs/agents/loop.md`, `start` refuses a host the line does not list, naming the list; without
+report file as any child does. With a `Placement: hosts: <name>, <name>` line (or the old `Verifier hosts:`) in the project's
+`docs/agents/loop.md` (engineering-loop, Where heavy steps run), `start` refuses a host the line does not list, naming the list; without
 it any host goes. Other sessions holding that clone don't stop it, since it works in a detached
 worktree of its own under the clone's `tmp/loop/` and never switches the clone's branch; every
 other start keeps the in-use refusal. Each `--file <local>` (a proof log, the previous report) is written beside the

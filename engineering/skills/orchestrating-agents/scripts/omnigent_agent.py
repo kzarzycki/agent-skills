@@ -168,7 +168,7 @@ its file would be here, and the report is written there, so follow the lead with
 writes here. A verifier (a ``--role`` whose file is ``verifier.md``) takes ``--pr`` as the PR it
 reviews, not a report channel, starts on another host's clone however many sessions hold it (it
 works in a worktree of its own), and runs on another host only when the project's loop.md has no
-``Verifier hosts: <name>, <name>`` line or that line lists the host; ``--file`` writes a local
+``Placement: hosts: <name>, <name>`` line (or the old ``Verifier hosts:`` one) or that line lists the host; ``--file`` writes a local
 file (a proof log, the previous report) beside its report there before its brief, and
 ``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
 saying it left the far worktree's tracked changes unchecked, since the file API runs no git.
@@ -1335,6 +1335,35 @@ def project_line(workspace: str, key: str) -> str:
         return ""
     found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
     return found.group(1) if found else ""
+
+
+def placement_hosts(workspace: str) -> list[str]:
+    """The hosts the project's ``docs/agents/loop.md`` names for a gate or verifier: those of
+    ``Placement: hosts: <a>, <b>``; none for ``same machine`` (the default when the line is
+    absent) or ``CI``. The old ``Verifier hosts: <a>, <b>`` line reads as the same list and
+    ``Cloud verifier:`` as the same machine; the new line wins."""
+    new = project_line(workspace, "Placement")
+    if new:
+        value = new[len("hosts:") :] if new.lower().startswith("hosts:") else ""
+    else:
+        value = project_line(workspace, "Verifier hosts")
+    return [h for h in (x.strip() for x in value.split(",")) if h]
+
+
+def cloud_default_host(og: Omnigent, named: list[str]) -> str:
+    """The host a cloud caller's ``start`` without ``--host`` uses: the first online one the
+    project's placement setting names, never the bridge's own host, which says nothing about where
+    heavy work should run."""
+    if not named:
+        raise Fail(
+            "start in a cloud session without --host: loop.md's Placement line names no host; "
+            "pass --host <name>"
+        )
+    online = {h["name"]: h.get("status") == "online" for h in og.call("GET", "/v1/hosts")["hosts"]}
+    for name in named:
+        if online.get(name):
+            return name
+    raise Fail(f"no host loop.md's Placement line names is online: {', '.join(named)}; pass --host")
 
 
 def lean_args(workspace: str, role: str) -> list[str]:
@@ -5743,7 +5772,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--host",
             help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
-            " cloud worker, or a verifier (one loop.md's Verifier hosts: line lists) on",
+            " cloud worker, or a verifier (one loop.md's Placement: hosts: line lists) on",
         )
         p.add_argument(
             "--file",
@@ -6210,9 +6239,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             apply_route(args)
         if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
             args.pr = None
+        cloud = os.environ.get("CLAUDE_CODE_REMOTE") == "true"
+        if args.cmd == "start" and args.top_level and not args.host and cloud:
+            args.host = cloud_default_host(og, placement_hosts(os.getcwd()))
         if verifier and args.host:
-            allowed = [h.strip() for h in project_line(os.getcwd(), "Verifier hosts").split(",")]
-            allowed = [h for h in allowed if h]
+            allowed = placement_hosts(os.getcwd())
             if allowed and not {args.host, og.hosts().get(og.host(args.host), "")} & set(allowed):
                 raise Fail(
                     f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"

@@ -147,7 +147,7 @@ design, wireframes included for a UI, and delegate the rest.
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
    verifier, running at the same time, gets its own detached worktree the same way. A verifier
-   may instead run on another host loop.md's `Verifier hosts:` line lists, so its tests and
+   may instead run on another host loop.md's `Placement: hosts:` line lists (SKILL.md, Where heavy steps run), so its tests and
    mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
    backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
    `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own

@@ -527,8 +527,8 @@ verifier, review angles run as native subagents, never as full harness sessions.
 
 One rule, for every project and every machine. Heavy steps (implementation, the gate, the verifier) go, in this order:
 
-1. To the cloud worker or cloud verifier the project's `docs/agents/loop.md` names (`Cloud worker:`, `Cloud verifier:`).
-2. Else to a host that offers the harness the step needs.
+1. To the cloud worker the project's `docs/agents/loop.md` names (`Cloud worker:`), with the gate and the verifier on the same machine as the worker, which shares its checkout and build. The loop.md line `Placement:` sets where the verifier runs: `same machine` (the default when the line is absent), `hosts: <name>, <name>` or `CI`. It replaces the older `Cloud verifier:` and `Verifier hosts:` lines, which keep their meaning where a project still has one; the new line wins. A worker's machine that can't take the verifier (no Codex login, a PR that needs a Claude verifier) goes to a Codex Cloud thread, then a host.
+2. Else to a host that offers the harness the step needs. A `start` in a cloud session without `--host` follows `Placement:`: the first online host it names, and a refusal naming `--host` where it names none, never the host the bridge runs on.
 3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
 
 When a launch fails, for any reason (refused, no capacity, unreachable), take the next option on this list. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
@@ -591,7 +591,7 @@ or the owner's private network.
   `Claude-Session:` link, and a brief can't override it, so the project commits a
   `.claude/settings.json` whose `attribution.commit` is only the co-author line (and
   `attribution.pr` empty), which replaces that instruction in every session cloned from it.
-- **Verifier in the worker's VM.** With the loop.md line `Cloud verifier: worker session`, the verifier of a
+- **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host.
   `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
@@ -619,7 +619,7 @@ or the owner's private network.
   session, picks the head and posts the report; the environment holds a ChatGPT login that every process in
   the VM can read, good for up to 10 days, so it suits PRs the owner's own agents wrote and not ones from
   forks; and the carrier spends its quota while it waits.
-- **Verifier on a Codex Cloud thread.** With the loop.md line `Cloud verifier: worker session, else codex thread`, a
+- **Verifier on a Codex Cloud thread.** With `Placement: same machine` (or the old `Cloud verifier: worker session, else codex thread`), a
   pass with no worker VM to carry it (the PR has no Claude cloud worker, or Claude tokens are short) runs on a Codex Cloud
   thread, driven from the host: `scripts/cloud_verifier.py thread --pr <n> --brief <file> --model M --effort E`. The
   host's own Codex login goes to OpenAI's endpoint only, never to a VM. It starts a thread (a VM that keeps its files and
