@@ -647,7 +647,7 @@ or the owner's private network.
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
   either), since it misses different things; otherwise, as for a user with one family installed, a fresh
-  session of the same family is the normal path. The PR body names which ran
+  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled and neither landing a high-risk change. The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
   included; each writes its own report, and the cap counts rounds they share. The family

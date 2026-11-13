@@ -152,7 +152,19 @@ design, wireframes included for a UI, and delegate the rest.
    `approvals.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
    worktree; the proof logs and the previous report go there with `start --file`, you make no
    worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
-   host can't run comes back as a proof-run question as above. Triage every finding (SKILL.md) and hand the fixes to a worker,
+   host can't run comes back as a proof-run question as above.
+   **Verifier route.** Codex is the default verifier whenever it has quota. When it refuses (the quota error
+   text goes to the owner at once), `--verifier-route gemini|claude` on the same verifier start, or
+   `$OMNIGENT_VERIFIER_ROUTE`, picks the fallback, with the same brief, report format and `verdict` post:
+   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode, with a model
+   from that host's `agy models` (`gemini-4-hydrogen-medium`; verifier.md's `Verifier:` line names it as
+   `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
+   fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
+   author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
+   same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
+   of quota)". Either fallback may land a low or medium risk change; `check merge` reads its family as a lower
+   tier and refuses a high-risk one, which waits for Codex or the owner. agy on another host takes the brief
+   as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), naming the last green head (the newest head whose
    gate passed) for the fix round's gate (worker.md, Gates and push). A correctness finding's fix
    covers its class: each sibling the verifier lists under it (verifier.md, Siblings), triaged like

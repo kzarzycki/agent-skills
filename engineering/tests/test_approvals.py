@@ -1324,7 +1324,9 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
     assert gate(said("codex", 1, "high")) == []
     # a tier word inside the model id is no tier: only a word of its own after the signature is
     assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
-    assert gate(said("claude/small-model/?, same-family", 1, "high")) == []
+    assert gate(
+        said("claude/small-model/?, same-family", 1, "high")
+    )  # a same-family pass is a fallback (#890)
     assert gate(said("claude, same-family, small", 1, "high"))
 
 

@@ -453,6 +453,11 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
 # family (`codex/terra-6.1/med mid`, verifier.md): a model id holding the word (`sol-mid-preview`) names no tier
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
+# a fallback verifier, run when Codex refuses (a Gemini pass through agy, `agy/<model>/<effort>`, or a same-family one):
+# a family naming one counts as a lower tier, so a high-risk change never lands on it (loop.md, Verifier route)
+FALLBACK_FAMILY = re.compile(
+    r"(?<![^\s,/])(agy|gemini[\w.-]*|same-family)(?![^\s,/])", re.IGNORECASE
+)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
@@ -1773,8 +1778,8 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
 
 def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
     """The tier below the default (LOWER_TIER) the newest verifier pass names in its heading's family, the newest
-    commit's highest pass (a mixed PR's two verifiers share one), or None: a heading naming no tier reads as the
-    default, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
+    commit's highest pass (a mixed PR's two verifiers share one), or None; a fallback family (`agy`, `gemini`,
+    `same-family`) counts as one: a heading naming no tier reads as the default, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
     if isinstance(verdicts, str) or not verdicts:
         return None
     head = verdicts[-1][0]
@@ -1783,7 +1788,8 @@ def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
     tiers = [
         found[1]
         for number, lines in on_head
-        if number == last and (found := LOWER_TIER.search(lines["Family"]))
+        if number == last
+        and (found := LOWER_TIER.search(lines["Family"]) or FALLBACK_FAMILY.search(lines["Family"]))
     ]
     return tiers[0].lower() if tiers else None
 
