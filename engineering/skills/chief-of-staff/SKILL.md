@@ -278,6 +278,8 @@ it quoted.
   your turn open, and Omnigent delivers new input only when a turn ends, so every relay,
   supervisor event and idle compaction waits behind the question until the owner replies,
   often hours later. Their reply arrives as your next message.
+- A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge go on a head): a question
+  alone holds nothing, since `land` batches every PR that is ready.
 
 ## Handover
 
