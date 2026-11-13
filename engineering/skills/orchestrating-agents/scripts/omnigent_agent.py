@@ -209,6 +209,10 @@ LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
 COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
+# The model an agent runs on when neither --model nor its OMNIGENT_MODEL_<AGENT> names one. The
+# server refuses an acp session with no model, since it can't tell whether the default is blocked
+# (#896); any other agent sends none and runs on its harness default.
+DEFAULT_MODELS = {"claude-cloud": "sonnet"}
 # an agent record and config field that names or dates one agent, not what it does
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
@@ -1014,10 +1018,7 @@ class Omnigent:
                 " set OMNIGENT_PROJECT to file it",
                 file=sys.stderr,
             )
-        # The variable names only exist for the two aliases; any other agent takes --model.
-        if model := model or (
-            agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
-        ):
+        if model := model_for(agent, model)[0]:
             body["model_override"] = model
         # Omnigent turns it into each harness's own setting (``--effort`` for Claude Code, the pinned
         # config for Codex), so nothing goes into the launch args. The create refuses a word outside
@@ -2282,6 +2283,21 @@ def harness_signature(env: dict[str, str] | None = None, home: Path | None = Non
     return signature("?", None)
 
 
+def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
+    """The model ``agent`` runs on and where it came from: ``model`` (``--model``), else
+    ``$OMNIGENT_MODEL_<AGENT>`` (``-`` as ``_``), else ``DEFAULT_MODELS``; None for an agent with
+    no default, which runs on its harness's. Only the two aliases and an agent with a default
+    read the variable, so another agent's model is always one ``--model`` named."""
+    variable = f"OMNIGENT_MODEL_{agent.upper().replace('-', '_')}"
+    if model:
+        return model, f"--model {model}"
+    if (agent in AGENTS or agent in DEFAULT_MODELS) and (named := os.environ.get(variable)):
+        return named, f"{variable}={named}"
+    if default := DEFAULT_MODELS.get(agent):
+        return default, f"default {default}"
+    return None, ""
+
+
 def start(
     og: Omnigent,
     agent: str,
@@ -2322,10 +2338,8 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
-    variable = f"OMNIGENT_MODEL_{agent.upper()}"
-    chosen = model or (agent in AGENTS and os.environ.get(variable)) or None
+    chosen, source = model_for(agent, model)
     if chosen:
-        source = f"--model {chosen}" if model else f"{variable}={chosen}"
         try:
             listed = og.models(agent, host_id)
         except Fail as e:
@@ -4974,19 +4988,38 @@ def supervise_registry(
                 say(line, sid, f"landed:{repo}:{sha}", "landed")
             heads[repo] = sha
 
-    def moving(sid: str, lead: dict) -> bool:
-        """Whether every session ``sid``'s wait names is running: not archived, its status running
-        and its ``updated_at`` within ``DEADLINE_SECONDS``. A wait names a full session id in
-        ``sid``'s follow set: one of its leads (the sessions its line's ``leads=`` registry
-        follows) or of its ``kin`` (its live children and subscriptions, a lead's worker), or, for
-        a manager, its leads as a group. A wait on anything else (the notified session, a session
-        outside its follow set, the owner, a word), a named session that is idle, ended or not
-        read, and a registry or kin not read, are False: the deadline is raised as without it."""
-        wait = lead["wait"]
-        if wait == notify or not (
-            re.fullmatch(r"[0-9a-f]{32}", wait) or (wait == "lead" and lead.get("leads"))
-        ):
+    def alive(other: str, info: dict) -> bool:
+        """Whether session ``other`` (its ``info``) shows life: not archived or failed, no
+        question or permission waiting on it, and a running turn, a declared background job
+        (``live_tasks``) or its last item, or its live kin's, within ``DEADLINE_SECONDS``. A turn
+        reads running through a long tool call, which is persisted only once it returns, and a
+        lead idle between its own background jobs has a recent item."""
+        if info.get("archived") or str(info.get("status")) == "failed" or prompts_of(info):
             return False
+        if str(info.get("status")) in RUNNING or live_tasks(info):
+            return True
+        last = max(float(info.get("updated_at") or 0), active(other))
+        return time.time() - last < DEADLINE_SECONDS
+
+    def moving(sid: str, lead: dict) -> bool:
+        """Whether every session ``sid``'s wait names shows life (``alive``). A wait names X by
+        a full session id in ``sid``'s follow set: one of its leads (the sessions its line's
+        ``leads=`` registry follows) or of its ``kin`` (its live children and subscriptions, a
+        lead's worker); for a manager, ``lead`` names its leads as a group; any other word (a kind
+        such as ``worker``, a title word, a short id) names each of its kin whose title holds it
+        as a word or whose id opens with it; a background task id names ``sid``'s own job, alive
+        while ``sid`` declares a live background task. A wait on anything else (the notified
+        session, a session outside its follow set, the owner, a word no kin answers), a named
+        session that shows no life or is not read, and a registry or kin not read, are False:
+        the deadline is raised as without it."""
+        wait = lead["wait"]
+        if wait == notify or wait == "unknown":
+            return False
+        if re.fullmatch(r"b(?=[a-z]{0,7}[0-9])[a-z0-9]{8}", wait):  # its own background job
+            try:
+                return bool(live_tasks(og.info(sid)))
+            except Exception:  # noqa: BLE001 - unread: not known to be moving
+                return False
         try:
             owed = registered(Path(lead["leads"]))[0] if lead.get("leads") else {}
             followed = [s for s, owes in owed.items() if owes[3]]
@@ -4994,28 +5027,37 @@ def supervise_registry(
             log(("leads", sid), f"{sid}: leads registry not read: {reason(e)}")
             return False
         log(("leads", sid), None)
-        if wait == "lead":
+        infos: dict[str, dict] = {}
+        if wait == "lead" and lead.get("leads"):
             named = followed
         elif wait in followed:
             named = [wait]
         else:  # not one of its leads: one of its own children or subscriptions, else outside
             try:
-                named = [wait] if wait in og.kin(sid) else []
+                kin = [k for k in og.kin(sid) if k != notify]
             except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
                 log(("kin", sid), f"{sid}: children not read: {reason(e)}")
                 return False
             log(("kin", sid), None)
+            if re.fullmatch(r"[0-9a-f]{32}", wait):
+                named = [wait] if wait in kin else []
+            else:  # a kind or a title word, else a short id: X resolved from the wait's word
+                named = []
+                for other in kin:
+                    try:
+                        infos[other] = og.info(other)
+                    except Exception:  # noqa: BLE001 - gone or unread: not known to be moving
+                        return False
+                    words = re.split(r"[^\w']+", str(infos[other].get("title") or "").lower())
+                    short = re.fullmatch(r"[0-9a-f]{8,31}", wait) and other.startswith(wait)
+                    if wait.lower() in words or short:
+                        named.append(other)
         for other in named:
             try:
-                info = og.info(other)
+                info = infos[other] if other in infos else og.info(other)
             except Exception:  # noqa: BLE001 - gone or unread: not known to be moving
                 return False
-            updated = float(info.get("updated_at") or 0)
-            if (
-                info.get("archived")
-                or str(info.get("status")) not in RUNNING
-                or time.time() - updated >= DEADLINE_SECONDS
-            ):
+            if not alive(other, info):
                 return False
         return bool(named)
 
@@ -5024,7 +5066,7 @@ def supervise_registry(
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
         wait with no progress since its time raises one at its time, which wakes the lead, and
         once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``,
-        so new progress starts a new chain. None while every session its wait names is running
+        so new progress starts a new chain. None while every session its wait names shows life
         (``moving``), since it is waiting, not stalled."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
@@ -5044,7 +5086,7 @@ def supervise_registry(
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
         if due is None and moving(sid, lead):
-            return  # it waits on sessions that are all making progress: no stall of its own
+            return  # what it waits on all shows life: no stall of its own
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -5232,7 +5274,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--confirm-seconds", type=float, default=60.0)
         p.add_argument(
             "--model",
-            help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CODEX, else the harness default)",
+            help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CLAUDE_CLOUD, else"
+            " sonnet for claude-cloud and the harness default for any other agent)",
         )
         p.add_argument(
             "--effort",
@@ -5301,7 +5344,7 @@ def main(argv: list[str] | None = None) -> int:
             metavar="FILE",
             type=Path,
             help="with --top-level and a registry, the registry of the project manager's own leads:"
-            " the supervisor --console raises no deadline while every lead in it is running",
+            " the supervisor --console raises no deadline on its wait on its leads while every lead in it shows life",
         )
     p = sub.add_parser("send")
     p.add_argument("session")
