@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
-    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
+    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep] [--notify]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -35,7 +35,8 @@ REST and end its turn with the comment's URL, and tells it that its checkout is 
 workspace it started from and that a foreground command stops at 10 minutes; ``wait --pr N`` then writes that comment's body to the report path,
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
-exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
+exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
@@ -5314,6 +5315,15 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one command; with ``--notify`` on run, send or wait, tell ``$LOOP_NOTIFY`` how it ended."""
+    ended: dict[str, str] = {}
+    code = command(argv, ended)
+    if "report" in ended:
+        notify(f"exit {code}: {ended.get('failure') or ended['report']}")
+    return code
+
+
+def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -5579,6 +5589,12 @@ def main(argv: list[str] | None = None) -> int:
                 type=int,
                 help="a cloud worker's PR: it reports as a comment there, which wait writes to the report path",
             )
+        if p.prog.split()[-1] in ("run", "send", "wait"):
+            p.add_argument(
+                "--notify",
+                action="store_true",
+                help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
+            )
         if p.prog.split()[-1] in ("run", "wait"):
             p.add_argument(
                 "--keep",
@@ -5613,6 +5629,8 @@ def main(argv: list[str] | None = None) -> int:
                 " finished session from (default: $OMNIGENT_SUPERVISE_REGISTRY)",
             )
     args = ap.parse_args(argv)
+    if getattr(args, "notify", False) and args.cmd in ("run", "send", "wait"):
+        ended["report"] = str(args.report.resolve())
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
     unreported: Path | None = None
     stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
@@ -6004,6 +6022,7 @@ def main(argv: list[str] | None = None) -> int:
         elif unreported:
             write_failed(og, sid, unreported, e)
         print(e, file=sys.stderr)
+        ended["failure"] = (str(e).splitlines() or [""])[0]
         return e.code
     finally:
         for s, handler in handlers.items():
