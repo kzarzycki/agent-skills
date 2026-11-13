@@ -3,6 +3,7 @@
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
@@ -2190,7 +2191,89 @@ def pin_environment(workspace: Path) -> None:
         + (f", nor does {main / SETTINGS}" if main else "")
         + ": the cloud session would land in the account's default environment; pin the"
         ' environment there ({"remote": {"defaultEnvironmentId": "<id>"}})'
+        + ("" if main else "; make a launch dir with `launch-dir` (no files checked out)")
     )
+
+
+def launch_dir(
+    remote: str, branch: str, env: str, path: Path, trust: bool = False, config: Path | None = None
+) -> None:
+    """A directory cloud sessions launch from, with no working tree: nothing on the cloud path reads
+    its files (the bridge checks for a git repo, the CLI bundles it and reads the pin), so a
+    blobless ``--no-checkout`` clone with HEAD on ``branch`` stands in for a full checkout. It holds
+    the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/`` that briefs and reports use. The
+    folder-trust entry in the user's Claude config (``config``, default ``~/.claude.json``) is
+    written only with ``trust``: trust is the user's decision, never this script's."""
+    if path.exists() and any(path.iterdir()):
+        raise Fail(f"{path} is not empty")
+    done = subprocess.run(
+        [
+            "git",
+            "clone",
+            "--no-checkout",
+            "--filter=blob:none",
+            "--branch",
+            branch,
+            remote,
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode:
+        raise Fail(f"git clone {remote} ({branch}): {done.stderr.strip()[-300:]}")
+    (path / SETTINGS).parent.mkdir(parents=True, exist_ok=True)
+    (path / SETTINGS).write_text(
+        json.dumps({"remote": {"defaultEnvironmentId": env}}, indent=2) + "\n"
+    )
+    (path / "tmp" / "loop").mkdir(parents=True, exist_ok=True)
+    if trust:
+        config = config or Path.home() / ".claude.json"
+        data = json.loads(config.read_text()) if config.exists() else {}
+        data.setdefault("projects", {}).setdefault(str(path.resolve()), {})[
+            "hasTrustDialogAccepted"
+        ] = True
+        config.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"launch dir {path}: {branch}, environment {env}" + (", trusted" * trust))
+
+
+def move_head(workspace: Path, pr: int) -> None:
+    """Point a launch dir's HEAD at PR ``pr``'s head branch (fetched from origin when needed) without checking
+    files out, so a cloud session starts on it. A directory with a working tree (it has an index)
+    is left alone: moving its HEAD under its files would corrupt it."""
+    index = subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-path", "index"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if not index or Path(index).exists():
+        return
+    branch = pr_branch(pr)
+    for cmd in (
+        ["fetch", "-q", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+        ["update-ref", f"refs/heads/{branch}", f"refs/remotes/origin/{branch}"],
+        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"],
+    ):
+        done = subprocess.run(
+            ["git", "-C", str(workspace), *cmd], capture_output=True, text=True, check=False
+        )
+        if done.returncode:
+            raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
+
+
+def pr_branch(pr: int) -> str:
+    """The head branch of PR ``pr``."""
+    out = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--json", "headRefName", "-q", ".headRefName"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode or not out.stdout.strip():
+        raise Fail(f"PR {pr}: no head branch read ({out.stderr.strip()[-200:]})")
+    return out.stdout.strip()
 
 
 def briefed_by_file(og: Omnigent, agent: str, host_id: str | None) -> bool:
@@ -5392,6 +5475,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser(
+        "launch-dir",
+        description="make a directory cloud sessions launch from, with no files checked out",
+    )
+    p.add_argument("remote")
+    p.add_argument("branch")
+    p.add_argument("env", help="the claude.ai environment id to pin")
+    p.add_argument("path", type=Path)
+    p.add_argument(
+        "--trust", action="store_true", help="also write the folder-trust entry (the user's call)"
+    )
+    p = sub.add_parser(
         "capacity", description="exit 0 when this host, or --host, has room for another session"
     )
     p.add_argument(
@@ -5599,6 +5693,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.notify:
                 notify(outcome)
             return code
+        if args.cmd == "launch-dir":
+            launch_dir(args.remote, args.branch, args.env, args.path, args.trust)
+            return 0
         if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
             print(line)
@@ -5859,6 +5956,8 @@ def main(argv: list[str] | None = None) -> int:
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
+            if args.pr:
+                move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
         if here:  # a remote lead's report is written on its host, never read here

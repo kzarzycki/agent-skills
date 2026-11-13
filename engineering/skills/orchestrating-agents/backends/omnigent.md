@@ -150,7 +150,8 @@ worktree's missing pin from its main checkout (keeping the file's other settings
 when neither has one. They refuse a local agent in a main checkout whose own file names the pin, naming
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
 and a local agent working there switches its branch under every later start. A worktree's copied
-pin is its own, so a local agent there is accepted. `wait` (and so `run`) with `--pr <n>` fetches
+pin is its own, so a local agent there is accepted. A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> <env-id> <path>` makes one as a blobless `--no-checkout` clone with HEAD on the branch, the pin and a `tmp/loop/`, a few dozen MB instead of a full checkout; `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `pin_environment` accepts such a clone with its own pin and refuses one without, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone.
+`wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
 only to the `claude/…` branch its session started on and names it, with its head SHA, in the
