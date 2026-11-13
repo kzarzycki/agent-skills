@@ -7488,6 +7488,73 @@ def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
     assert state_of(registry)["leads"]["a"]["revives"] == 1
 
 
+# A failure whose text is a transient provider error is revived again with backoff (#904).
+
+
+def failing_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str, polls: int
+) -> tuple[Lead, Path, list[float], list[float]]:
+    """A followed lead that fails with ``error`` each time it runs, on a clock one minute a poll:
+    a revive sets it running for one poll, then it fails again. Returns the times each failure
+    was first seen and each revive was sent."""
+    clock = [time.time()]
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
+    og.snap = {"status": "failed", "last_task_error": {"message": error}}
+    failed, revived = [clock[0]], []
+
+    def between(poll: int) -> None:
+        sent = [
+            i for i in og.histories["a"] if omnigent_agent.text_of(i) == omnigent_agent.LEAD_REVIVE
+        ]
+        clock[0] += 60
+        if len(sent) > len(revived):  # revived this poll: it runs one poll, then fails again
+            revived.append(float(sent[-1]["created_at"]))
+            og.snap["status"] = "running"
+            og.histories["a"].append(ending(f"working {poll}", 0))
+        elif og.snap["status"] == "running":
+            og.snap["status"] = "failed"
+            failed.append(clock[0])
+
+    supervised(og, registry, monkeypatch, polls, between, notify="cos", console=True)
+    return og, registry, failed, revived
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "API error (authentication_failed)",
+        "403 Attention Required! | Cloudflare",
+        "claude --cloud create: HTTP 503 Service Unavailable",
+        "HTTP 500 Internal Server Error",
+        "API error (overloaded_error): Overloaded",
+    ],
+)
+def test_a_transient_provider_failure_is_revived_with_backoff_and_reported_only_at_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str
+) -> None:
+    og, registry, failed, revived = failing_lead(tmp_path, monkeypatch, error, 150)
+    gaps = [round((r - f) / 60) for f, r in zip(failed, revived)]
+    assert gaps == [2, 5, 10, 20, 20, 20, 20]  # then every 20, while it fits in about 2 hours
+    assert len(failed) == len(revived) + 1  # its last failure is reported, not revived
+    assert failed[-1] - failed[0] + 20 * 60 > 2 * 3600 >= revived[-1] - failed[0]
+    [post] = posted(og)  # nothing reached the parent before the cap
+    assert f"[act] a t-a: failed: {error} (" in post
+    assert "transient" in post
+    assert state_of(registry)["leads"]["a"]["retrying"]["count"] == 7
+
+
+def test_a_failure_that_is_no_transient_provider_error_is_still_reported_after_one_revive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og, registry, failed, revived = failing_lead(tmp_path, monkeypatch, "runner lost", 10)
+    assert len(revived) == 1 and len(failed) == 2
+    [post] = posted(og)
+    assert "[act] a t-a: failed: runner lost (failed again after its revive)" in post
+    assert "retrying" not in state_of(registry)["leads"]["a"]
+
+
 @pytest.mark.parametrize("runner", ["offline", "revive fails", "online"])
 def test_a_lead_past_its_named_wait_with_no_live_runner_is_revived_not_raised(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: str
