@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 from collections.abc import Callable, Iterator
@@ -639,6 +640,10 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
         ),
         ("bot:\n  dependabot[bot]:\n", "loop.md's `bot.dependabot[bot]` lacks `paths`"),
         ("land:\n  signed_squash_to: main\n", "loop.md's `land` lacks `allowed_signers`"),
+        (
+            "land:\n  signed_squash_to: main\n  allowed_signers: s\n  where: everywhere\n",
+            "loop.md's `land.where` must be one of host, cloud, both, not 'everywhere'",
+        ),
         (
             'land:\n  signed_squash_to: ""\n  allowed_signers: s\n',
             "loop.md's `land.signed_squash_to` is empty",
@@ -4799,6 +4804,367 @@ def test_a_green_signed_batch_gives_each_pr_a_commit_of_its_own_change(
     assert git_in(work, "log", "-2", "--name-only", "--format=%s", lands["main"]()).split() == [
         "PR", "8", "(#8)", "8.txt", "PR", "7", "(#7)", "7.txt",
     ]  # fmt: skip
+
+
+# --- land in a cloud session: the landing key from the environment, never the VM's ---
+
+CLOUD_LAND = SIGNED_LAND + "where: cloud\nsigning_key_env: LAND_KEY\n"
+# a cloud VM's signing program, which signs with the session's key: here it fails, so a land through it fails
+VM_SIGNER = "#!/bin/sh\necho 'the session signer was used' >&2\nexit 1\n"
+
+
+@pytest.fixture
+def cloud_land(
+    lands: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    """`lands` as a cloud session runs it: the cloud marker set, PR 7 open, loop.md's `land` section with `where:
+    cloud` and `signing_key_env: LAND_KEY`, the variable holding a landing key listed in `signers`, and the VM's own
+    config (`commit.gpgsign`, a session key, a signing program that fails). The temporary directory is a fresh one,
+    `tmp`, so a key folder left behind shows. `out(code, lines)` checks the key's text was printed nowhere."""
+    work = lands["work"]
+    git_in(work, "remote", "set-url", "origin", REPO)
+    git_in(work, "config", f"url.{lands['origin'].as_uri()}.insteadOf", REPO)
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    for name in ("landing", "session", "stranger"):
+        sh(
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            name,
+            "-f",
+            str(keys / name),
+            cwd=keys,
+        )
+    (work / "signers").write_text(f"loop@example.com {(keys / 'landing.pub').read_text()}")
+    loop = work / "docs" / "agents" / "loop.md"
+    loop.write_text(add(loop.read_text(), "land", CLOUD_LAND))
+    head = lands["open"](7, {"7.txt": "7\n"})
+    signer = tmp_path / "code-sign"
+    signer.write_text(VM_SIGNER)
+    signer.chmod(0o755)
+    for key, value in (
+        ("gpg.format", "ssh"),
+        ("commit.gpgsign", "true"),
+        ("user.signingkey", str(keys / "session")),
+        ("gpg.ssh.program", str(signer)),
+    ):
+        git_in(work, "config", key, value)
+    landing_key = (keys / "landing").read_text()
+    monkeypatch.setenv(approvals.CLOUD, "true")
+    monkeypatch.setenv("LAND_KEY", landing_key)
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp))
+    faked = approvals.gh
+
+    def gh(*args: str, data: str | None = None) -> str:
+        """`lands`' gh, also listing the open PRs as drop_records reads them over REST once a land merged."""
+        if args[:2] == ("api", "--paginate") and "pulls?state=open" in args[2]:
+            assert args[3:] == ("--jq", ".[]"), args
+            return "".join(
+                json.dumps({"number": pr["number"], "head": {"sha": pr["headRefOid"]}}) + "\n"
+                for pr in lands["pulls"].values()
+                if pr["state"] == "OPEN"
+            )
+        return faked(*args, data=data)
+
+    monkeypatch.setattr(approvals, "gh", gh)
+
+    def out(capsys: pytest.CaptureFixture[str], code_lines: tuple[int, list[str]]) -> list[str]:
+        """land's lines, once the key's text is in neither them nor stderr, and no key folder is left."""
+        err = capsys.readouterr().err
+        for secret in (landing_key, *landing_key.splitlines()[1:-1]):
+            assert secret not in "\n".join(code_lines[1]) and secret not in err
+        assert list(tmp.iterdir()) == []
+        return code_lines[1]
+
+    lands.update(keys=keys, head=head, loop=loop, out=out, tmp=tmp, base=lands["main"]())
+    return lands
+
+
+def unmoved(cloud_land: dict[str, Any]) -> None:
+    """No ref the land would move moved: main, the PR's branch, and no landing lock taken."""
+    assert (cloud_land["main"](), git_in(cloud_land["origin"], "rev-parse", "pr7").strip()) == (
+        cloud_land["base"],
+        cloud_land["head"],
+    )
+    assert cloud_land["tips"]() == []
+
+
+def test_a_cloud_land_signs_the_squash_with_the_environments_key_not_the_vms(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The VM's signing program fails, yet the PR lands, as a squash a host verifies against `signers` with the
+    landing key; GitHub refusing the `gate` status, as a cloud session's proxy does, the pass goes to origin as its record
+    branch, which the land drops once that tree landed."""
+
+    def refused(*_args: Any, **_kw: Any) -> None:
+        raise subprocess.CalledProcessError(1, "gh", stderr="gh: Forbidden (HTTP 403)")
+
+    monkeypatch.setattr(approvals, "post_status", refused)
+    for name, real in (
+        ("record_ref", RECORD_REF),
+        ("push_record", PUSH_RECORD),
+        ("drop_records", DROP_RECORDS),
+    ):
+        monkeypatch.setattr(approvals, name, real)
+    lines = cloud_land["out"](capsys, cloud_land["land"]("7"))
+    tip = cloud_land["main"]()
+    assert f"PR #7 landed in main as {tip}, signed by a key in signers" in lines
+    assert cloud_land["merged"]() == []  # never GitHub's merge
+    assert git_in(cloud_land["origin"], "rev-parse", "pr7").strip() == tip
+    verified = subprocess.run(
+        # as a host checks it, with ssh-keygen rather than the VM's program
+        [
+            "git",
+            *("-c", "gpg.ssh.program=ssh-keygen"),
+            *("-c", "gpg.ssh.allowedSignersFile=signers"),
+            *("verify-commit", tip),
+        ],
+        cwd=cloud_land["work"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert 'Good "git" signature for loop@example.com with ED25519 key' in verified.stderr
+    assert cloud_land["tips"]() and cloud_land["lock"]() == ""  # the lock was taken and released
+    ref = approvals.RECORD_BRANCH.format(
+        approvals.record_name(cloud_land["main"]("^{tree}"), approvals.gate()[0])
+    )
+    assert any(line.startswith(f"published in origin as the record branch {ref}") for line in lines)
+    # and gone once the tree it holds landed (drop_records)
+    assert git_in(cloud_land["origin"], "for-each-ref", "--format=%(refname)", ref).strip() == ""
+
+
+@pytest.mark.parametrize(
+    ("key", "why"),
+    [
+        (None, "the variable LAND_KEY (loop.md's `land.signing_key_env`) is not set"),
+        ("", "the variable LAND_KEY (loop.md's `land.signing_key_env`) is empty"),
+        (" \n", "the variable LAND_KEY (loop.md's `land.signing_key_env`) is empty"),
+        (
+            "stranger",
+            (
+                "the key in the variable LAND_KEY (loop.md's `land.signing_key_env`) is not in signers: add its"
+                " public key there"
+            ),
+        ),
+        (
+            "garbage",
+            "the variable LAND_KEY (loop.md's `land.signing_key_env`) holds no SSH private key without a passphrase",
+        ),
+    ],
+)
+def test_a_cloud_land_refuses_a_missing_empty_or_unlisted_key_and_prints_no_key(
+    cloud_land: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    key: str | None,
+    why: str,
+) -> None:
+    if key is None:
+        monkeypatch.delenv("LAND_KEY")
+    elif key == "stranger":
+        monkeypatch.setenv("LAND_KEY", (cloud_land["keys"] / "stranger").read_text())
+    elif key == "garbage":
+        monkeypatch.setenv("LAND_KEY", (cloud_land["keys"] / "landing").read_text()[:-40] + "\n")
+    else:
+        monkeypatch.setenv("LAND_KEY", key)
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["out"](capsys, (code, lines))) == (1, [why])
+    unmoved(cloud_land)
+    if key in ("stranger", "garbage"):
+        text = os.environ["LAND_KEY"]
+        assert all(part not in "\n".join(lines) for part in text.splitlines()[1:-1])
+
+
+def test_a_cloud_land_refuses_a_section_naming_no_key_variable(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cloud_land["loop"].write_text(
+        cloud_land["loop"].read_text().replace("  signing_key_env: LAND_KEY\n", "")
+    )
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        (
+            "land in a cloud session signs with the key in the variable loop.md's `land.signing_key_env` names,"
+            " and it names none"
+        )
+    ]
+    unmoved(cloud_land)
+
+
+@pytest.mark.parametrize(
+    ("where", "marker", "place"),
+    [("host", True, "a cloud session"), ("cloud", False, "a host")],
+)
+def test_land_refuses_where_loop_md_excludes_the_place_it_runs(
+    cloud_land: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    where: str,
+    marker: bool,
+    place: str,
+) -> None:
+    cloud_land["loop"].write_text(
+        cloud_land["loop"].read_text().replace("where: cloud", f"where: {where}")
+    )
+    if not marker:
+        monkeypatch.delenv(approvals.CLOUD)
+    # never a PR read: the refusal comes first
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pytest.fail(f"PR #{n} read"))
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        f"loop.md's `land.where` is `{where}`, so land does not run in {place}"
+    ]
+    unmoved(cloud_land)
+
+
+def test_a_cloud_land_defaults_to_host_and_lands_with_both(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`where` unset is `host`, which a cloud session refuses; `both` lands there."""
+    text = cloud_land["loop"].read_text()
+    cloud_land["loop"].write_text(text.replace("  where: cloud\n", ""))
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        "loop.md's `land.where` is `host`, so land does not run in a cloud session"
+    ]
+    unmoved(cloud_land)
+    cloud_land["loop"].write_text(text.replace("where: cloud", "where: both"))
+    code, lines = cloud_land["land"]("7")
+    assert (code, cloud_land["main"]()) == (
+        0,
+        git_in(cloud_land["origin"], "rev-parse", "pr7").strip(),
+    )
+    cloud_land["out"](capsys, (code, lines))
+
+
+def test_a_cloud_land_without_the_land_section_names_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    cloud_land["loop"].write_text(GITHUB_RULE)
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == [
+        (
+            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
+            " the session's proxy refuses, and signs with GitHub's key"
+        )
+    ]
+    unmoved(cloud_land)
+
+
+def test_the_cloud_key_folder_is_removed_when_the_land_fails_after_taking_it(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A land that raises once the key is on disk still removes its folder, and signs nothing after it."""
+    seen: list[list[str]] = []
+
+    def broken(*_args: Any) -> tuple[int, bool]:
+        seen.append(list(approvals.SIGNING))
+        raise approvals.Refused("broken")
+
+    monkeypatch.setattr(approvals, "landing_here", broken)
+    assert cloud_land["out"](capsys, cloud_land["land"]("7")) == ["broken"]
+    assert seen[0][1::2] == [
+        "gpg.format=ssh",
+        f"user.signingkey={seen[0][3].split('=', 1)[1]}",
+        "gpg.ssh.program=ssh-keygen",
+    ]
+    assert Path(seen[0][3].split("=", 1)[1]).parent.parent == cloud_land["tmp"]
+    assert approvals.SIGNING == []
+
+
+def test_the_cloud_key_file_is_the_owners_alone(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    modes: list[int] = []
+    monkeypatch.setattr(
+        approvals,
+        "landing_here",
+        lambda *_a: (
+            modes.append(Path(approvals.SIGNING[3].split("=", 1)[1]).stat().st_mode & 0o777)
+            or (0, False)
+        ),
+    )
+    assert approvals.landing(7) == (0, False)
+    assert modes == [0o600]
+
+
+def test_a_cloud_land_refuses_a_draft_it_cannot_mark_ready(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses."""
+    cloud_land["pulls"][7]["isDraft"] = True
+    assert cloud_land["out"](capsys, cloud_land["land"]("7"))[-1] == (
+        "PR #7 is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+    )
+    assert cloud_land["calls"] == []
+    assert cloud_land["main"]() == cloud_land["base"]
+
+
+def test_a_cloud_land_reads_the_default_branch_over_rest(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(approvals, "_rest_only", True)
+    monkeypatch.setattr(approvals, "rest", lambda path: {"default_branch": "main"})
+    named: list[str] = []
+    monkeypatch.setattr(approvals, "locked", lambda base, _held: named.append(base) or False)
+    assert approvals.landing(None) == (approvals.WAITING, True)
+    assert named == ["main"]
+
+
+def test_a_cloud_land_takes_a_pr_rest_cannot_say_is_queued_only_on_the_projects_word(
+    cloud_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REST says neither whether a PR is in a merge queue nor whether classic branch protection requires one: a cloud
+    session refuses such a PR unless loop.md's `land` section says `merge_queue: false`. A host still refuses it."""
+    pull = cloud_land["pulls"][7] | {"isInMergeQueue": None}
+    with approvals.placed(approvals.project()[1]):
+        assert "`merge_queue: false`" in approvals.unsignable(pull, "main", Path("signers"))
+    cloud_land["loop"].write_text(
+        cloud_land["loop"]
+        .read_text()
+        .replace(
+            "  signing_key_env: LAND_KEY\n", "  signing_key_env: LAND_KEY\n  merge_queue: false\n"
+        )
+    )
+    with approvals.placed(approvals.project()[1]):
+        assert approvals.unsignable(pull, "main", Path("signers")) is None
+    monkeypatch.delenv(approvals.CLOUD)
+    git_in(cloud_land["work"], "config", "gpg.ssh.program", "ssh-keygen")
+    assert approvals.unsignable(pull, "main", Path("signers")).startswith(
+        "PR #7: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
+        " signature: land it where GraphQL answers"
+    )
+
+
+def test_a_key_is_listed_only_as_its_type_and_body_together_on_a_live_line(tmp_path: Path) -> None:
+    signers = tmp_path / "signers"
+    signers.write_text(
+        "# a@example.com ssh-ed25519 BODY\nb@example.com ssh-rsa BODY\nc@example.com ssh-ed25519 OTHER\n"
+    )
+    assert not approvals.listed("ssh-ed25519 BODY landing", signers)
+    signers.write_text(signers.read_text() + 'd@example.com namespaces="git" ssh-ed25519 BODY d\n')
+    assert approvals.listed("ssh-ed25519 BODY landing", signers)
+
+
+def test_a_cloud_eviction_leaves_the_pr_ready_and_says_so(
+    cloud_land: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub turns a PR back to draft only over GraphQL: a cloud session says it stays ready; a host makes it one."""
+    pull = cloud_land["pulls"][7]
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert (
+        "PR #7 stays ready, since a cloud session can't make it a draft: make it one on GitHub"
+        in (capsys.readouterr().out.splitlines())
+    )
+    assert cloud_land["calls"] == []
+    monkeypatch.delenv(approvals.CLOUD)
+    approvals.evict(pull, "main", "c" * 40, Path("missing.log"))
+    assert cloud_land["calls"] == [("pr", "ready", "--undo", "7")]
 
 
 def test_required_checks_never_stand_in_for_the_gate(

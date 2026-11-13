@@ -165,6 +165,19 @@ meanwhile; a base push refused puts the PR's branch back on its head. It is no c
 repository (its branch isn't ours to push), targets a base other than the section's, has auto-merge or the merge queue
 on (GitHub would sign that squash), or when `origin` isn't the PR's repo, the checkout signs nothing or the signers file
 is missing. Without the section nothing changes.
+`where: host | cloud | both` (default `host`) says where `land` runs: it refuses elsewhere, exit 1, before reading any
+PR. A cloud session is one where Claude Code sets `CLAUDE_CODE_REMOTE=true`; its checkout signs with the session's own
+key, shared across that service's users, so there `land` refuses without the section (GitHub's merge is GraphQL, which
+the session's proxy refuses, and signs with GitHub's key), when it names no `signing_key_env`, and when that variable
+is unset, empty, no unencrypted SSH private key, or a key whose public half is no line of the allowed signers file, each
+refusal naming which and never the key. Else it writes the key to a mode-0600 file in a fresh temporary directory,
+removed however the land ends, and every git command of the land runs with it (`-c gpg.format=ssh -c
+user.signingkey=<file> -c gpg.ssh.program=ssh-keygen`, over the session's key and signing program), so each squash is
+signed and verified with it. The batch's pass is published as below: GitHub refusing the status
+there, it goes to origin as a ref. There REST alone answers, and it says neither whether a PR is in a merge queue nor
+whether classic branch protection requires one, so a PR is a candidate there only with `merge_queue: false` in the
+section, the project's word that its base requires none (`required_checks` still refuses a ruleset that does); a draft is refused, and an evicted PR stays
+ready, each said, since GitHub changes a draft only over GraphQL. Off a cloud session only `where` is new.
 `check queue`, `batch` and loop.md's `batch_queue`, `carry_over_main` and `ci` work as below for one more release, each
 printing one `deprecated:` line on stderr, so a project's own queue keeps running until it adopts `land`.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
@@ -571,13 +584,19 @@ def label_names(tracker: str) -> dict[str, set[str]]:
 
 
 class Table(dict):
-    """A settings section whose every key is required, such as `land`."""
+    """A settings section whose every key is required but those `optional` names, such as `land`."""
+
+    def __init__(self, *args: Any, optional: tuple[str, ...] = (), **kinds: Any) -> None:
+        super().__init__(*args, **kinds)
+        self.optional = frozenset(optional)
 
 
 class Choice(tuple):
     """A setting that is one of these names, such as `loop.delegate`."""
 
 
+# where `land` may run (loop.md's `land.where`): a host, a cloud session (CLOUD), or either
+PLACES = ("host", "cloud", "both")
 # loop.md's settings (SKILL.md § Settings), one section each: each key's type, or a tuple of the values it allows.
 # A list holds strings; `bot.<login>` is a section per bot.
 STAGES = ("intent", "spec", "plan", "build", "review", "land")
@@ -603,7 +622,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "plan": {"always": bool, "labels": list},
     "signoff": {"always": bool, "labels": list, "paths": list},
     "bot": {"paths": list, "branch": str},
-    "land": Table(signed_squash_to=str, allowed_signers=str),
+    "land": Table(
+        signed_squash_to=str,
+        allowed_signers=str,
+        where=Choice(PLACES),
+        signing_key_env=str,
+        merge_queue=bool,
+        optional=("where", "signing_key_env", "merge_queue"),
+    ),
     "carry_over_main": Table({"except": list}),
 }
 # docs/agents/issue-tracker.md's settings: in each section every key is a name, its value a description or a new name
@@ -722,7 +748,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             raise Refused(
                 f"{file}'s {where} is empty"
             )  # a name's description may be empty, a path may not
-    if isinstance(schema, Table) and (missing := [key for key in schema if key not in section]):
+    if isinstance(schema, Table) and (
+        missing := [key for key in schema if key not in section and key not in schema.optional]
+    ):
         raise Refused(f"{file}'s `{name}` lacks `{'`, `'.join(missing)}`")
     return section
 
@@ -1853,6 +1881,101 @@ def opted_out(loop: str | None) -> bool:
     return settings(loop).get("opt_out", False)
 
 
+# the variable Claude Code sets to `true` in a cloud session's VM, where the checkout's signing key is the session's own
+CLOUD = "CLAUDE_CODE_REMOTE"
+# the config every git command takes during a cloud land (placed): sign and verify a squash with the landing key, through
+# ssh-keygen itself rather than the VM's signing program, which signs with the session's key
+SIGNING: list[str] = []
+
+
+def in_cloud() -> bool:
+    return os.environ.get(CLOUD) == "true"
+
+
+def listed(public: str, signers: Path) -> bool:
+    """Whether the public key `public` (`<type> <base64> [comment]`) is a line of the allowed signers file."""
+    key = public.split()[:2]
+    lines = signers.read_text().splitlines()
+    return len(key) == 2 and any(
+        fields[i : i + 2] == key
+        for line in lines
+        if not line.lstrip().startswith("#")
+        for fields in [line.split()]
+        for i in range(len(fields) - 1)
+    )
+
+
+@contextlib.contextmanager
+def placed(loop: str | None) -> Any:
+    """Refuse a land where loop.md's `land.where` (default `host`) excludes the place it runs, before any PR is read.
+    In a cloud session (CLOUD) also refuse one without the `land` section, since GitHub's own merge is GraphQL there
+    and signs with GitHub's key, and one whose `signing_key_env` variable is unset, empty or holds a key the allowed
+    signers lack; else hold that key in a mode-0600 file in a fresh temporary directory, removed whatever happens, and
+    sign each squash with it (SIGNING). The key and the variable's value are never printed."""
+    global SIGNING
+    land, cloud = settings(loop).get("land"), in_cloud()
+    place = "a cloud session" if cloud else "a host"
+    if cloud and land is None:
+        raise Refused(
+            "land in a cloud session needs loop.md's `land` section: without it GitHub merges, over GraphQL, which"
+            " the session's proxy refuses, and signs with GitHub's key"
+        )
+    where = (land or {}).get("where", "host")
+    if where not in ("both", "cloud" if cloud else "host"):
+        raise Refused(f"loop.md's `land.where` is `{where}`, so land does not run in {place}")
+    if not cloud:
+        yield
+        return
+    name = land.get("signing_key_env")
+    if not name:
+        raise Refused(
+            "land in a cloud session signs with the key in the variable loop.md's `land.signing_key_env` names,"
+            " and it names none"
+        )
+    key = os.environ.get(name)
+    if key is None:
+        raise Refused(f"the variable {name} (loop.md's `land.signing_key_env`) is not set")
+    if not key.strip():
+        raise Refused(f"the variable {name} (loop.md's `land.signing_key_env`) is empty")
+    signers = Path(land["allowed_signers"]).expanduser()
+    if not signers.is_file():
+        raise Refused(f"no allowed signers file at {signers}")
+    folder = Path(tempfile.mkdtemp(prefix="land-key-"))
+    try:
+        file = folder / "key"
+        with os.fdopen(os.open(file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as out:
+            out.write(key if key.endswith("\n") else key + "\n")
+        public = subprocess.run(
+            ["ssh-keygen", "-y", "-P", "", "-f", str(file)],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+        # ssh-keygen's error is not repeated: it is about the key, which stays unprinted
+        if public.returncode:
+            raise Refused(
+                f"the variable {name} (loop.md's `land.signing_key_env`) holds no SSH private key without a"
+                " passphrase"
+            )
+        if not listed(public.stdout, signers):
+            raise Refused(
+                f"the key in the variable {name} (loop.md's `land.signing_key_env`) is not in {signers}: add its"
+                " public key there"
+            )
+        SIGNING = [
+            *("-c", "gpg.format=ssh"),
+            *("-c", f"user.signingkey={file}"),
+            *("-c", "gpg.ssh.program=ssh-keygen"),
+        ]
+        try:
+            yield
+        finally:
+            SIGNING = []
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def signed(loop: str | None) -> tuple[str, Path] | None:
     """loop.md's `land` section as (branch, signers), None without one."""
     land = settings(loop).get("land")
@@ -1868,19 +1991,34 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
         return f"{where} targets {pull['baseRefName']}, but the policy lands signed squashes only to {branch}"
     if pull["autoMergeRequest"] is not None or pull["isInMergeQueue"]:
         return f"{where}: auto-merge or the merge queue would merge it with GitHub's signature: turn it off"
-    if pull["isInMergeQueue"] is None:
-        return f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's signature: land it where GraphQL answers"
+    # REST can't say whether a PR is queued, nor whether classic branch protection requires a queue (required_checks()
+    # refuses only a ruleset's): a cloud session, where only REST answers, takes the project's word in loop.md
+    if pull["isInMergeQueue"] is None and not (
+        in_cloud() and settings(project()[1]).get("land", {}).get("merge_queue") is False
+    ):
+        return (
+            f"{where}: GitHub's REST API doesn't say whether it is in a merge queue, which would merge it with GitHub's"
+            " signature: land it where GraphQL answers, or, where the base requires no merge queue, say so with"
+            " `merge_queue: false` in loop.md's `land` section"
+        )
     # the URL as configured, before any `insteadOf` rewrite
     origin = subprocess.run(
         ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
     )
     if github_repo(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
         return f"this checkout's `origin` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
+    # with SIGNING, as the land signs: a cloud land's own key over the VM's
     config = subprocess.run(
-        ["git", "config", "--get", "user.signingkey"], capture_output=True, text=True, check=False
+        ["git", *SIGNING, "config", "--get", "user.signingkey"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     gpg = subprocess.run(
-        ["git", "config", "--get", "gpg.format"], capture_output=True, text=True, check=False
+        ["git", *SIGNING, "config", "--get", "gpg.format"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if not config.stdout.strip() or gpg.stdout.strip() != "ssh":
         return "this checkout signs no commits with an SSH key: set `gpg.format ssh` and `user.signingkey`"
@@ -3040,7 +3178,8 @@ def rest_threads(number: int) -> dict[str, Any]:
 def rest_pull(pr: int) -> dict[str, Any]:
     """PR #pr as PULL reads it, from REST, call by call. `closingIssuesReferences` is empty, since REST has no such
     link: the PR's issues are its body's `Closes`, `Part of` and `Implements` lines (closing_issues). Whether it is in
-    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses."""
+    a merge queue can't be read: `isInMergeQueue` is None, which unsignable() refuses unless a cloud session's loop.md
+    says `merge_queue: false`."""
     found = rest(f"repos/{{owner}}/{{repo}}/pulls/{pr}")
     base, head = found["base"], found["head"]
     reviews = [
@@ -3610,8 +3749,16 @@ def land(pr: int | None, wait: bool = False, only: bool = False) -> int:
 
 def landing(pr: int | None, only: bool = False) -> tuple[int, bool]:
     """Land every landable PR into the base (PR `pr`'s, else the default branch) as one gated batch, under the landing
-    lock (`only`: the named PR alone); the exit, and whether a wait would end it (lock, CI on a head), so land --wait runs it again."""
+    lock, where loop.md lets land run (placed) (`only`: the named PR alone); the exit, and whether a wait would end it
+    (lock, CI on a head), so land --wait runs it again."""
     tracker, loop = project()
+    with placed(loop):
+        return landing_here(pr, tracker, loop, only)
+
+
+def landing_here(
+    pr: int | None, tracker: str | None, loop: str | None, only: bool = False
+) -> tuple[int, bool]:
     named = None if pr is None else pull_request(pr)
     if named is not None:
         if named["state"] == "MERGED":
@@ -3622,9 +3769,12 @@ def landing(pr: int | None, only: bool = False) -> tuple[int, bool]:
     base = (
         named["baseRefName"]
         if named
-        else gh(
-            "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
-        ).strip()
+        else fast(
+            lambda: gh(
+                "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"
+            ).strip(),
+            lambda: rest("repos/{owner}/{repo}")["default_branch"],
+        )
     )
     previous = {sig: signal.getsignal(sig) for sig in STOPS}
     stoppable = {sig for sig, handler in previous.items() if handler is not signal.SIG_IGN}
@@ -3818,6 +3968,12 @@ def landable(
     for line in flag(pull, issues, loop):
         print(line)
     if pull["isDraft"]:
+        # GitHub marks a draft ready only over GraphQL, which a cloud session's proxy refuses
+        if in_cloud():
+            print(
+                f"{where} is a draft, and a cloud session can't mark it ready: mark it ready on GitHub"
+            )
+            return 1, False
         # CI skips a draft, and a skipped check counts as green: a draft's checks say nothing about the ready PR
         gh("pr", "ready", str(pull["number"]))
         print(f"{where} is ready now")
@@ -4130,7 +4286,13 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
         tail = log.read_text(errors="replace").splitlines()[-LOG_TAIL:]
     except OSError:
         tail = []
-    gh("pr", "ready", "--undo", str(number))
+    # GitHub turns a PR back to draft only over GraphQL, which a cloud session's proxy refuses
+    if in_cloud():
+        print(
+            f"{where} stays ready, since a cloud session can't make it a draft: make it one on GitHub"
+        )
+    else:
+        gh("pr", "ready", "--undo", str(number))
     comment(
         number,
         f"{EVICTED}\nHead: {head}\n\n`{gate()[0]}` failed twice on it merged alone onto {base} at {green}: fix it,"
@@ -4448,7 +4610,9 @@ def verdict(pr: int, report: Path) -> int:
 
 
 def git(*args: str) -> str:
-    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+    return subprocess.run(
+        ["git", *SIGNING, *args], check=True, capture_output=True, text=True
+    ).stdout
 
 
 LOCAL_CI = ["mise", "run", "check:all"]
@@ -4936,7 +5100,15 @@ def push_record(record: dict[str, Any]) -> str:
     committer and dates are fixed, so pushing a pass again pushes the same commit. Refused: CalledProcessError."""
     when = {"GIT_COMMITTER_DATE": record["time"], "GIT_AUTHOR_DATE": record["time"]}
     commit = subprocess.run(
-        ["git", "commit-tree", record["tree"], "-p", record["head"], "-m", record_message(record)],
+        [
+            "git",
+            "commit-tree",
+            record["tree"],
+            "-p",
+            record["head"],
+            "-m",
+            record_message(record),
+        ],
         check=True,
         capture_output=True,
         text=True,
