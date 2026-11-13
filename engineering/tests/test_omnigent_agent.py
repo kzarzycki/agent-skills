@@ -7134,13 +7134,16 @@ def test_a_quiet_waiter_whose_named_sessions_all_run_raises_no_deadline(
 @pytest.mark.parametrize(
     ("wait", "snaps", "why"),
     [
-        ("waiting on my leads", {"y": {"status": "idle"}}, "lead"),
+        (
+            "waiting on my leads",
+            {"y": {"status": "idle", "updated_at": time.time() - 1300}},
+            "lead",
+        ),
         ("waiting on my leads", {"y": {"archived": True}}, "lead"),
         ("waiting on my leads", {"y": {"status": "failed"}}, "lead"),
-        ("waiting on my leads", {"y": {"updated_at": time.time() - 1300}}, "lead"),
-        ("waiting on my leads", {"y": {"updated_at": None}}, "lead"),
-        (f"waiting on {WORKER}", {WORKER: {"status": "idle"}}, WORKER),
-        (f"waiting on {LEAD}", {LEAD: {"status": "idle"}}, LEAD),
+        ("waiting on my leads", {"y": {"status": "idle", "updated_at": None}}, "lead"),
+        (f"waiting on {WORKER}", {WORKER: {"status": "idle", "updated_at": 1.0}}, WORKER),
+        (f"waiting on {LEAD}", {LEAD: {"status": "idle", "updated_at": 1.0}}, LEAD),
         (f"waiting on {OTHER}", {}, OTHER),
         ("waiting on the chief of staff for a host", {}, "chief"),
         (f"waiting on {COS} for a host", {}, COS),
@@ -7202,6 +7205,139 @@ def test_a_waiter_on_its_leads_without_a_leads_registry_or_with_one_unread_raise
     registry.with_suffix(".state.json").unlink()
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert stalls(og) == ["Supervisor: m t-m: no progress 60m (lead)"]
+
+
+STALE = 1300.0  # seconds since a session's last item: past DEADLINE_SECONDS
+JOB = [{"type": "shell", "status": "running"}]  # a declared background job
+
+
+@pytest.mark.parametrize(
+    ("wait", "snaps"),
+    [
+        # X named by kind or title word, its title holding the word: running, a recent item
+        ("waiting on the worker", {WORKER: {"title": "s898-parser-worker"}}),
+        ("waiting on deployment", {WORKER: {"title": "Deployment check"}}),
+        ("waiting on cccccccc", {}),  # a short id opening X's
+        # X named by its id: busy in a long tool call (running, an old item)
+        (f"waiting on {WORKER}", {WORKER: {"updated_at": time.time() - STALE}}),
+        # idle between its own background jobs: a recent item, or a job declared
+        (f"waiting on {WORKER}", {WORKER: {"status": "idle"}}),
+        (
+            f"waiting on {WORKER}",
+            {WORKER: {"status": "idle", "updated_at": None, "background_tasks": JOB}},
+        ),
+        ("waiting on my leads", {"y": {"status": "idle", "background_tasks": JOB}}),
+        # its own background job, declared and live
+        ("waiting on bz3jp5aod", {"m": {"status": "idle", "background_tasks": JOB}}),
+    ],
+)
+def test_a_quiet_waiter_on_a_session_that_shows_life_raises_no_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, snaps: dict
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: {wait}. Report: m.md", **snaps)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
+def test_a_waiters_named_session_with_an_old_item_shows_life_through_its_live_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = f"STILL WORKING: waiting on {WORKER}. Report: m.md"
+    registry, og = manager(tmp_path, wait, **{WORKER: {"status": "idle", "updated_at": 1.0}})
+    og.kids[WORKER] = time.time() - 60  # its own worker wrote a minute ago
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == []
+    og.kids[WORKER] = time.time() - STALE
+    registry.with_suffix(".state.json").unlink()
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({WORKER})"]
+
+
+ASKING = {"pending_elicitations": [{"params": {"message": "pick", "ask_user_question": True}}]}
+APPROVING = {"pending_elicitations": [{"params": {"content_preview": "Bash: rm x"}}]}
+
+
+@pytest.mark.parametrize(
+    ("wait", "snaps", "why"),
+    [
+        # dead: archived, failed or gone, though running and recent otherwise
+        ("waiting on the worker", {WORKER: {"title": "w-worker", "archived": True}}, "worker"),
+        ("waiting on the worker", {WORKER: {"title": "w-worker", "status": "failed"}}, "worker"),
+        (f"waiting on {WORKER}", {WORKER: {"archived": True, "background_tasks": JOB}}, WORKER),
+        (f"waiting on {WORKER}", {WORKER: {"status": "failed"}}, WORKER),
+        # stuck on a question or a permission, though its turn reads running
+        (f"waiting on {WORKER}", {WORKER: ASKING}, WORKER),
+        (f"waiting on {WORKER}", {WORKER: APPROVING}, WORKER),
+        ("waiting on the worker", {WORKER: {"title": "w-worker", **APPROVING}}, "worker"),
+        # no kin answers the word, or the short id opens no kin's id
+        ("waiting on the worker", {}, "worker"),
+        ("waiting on dddddddd", {}, "dddddddd"),
+    ],
+)
+def test_a_quiet_waiter_on_a_dead_or_prompted_session_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, snaps: dict, why: str
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: {wait}. Report: m.md", **snaps)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({why})"]
+
+
+def test_a_quiet_waiter_on_a_gone_session_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for wait, why in ((f"waiting on {WORKER}", WORKER), ("waiting on cccccccc", "cccccccc")):
+        registry, og = manager(tmp_path, f"STILL WORKING: {wait}. Report: m.md")
+        og.broken[WORKER] = omnigent_agent.Gone(f"GET /v1/sessions/{WORKER}: HTTP 404")
+        supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+        assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({why})"]
+        registry.with_suffix(".state.json").unlink()
+
+
+@pytest.mark.parametrize(
+    ("wait", "snaps", "why"),
+    [
+        (
+            f"waiting on {WORKER}",
+            {WORKER: {"status": "idle", "updated_at": time.time() - STALE}},
+            WORKER,
+        ),
+        (f"waiting on {WORKER}", {WORKER: {"status": "idle", "updated_at": None}}, WORKER),
+        (
+            "waiting on the worker",
+            {WORKER: {"title": "w-worker", "status": "idle", "updated_at": time.time() - STALE}},
+            "worker",
+        ),
+        (  # a monitor is no declared job
+            f"waiting on {WORKER}",
+            {
+                WORKER: {
+                    "status": "idle",
+                    "updated_at": time.time() - STALE,
+                    "background_tasks": [{"type": "monitor", "status": "running"}],
+                }
+            },
+            WORKER,
+        ),
+        (  # a job that finished is none either
+            f"waiting on {WORKER}",
+            {
+                WORKER: {
+                    "status": "idle",
+                    "updated_at": time.time() - STALE,
+                    "background_tasks": [{"type": "shell", "status": "completed"}],
+                }
+            },
+            WORKER,
+        ),
+        ("waiting on bz3jp5aod", {}, "bz3jp5aod"),  # its own job, none declared
+    ],
+)
+def test_a_quiet_waiter_on_a_session_with_an_old_item_no_turn_and_no_job_raises_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wait: str, snaps: dict, why: str
+) -> None:
+    registry, og = manager(tmp_path, f"STILL WORKING: {wait}. Report: m.md", **snaps)
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [f"Supervisor: m t-m: no progress 60m ({why})"]
 
 
 def test_the_nudge_and_revive_end_on_a_wait_the_supervisor_accepts() -> None:

@@ -620,14 +620,20 @@ is only a report's path takes its ending and wait from the report's first line, 
 last message (a failed read is logged once and leaves them as the message gave them). None for a
 parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
 none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
-then waits on its follower, who was told. None either while every session the wait names is
-running: not archived, its status running and updated within 20 minutes, since the lead is
-waiting, not stalled. A wait names a session by its full id (not the `--notify` session's, the
-chief of staff, which is outside its follow set), or, for a project manager started with `start
---top-level --leads <file>` (a `leads=<file>` field on its registry line, kept on a re-arm), its
-leads as a group: `lead` names every lead that registry follows. A named session idle, ended or
-not read, a registry not read, and a wait on anything else (the owner, a word) leave the deadline
-as above. Each deadline is one event per
+then waits on its follower, who was told. None either while every session the wait names shows
+life, since the lead is waiting, not stalled: not archived, failed or gone, no question or
+permission waiting on it, and a running turn (a long tool call is persisted only once it
+returns), a declared background job (a monitor is none), or a last item, its own or its live
+children's, within 20 minutes. A wait names a session by its full id among the lead's live
+children and subscriptions or its leads (never the `--notify` session's, the chief of staff,
+which is outside its follow set); for a project manager started with `start --top-level --leads
+<file>` (a `leads=<file>` field on its registry line, kept on a re-arm), `lead` names every lead
+that registry follows; any other word, a kind (`worker`, `verifier`) or a title word, names each
+of the lead's live children and subscriptions whose title holds it as a word, and a short id
+(8 hex or more) the one whose id opens with it; a background task id names the lead's own job,
+alive while it declares a live background task. A named session that shows no life or is not
+read, a registry or children not read, and a wait no session answers (the owner, `CI` with no
+session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
 `direct` field (`omnigent_agent.py direct <session>`, `--off` clears it), one the owner drives in
 its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
