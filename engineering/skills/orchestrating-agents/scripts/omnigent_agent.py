@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
@@ -106,7 +106,7 @@ session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal ev
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
 It also raises one ``landed`` line per repo and new default-branch head of the repos its followed
 leads work in, whatever the leads write (``gh api``; the first head seen is only stored).
-With ``--console``, the chief of staff's console, each poll it also writes ``<registry
+With ``--console``, the chief of staff's or a project manager's console (it labels its own session ``omni.role=cos``, or, on ``<repo>-leads.registry``, ``omni.role=pm`` and ``omni.repos=<repo>``), each poll it also writes ``<registry
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
@@ -330,6 +330,8 @@ FAILED_LINE = re.compile(r"FAILED: \S+: [^\n]*\n?")
 VERDICT_FIELD = "verdict"  # a registry line's mark for a verifier's report
 FOLLOW_FIELD = "follow"  # a registry line's mark for a lead followed, not owed a report
 AFTER_FIELD = "after="  # a followed lead's line: the lead whose DONE it waits on
+# A followed manager's line: the registry of its own leads, the sessions its wait on its leads names
+LEADS_FIELD = "leads="
 # A followed lead the owner drives directly, in its own session: no deadline, nudge or quiet-end
 # routing, since the owner is its follower; its DONE, failures and prompts are still routed.
 DIRECT_FIELD = "direct"
@@ -442,6 +444,12 @@ PROC_STAT = Path("/proc/stat")
 HOST_LIMITS: dict[str, dict[str, float]] = {
     "cc-experiments": {"min_mb": 2500, "max_load": 40},  # it serves Omnigent and the managers
     "oz": {"max_load": 10},  # its 8 threads
+}
+# A row for every host whose name starts with the key, since burst boxes come and go every few days.
+# ``max_sessions`` counts the live sessions bound to the host (sub-agents included). An epic-* box
+# is 4 vCPU and 8 GB: about 4 sessions plus one gate; past that it thrashed and lost ssh.
+HOST_PREFIX_LIMITS: dict[str, dict[str, float]] = {
+    "epic-": {"min_mb": 1500, "max_load": 6, "max_sessions": 4},
 }
 FAR_READS = 3  # live sessions on another host tried for its load and memory, newest first
 
@@ -1229,13 +1237,12 @@ class Omnigent:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
         return [str(c["id"]) for c in page.get("data", [])]
 
-    def active(self, sid: str) -> float:
-        """When any live child of ``sid`` (archived ones are not listed), or a live session it
-        subscribes to, was last updated, else 0. The subscriptions are its top-level helpers, a
-        cloud worker for one, which are no children. Not ``busy``: a child whose turn end was lost
-        stays busy for good."""
+    def kin(self, sid: str) -> dict[str, float]:
+        """``sid``'s live children (archived ones are not listed) and the live sessions it
+        subscribes to, each with when it was last updated. The subscriptions are its top-level
+        helpers, a cloud worker for one, which are no children."""
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
-        times = [float(c.get("updated_at") or 0) for c in page.get("data", [])]
+        found = {str(c["id"]): float(c.get("updated_at") or 0) for c in page.get("data", [])}
         try:  # ponytail: the first page of subscriptions; a lead holds a handful
             subscribed = self.call("GET", f"/v1/sessions/{sid}/subscriptions").get("data", [])
         except Fail:  # an Omnigent without subscriptions: the children alone, as before
@@ -1246,8 +1253,13 @@ class Omnigent:
             except Fail:  # Gone too
                 continue  # deleted, or unreadable this poll: counts for nothing
             if not info.get("archived"):
-                times.append(float(info.get("updated_at") or 0))
-        return max(times, default=0.0)
+                found[str(helper["session_id"])] = float(info.get("updated_at") or 0)
+        return found
+
+    def active(self, sid: str) -> float:
+        """When any of ``sid``'s ``kin`` was last updated, else 0. Not ``busy``: a child whose
+        turn end was lost stays busy for good."""
+        return max(self.kin(sid).values(), default=0.0)
 
 
 def checkout_root(workspace: str) -> str:
@@ -1543,8 +1555,15 @@ def send(
 
     # ponytail: compares the server's item clock with the local question file's; a skewed server
     # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
+    # Any item after a copy that the session wrote (a reply, a tool call, a reasoning step) means it
+    # took that copy up: a repeat of the same words is a new message, not "already landed", or a
+    # session that works through tool calls alone never sees the repeat (#878).
     replied = max(
-        (n for n, i in enumerate(items) if i.get("type") == "message" and i.get("role") != "user"),
+        (
+            n
+            for n, i in enumerate(items)
+            if i.get("type") != "resource_event" and i.get("role") != "user"
+        ),
         default=-1,
     )
     if (
@@ -1929,11 +1948,18 @@ def capacity(min_mb: float | None = None, max_load: float | None = None) -> tupl
     return room and (mb is None or mb >= min_mb), line
 
 
+def host_row(name: str) -> dict[str, float]:
+    """Host ``name``'s limits row: ``HOST_LIMITS``, else the ``HOST_PREFIX_LIMITS`` row its name starts with."""
+    if name in HOST_LIMITS:
+        return HOST_LIMITS[name]
+    return next((r for p, r in HOST_PREFIX_LIMITS.items() if name.startswith(p)), {})
+
+
 def host_limits(name: str) -> tuple[float, float | None]:
     """Host ``name``'s ``min_mb`` and ``max_load`` (None: judged per core, or by idle CPU here):
     its ``HOST_LIMITS`` row over the defaults, under its OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
     OMNIGENT_MAX_LOAD_<HOST> overrides."""
-    row, key = HOST_LIMITS.get(name, {}), re.sub(r"\W", "_", name.upper())
+    row, key = host_row(name), re.sub(r"\W", "_", name.upper())
     min_mb = os.environ.get(f"OMNIGENT_MIN_AVAILABLE_MB_{key}") or row.get("min_mb")
     max_load = os.environ.get(f"OMNIGENT_MAX_LOAD_{key}") or row.get("max_load")
     return (
@@ -2018,8 +2044,18 @@ def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, s
     through a session on another (``far_capacity``, None when unreadable)."""
     min_mb, max_load = host_limits(name)
     if host_id == og.host_id:
-        return capacity(min_mb=min_mb, max_load=max_load)
-    return far_capacity(og, host_id, min_mb, max_load)
+        ok, line = capacity(min_mb=min_mb, max_load=max_load)
+    else:
+        ok, line = far_capacity(og, host_id, min_mb, max_load)
+    cap = host_row(name).get("max_sessions")
+    if cap is not None:
+        # from the session list, so it holds where load and memory can't be read
+        live = len(live_sessions(og, host_id))
+        if live >= cap:
+            return False, f"{live} live sessions (max {cap:g})" + (
+                f"; {line}" if ok is not None else ""
+            )
+    return ok, line
 
 
 def unchecked(name: str, why: str) -> str:
@@ -3684,34 +3720,42 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         return []
 
 
-def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool]:
+def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool, str]:
     """A registry line: ``session=report``, then the session's brief files, each after a tab,
     whether its report is a verifier's (a ``verdict`` field, which ``run``, ``start`` and ``send``
     write for one), whether it is a lead followed (a ``follow`` field, which ``start
     --top-level`` writes), whose report ``follow`` never reads, and the lead it waits on (an
     ``after=<session>`` field, which ``start --top-level --after`` writes), else empty, and
-    whether the owner drives it directly (a ``direct`` field, which the ``direct`` command writes)."""
+    whether the owner drives it directly (a ``direct`` field, which the ``direct`` command writes),
+    and a manager's own leads registry (a ``leads=<file>`` field, which ``start --top-level
+    --leads`` writes), else empty."""
     head, *fields = line.split("\t")
     sid, report = pair(head)
     fields = [f.strip() for f in fields if f.strip()]
     after = next((f.removeprefix(AFTER_FIELD) for f in fields if f.startswith(AFTER_FIELD)), "")
+    leads = next((f.removeprefix(LEADS_FIELD) for f in fields if f.startswith(LEADS_FIELD)), "")
     marks = (VERDICT_FIELD, FOLLOW_FIELD, DIRECT_FIELD)
     return (
         sid,
         report,
-        [Path(f) for f in fields if f not in marks and not f.startswith(AFTER_FIELD)],
+        [
+            Path(f)
+            for f in fields
+            if f not in marks and not f.startswith((AFTER_FIELD, LEADS_FIELD))
+        ],
         VERDICT_FIELD in fields,
         FOLLOW_FIELD in fields,
         after,
         DIRECT_FIELD in fields,
+        leads,
     )
 
 
 def registered(
     path: Path,
-) -> tuple[dict[str, tuple[Path, list[Path], bool, bool, str, bool]], list[str]]:
+) -> tuple[dict[str, tuple[Path, list[Path], bool, bool, str, bool, str]], list[str]]:
     """The registry's sessions with the reports they owe, their brief files, verdict and follow
-    flags, the lead each waits on and its direct flag, the last line
+    flags, the lead each waits on, its direct flag and its own leads registry, the last line
     winning for a session listed twice, and its malformed lines. Blank lines and ``#`` comments
     are skipped."""
     owed, bad = {}, []
@@ -3743,9 +3787,11 @@ def arm(
     followed: bool = False,
     after: str = "",
     far: bool = False,
+    leads: str = "",
 ) -> None:
     """Replace ``sid``'s line in the registry with ``sid=report``, ``briefs`` and, with ``verdict``,
-    ``followed`` or ``after``, that field, or with ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
+    ``followed``, ``after`` or ``leads``, that field (``leads`` kept from the line it had), or with
+    ``report`` None drop it; unless ``unless()``, asked under the lock, is true. ``then`` (a follow-up's file)
     goes after the brief files the line had, else after the one ``start`` wrote (``far``: the
     session runs on another host, and ``start`` wrote none)."""
 
@@ -3761,8 +3807,9 @@ def arm(
         files = briefs or []
         try:  # the owner's mark outlives a re-arm: no caller of arm sets it
             direct = bool(mine) and entry(mine[-1])[6]
+            had_leads = entry(mine[-1])[7] if mine else ""
         except Fail:
-            direct = False
+            direct, had_leads = False, ""
         if then:
             try:
                 had = entry(mine[-1])[2] if mine else []
@@ -3771,6 +3818,7 @@ def arm(
             files = [b for b in briefs_for(report, had, far) if b != then] + [then]
         flag = [VERDICT_FIELD] * verdict + [FOLLOW_FIELD] * followed
         flag += [AFTER_FIELD + after] if after else []
+        flag += [LEADS_FIELD + (leads or had_leads)] if leads or had_leads else []
         flag += [DIRECT_FIELD] * direct
         return rest + ["\t".join([f"{sid}={report}", *map(str, files), *flag])]
 
@@ -3808,6 +3856,7 @@ def arm_quietly(
     followed: bool = False,
     after: str = "",
     far: bool = False,
+    leads: str = "",
 ) -> None:
     """``arm`` for a command with its own wait: a failure is a warning, since that wait still
     covers the session."""
@@ -3823,6 +3872,7 @@ def arm_quietly(
                 followed=followed,
                 after=after,
                 far=far,
+                leads=leads,
             )
         except OSError as e:
             print(
@@ -4215,9 +4265,15 @@ def supervise_registry(
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
-    if console and (me := parent_id()):  # only the chief of staff runs the console
+    if console and (me := parent_id()):
+        # the chief of staff's registry is leads.registry; a project manager's is <repo>-leads.registry
+        repo = (
+            registry.name.removesuffix("-leads.registry")
+            if registry.name.endswith("-leads.registry")
+            else ""
+        )
         try:
-            og.label(me, {"omni.role": "cos"})
+            og.label(me, {"omni.role": "pm", "omni.repos": repo} if repo else {"omni.role": "cos"})
         except Fail as e:
             print(f"{me}: role label not written: {e}", file=sys.stderr)
     if not isinstance(state["rate"].get("model_calls"), list):
@@ -4480,7 +4536,7 @@ def supervise_registry(
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             act_on(
                 eid,
-                [(other, "tell", result) for other, (*_, after, _) in owed.items() if after == sid],
+                [(other, "tell", result) for other, owes in owed.items() if owes[4] == sid],
             )
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)
@@ -4628,7 +4684,13 @@ def supervise_registry(
         flush()
 
     def track(
-        sid: str, report: Path, briefs: list[Path], followed: bool, after: str, direct: bool
+        sid: str,
+        report: Path,
+        briefs: list[Path],
+        followed: bool,
+        after: str,
+        direct: bool,
+        leads: str = "",
     ) -> dict:
         """``sid``'s state entry, updated from what its look just read."""
         nonlocal hosts
@@ -4657,6 +4719,7 @@ def supervise_registry(
             follow=followed,
             direct=direct,
             waits_on=[after] if after else [],
+            leads=leads,
             cloud=cloud_session(og, info),
             **lead_status(info, items),
         )
@@ -4809,12 +4872,58 @@ def supervise_registry(
                 say(line, sid, f"landed:{repo}:{sha}", "landed")
             heads[repo] = sha
 
+    def moving(sid: str, lead: dict) -> bool:
+        """Whether every session ``sid``'s wait names is running: not archived, its status running
+        and its ``updated_at`` within ``DEADLINE_SECONDS``. A wait names a full session id in
+        ``sid``'s follow set: one of its leads (the sessions its line's ``leads=`` registry
+        follows) or of its ``kin`` (its live children and subscriptions, a lead's worker), or, for
+        a manager, its leads as a group. A wait on anything else (the notified session, a session
+        outside its follow set, the owner, a word), a named session that is idle, ended or not
+        read, and a registry or kin not read, are False: the deadline is raised as without it."""
+        wait = lead["wait"]
+        if wait == notify or not (
+            re.fullmatch(r"[0-9a-f]{32}", wait) or (wait == "lead" and lead.get("leads"))
+        ):
+            return False
+        try:
+            owed = registered(Path(lead["leads"]))[0] if lead.get("leads") else {}
+            followed = [s for s, owes in owed.items() if owes[3]]
+        except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
+            log(("leads", sid), f"{sid}: leads registry not read: {reason(e)}")
+            return False
+        log(("leads", sid), None)
+        if wait == "lead":
+            named = followed
+        elif wait in followed:
+            named = [wait]
+        else:  # not one of its leads: one of its own children or subscriptions, else outside
+            try:
+                named = [wait] if wait in og.kin(sid) else []
+            except Exception as e:  # noqa: BLE001 - the deadline is raised as without it
+                log(("kin", sid), f"{sid}: children not read: {reason(e)}")
+                return False
+            log(("kin", sid), None)
+        for other in named:
+            try:
+                info = og.info(other)
+            except Exception:  # noqa: BLE001 - gone or unread: not known to be moving
+                return False
+            updated = float(info.get("updated_at") or 0)
+            if (
+                info.get("archived")
+                or str(info.get("status")) not in RUNNING
+                or time.time() - updated >= DEADLINE_SECONDS
+            ):
+                return False
+        return bool(named)
+
     def overdue(sid: str, lead: dict) -> None:
         """Raise a followed lead's ``deadline`` events: ``DEADLINE_SECONDS`` with no progress, and
         for a lead whose wait is unknown and that was nudged, ``NUDGED_SECONDS`` more. A timed
         wait with no progress since its time raises one at its time, which wakes the lead, and
         once woken one more ``DEADLINE_SECONDS`` after it. Each is one event per ``progress_at``,
-        so new progress starts a new chain."""
+        so new progress starts a new chain. None while every session its wait names is running
+        (``moving``), since it is waiting, not stalled."""
         if lead.get("direct"):
             return  # the owner drives it in its own session: they are its follower
         if lead["wait"] == "parked":
@@ -4832,6 +4941,8 @@ def supervise_registry(
             return
         # read only once due
         lead["progress_at"] = max(lead["progress_at"], og.active(sid), written(sid, lead))
+        if due is None and moving(sid, lead):
+            return  # it waits on sessions that are all making progress: no stall of its own
         quiet = time.time() - lead["progress_at"]
         spent = lead.get("nudged_at") == lead["progress_at"]
         if due is not None and lead["progress_at"] < due:
@@ -4888,13 +4999,17 @@ def supervise_registry(
             log("registry", None)
         for line in bad:
             log(("line", line), f"{registry}: {line!r}: expected <session>=<report>; skipped")
-        for sid, (report, briefs, verdict, followed, after, direct) in owed.items():
+        for sid, (report, briefs, verdict, followed, after, direct, leads) in owed.items():
             if any(o[1] and o[1][0] == sid for o in outbox):
                 continue  # its event is found; it waits to be posted
             try:
                 if followed:  # no report rules: only --console's routing nudges or revives it
                     event, key = follow(rec, sid, idle_since, told, holding)
-                    lead = track(sid, report, briefs, followed, after, direct) if console else {}
+                    lead = (
+                        track(sid, report, briefs, followed, after, direct, leads)
+                        if console
+                        else {}
+                    )
                     since, kind = time.time(), key[0]
                     nth = [str(lead.get("occurrences"))] if kind in ("blocked", "failed") else []
                     eid = ":".join((kind, sid, *nth, *key[1:]))
@@ -4917,7 +5032,7 @@ def supervise_registry(
                         rec, sid, report, silent, resumed, unsent, notice, briefs, verdict, ended
                     )
                     if console:
-                        label(sid, track(sid, report, briefs, followed, after, direct))
+                        label(sid, track(sid, report, briefs, followed, after, direct, leads))
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
@@ -5065,6 +5180,13 @@ def main(argv: list[str] | None = None) -> int:
             metavar="SESSION",
             help="with --top-level and a registry, the lead this one waits on: the supervisor"
             " --console tells it that lead's DONE",
+        )
+        p.add_argument(
+            "--leads",
+            metavar="FILE",
+            type=Path,
+            help="with --top-level and a registry, the registry of the project manager's own leads:"
+            " the supervisor --console raises no deadline while every lead in it is running",
         )
     p = sub.add_parser("send")
     p.add_argument("session")
@@ -5279,6 +5401,10 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "after", None) and not (args.top_level and registry):
             raise Fail(
                 "--after needs --top-level and a registry: it marks the lead's registry line"
+            )
+        if getattr(args, "leads", None) and not (args.top_level and registry):
+            raise Fail(
+                "--leads needs --top-level and a registry: it marks the manager's registry line"
             )
         if args.cmd == "direct":
             if not registry:
@@ -5628,6 +5754,7 @@ def main(argv: list[str] | None = None) -> int:
                     verdict=verifier,
                     followed=args.top_level,
                     after=args.after or "",
+                    leads=str(args.leads.resolve()) if args.leads else "",
                 )
             print(sid, flush=True)
             return sid
