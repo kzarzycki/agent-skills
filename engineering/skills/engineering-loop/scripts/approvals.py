@@ -5805,7 +5805,7 @@ def pack_behind(script: Path | str) -> str | None:
             done = subprocess.run(
                 ["git", "-C", str(here.parent), *args], capture_output=True, text=True, check=False
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             return None
         return done.stdout.strip() if done.returncode == 0 else None
 
