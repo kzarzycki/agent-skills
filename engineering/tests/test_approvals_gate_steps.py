@@ -449,6 +449,10 @@ def test_steps_named_gate_or_alone_record_and_print_as_steps(
             assert record["step"] == name
         assert approvals.main(["local-ci", "7"]) == 0
         assert all(f"`{name}` from the pass recorded on" in posted[-1] for name, _ in rows)
+        # the pass land republishes on a new tip is the steps' records, never one record of the whole gate
+        assert [one["step"] for one in approvals.landed_pass("d" * 40, steps["tree"])["steps"]] == [
+            name for name, _ in rows
+        ]
 
 
 def other_commit(steps: dict[str, Any]) -> str:
@@ -484,3 +488,10 @@ def test_a_clean_head_switch_between_steps_fails_lands_batch_gate(steps: dict[st
     assert local_record(steps, "lint") is None
     log = (steps["repo"].parent / f"{steps['tree']}.log").read_text()
     assert f"HEAD moved during the gate: it is {other}" in log
+
+
+def test_a_step_moved_to_another_tree_is_a_move_whatever_its_head_says() -> None:
+    """The run checks the tree as well as HEAD: either one changed is the checkout moving."""
+    assert approvals.head_moved("a" * 40, "t" * 40, "a" * 40, "t" * 40) == ""
+    assert approvals.head_moved("a" * 40, "t" * 40, "a" * 40, "u" * 40)
+    assert approvals.head_moved("a" * 40, "t" * 40, "b" * 40, "t" * 40)
