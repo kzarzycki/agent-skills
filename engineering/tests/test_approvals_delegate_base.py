@@ -14,6 +14,7 @@ from approvals_harness import (
     approvals,
     assigned,  # noqa: F401
     attached,  # noqa: F401
+    gatekeeper_md,
     git_in,
     graphql_answers,  # noqa: F401
     hub,  # noqa: F401
@@ -38,6 +39,11 @@ def committed(where: Path, loop: str) -> None:
     git_in(where, "commit", "-q", "-m", "policy")
 
 
+def identify(where: Path) -> None:
+    git_in(where, "config", "user.email", "loop@example.com")
+    git_in(where, "config", "user.name", "loop")
+
+
 @pytest.fixture
 def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """A clone of an origin whose main holds `RULE`, on a branch `feature`, run in; a PR #7 into main stubbed on
@@ -45,14 +51,11 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     branch's by writing its loop.md."""
     origin, work = tmp_path / "origin", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "-b", "main", str(origin))
-    for where in (origin,):
-        git_in(where, "config", "user.email", "loop@example.com")
-        git_in(where, "config", "user.name", "loop")
+    identify(origin)
     committed(origin, RULE)
     git_in(tmp_path, "clone", "-q", str(origin), str(work))
     git_in(work, "checkout", "-q", "-b", "feature")
-    git_in(work, "config", "user.email", "loop@example.com")
-    git_in(work, "config", "user.name", "loop")
+    identify(work)
 
     def main(loop: str) -> None:
         git_in(origin, "checkout", "-q", "main")
@@ -63,7 +66,7 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
     monkeypatch.setattr(approvals, "comment", lambda _n, body: posted.append(body))
     monkeypatch.chdir(work)
-    return {"main": main, "posted": posted, "work": work}
+    return {"main": main, "posted": posted, "work": work, "origin": origin}
 
 
 def delegate(capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
@@ -105,7 +108,7 @@ def test_a_default_branch_with_no_policy_falls_back_to_the_checkouts(
     hub: dict[str, list[dict[str, Any]]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    origin = checkout["work"].parent / "origin"
+    origin = checkout["origin"]
     git_in(origin, "rm", "-q", str(LOOP))
     git_in(
         origin, "commit", "-q", "-m", "no policy"
@@ -115,3 +118,27 @@ def test_a_default_branch_with_no_policy_falls_back_to_the_checkouts(
     hub.clear()
     LOOP.write_text(RULE)
     assert delegate(capsys)[0] == 1
+
+
+def test_mains_gatekeeper_md_policy_is_read_as_the_checkouts_would_be(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Main moved its policy to gatekeeper.md's ## Policy with `delegate: all`; the branch still has loop.md's."""
+    origin = checkout["origin"]
+    git_in(origin, "rm", "-q", str(LOOP))
+    (origin / "docs" / "agents").mkdir(parents=True)
+    (origin / "docs" / "agents" / "gatekeeper.md").write_text(
+        gatekeeper_md("risk:\n  paths:\n    - .github/**\nloop:\n  delegate: all\n")
+    )
+    git_in(origin, "add", "-A")
+    git_in(origin, "commit", "-q", "-m", "gatekeeper")
+    assert delegate(capsys)[0] == 0
+    hub.clear()
+    (origin / "docs" / "agents" / "gatekeeper.md").write_text(
+        gatekeeper_md("loop:\n  delegate: feature\n")
+    )
+    git_in(origin, "commit", "-q", "-am", "feature")
+    code, out = delegate(capsys)
+    assert code == 1 and "main's gatekeeper.md" in out
