@@ -6066,7 +6066,11 @@ def test_relay_to_an_archived_session_names_its_state_and_where_its_work_continu
     sid = og.create("claude", "sched")
     og.archive(sid)
     og.kids = ["s9"]
-    og.tasks = [{"type": "shell", "status": "running"}]
+    og.tasks = [  # a monitor and an ended shell are no work left running
+        {"type": "monitor", "status": "running"},
+        {"type": "shell", "status": "done"},
+        {"type": "shell", "status": "running"},
+    ]
     assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.GONE
     err = capsys.readouterr().err
     assert f"session {sid} is archived (title '?', status idle; 1 background task(s)" in err
