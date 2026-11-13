@@ -4,7 +4,9 @@
     python3 scripts/omnigent_telemetry.py [--days N] [--json] [--html PATH] [--db-container NAME]
 
 - The Omnigent API (any logged-in host): ``GET /v1/usage`` gives spend today, over 7 and 30
-  days, and each top-level session tree's cost by model. Login and token refresh are
+  days, and each top-level session tree's cost by model. It is asked with ``?days=N``, so the
+  server totals only the window rather than all history, which can time out from another host;
+  a server that predates the parameter ignores it. Login and token refresh are
   ``orchestrating-agents``' ``omnigent_agent.py``.
 - The server's Postgres, through ``docker exec <container> psql`` (default container
   ``omnigent-postgres-1``): daily cost, tokens by model, each root tree's sub-agents, nested
@@ -593,7 +595,7 @@ def main(argv: list[str] | None = None) -> int:
         reason = f"Postgres via `docker exec {args.db_container}` unreachable: {str(e)[:200]}"
         left_out.update(dict.fromkeys(DB_SECTIONS, reason))
     try:
-        usage = Omnigent(args.server).call("GET", "/v1/usage")
+        usage = Omnigent(args.server).call("GET", f"/v1/usage?days={args.days}")
     except (Fail, OSError, ValueError) as e:
         left_out["spend and session-tree cost (API)"] = str(e)
     r = build(usage, db, codex_rate_limits(), args.days, now, left_out)
