@@ -376,6 +376,8 @@ word but `low`, or has no `Risk:` line, and the hold quotes it. A head no review
 PR that needs none (exempt, an exact revert) has no judgment. A `risk:high` the gate added for that term comes with a
 comment saying so, and the gate takes the label off once a later pass says `Risk: low`, unless it was added again
 after that comment, which is a raise only the owner lowers. Paths in the same rule hold whatever the verifier says.
+The board's `Risk` field follows the label and the verifier's word, and a field at `High` adds the label (flag); the
+label stays the gate's only input, and a board it can't reach is a line, never a failure.
 The spec is the issue body, or its last comment whose first line is `## Spec`, where a tool owns the body. A soft gate against a forgotten step, not a security boundary: the agent holds the same
 credentials as the person. issue-tracker.md's components and extra categories are the keys of its settings block's
 `components` and `categories` (tracker_settings). Reads and writes through `gh`. Stdlib, and PyYAML for the settings
@@ -390,6 +392,7 @@ import fcntl
 import fnmatch
 import functools
 import hashlib
+import importlib.util
 import io
 import itertools
 import json
@@ -506,6 +509,8 @@ QUOTED = re.compile(r"^[ \t>]*```.*?^[ \t>]*```|`[^`\n]*`|<!--.*?-->", re.DOTALL
 # the first line of the comment flag() leaves when the verifier's `Risk:` line made it add `risk:high`, which says the
 # label is the gate's to take off again when a later pass judges the risk low
 FLAGGED = f"`{RISK_LABEL}` added by the gate"
+# the board's single-select field holding a PR's risk beside its `risk:high` label (the board template's)
+BOARD_RISK = "Risk"
 # a revert's line, as GitHub's Revert button writes it or by hand; ponytail: one revert per PR, the first line counts.
 REVERTS = re.compile(r"^[ \t]*Reverts[ \t]+([\w.-]+/[\w.-]+)?#(\d+)\b", re.MULTILINE)
 CHECKED = "Local check passed"
@@ -1011,19 +1016,31 @@ def owners_only(pull: dict[str, Any], loop: str | None) -> str | None:
     return None
 
 
-def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
-    """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
-    proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
-    PR's two verifiers both must say `low`. A head no review covers is None, since reviewed() then refuses the merge,
-    or the PR needs no review (exempt, an exact revert)."""
+def head_passes(
+    pull: dict[str, Any], loop: str | None
+) -> tuple[str, list[tuple[int, dict[str, str]]]] | str:
+    """The commit the verifier's passes judge, the head or the commit whose proofs it carries (carried), and those
+    passes' numbers and lines (passes); a string names why none can be read."""
     found = passes(pull)
     if isinstance(found, str):
-        return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
+        return found
     head = pull["headRefOid"].lower()
     on_head = [(number, lines) for commit, number, lines in found if commit == head]
     if not on_head and found and isinstance(carry := carried(pull, loop, found[-1][0]), tuple):
         head = carry[0]
         on_head = [(number, lines) for commit, number, lines in found if commit == head]
+    return head, on_head
+
+
+def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
+    """Why the verifier holds the change high, or None: the highest pass on the head (passes), or on the commit whose
+    proofs the head carries (carried), says `Risk: high`, any other word than `low`, or has no `Risk:` line; a mixed
+    PR's two verifiers both must say `low`. A head no review covers is None, since reviewed() then refuses the merge,
+    or the PR needs no review (exempt, an exact revert)."""
+    found = head_passes(pull, loop)
+    if isinstance(found, str):
+        return f"the gate can't read the verifier's `Risk:` line: PR #{pull['number']} {found}"
+    head, on_head = found
     if not on_head:
         return None
     last = max(number for number, _ in on_head)
@@ -1162,11 +1179,25 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     """Add `risk:high` to a high-risk PR that lacks it, so the board shows why it waits: take off every other `risk:*`
     label, since two give the board two answers, and comment the reason risk() gave. A line when GitHub refuses,
     never a failure, since the merge already waits for the owner either way. Added for the verifier's `Risk:` line,
-    the comment is FLAGGED, and the label comes off once a later pass judges the risk low (unflag)."""
+    the comment is FLAGGED, and the label comes off once a later pass judges the risk low (unflag).
+    The PR's board `Risk` field (BOARD_RISK) follows (boarded): `High` beside the label. A field already at `High` on a
+    PR without the label adds it, naming the field in the comment, since whoever set it made the risk call; a lower
+    field never takes the label off, since the label is the merge check's input and only the owner lowers a raise."""
+    shown = board_risk(pull["number"])
     if RISK_LABEL in names(pull):
-        return unflag(pull, issues, loop)
-    if (why := risk(pull, issues, loop)) is None:
-        return []
+        return unflag(pull, issues, loop) + boarded(pull, loop, shown)
+    if (why := risk(pull, issues, loop)) is not None:
+        return raise_risk(pull, why, loop) + boarded(pull, loop, shown, high=True)
+    if shown[1] != "High":
+        return boarded(pull, loop, shown)
+    # risk() said low, so the checks after flag() read the label added here to hold the merge
+    why = f"the board's `{BOARD_RISK}` field says `High`"
+    return raise_risk(pull, why, loop, mark=True)
+
+
+def raise_risk(pull: dict[str, Any], why: str, loop: str | None, mark: bool = False) -> list[str]:
+    """flag()'s raise: add `risk:high` for `why`, take off the other `risk:*` labels and comment the reason; `mark`
+    puts the label on the PR as read here too."""
     where = f"PR #{pull['number']}"
     try:
         label(pull["number"], RISK_LABEL, add=True)
@@ -1182,6 +1213,8 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
             found.append(
                 f"{where}: could not remove `{other}` beside `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): remove it by hand"
             )
+    if mark:
+        pull["labels"] = {"nodes": [{"name": n} for n in sorted(names(pull) | {RISK_LABEL})]}
     if (verdict := judged(pull, loop)) and verdict in why:
         body = f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n"
         failed = f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it"
@@ -1193,6 +1226,66 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     except subprocess.CalledProcessError as exc:
         found.append(f"{failed} ({exc})")
     return found
+
+
+def board() -> Any:
+    """board.py beside this script, loaded on first use, since it imports this module: it reads this same one."""
+    if "board" not in sys.modules:
+        if here := sys.modules.get(__name__):
+            sys.modules.setdefault("approvals", here)
+        spec = importlib.util.spec_from_file_location("board", Path(__file__).with_name("board.py"))
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules["board"] = module
+    return sys.modules["board"]
+
+
+def board_risk(number: int) -> tuple[dict[str, Any] | None, str]:
+    """The board's lookup of the PR's `Risk` field (board.py) and the field's option, '' when unset or off the board;
+    or None and why the board can't be read: no linked board or field, no `project` token scope, or an API error.
+    A workflow's default token can't read a board a personal account owns, so the label alone decides there."""
+    if _rest_only:
+        return None, "GitHub refuses GraphQL here"
+    try:
+        found = board().lookup(number, BOARD_RISK)
+        return found, board().value(found, BOARD_RISK) or ""
+    except (ValueError, LookupError, TypeError, OSError, subprocess.CalledProcessError) as exc:
+        return None, (getattr(exc, "stderr", "") or "").strip() or str(exc)
+
+
+def boarded(
+    pull: dict[str, Any],
+    loop: str | None,
+    shown: tuple[dict[str, Any] | None, str],
+    high: bool = False,
+) -> list[str]:
+    """Set the PR's board `Risk` field (board_risk's `shown`) to `High` beside `risk:high` (or `high`, raised this
+    run), else to the verifier's `Risk:` word on the head (head_passes), so whoever makes the risk call sets it; no
+    pass yet, or the field already at that option, leaves it. Best effort, like a column move: a board that can't
+    be read or set is a line, never a failure, since the label is what the merge check reads."""
+    if high or RISK_LABEL in names(pull):
+        option = "High"
+    elif isinstance(found := head_passes(pull, loop), str) or not found[1]:
+        return []
+    else:
+        option = "High" if judged(pull, loop) else "Low"
+    repo, said = shown
+    if repo is not None and said == option:
+        return []
+    why = said
+    if repo is not None:
+        try:
+            board().set_field(pull["number"], BOARD_RISK, option, repo)
+            return []
+        except (ValueError, LookupError, TypeError, OSError, subprocess.CalledProcessError) as exc:
+            why = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+    return [
+        (
+            f"PR #{pull['number']}: could not set the board's `{BOARD_RISK}` field to `{option}` ({why}); the"
+            f" `{RISK_LABEL}` label alone shows the risk"
+        )
+    ]
 
 
 def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
