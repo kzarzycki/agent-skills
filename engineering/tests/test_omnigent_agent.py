@@ -10588,7 +10588,9 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     assert "is in use on host h by live session" in err and "M lead" in err
 
 
-def test_supervise_install_writes_a_restarting_service_per_registry(tmp_path: Path) -> None:
+def test_supervise_install_writes_a_restarting_service_per_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The unit and plist run the supervise command less --install and --log, restart it and
     log to the file, in directive forms systemd accepts; each registry gets its own name; only
     the variables the script reads are carried over. Neither systemctl nor launchctl runs."""
@@ -10653,3 +10655,22 @@ def test_supervise_install_writes_a_restarting_service_per_registry(tmp_path: Pa
     assert plist["EnvironmentVariables"] == env
     assert name.startswith("omnigent-supervise-") and name != omnigent_agent.service_name(two)
     assert omnigent_agent.service_name(tmp_path / "x" / ".." / "a.registry") == name
+
+    # A re-install must restart a running unit so it takes the new command line: `restart`, not
+    # `start` or `enable --now`. The one runner function is recorded, so nothing runs.
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        omnigent_agent, "_service_call", lambda cmd, check=True: calls.append(cmd) or ""
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "linux")
+    omnigent_agent.install_service(argv, log, one)
+    systemctl = [c[2:] for c in calls if c[:2] == ["systemctl", "--user"]]
+    assert systemctl == [["daemon-reload"], ["enable", name], ["restart", name]]
+    assert (tmp_path / "home/.config/systemd/user" / f"{name}.service").is_file()
+    calls.clear()
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "darwin")
+    omnigent_agent.install_service(argv, log, one)
+    label = omnigent_agent.service_label(one)
+    assert [c[:2] for c in calls] == [["launchctl", "bootout"], ["launchctl", "bootstrap"]]
+    assert calls[0][2].endswith(f"/{label}") and calls[1][3].endswith(f"/{label}.plist")
