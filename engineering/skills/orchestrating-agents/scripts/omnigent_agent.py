@@ -5356,42 +5356,67 @@ def unquoted(token: str) -> str:
     return token[1:-1] if len(token) > 1 and token[0] == token[-1] and token[0] in "'\"" else token
 
 
+def stale_entry(pair: re.Match[str] | None) -> tuple[bool, bool]:
+    """(whether one entry of the ``loop`` mapping sets ``pack_staleness: refuse``, whether it was read exactly): an
+    entry is read only when its key is a plain word, plain or quoted, and neither key nor value holds a backslash, which
+    YAML reads as an escape; ``pack_staleness`` also needs a value that is exactly ``warn`` or ``refuse``. Anything else
+    PyYAML might read differently is not read."""
+    if (
+        pair is None
+        or "\\" in pair["k"] + (pair["v"] or "")
+        or not re.fullmatch(r"\w+", unquoted(pair["k"]))
+    ):
+        return False, False
+    if unquoted(pair["k"]) != "pack_staleness":
+        return False, True
+    value = unquoted(pair["v"] or "")
+    return value == "refuse", value in ("warn", "refuse")
+
+
 def stale_setting(block: str) -> tuple[bool, bool]:
     """(whether ``block`` sets ``pack_staleness: refuse`` under its top-level ``loop`` mapping, whether the block was
-    read whole): a small reader of the block's few forms, with no YAML dependency, that agrees with approvals.py's
-    PyYAML on the forms it reads (plain or quoted key and value, a block or a one-line flow mapping under ``loop``)
-    and says it could not read the rest, when the block names the key at all, so it never fails silently."""
-    refuses, seen, unreadable, inside, child = False, False, False, False, None
+    read whole): a small reader of the block's few forms, with no YAML dependency, closed-world: every entry of the
+    ``loop`` mapping (block or one-line flow), and the key of every other top-level section, must be in a form it
+    parses exactly (stale_entry), else the block is not read whole and the caller says so, so the reader never takes a
+    block for read when PyYAML could read it differently."""
+    refuses, unreadable, inside, child = False, False, False, None
     for line in block.splitlines():
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         indent, text = len(line) - len(line.lstrip()), line.strip()
-        pair = STALE_PAIR.match(text)
-        pairs = [pair]
+        entries: list[re.Match[str] | None] = []
         if indent == 0:
-            inside, child = STALE_LOOP.match(text) is not None, None
-            if inside and not (pair and pair["v"] is None):  # a value on the `loop` line
-                flow = pair and (pair["v"] or "").startswith("{") and pair["v"]
-                unreadable = unreadable or not flow
-                pairs = [STALE_PAIR.match(i.strip()) for i in flow[1:-1].split(",")] if flow else []
+            top = STALE_LOOP.match(text)
+            inside, child = top is not None, None
+            if top is None:
+                unreadable = (
+                    unreadable or "\\" in text.split(":")[0]
+                )  # an escaped key may spell `loop`
+                continue
+            rest = re.sub(r"[ \t]#.*$", "", text[top.end() :]).strip()
+            if rest.startswith("{") and rest.endswith("}"):
+                entries = [
+                    STALE_PAIR.match(item.strip()) for item in rest[1:-1].split(",") if item.strip()
+                ]
+            else:
+                unreadable = unreadable or bool(
+                    rest
+                )  # an anchor, an alias or a scalar after `loop:`
         elif inside:
             child = indent if child is None else child
-            pairs = [pair] if indent == child else []
-        else:
-            pairs = [pair]
-        for found in pairs:
-            if found and unquoted(found["k"]) == "pack_staleness":
-                seen = True
-                if inside:
-                    refuses = refuses or unquoted(found["v"] or "") == "refuse"
-    return refuses and not unreadable, "pack_staleness" not in block or (seen and not unreadable)
+            if indent == child and not text.startswith("-"):
+                entries = [STALE_PAIR.match(text)]
+        for pair in entries:
+            refuse, read = stale_entry(pair)
+            refuses, unreadable = refuses or refuse, unreadable or not read
+    return refuses and not unreadable, not unreadable
 
 
 def refuses_stale() -> bool:
     """Whether the project's settings block sets ``pack_staleness: refuse`` under its ``loop`` mapping: the first fenced
     ``yaml`` block under ``## Policy`` of ``docs/agents/gatekeeper.md``, else under ``## Settings`` of ``loop.md``, the
     file approvals.py reads (stale_setting reads it). An example elsewhere in the Markdown, or in another section or
-    mapping, is never read as the setting; a mention it cannot read is treated as ``warn``, with a line on stderr."""
+    mapping, is never read as the setting; a block it cannot read exactly is treated as ``warn``, with a line on stderr."""
     root = checkout_root(os.getcwd())
     if not root:
         return False
@@ -5411,7 +5436,7 @@ def refuses_stale() -> bool:
         refuses, read = stale_setting(fenced.group(1))
         if not read:
             print(
-                f"{name} names `pack_staleness` in a form this script cannot read: treated as warn",
+                f"{name}: its `loop` settings are in a form this script cannot read: pack_staleness is treated as warn",
                 file=sys.stderr,
             )
         return refuses  # the block approvals.py reads, whether or not it sets the key

@@ -189,3 +189,29 @@ def test_both_readers_agree_on_every_form(
     assert agent.refuses_stale() is (
         approvals.settings(loop_md(block)).get("pack_staleness") == "refuse"
     )
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        'loop:\n  pack_staleness: "ref\\x75se"\n',
+        'loop:\n  "pack\\x5fstaleness": refuse\n',
+        '"l\\x6fop":\n  pack_staleness: refuse\n',
+        'loop: {pack_staleness: "ref\\x75se"}\n',
+        'loop: {"pack\\x5fstaleness": refuse}\n',
+    ],
+)
+def test_where_approvals_refuses_through_an_escape_omnigent_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    block: str,
+) -> None:
+    """PyYAML decodes the escape, so approvals.py refuses; the small reader never reads it, and says so."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs" / "agents" / "loop.md").write_text(loop_md(block))
+    monkeypatch.chdir(tmp_path)
+    assert approvals.settings(loop_md(block)).get("pack_staleness") == "refuse"
+    assert agent.refuses_stale() is False
+    assert "cannot read: pack_staleness is treated as warn" in capsys.readouterr().err

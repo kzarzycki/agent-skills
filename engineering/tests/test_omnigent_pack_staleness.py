@@ -223,8 +223,7 @@ def test_a_form_it_cannot_read_is_warn_and_says_so(
     monkeypatch.chdir(tmp_path)
     assert agent.refuses_stale() is False
     assert (
-        "pack_staleness` in a form this script cannot read: treated as warn"
-        in capsys.readouterr().err
+        "form this script cannot read: pack_staleness is treated as warn" in capsys.readouterr().err
     )
 
 
@@ -235,4 +234,47 @@ def test_a_block_that_never_names_the_key_says_nothing(
     policy(tmp_path, "loop.md", "Settings", "loop:\n  cap: 3\n")
     monkeypatch.chdir(tmp_path)
     assert agent.refuses_stale() is False
+    assert capsys.readouterr().err == ""
+
+
+ESCAPED = [
+    'loop:\n  pack_staleness: "ref\\x75se"\n',
+    'loop:\n  "pack\\x5fstaleness": refuse\n',
+    '"l\\x6fop":\n  pack_staleness: refuse\n',
+    'loop: {pack_staleness: "ref\\x75se"}\n',
+    'loop: {"pack\\x5fstaleness": refuse}\n',
+    'loop:\n  cap: 3\n  gate: "a\\tb"\n',
+    "loop:\n  pack_staleness: Refuse\n",
+    "loop:\n  pack_staleness: refuse now\n",
+    'loop:\n  pack_staleness: refuse\n  gate: "a\\tb"\n',
+    "loop:\n  <<: *base\n",
+]
+
+
+@pytest.mark.parametrize("block", ESCAPED)
+def test_a_form_pyyaml_may_read_differently_is_never_read_silently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    block: str,
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    policy(tmp_path, "loop.md", "Settings", block)
+    monkeypatch.chdir(tmp_path)
+    assert agent.refuses_stale() is False
+    assert "cannot read: pack_staleness is treated as warn" in capsys.readouterr().err
+
+
+def test_a_list_at_the_keys_own_indent_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    policy(
+        tmp_path,
+        "loop.md",
+        "Settings",
+        "loop:\n  local_ci_env:\n  - GATE_UI\n  - GATE_X\n  pack_staleness: refuse\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    assert agent.refuses_stale() is True
     assert capsys.readouterr().err == ""
