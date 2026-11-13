@@ -130,13 +130,18 @@ def test_no_line_unless_every_commit_since_the_verdict_is_a_merge_of_the_base(
     assert approvals.unforced(merged_pull(repo, at, on)) is None
 
 
-def test_no_line_without_a_verdict_or_a_head_this_clone_has(repo: dict[str, str]) -> None:
+def test_no_line_without_a_verdict_or_a_head_this_clone_has(
+    repo: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     pr = merged_pull(repo)
     pr["reviews"] = {"nodes": []}
     assert approvals.unforced(pr) is None
-    pr = merged_pull(repo)
-    pr["headRefOid"] = "c" * 40
-    assert approvals.unforced(pr) is None
+    # advice costs no fetch: a head or base tip this clone lacks ends the read before the walk
+    monkeypatch.setattr(approvals, "fetched", lambda sha: pytest.fail(f"fetched {sha}"))
+    for key in ("headRefOid", "baseRefOid"):
+        pr = merged_pull(repo)
+        pr[key] = "c" * 40
+        assert approvals.unforced(pr) is None
 
 
 def test_check_merge_and_the_brief_print_the_line(
