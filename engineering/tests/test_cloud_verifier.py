@@ -193,6 +193,31 @@ def test_seed_with_a_host_api_key_login_uses_the_seed_home(seeded, host) -> None
     assert stored(calls)[1]["last_refresh"] == "seed"
 
 
+def test_a_seed_home_that_is_the_host_home_is_never_refreshed(
+    seeded, tmp_path, monkeypatch, capsys
+) -> None:
+    _, calls = seeded
+    home = tmp_path / "shared"
+    home.mkdir()
+    (home / "auth.json").write_text(json.dumps(login(0.5)))
+    alias = tmp_path / "alias"
+    alias.symlink_to(home)  # the same directory under another name
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_CLOUD_HOME", str(alias))
+    before = (home / "auth.json").read_bytes()
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    assert calls == [] and (home / "auth.json").read_bytes() == before
+    assert "seed home is the host's own" in capsys.readouterr().err
+
+
+def test_exit_2_labels_an_unusable_host_login_as_the_host_login(seeded, host, capsys) -> None:
+    host.write_text(json.dumps({"OPENAI_API_KEY": "sk-x", "tokens": None}))
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    err = capsys.readouterr().err
+    assert "the host login at" in err and "not a ChatGPT login" in err and "no seed login" in err
+    assert "sk-x" not in err
+
+
 def git(cwd: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, capture_output=True, text=True

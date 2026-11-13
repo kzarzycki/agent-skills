@@ -205,16 +205,20 @@ def pinned_environment() -> str:
     raise Refused("no cloud environment: pass --env, or pin one in .claude/settings.local.json")
 
 
+def host_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
 def host_login() -> tuple[dict | None, str]:
     """The host's own Codex login and, when it can't be used, why: a ChatGPT login with an access token. Read only."""
-    path = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "auth.json"
+    path = host_home() / "auth.json"
     if not path.exists():
         return None, f"no host login at {path}"
     try:
         auth = json.loads(path.read_text())
         expires_at(auth["tokens"]["access_token"])
     except (ValueError, KeyError, IndexError, TypeError):
-        return None, f"{path} is not a ChatGPT login with an access token"
+        return None, f"the host login at {path} is not a ChatGPT login with an access token"
     return auth, str(path)
 
 
@@ -246,6 +250,9 @@ def seed(env: str | None, min_days: float, host_min_days: float = 1) -> int:
         if auth:
             where = f"the host login at {where} has under {host_min_days:g} days left"
         try:
+            if seed_home().resolve() == host_home().resolve():
+                # the fallback refreshes in place: never on the host's own file, however the two paths alias
+                raise Refused("the seed home is the host's own Codex home, so it is not refreshed")
             auth = seed_login(min_days)
         except Refused as e:
             raise Refused(f"no usable Codex login: {where}; and {e}")
