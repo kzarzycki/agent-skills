@@ -3116,7 +3116,10 @@ def wait_for(
         except OSError:
             return None
         if waited > LOCK_CEILING:
-            return LIMIT, f"gave up waiting on the gate lock after {waited:.0f}s: the check has not run"
+            return (
+                LIMIT,
+                f"gave up waiting on the gate lock after {waited:.0f}s: the check has not run",
+            )
         return None
 
     while True:
