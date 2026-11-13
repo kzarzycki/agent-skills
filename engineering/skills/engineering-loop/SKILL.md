@@ -575,6 +575,10 @@ or the owner's private network.
   cloud.
 - **Nothing on GitHub names a host, a path or a session**: not the report, the verdict, the
   evidence or a brief's text quoted there, since a public repo publishes them.
+  The commits too: the cloud harness tells each session to end every commit with a
+  `Claude-Session:` link, and a brief can't override it, so the project commits a
+  `.claude/settings.json` whose `attribution.commit` is only the co-author line (and
+  `attribution.pr` empty), which replaces that instruction in every session cloned from it.
 - **Verifier in the worker's VM.** With the loop.md line `Cloud verifier: worker session`, the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host.

@@ -133,12 +133,16 @@ date with the base runs no gate. GitHub's required checks never stand in for it,
 command's. Otherwise it runs the gate there as `local-ci` does (below), its log under the git common dir, and records
 the pass by tree; a gate that leaves the worktree changed is red, since it no longer ran on the batch as merged.
 5. Green: it merges each PR through GitHub in that order, pinned to its head (`gh pr merge --squash
---match-head-commit`). A merge GitHub refuses, or leaves unmerged (a base requiring a merge queue only queues it, to
-merge later on a tree no gate saw), stops there: that PR and those after it wait for the next land. Then it fetches
-and compares the base's tree with the gated tree. Equal: the pass is published (below) on the new tip. It then deletes
-the record branches no head needs: those of the trees it landed, and those over a day old whose tree is no open PR's
-head (a head replaced or never landed; the day spares a record pushed before its PR opened). A refused delete is said
-and never fails the landing.
+--match-head-commit`), with the body the repo's squash default would write less every `Claude-Session:` line, since a
+cloud session's harness adds its link to each commit and the PR may be public: under the commit-messages default the
+body GitHub builds from the commits (one: its message after the subject, its co-author lines moved to the end;
+several: each message as a `* ` item, then `---------` and their co-authors), under the PR-description default the
+PR's body, and under the blank default none. A merge GitHub refuses, or leaves unmerged
+(a base requiring a merge queue only queues it, to merge later on a tree no gate saw), stops there: that PR and those
+after it wait for the next land. Then it fetches and compares the base's tree with the gated tree. Equal: the pass is
+published (below) on the new tip. It then deletes the record branches no head needs: those of the trees it landed, and
+those over a day old whose tree is no open PR's head (a head replaced or never landed; the day spares a record pushed
+before its PR opened). A refused delete is said and never fails the landing.
 Different, because a refusal left only part of the batch on the base or someone merged by hand meanwhile: it says
 which, gates the tip, and publishes only a pass. Each PR landed gets one comment, `Landed`, then `Base:` the new tip,
 `Tree:` the tree it landed (the base with it and the PRs before it merged), `Gate:` the command, `run` or `reused`,
@@ -4303,6 +4307,79 @@ def evict(pull: dict[str, Any], base: str, green: str, log: Path) -> None:
     )
 
 
+# a cloud session's link, which its harness adds to every commit message; land drops it from the squash body
+SESSION_LINE = re.compile(r"^Claude-Session:.*(?:\n|$)", re.MULTILINE)
+CO_AUTHOR = re.compile(r"^Co-authored-by:[ \t]*(.*?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+
+
+def squash_body(commits: list[dict[str, Any]], author: str | None) -> str:
+    """The body GitHub's squash writes under the repo's commit-messages default, from the PR's commits as REST lists
+    them (oldest first) and the PR author's login, as 250 squashes on this repo's main show it. Its co-authors are, in
+    commit order, each commit's author other than the PR's (a merge commit's too), then each `Co-authored-by:` its
+    message names, one per email, the first seen keeping its name. The commits less merge commits: one is its message
+    after the subject with those trailer lines emptied, then the co-authors; several are each whole message as a `* `
+    item, then `---------` and the co-authors."""
+    named: dict[str, str] = {}
+    for commit in commits:
+        if (commit.get("author") or {}).get("login") != author:
+            who = commit["commit"]["author"]
+            named.setdefault(who["email"].casefold(), f"{who['name']} <{who['email']}>")
+        for line in CO_AUTHOR.findall(commit["commit"]["message"]):
+            email = re.search(r"<([^>]*)>", line)
+            named.setdefault((email[1] if email else line).casefold(), line)
+    footer = "\n".join(f"Co-authored-by: {who}" for who in named.values())
+    messages = [commit["commit"]["message"] for commit in commits if len(commit["parents"]) < 2]
+    if len(messages) == 1:
+        text = CO_AUTHOR.sub("", messages[0].partition("\n")[2]).strip()
+        return "\n\n".join(part for part in (text, footer) if part)
+    items = "\n\n".join(f"* {message}" for message in messages)
+    return f"{items}\n\n---------\n\n{footer}" if footer else items
+
+
+def unlinked(text: str) -> str:
+    """text less every `Claude-Session:` line, the blank lines around each removed one folded into one (none when
+    it sat between two text lines); blank lines elsewhere (a PR body's code block) stay as written."""
+    marked = "\n".join("\0" if SESSION_LINE.match(line) else line for line in text.split("\n"))
+
+    def fold(run: re.Match[str]) -> str:  # each removed line held one of the run's line breaks
+        return "\n\n" if run[0].count("\n") - run[0].count("\0") >= 2 else "\n"
+
+    return re.sub(r"\n*(?:\0(?:\n|$))+\n*", fold, marked).strip()
+
+
+def land_body(pull: dict[str, Any]) -> str | None:
+    """The `--body` land passes to GitHub's squash of pull, whatever the repo's squash default would put a
+    `Claude-Session:` line in, or None to leave GitHub's default. The repo's `squash_merge_commit_message` picks it:
+    COMMIT_MESSAGES, squash_body() less those lines; PR_BODY, the PR's body less them; BLANK, None, since GitHub
+    writes no body. ponytail: under PR_BODY GitHub's own co-author lines, if it adds any, are not added here, as no
+    squash on this repo shows that setting."""
+    setting = json.loads(gh("api", "repos/{owner}/{repo}"))["squash_merge_commit_message"]
+    if setting == "BLANK":
+        return None
+    if setting == "PR_BODY":
+        text = pull.get("body") or ""
+    else:
+        number = pull["number"]
+        commits = [
+            json.loads(line)
+            for line in gh(
+                "api",
+                "--paginate",
+                f"repos/{{owner}}/{{repo}}/pulls/{number}/commits?per_page=100",
+                "--jq",
+                ".[]",
+            ).splitlines()
+        ]
+        # ponytail: REST lists a PR's first 250 commits
+        text = squash_body(commits, (pull.get("author") or {}).get("login"))
+    # GitHub writes no body for this PR either, so there is nothing to override
+    if not text.strip():
+        return None
+    # ponytail: a body that was only `Claude-Session:` lines goes as an empty `--body`; whether GitHub then writes
+    # its default instead is unproven
+    return unlinked(text)
+
+
 def merges(
     landed: list[tuple[dict[str, Any], str, str, str]],
     base: str,
@@ -4325,7 +4402,16 @@ def merges(
             else:
                 # ponytail: no --delete-branch, which also deletes the local branch a worktree has checked out; the
                 # repo's delete_branch_on_merge removes the remote one
-                gh("pr", "merge", str(pull["number"]), "--squash", "--match-head-commit", head)
+                body = land_body(pull)
+                gh(
+                    "pr",
+                    "merge",
+                    str(pull["number"]),
+                    "--squash",
+                    *(("--body", body) if body is not None else ()),
+                    "--match-head-commit",
+                    head,
+                )
                 # a base requiring a merge queue only queues it, to merge later on a tree this batch never gated
                 if (state := pull_request(pull["number"])["state"]) != "MERGED":
                     raise Refused(f"GitHub left it {state}, not merged")
