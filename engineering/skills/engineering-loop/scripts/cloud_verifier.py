@@ -826,7 +826,9 @@ def thread_verify(
     checkout = said.strip().splitlines()[-1]
     if out:  # an earlier pass's report in a reused checkout is never this pass's
         stale = shlex.quote(f"{checkout}/{out}")
-        thread_exec(rpc, thread, env, f"rm -f {stale} {stale}.question")
+        code, said = thread_exec(rpc, thread, env, f"rm -f {stale} {stale}.question")
+        if code:
+            raise Unusable(f"could not clear the earlier report in the thread's VM: {said[-200:]}")
     final = thread_turn(
         rpc,
         thread,

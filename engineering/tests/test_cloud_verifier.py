@@ -759,6 +759,16 @@ class FakeCloud:
                 result = {"thread": {"id": "t1", "environments": [{"environmentId": "e1"}]}}
             elif method == "command/exec":
                 cmd = msg["params"]["command"][-1]
+                if self.quirks.get("rm_fails") and cmd.startswith("rm "):
+                    conn.sendall(
+                        self.frame(
+                            {
+                                "id": msg["id"],
+                                "result": {"exitCode": 1, "stdout": "", "stderr": "denied"},
+                            }
+                        )
+                    )
+                    continue
                 result = {
                     "exitCode": 0,
                     "stdout": (self.question if cmd.endswith(".question") else self.report)
@@ -910,3 +920,13 @@ def test_thread_exec_runs_a_command_in_the_vm_and_returns_its_exit_code(
     monkeypatch.setattr(cv, "WS_URL", fake.url)
     assert cv.main(["thread-exec", "--thread", "t1", "--env", "e1", "--", "echo", "hi"]) == 0
     assert "/home/agent/pr1" in capsys.readouterr().out and "turn/addUserMessage" not in fake.seen
+
+
+def test_a_report_that_cannot_be_cleared_stops_the_pass_before_the_turn(
+    route_1b, monkeypatch
+) -> None:
+    _, brief, out = route_1b
+    fake = FakeCloud("SATISFIED: yes", rm_fails=True)
+    monkeypatch.setattr(cv, "WS_URL", fake.url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
+    assert "turn/addUserMessage" not in fake.seen and not out.exists()
