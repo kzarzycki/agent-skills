@@ -596,6 +596,38 @@ def test_wait_notify_tells_loop_notify_once_the_report_is_in(
     assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
 
 
+def test_run_notify_tells_loop_notify_once_the_report_is_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    repo = git_checkout(tmp_path / "w")
+    (repo / "b.md").write_text("do X")
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    info = og.info
+    og.info = lambda s: ((repo / "r.md").write_text("ok"), info(s))[1]  # type: ignore[method-assign]
+    argv = ["run", "claude", "t", "b.md", "r.md", "--confirm-seconds", "0", "--notify"]
+    assert omnigent_agent.main(argv) == 0
+    assert calls.read_text().splitlines() == [f"exit 0: {repo / 'r.md'}"]
+
+
+def test_notify_tells_loop_notify_of_an_unexpected_exception_and_reraises_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = notify_stub(tmp_path, monkeypatch)
+    og = FakeOmnigent()
+    sid, _ = notify_session(tmp_path, monkeypatch, og)
+
+    def boom(*a: object, **k: object) -> None:
+        raise RuntimeError("client broke\nsecond line")
+
+    og.info = boom  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        omnigent_agent.main(["wait", sid, "r.md", "--notify"])
+    assert calls.read_text().splitlines() == ["exit 1: client broke"]
+
+
 def test_without_notify_loop_notify_is_never_called(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -5317,7 +5317,14 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     """Run one command; with ``--notify`` on run, send or wait, tell ``$LOOP_NOTIFY`` how it ended."""
     ended: dict[str, str] = {}
-    code = command(argv, ended)
+    try:
+        code = command(argv, ended)
+    except BaseException as e:
+        # an uncaught exception is an ending too: exit 1, as Python gives, and its first line
+        if "report" in ended:
+            ended.setdefault("failure", (str(e).splitlines() or [type(e).__name__])[0])
+            notify(f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}")
+        raise
     if "report" in ended:
         notify(f"exit {code}: {ended.get('failure') or ended['report']}")
     return code
