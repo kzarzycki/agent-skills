@@ -4597,7 +4597,7 @@ def supervise_registry(
             "nudged": lead.get("nudged_at") is not None
             and lead.get("nudged_at") == lead.get("progress_at"),
             "revived": bool(lead.get("revives")),
-            "transient": kind == "failed" and bool(TRANSIENT.search(lead.get("error") or line)),
+            "transient": bool(TRANSIENT.search(lead.get("error") or line)),
             "capped": now + backoff(retrying.get("count", 0)) - retrying.get("since", now)
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),

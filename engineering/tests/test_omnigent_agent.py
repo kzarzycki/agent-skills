@@ -7555,6 +7555,32 @@ def test_a_failure_that_is_no_transient_provider_error_is_still_reported_after_o
     assert "retrying" not in state_of(registry)["leads"]["a"]
 
 
+def test_a_transient_chain_sends_no_revive_to_a_lead_running_again_and_restarts_after_a_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [time.time()]
+    monkeypatch.setattr(omnigent_agent.time, "time", lambda: clock[0])
+    registry = following(tmp_path)
+    og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
+    og.snap = {"status": "failed", "last_task_error": {"message": "HTTP 502 Bad Gateway"}}
+    # poll 1 fails; someone else revives it before its backoff passes; poll 4 its turn ends;
+    # poll 5 it fails again, a new chain
+    steps = {1: "running", 3: "idle", 4: "failed"}
+
+    def between(poll: int) -> None:
+        clock[0] += 60
+        if poll in steps:
+            og.snap["status"] = steps[poll]
+        if poll == 3:
+            og.histories["a"].append(ending("STILL WORKING: on CI", 0))
+
+    supervised(og, registry, monkeypatch, 6, between, notify="cos", console=True)
+    assert [t for s, t in og.inbox if s == "a"] == []  # running at its due time: not revived
+    retrying = state_of(registry)["leads"]["a"]["retrying"]
+    assert (retrying["count"], retrying["at"] - retrying["since"]) == (1, 120)
+    assert retrying["since"] == clock[0] - 60  # from its second failure, not its first
+
+
 @pytest.mark.parametrize("runner", ["offline", "revive fails", "online"])
 def test_a_lead_past_its_named_wait_with_no_live_runner_is_revived_not_raised(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: str
