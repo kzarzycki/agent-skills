@@ -209,6 +209,10 @@ LEAN_TOOLS = "Bash,Read,Edit,Write,Agent,Skill,ToolSearch,WebFetch,WebSearch"
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
 COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
+# The model an agent runs on when neither --model nor its OMNIGENT_MODEL_<AGENT> names one. The
+# server refuses an acp session with no model, since it can't tell whether the default is blocked
+# (#896); any other agent sends none and runs on its harness default.
+DEFAULT_MODELS = {"claude-cloud": "sonnet"}
 # an agent record and config field that names or dates one agent, not what it does
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
@@ -1014,10 +1018,7 @@ class Omnigent:
                 " set OMNIGENT_PROJECT to file it",
                 file=sys.stderr,
             )
-        # The variable names only exist for the two aliases; any other agent takes --model.
-        if model := model or (
-            agent in AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
-        ):
+        if model := model_for(agent, model)[0]:
             body["model_override"] = model
         # Omnigent turns it into each harness's own setting (``--effort`` for Claude Code, the pinned
         # config for Codex), so nothing goes into the launch args. The create refuses a word outside
@@ -2282,6 +2283,21 @@ def harness_signature(env: dict[str, str] | None = None, home: Path | None = Non
     return signature("?", None)
 
 
+def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
+    """The model ``agent`` runs on and where it came from: ``model`` (``--model``), else
+    ``$OMNIGENT_MODEL_<AGENT>`` (``-`` as ``_``), else ``DEFAULT_MODELS``; None for an agent with
+    no default, which runs on its harness's. Only the two aliases and an agent with a default
+    read the variable, so another agent's model is always one ``--model`` named."""
+    variable = f"OMNIGENT_MODEL_{agent.upper().replace('-', '_')}"
+    if model:
+        return model, f"--model {model}"
+    if (agent in AGENTS or agent in DEFAULT_MODELS) and (named := os.environ.get(variable)):
+        return named, f"{variable}={named}"
+    if default := DEFAULT_MODELS.get(agent):
+        return default, f"default {default}"
+    return None, ""
+
+
 def start(
     og: Omnigent,
     agent: str,
@@ -2322,10 +2338,8 @@ def start(
             f"{agent} asks for approval of every command, and its only other mode skips them all,"
             f" so a --role child blocks unattended; pass --permission-mode {BYPASS} to allow that"
         )
-    variable = f"OMNIGENT_MODEL_{agent.upper()}"
-    chosen = model or (agent in AGENTS and os.environ.get(variable)) or None
+    chosen, source = model_for(agent, model)
     if chosen:
-        source = f"--model {chosen}" if model else f"{variable}={chosen}"
         try:
             listed = og.models(agent, host_id)
         except Fail as e:
@@ -5232,7 +5246,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--confirm-seconds", type=float, default=60.0)
         p.add_argument(
             "--model",
-            help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CODEX, else the harness default)",
+            help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CLAUDE_CLOUD, else"
+            " sonnet for claude-cloud and the harness default for any other agent)",
         )
         p.add_argument(
             "--effort",
