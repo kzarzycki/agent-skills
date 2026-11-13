@@ -206,6 +206,7 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         "tmpnew",
         "tmpkeep",
         "tmpkeepmix",
+        "tmpfile",
     ):
         git(repo, "worktree", "add", "-q", "-b", branch, str(dev / f"wt-{branch}"))
         wt = dev / f"wt-{branch}"
@@ -265,6 +266,7 @@ def test_agent_hygiene(tmp_path, monkeypatch):
             "tmpnew",
             "tmpkeep",
             "tmpkeepmix",
+            "tmpfile",
         ):
             git(wt, "push", "-q", "origin", branch)
         merged[branch] = git(wt, "rev-parse", "HEAD")
@@ -321,6 +323,8 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         (dev / f"wt-{name}/tmp/old.md").write_text("proof")
         for path in (dev / f"wt-{name}/tmp/old.md", dev / f"wt-{name}/tmp"):
             os.utime(path, (old, old))
+    (dev / "wt-tmpfile/tmp").write_text("mine")  # an untracked file named tmp is not a tmp/ directory
+    os.utime(dev / "wt-tmpfile/tmp", (old, old))
     (dev / "wt-tmpkeepmix/tmp/new.md").write_text("today")  # changed today: the worktree stays, unasked
     (dev / "wt-fresh/tmp/loop").mkdir(parents=True)  # a lead may still read today's report
     (dev / "wt-fresh/tmp/loop/report.md").write_text("proof")
@@ -577,6 +581,7 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "wt-tmpkeepmix/tmp/old.md",
             "wt-tmpkeepmix/tmp/new.md",
             "wt-tmpkeepmix/tmp/.gitkeep",
+            "wt-tmpfile/tmp",
             "wt-apm-mine/.claude/skills/mine/SKILL.md",
             "wt-held/held.lock",
             "wt-apm-bad/.claude/skills/mine/SKILL.md",
@@ -701,6 +706,7 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
         f"skip worktree {dev}/wt-tmpnew (o/r#7 merged): its tmp/ changed in the last 24 h",
         f"skip worktree {dev}/wt-tmpkeepmix (o/r#7 merged): its tmp/ changed in the last 24 h\n",
         f"removed worktree {dev}/wt-tmpkeep (o/r#7 merged)",
+        f"skip worktree {dev}/wt-tmpfile (o/r#7 merged): not clean: ?? tmp\n",
         f"skip worktree {dev}/wt-apm-mine (o/r#7 merged): ignored files that may not rebuild: .claude/skills/mine/SKILL.md\n",
         f"skip worktree {dev}/wt-held (o/r#7 merged): a process has it open",
         f"skip worktree {dev}/wt-deep-tmp (o/r#7 merged): its tmp/ changed in the last 24 h",
