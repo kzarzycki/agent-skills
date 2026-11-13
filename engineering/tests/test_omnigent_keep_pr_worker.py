@@ -223,3 +223,24 @@ def test_the_reap_command_passes_merged_and_pr_on(
     assert og.archived == [second] and first not in og.archived
     assert omnigent_agent.main(["reap", "--merged"]) == 0
     assert og.archived == [second, first]
+
+
+def test_reap_merged_takes_neither_an_unlabelled_nor_an_archived_session(
+    og: base.FakeOmnigent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub(monkeypatch, o__r_7="MERGED", o__r_8="MERGED")
+    live, gone = worker(og, tmp_path, 7), worker(og, tmp_path, 8)
+    og.sessions["plain"] = []
+    og.archived.append(gone)
+    rows = [
+        {"id": live, "labels": {"omni.pr": "o/r#7"}},
+        {"id": gone, "labels": {"omni.pr": "o/r#8"}, "archived": True},
+        {"id": "plain"},
+        {"id": "other", "labels": {"omni.role": "worker"}},
+    ]
+    call = og.call
+    og.call = lambda m, p, b=None: (  # type: ignore[method-assign]
+        {"data": rows} if p.startswith("/v1/sessions?kind=any&limit=1000") else call(m, p, b)
+    )
+    lines, _ = omnigent_agent.reap(og, [], merged=True)
+    assert og.archived == [gone, live] and [line.split()[0] for line in lines] == [live]
