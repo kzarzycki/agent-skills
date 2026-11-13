@@ -4259,8 +4259,7 @@ def test_two_lands_from_one_free_tip_in_the_same_second_one_wins_and_the_other_w
     assert lands["lock"]() == winner[-1]
     assert git_in(lands["origin"], "rev-parse", f"{winner[-1]}^").strip() == free
     assert lines[-1].startswith(
-        f"another land holds the landing lock {NAME} (pid {os.getpid()}),"
-        " taken 0 minutes ago ("
+        f"another land holds the landing lock {NAME} (pid {os.getpid()}), taken 0 minutes ago ("
     )
 
 
