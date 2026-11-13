@@ -782,7 +782,7 @@ def test_a_thread_pass_writes_the_report_read_from_the_vm_and_no_token_is_printe
     code = cv.main(["thread", "--pr", "1", "--brief", str(brief), "--model", "gpt-6.1-terra", "--effort", "medium"])
     shown = capsys.readouterr()
     assert code == 0
-    assert out.read_text().startswith("codex/terra-6.1/med") and "SATISFIED: yes" in out.read_text()
+    assert out.read_text().startswith("Verifier: codex/terra-6.1/med, pass 1") and "SATISFIED: yes" in out.read_text()
     assert token in fake.proto and token not in shown.out + shown.err  # the login goes to the endpoint only
     assert fake.seen.count("command/exec") == 2 and "turn/addUserMessage" in fake.seen
 
