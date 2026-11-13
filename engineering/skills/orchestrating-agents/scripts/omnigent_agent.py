@@ -2039,7 +2039,9 @@ def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, s
         # from the session list, so it holds where load and memory can't be read
         live = len(live_sessions(og, host_id))
         if live >= cap:
-            return False, f"{live} live sessions (max {cap:g})" + (f"; {line}" if ok is not None else "")
+            return False, f"{live} live sessions (max {cap:g})" + (
+                f"; {line}" if ok is not None else ""
+            )
     return ok, line
 
 
