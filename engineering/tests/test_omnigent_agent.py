@@ -7528,7 +7528,7 @@ def failing_lead(
         "403 Attention Required! | Cloudflare",
         "claude --cloud create: HTTP 503 Service Unavailable",
         "HTTP 500 Internal Server Error",
-        "API error (overloaded_error): Overloaded",
+        "API error: Overloaded",
     ],
 )
 def test_a_transient_provider_failure_is_revived_with_backoff_and_reported_only_at_the_cap(
