@@ -35,9 +35,11 @@ refresh token, so a session can run Codex but cannot renew or replace the login.
 of a cloud worker's PR runs in that worker's kept session, on its checkout and build
 (SKILL.md, Verifier in the worker's VM). Before starting a worker, run
 `engineering/skills/engineering-loop/scripts/cloud_verifier.py seed`: it renews the stored
-login when under 5 days are left, puts the copy into the environment and allows the hosts
+seed login when under 5 days are left, or uses the host's own Codex login (read only, never
+refreshed or written) when its access token has at least a day left (`--host-min-days`),
+puts the copy into the environment and allows the hosts
 Codex needs there: `chatgpt.com`, `*.chatgpt.com`, `auth.openai.com` and `api.openai.com`.
-When it says the login is gone, the owner runs its `login` once.
+When it says no login is usable, the owner logs in to Codex on the host, or runs its `login` once.
 
 The live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`) need
 logged-in harnesses and Omnigent, so they stay with the host lead. A cloud session clones the

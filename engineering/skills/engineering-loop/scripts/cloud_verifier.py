@@ -11,17 +11,19 @@ In the VM, from the checkout:
     python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--model M] [--effort E]
 
 `login` runs `codex login --device-auth` with CODEX_HOME at the seed home (`$CODEX_CLOUD_HOME`, else
-`~/.codex-cloud`), so the host's own Codex login is never copied: one login used from two machines breaks when
-either refreshes it.
+`~/.codex-cloud`), a login of its own for when the host's cannot be used.
 
-`seed` keeps that login fresh and stores a copy of it in the cloud environment, as the variable CODEX_AUTH_JSON
-(base64). When the access token has under `--min-days` left (default 5 of its 10), it refreshes the login the way
-the Codex CLI does and writes the new tokens back to the seed home. The stored copy carries no refresh token, so no
-VM can rotate the seed's, and a VM whose copy has expired fails with a 401 instead of breaking the login for the
-others. It also adds OpenAI's hosts to the environment's allowed hosts. The environment is `--env`, else the
+`seed` stores a copy of a Codex login in the cloud environment, as the variable CODEX_AUTH_JSON (base64). It takes
+the host's own login (`$CODEX_HOME`, else `~/.codex/auth.json`) when that is a ChatGPT login whose access token has
+at least `--host-min-days` (default 1) left: the file is only read, never written or refreshed, and the copy has no
+refresh token, so the host's login is never rotated out from under it. Otherwise it uses the seed home's login and,
+when its access token has under `--min-days` left (default 5 of its 10), refreshes it the way the Codex CLI does and
+writes the new tokens back to the seed home. Either copy carries no refresh token, so no VM can rotate a login, and
+a VM whose copy has expired fails with a 401 instead of breaking the login for the others. It also adds OpenAI's hosts to the environment's allowed hosts. The environment is `--env`, else the
 checkout's `.claude/settings.local.json` pin (`remote.defaultEnvironmentId`), read from the main checkout when run
-in a worktree. A variable is set when a session starts, so seed before starting the session. Exit 2 means the owner
-has to run `login` again (no seed login, or its refresh token was refused).
+in a worktree. A variable is set when a session starts, so seed before starting the session. Exit 2 means no login can be
+seeded: its text names the host login and the seed home's, each missing or too short, and the owner runs `login`
+(or `codex login` on the host) again.
 
 `verify` installs the Codex CLI when the VM lacks it, writes the seeded login to `~/.codex/auth.json` when Codex is
 not logged in, and refuses a tree with uncommitted changes, since a verifier reviews a pushed head only (files in the
@@ -203,7 +205,25 @@ def pinned_environment() -> str:
     raise Refused("no cloud environment: pass --env, or pin one in .claude/settings.local.json")
 
 
-def seed(env: str | None, min_days: float) -> int:
+def host_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def host_login() -> tuple[dict | None, str]:
+    """The host's own Codex login and, when it can't be used, why: a ChatGPT login with an access token. Read only."""
+    path = host_home() / "auth.json"
+    if not path.exists():
+        return None, f"no host login at {path}"
+    try:
+        auth = json.loads(path.read_text())
+        expires_at(auth["tokens"]["access_token"])
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None, f"the host login at {path} is not a ChatGPT login with an access token"
+    return auth, str(path)
+
+
+def seed_login(min_days: float) -> dict:
+    """The seed home's login, refreshed in place when it is running out."""
     path = seed_home() / "auth.json"
     if not path.exists():
         raise Refused(f"no seed login at {path}: run `cloud_verifier.py login`")
@@ -219,6 +239,23 @@ def seed(env: str | None, min_days: float) -> int:
         tmp.write_text(json.dumps(auth, indent=2))
         tmp.replace(path)  # the new refresh token replaces the spent one in one step
         print("refreshed the seed login")
+    return auth
+
+
+def seed(env: str | None, min_days: float, host_min_days: float = 1) -> int:
+    auth, where = host_login()
+    if auth and expires_at(auth["tokens"]["access_token"]) - time.time() >= host_min_days * 86400:
+        print("using the host's Codex login (read only, no refresh token stored)")
+    else:
+        if auth:
+            where = f"the host login at {where} has under {host_min_days:g} days left"
+        try:
+            if seed_home().resolve() == host_home().resolve():
+                # the fallback refreshes in place: never on the host's own file, however the two paths alias
+                raise Refused("the seed home is the host's own Codex home, so it is not refreshed")
+            auth = seed_login(min_days)
+        except Refused as e:
+            raise Refused(f"no usable Codex login: {where}; and {e}")
     env = env or pinned_environment()
     headers = claude_headers()
     url = f"{CLAUDE_API}/v1/environment_providers/{env}"
@@ -450,7 +487,13 @@ def main(argv: list[str] | None = None) -> int:
         "--min-days",
         type=float,
         default=5,
-        help="refresh when the access token has fewer days left",
+        help="refresh the seed login when its access token has fewer days left",
+    )
+    s.add_argument(
+        "--host-min-days",
+        type=float,
+        default=1,
+        help="use the host's own login when its access token has at least this many days left",
     )
     v = sub.add_parser(
         "verify", help="run a Codex verifier pass on the PR and post its report (VM)"
@@ -464,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "login":
             return login()
         if args.command == "seed":
-            return seed(args.env, args.min_days)
+            return seed(args.env, args.min_days, args.host_min_days)
         return verify(args.pr, args.brief, args.model, args.effort)
     except Refused as e:
         print(f"cloud_verifier: {e}", file=sys.stderr)

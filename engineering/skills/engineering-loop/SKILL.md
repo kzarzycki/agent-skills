@@ -583,9 +583,9 @@ or the owner's private network.
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host.
   `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
-  `seed` before starting the worker: it keeps a Codex login of its own fresh and stores a copy without the
-  refresh token in the cloud environment, so the owner logs in once and no VM can break the login for the
-  others. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
+  `seed` before starting the worker: it stores a copy without the refresh token in the cloud environment,
+  of the host's own Codex login when that has a day left (read only, never refreshed), else of a login of its own
+  that it keeps fresh, so no VM can break a login for the others. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
   the pass: the lead sends it the brief `approvals.py brief` prints, with `send --pr`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
@@ -647,7 +647,7 @@ or the owner's private network.
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
   either), since it misses different things; otherwise, as for a user with one family installed, a fresh
-  session of the same family is the normal path. The PR body names which ran
+  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled and neither landing a high-risk change. The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
   included; each writes its own report, and the cap counts rounds they share. The family

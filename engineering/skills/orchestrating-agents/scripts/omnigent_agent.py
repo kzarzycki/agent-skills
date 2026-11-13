@@ -106,7 +106,7 @@ session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal ev
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
 It also raises one ``landed`` line per repo and new default-branch head of the repos its followed
 leads work in, whatever the leads write (``gh api``; the first head seen is only stored).
-With ``--console``, the chief of staff's console, each poll it also writes ``<registry
+With ``--console``, the chief of staff's or a project manager's console (it labels its own session ``omni.role=cos``, or, on ``<repo>-leads.registry``, ``omni.role=pm`` and ``omni.repos=<repo>``), each poll it also writes ``<registry
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
@@ -1418,6 +1418,41 @@ def ended_on_monitor(info: dict, items: list[dict]) -> bool:
     )
 
 
+def live_tasks(info: dict) -> list[dict]:
+    """The background tasks of a session still running, a ``monitor`` (the live updates a
+    published Artifact arms) apart: work whose result goes to the session when it ends."""
+    return [
+        t
+        for t in info.get("background_tasks") or []
+        if t.get("type") != "monitor" and t.get("status", "running") == "running"
+    ]
+
+
+def archived_note(og: Omnigent, sid: str, info: dict) -> str:
+    """Why a relay to archived session ``sid`` goes nowhere: its state and where its work
+    continues, the live sub-agents it left (Omnigent records no successor session)."""
+    try:
+        kids = og.children(sid)
+    except Fail:
+        kids = []
+    where = (
+        f"its work continues in sub-agents {', '.join(kids)}: relay there"
+        if kids
+        else "no sub-agent or successor session is recorded for it: start a fresh run, or"
+        " relay to the session that started it"
+    )
+    tasks = live_tasks(info)
+    work = (
+        f"; {len(tasks)} background task(s) were still running when it was archived"
+        if tasks
+        else ""
+    )
+    return (
+        f"session {sid} is archived (title {info.get('title') or '?'!r}, status"
+        f" {info.get('status') or '?'}{work}); {where}"
+    )
+
+
 def last_message(items: list[dict]) -> dict | None:
     return next((i for i in reversed(items) if i.get("type") == "message"), None)
 
@@ -1537,7 +1572,7 @@ def send(
     old = frozenset(str(i.get("id")) for i in items)
     info = og.info(sid)
     if info.get("archived"):
-        raise Gone(f"session {sid} is archived")
+        raise Gone(archived_note(og, sid, info))
     if not info.get("runner_online", True):
         revive(og, sid)
 
@@ -2081,6 +2116,9 @@ EFFORTS = {
     "codex-native": None,
 }
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
+# the verifier's routes (`--verifier-route`): the default stays Codex, the other two are its fallback when it refuses
+VERIFIER_ROUTES = ("codex", "gemini", "claude")
+GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
 SETTINGS = Path(".claude") / "settings.local.json"
 
@@ -2170,7 +2208,16 @@ def signature(harness: str, model: str | None, effort: str | None = None) -> str
     started with, as the server recorded it (``model_override``, ``reasoning_effort``); ``running_signature`` reads
     the rest once it runs."""
     name = next(
-        (n for key, n in (("claude", "cc"), ("codex", "codex"), ("omp", "omp")) if key in harness),
+        (
+            n
+            for key, n in (
+                ("claude", "cc"),
+                ("codex", "codex"),
+                ("omp", "omp"),
+                ("antigravity", "agy"),
+            )
+            if key in harness
+        ),
         "?",
     )
     short = re.sub(r"^(claude|gpt)-", "", model or "")
@@ -2343,6 +2390,9 @@ def start(
             f"brief line {line} has an empty `` span: a name lost in an unquoted heredoc; quote it (<<'EOF')"
         )
     by_file = briefed_by_file(og, agent, host_id)
+    # agy on another host takes the same short message: its render check reads the pasted brief's
+    # first line, which a long paste scrolls away, so the brief goes to a file on that host
+    far_file = agy and not by_file and bool(host_id and host_id != og.host_id)
     # a cloud VM or another host has its own cores, and a top-level lead caps its own children
     lock = heavy_lock() if by_file and not top_level else ""
     # The AGENT_SIGNATURE line goes atop it once the session exists: its model is the one the
@@ -2365,7 +2415,7 @@ def start(
     def message(full: str) -> str:
         # Omnigent labels a child by a model summary of this first message, not by its title, so
         # the title leads: a generic line gets labels like "Read Brief and Execute".
-        if not by_file:
+        if not (by_file or far_file):
             # A file here is not on that host, nor where a non-native agent runs its tools (a
             # cloud VM); inline, a Claude lead may read it as pasted text and ask its starter for a
             # go-ahead.
@@ -2466,6 +2516,8 @@ def start(
             brief_file.parent.mkdir(parents=True, exist_ok=True)
             brief_file.write_text(full)
         try:
+            if far_file:
+                file_write(og, sid, brief_file, full, True)
             for local in files or []:  # before the brief, which names them
                 file_write(og, sid, report.parent / local.name, local.read_text(), True)
         except Fail as e:
@@ -3464,6 +3516,32 @@ def bring_home(og: Omnigent, sid: str, report: Path) -> Path:
     return home.resolve()
 
 
+def apply_route(args: argparse.Namespace) -> None:
+    """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
+    agy needs to run unattended) and `claude` a fresh Claude session of another model than the author's, marked
+    same-family. Refused where the route can't run, naming the fix, since a verifier started wrong costs a pass."""
+    if args.verifier_route == "gemini":
+        if not args.host:
+            raise Fail(
+                "--verifier-route gemini runs agy on a host that has it logged in: pass --host"
+            )
+        args.agent = GEMINI_AGENT
+        args.permission_mode = args.permission_mode or BYPASS
+        return
+    args.agent = "claude"
+    args.same_family = True
+    if not args.model or not args.author_model:
+        raise Fail(
+            "--verifier-route claude names its model and the author's: pass --model and"
+            " --author-model, which differ"
+        )
+    if args.model == args.author_model:
+        raise Fail(
+            f"--verifier-route claude would verify {args.author_model}'s diff with the same model:"
+            " pass a different --model"
+        )
+
+
 def reviews(role: str | None) -> bool:
     """Whether ``role`` is the verifier's role file (``verifier.md``): only that one reviews a PR,
     so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
@@ -3942,8 +4020,9 @@ def write_state(path: Path, state: dict) -> None:
 
 def lead_status(info: dict, items: list[dict]) -> dict:
     """A session's state (``running``, ``idle``, ``blocked``, ``failed``, ``archived``), its last
-    message's ending and first line, and what it waits on: ``parked``, the wait its ``STILL
-    WORKING`` names, else ``unknown``."""
+    message's ending and first line, what it waits on: ``parked``, the wait its ``STILL
+    WORKING`` names, else ``unknown``; and its turn, the key of that message (its id, else its
+    ``created_at``) with ``turn_at``, when it was written."""
     said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
     text = text_of(said[-1]).strip() if said else ""
     e = info.get("last_task_error") or {}
@@ -3963,6 +4042,8 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "ending": ending_of(text),
         "wait": wait_of(text, said[-1].get("created_at") if said else None),
         "last_line": text.splitlines()[0][:200] if text else "",
+        "turn": str(said[-1].get("id") or said[-1].get("created_at") or "") if said else "",
+        "turn_at": float(said[-1].get("created_at") or 0) if said else 0.0,
     }
 
 
@@ -4180,18 +4261,19 @@ def standing(path: Path | None) -> str:
     return own
 
 
-def status_line(lead: dict) -> str:
+def status_line(lead: dict, turn: bool = True) -> str:
     """A lead's ``status.line`` label: its state in one short line, under 200 characters, since
-    Omnigent cuts a label value to its first 256 without an error."""
+    Omnigent cuts a label value to its first 256 without an error. Without ``turn`` a lead not
+    running reads ``idle``, with no last line: its turn end is not news."""
     if lead["state"] == "blocked":
         line = "blocked on a prompt"
     elif lead["state"] == "failed":
         line = f"failed: {lead['error']}"
     else:
-        line = "running" if lead["state"] == "running" else "turn ended"
+        line = "running" if lead["state"] == "running" else "turn ended" if turn else "idle"
         if lead["wait"] not in ("unknown", "parked"):
             line += f" · {waits(lead['wait'])}"
-        if lead["state"] != "running" and lead["last_line"]:
+        if turn and lead["state"] != "running" and lead["last_line"]:
             line += f": {lead['last_line']}"
     return line if len(line) < 200 else line[:198] + "…"
 
@@ -4265,9 +4347,15 @@ def supervise_registry(
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
-    if console and (me := parent_id()):  # only the chief of staff runs the console
+    if console and (me := parent_id()):
+        # the chief of staff's registry is leads.registry; a project manager's is <repo>-leads.registry
+        repo = (
+            registry.name.removesuffix("-leads.registry")
+            if registry.name.endswith("-leads.registry")
+            else ""
+        )
         try:
-            og.label(me, {"omni.role": "cos"})
+            og.label(me, {"omni.role": "pm", "omni.repos": repo} if repo else {"omni.role": "cos"})
         except Fail as e:
             print(f"{me}: role label not written: {e}", file=sys.stderr)
     if not isinstance(state["rate"].get("model_calls"), list):
@@ -4297,6 +4385,7 @@ def supervise_registry(
     repos: dict[str, str] = {}  # each followed lead's repo, empty for none; read once
     headed: dict[str, float] = {}  # when each repo's default-branch head was last read
     window = time.monotonic()
+    started = time.time()  # a lead first seen in this run reports no turn end from before it
     script = script or Path(os.path.realpath(__file__))
     try:
         ran = script.stat().st_mtime_ns
@@ -4544,7 +4633,11 @@ def supervise_registry(
         print(stamp(f"{eid}: {by}: {action} ({why})"), flush=True)
 
     def compose(bid: str, events: list[dict]) -> str:
-        """A post of ``events``: one line each, then each lead's status row and report head."""
+        """A post of ``events``: one line each, then each lead's status row and report head. A
+        row gives a turn end (``turn ended: <last line>``) once per turn, kept in the lead's
+        ``told_turn``, and never one written before the run that first saw the lead
+        (``seen_from``), so an old last message of a lead that never settles is no news in every
+        post; the row then reads ``idle``."""
         to = "owner" if any(e["route"] == "owner" for e in events) else "act"
         n = len(events)
         lines = [f"Supervisor [{to}] {bid}: {n} event{'s' * (n > 1)}"]
@@ -4553,7 +4646,13 @@ def supervise_registry(
             lead = state["leads"].get(sid) or {}
             if "state" not in lead:
                 continue  # gone from the registry, or never read
-            lines += ["", f"{sid} {lead['title']}: {status_line(lead)}"]
+            new = lead.get("turn") != lead.get("told_turn") and float(
+                lead.get("turn_at") or 0
+            ) >= float(lead.get("seen_from") or 0)
+            row = status_line(lead, turn=new)
+            if row != status_line(lead, turn=False):  # it gave the turn end: once
+                lead["told_turn"] = lead.get("turn")
+            lines += ["", f"{sid} {lead['title']}: {row}"]
             if lead.get("cloud"):  # its file stays in the VM: the head its last message gave
                 read = lead.get("report_read") or {}
                 if read.get("head"):
@@ -4691,8 +4790,17 @@ def supervise_registry(
         seen = rec.seen.pop(sid, {})
         looks[sid] = (seen.get("info") or {}, seen.get("items") or [])
         lead = state["leads"].setdefault(
-            sid, {"nudges": 0, "revives": 0, "waits_on": [], "label": {}, "occurrences": 0}
+            sid,
+            {
+                "nudges": 0,
+                "revives": 0,
+                "waits_on": [],
+                "label": {},
+                "occurrences": 0,
+                "seen_from": started,
+            },
         )
+        lead.setdefault("seen_from", started)  # a state written before it was kept
         if "info" not in seen or "items" not in seen:
             return lead
         info, items = seen["info"], seen["items"]
@@ -5142,6 +5250,19 @@ def main(argv: list[str] | None = None) -> int:
             help="model family that wrote the diff; a verifier of the same family needs --same-family",
         )
         p.add_argument(
+            "--verifier-route",
+            choices=VERIFIER_ROUTES,
+            default=os.environ.get("OMNIGENT_VERIFIER_ROUTE", "codex"),
+            help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
+            " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
+            " logged in); claude with a fresh Claude session of another model than --author-model (same-family)."
+            " The two fallbacks are for a Codex refusal, never for a high-risk change",
+        )
+        p.add_argument(
+            "--author-model",
+            help="the model that wrote the diff: --verifier-route claude refuses to verify it with the same one",
+        )
+        p.add_argument(
             "--same-family",
             action="store_true",
             help="verify with the author's own family when the other is unavailable; the PR body says so",
@@ -5564,6 +5685,8 @@ def main(argv: list[str] | None = None) -> int:
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
         verifier = args.cmd in ("run", "start") and reviews(args.role)
+        if verifier and args.verifier_route != "codex":
+            apply_route(args)
         if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
             args.pr = None
         if verifier and args.host:
