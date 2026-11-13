@@ -242,14 +242,14 @@ Merge-queue (`merge_group`) and push runs have no draft and run as before. While
 draft, `mise run check` on each pushed head is its check. With `ci: false` in gatekeeper.md, the
 check on a head you push for review is `uv run <this skill's folder>/scripts/approvals.py local-ci --record`
 instead, and is the gate while iterating too: it runs the merge check, gatekeeper.md's `gate`
-(default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and publishes it as a
-commit status `gate` on the head once GitHub has it, so `local-ci <pr>` at landing posts
-that pass rather than running the check again: on this host for any commit with the same
-tree and gate command (a rebase or reworded commit keeps its tree), on another for the
-commit whose `gate` status names them. A gate may run in a cloud session: where GitHub
-refuses it the status, `local-ci --record` pushes the pass to the base repo as a ref named by
-its tree and command and says which, and another host's `local-ci <pr>`, `check merge` and
-`land` reuse it at every risk, writing the `gate` status on the head as they do. `gate` is one command with no shell operator, so a
+(default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
+to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
+posts that pass rather than running the check again: in this clone for any commit with the same tree and gate
+command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
+risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
+reader write on the head, where the token allows, only shows the pass on the PR, and no decision reads it, since
+anyone who can write a status may type one. `land` deletes a record branch once its tree has landed, or once it is a
+day old and its tree is no open PR's head. `gate` is one command with no shell operator, so a
 chain of checks is one task. A run on a
 checkout with changes records nothing. A project whose check reads environment variables (a
 tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
@@ -457,6 +457,7 @@ it was never gated on:
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
+`land <pr> --only` lands that PR alone and leaves every other PR untouched, for a lead that must not land another lead's work.
 With `--wait` it is one background command that ends when the batch landed or needs someone
 (exit 3 while it waits on the lock or CI, 1 for a refusal or an eviction). Never run `gh pr
 ready` or `gh pr merge` by hand, because `land` is what refuses a PR whose proof is missing. A repo with
@@ -541,7 +542,9 @@ or the owner's private network.
   the light gate (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
   since a cloud session declines any other branch without its own user's permission and a
-  peer's brief is not that; no brief names another push target. Its brief names the role
+  peer's brief is not that; no brief names another push target. A worker's `local-ci --record`
+  pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
+  `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
   file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, or on another host loop.md's `Verifier hosts:` line lists, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its

@@ -16,8 +16,13 @@ It refuses a tracked change or an untracked file that isn't ignored, the check `
 patches under a gitignored `tmp/loop/` don't count, and it refuses any patch that doesn't apply before running a test.
 On SIGINT or SIGTERM it stops the test command, undoes the applied patch and then dies of that signal, so a killed run
 leaves no mutation in the tree. The test command runs with PYTHONDONTWRITEBYTECODE=1, since a .pyc written in the
-same second as its source would hide the next same-sized patch of that file. It takes no lock: a test command that
-needs the host's heavy slot carries the project's wrapper itself.
+same second as its source would hide the next same-sized patch of that file. Each patch's test run takes the host
+gate slot, an exclusive flock on `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.1.lock` (the file a project's gate
+takes, SKILL.md, One heavy gate per host slot), so it waits, with a `waiting for the host gate slot` line in the log,
+while a gate holds it; the slot is held per patch, so a gate can take it between two. The test command gets
+`LOOP_GATE_SLOT_HELD=<lock path>`: a wrapper that takes the same lock runs its command without taking it again, since
+it would otherwise wait on its own parent. A run already started under that variable naming the slot takes no lock.
+There is no option to skip the slot.
 
 The log: line 1 is `git rev-parse HEAD`, line 2 this command line, then `<patch>: exit <n> killed|survived` per
 patch, then each patch's test output under a `== <patch> ==` header. It is rewritten after every patch, so a stopped
@@ -30,12 +35,14 @@ library and git.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import shlex
 import signal
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 
 class Interrupted(Exception):
@@ -73,8 +80,44 @@ def on_signal(signum: int, _frame: object) -> None:
     raise Interrupted(signum)
 
 
-def run_test(command: str) -> tuple[int, str]:
-    """The test command's exit code and output; on a signal its whole process group is stopped first."""
+def slot_path() -> str:
+    """The host gate slot's lock file, the one SKILL.md and the project's gate wrapper name."""
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.environ.get("HOME", "~"), ".cache")
+    return os.path.join(cache, "engineering-loop", "gate.1.lock")
+
+
+def take_slot(path: str, waiting: Callable[[], None]) -> int | None:
+    """Hold the slot's exclusive flock and return its fd (closing it frees the lock, as does the process dying);
+    None when this run already runs under a holder of that same path. `waiting` is called once, before blocking."""
+    if os.environ.get("LOOP_GATE_SLOT_HELD") == path:
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            waiting()
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def run_test(command: str, waiting: Callable[[], None] = lambda: None) -> tuple[int, str]:
+    """The test command's exit code and output, run under the host gate slot; on a signal its whole process group is
+    stopped first."""
+    slot = slot_path()
+    fd = take_slot(slot, waiting)
+    try:
+        return run_command(command, slot)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def run_command(command: str, slot: str) -> tuple[int, str]:
     # its own session, so stopping it reaches every process the shell started
     proc = subprocess.Popen(
         command,
@@ -86,7 +129,7 @@ def run_test(command: str) -> tuple[int, str]:
         errors="replace",
         start_new_session=True,
         # a .pyc written in the same second as its source hides the next same-sized patch of it
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "LOOP_GATE_SLOT_HELD": slot},
     )
     try:
         output, _ = proc.communicate()
@@ -184,7 +227,12 @@ def main(argv: list[str]) -> int:
             current = path
             # applies: --check passed on this same tree, which restore() left clean
             git("apply", str(path), cwd=top)
-            code, output = run_test(args.test)
+
+            def waiting(name: Path = name) -> None:
+                lines.append(f"{name}: waiting for the host gate slot")
+                write_log()
+
+            code, output = run_test(args.test, waiting)
             survived |= code == 0
             # logged before the restore, so a restore that refuses keeps the result it followed
             lines.append(f"{name}: exit {code} {'survived' if code == 0 else 'killed'}")

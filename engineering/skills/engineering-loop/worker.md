@@ -86,7 +86,7 @@ A worker in a cloud session (loop.md's `Cloud worker:` line) follows SKILL.md, C
    Before the report, mutation-check each production change you add: one patch per
    condition, branch or value, written as verifier.md, Mutation-check the new tests, says,
    run with `uv run <this skill's folder>/scripts/mutate.py --test '<tests>' --log <log>
-   <patch>…`, the test command under your heavy lock when your brief names one. A survivor
+   <patch>…`, which queues on the host gate slot itself, so the test command takes no lock of its own. A survivor
    gets a test before the report, which lists the log of the run with none left, since the
    verifier runs the same tool and a survivor there costs a pass.
    Clean up what you started (servers, temporary files), and only that: stop a process by
