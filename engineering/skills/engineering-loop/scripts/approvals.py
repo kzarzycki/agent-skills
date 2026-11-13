@@ -453,7 +453,9 @@ PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # a fallback verifier, run when Codex refuses (a Gemini pass through agy, `agy/<model>/<effort>`, or a same-family one):
 # a family naming one counts as a lower tier, so a high-risk change never lands on it (loop.md, Verifier route)
-FALLBACK_FAMILY = re.compile(r"(?<![^\s,/])(agy|gemini[\w.-]*|same-family)(?![^\s,/])", re.IGNORECASE)
+FALLBACK_FAMILY = re.compile(
+    r"(?<![^\s,/])(agy|gemini[\w.-]*|same-family)(?![^\s,/])", re.IGNORECASE
+)
 # The cap, the last pass the loop runs on its own (a core finding open after it goes to the owner), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)

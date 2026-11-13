@@ -2137,7 +2137,16 @@ def signature(harness: str, model: str | None, effort: str | None = None) -> str
     started with, as the server recorded it (``model_override``, ``reasoning_effort``); ``running_signature`` reads
     the rest once it runs."""
     name = next(
-        (n for key, n in (("claude", "cc"), ("codex", "codex"), ("omp", "omp"), ("antigravity", "agy")) if key in harness),
+        (
+            n
+            for key, n in (
+                ("claude", "cc"),
+                ("codex", "codex"),
+                ("omp", "omp"),
+                ("antigravity", "agy"),
+            )
+            if key in harness
+        ),
         "?",
     )
     short = re.sub(r"^(claude|gpt)-", "", model or "")
@@ -3442,7 +3451,9 @@ def apply_route(args: argparse.Namespace) -> None:
     same-family. Refused where the route can't run, naming the fix, since a verifier started wrong costs a pass."""
     if args.verifier_route == "gemini":
         if not args.host:
-            raise Fail("--verifier-route gemini runs agy on a host that has it logged in: pass --host")
+            raise Fail(
+                "--verifier-route gemini runs agy on a host that has it logged in: pass --host"
+            )
         args.agent = GEMINI_AGENT
         args.permission_mode = args.permission_mode or BYPASS
         return
