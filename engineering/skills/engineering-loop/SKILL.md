@@ -607,6 +607,18 @@ or the owner's private network.
   session, picks the head and posts the report; the environment holds a ChatGPT login that every process in
   the VM can read, good for up to 10 days, so it suits PRs the owner's own agents wrote and not ones from
   forks; and the carrier spends its quota while it waits.
+- **Verifier on a Codex Cloud thread.** With the loop.md line `Cloud verifier: worker session, else codex thread`, a
+  pass with no worker VM to carry it (the PR has no Claude cloud worker, or Claude tokens are short) runs on a Codex Cloud
+  thread, driven from the host: `scripts/cloud_verifier.py thread --pr <n> --brief <file> --model M --effort E`. The
+  host's own Codex login goes to OpenAI's endpoint only, never to a VM. It starts a thread (a VM that keeps its files and
+  Docker images), checks out the PR's head there, sends the brief as a turn, reads the report back from the thread's
+  checkout (else the final message) and writes it at the brief's `- Report:` path on the host; the lead posts the
+  verdict from it as for a host verifier. It prints the weekly Codex quota before and after, the thread id and its
+  environment id; a later pass passes `--thread` and `--env` to run on the same machine. Use the routes in this order:
+  the worker's VM when a Claude cloud worker holds the build, the thread otherwise, a host verifier last. Never for a
+  Codex-written PR: it needs a Claude verifier. The endpoint is undocumented and may change, so every surprise ends
+  in exit 2 ("use route 2 or the host verifier"): take that exit as the cue to use the next route, never to skip the
+  verifier. Exit 1 is a pass that wrote no report with a `SATISFIED:` line.
 - **Auto-fix stays off on loop PRs** (a cloud session that subscribes to its own PR), since it
   pushes fixes and replies on threads by its own judgment, which is the lead's triage, and the
   lead already briefs the worker on each fix.

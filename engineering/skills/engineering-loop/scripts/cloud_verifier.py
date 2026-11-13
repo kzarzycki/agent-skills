@@ -10,6 +10,15 @@ In the VM, from the checkout:
 
     python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--model M] [--effort E]
 
+On a host with no worker VM (route 1b), a Codex Cloud thread driven with the host's own login:
+
+    python3 scripts/cloud_verifier.py thread --pr N --brief FILE [--model M] [--effort E] [--thread ID --env ID]
+
+`thread` starts a thread, checks out the PR's head in its VM, sends the brief as a turn and writes the report (read
+back from the thread's checkout, else its final message; one without a `SATISFIED:` line is not written) at the
+brief's `- Report:` path. Exit 0 report written, 1 no report, 2 route 1b unusable (the endpoint is undocumented):
+use route 2 or the host verifier. No token is printed or sent to the VM.
+
 `login` runs `codex login --device-auth` with CODEX_HOME at the seed home (`$CODEX_CLOUD_HOME`, else
 `~/.codex-cloud`), a login of its own for when the host's cannot be used.
 
@@ -66,13 +75,18 @@ import base64
 import json
 import os
 import re
+import shlex
+import socket
+import ssl
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 VAR = "CODEX_AUTH_JSON"
@@ -533,6 +547,213 @@ def post(pr: int, body: str) -> str:
     )
     return posted.stdout.strip()
 
+# ── host: a Codex Cloud thread as the verifier's machine (route 1b) ───────────────────────────────────────────────
+# ponytail: the endpoint, its subprotocol login and the cloud-only fields of `thread/start` are read from the ChatGPT
+# web app (docs/knowledge/codex-verifier-in-the-cloud.md, route 1b), so they can change without notice. Every
+# surprise raises Unusable, `thread` exits 2 and the lead falls back to route 2 or a host verifier, never to no
+# verifier. Upgrade path: OpenAI's access tokens for automation, if they cover Cloud threads.
+
+WS_URL = os.environ.get("CODEX_CLOUD_WS", "wss://codex-cloud-backend.chatgpt.com/")
+USAGE_URL = os.environ.get("CODEX_CLOUD_USAGE", "https://chatgpt.com/backend-api/wham/usage")
+
+
+class Unusable(Refused):
+    """Route 1b does not answer as the probe saw it: use route 2 or the host verifier."""
+
+
+class Socket:
+    """A WebSocket client of text frames, standard library only: just what a JSON-RPC conversation needs."""
+
+    def __init__(self, url: str, token: str) -> None:
+        u = urllib.parse.urlparse(url)
+        raw = socket.create_connection((u.hostname, u.port or (443 if u.scheme == "wss" else 80)), timeout=60)
+        self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=u.hostname) if u.scheme == "wss" else raw
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall(
+            (
+                f"GET {u.path or '/'} HTTP/1.1\r\nHost: {u.netloc}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nOrigin: https://chatgpt.com\r\n"
+                f"Sec-WebSocket-Protocol: codex-app-server, openai-bearer.{token}\r\n\r\n"
+            ).encode()
+        )
+        head = b""
+        while b"\r\n\r\n" not in head:
+            more = self.sock.recv(4096)
+            if not more:
+                break
+            head += more
+        self.buf = head.partition(b"\r\n\r\n")[2]
+        status = head.split(b"\r\n")[0].decode(errors="replace")
+        if " 101 " not in status:
+            raise Unusable(f"the endpoint refused the WebSocket: {status}")
+
+    def need(self, n: int) -> bytes:
+        while len(self.buf) < n:
+            more = self.sock.recv(65536)
+            if not more:
+                raise Unusable("the endpoint closed the connection")
+            self.buf += more
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def send(self, obj: dict) -> None:
+        data = json.dumps(obj).encode()
+        mask = os.urandom(4)
+        n = len(data)
+        size = bytes([0x80 | n]) if n < 126 else b"\xfe" + n.to_bytes(2, "big") if n < 65536 else b"\xff" + n.to_bytes(8, "big")
+        self.sock.sendall(b"\x81" + size + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def recv(self) -> dict:
+        text = b""
+        while True:
+            b0, b1 = self.need(2)
+            n = b1 & 0x7F
+            n = int.from_bytes(self.need(2), "big") if n == 126 else int.from_bytes(self.need(8), "big") if n == 127 else n
+            data = self.need(n)
+            op = b0 & 0x0F
+            if op == 8:
+                raise Unusable("the endpoint closed the connection")
+            if op == 9:  # ping: answer with the same bytes (a client frame is masked; a zero mask is a valid one)
+                self.sock.sendall(b"\x8a" + bytes([0x80 | len(data)]) + b"\0\0\0\0" + data)
+            elif op in (0, 1):
+                text += data
+                if b0 & 0x80:
+                    return json.loads(text)
+
+
+class Rpc:
+    def __init__(self, token: str) -> None:
+        try:
+            self.ws = Socket(WS_URL, token)
+        except OSError as e:
+            raise Unusable(f"no connection to {WS_URL}: {e}") from e
+        self.n = 0
+        self.notes: list[dict] = []
+        self.call("initialize", {"clientInfo": {"name": "cloud_verifier", "version": "1"}})
+        self.ws.send({"method": "initialized"})
+
+    def call(self, method: str, params: dict) -> dict:
+        self.n += 1
+        self.ws.send({"id": self.n, "method": method, "params": params})
+        while True:
+            msg = self.ws.recv()
+            if msg.get("id") == self.n and "method" not in msg:
+                if "error" in msg:
+                    raise Unusable(f"{method} failed: {str(msg['error'])[:300]}")
+                return msg.get("result") or {}
+            if "method" in msg:
+                self.notes.append(msg)
+
+    def until(self, method: str, timeout: float) -> dict:
+        """The next notification named `method`, with every other one kept in `notes`."""
+        end = time.time() + timeout
+        while time.time() < end:
+            for i, note in enumerate(self.notes):
+                if note["method"] == method:
+                    return self.notes.pop(i)
+            self.ws.sock.settimeout(max(1.0, end - time.time()))
+            try:
+                self.notes.append(self.ws.recv())
+            except TimeoutError:
+                break
+        raise Unusable(f"no {method} within {int(timeout)} s")
+
+
+def host_token() -> str:
+    auth, why = host_login()
+    if not auth:
+        raise Unusable(f"route 1b needs the host's own Codex login: {why}")
+    if expires_at(auth["tokens"]["access_token"]) < time.time() + 600:
+        raise Unusable("the host's Codex login has run out: run `codex login` on the host")
+    return auth["tokens"]["access_token"]
+
+
+def quota(token: str) -> str:
+    """The weekly Codex allowance used, as the endpoint states it ('?' when it does not)."""
+    try:
+        req = urllib.request.Request(USAGE_URL, headers={"Authorization": f"Bearer {token}"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = json.load(resp)
+        return json.dumps(body.get("rate_limit", body))[:300]
+    except (OSError, ValueError, AttributeError):
+        return "?"
+
+
+def thread_start(rpc: Rpc, model: str | None, effort: str | None) -> tuple[str, str]:
+    cfg = {"model_reasoning_effort": effort} if effort else {}
+    got = rpc.call(
+        "thread/start",
+        {"model": model, "config": cfg, "serviceName": "codex_cloud", "environments": [{"environmentConfigId": None}]},
+    )
+    try:
+        thread = got["thread"]["id"]
+    except (KeyError, TypeError) as e:
+        raise Unusable(f"thread/start answered without a thread id: {str(got)[:200]}") from e
+    return thread, next(iter(got["thread"].get("environments") or [{}]), {}).get("environmentId", "")
+
+
+def thread_exec(rpc: Rpc, thread: str, env: str, command: str) -> tuple[int, str]:
+    got = rpc.call("command/exec", {"threadId": thread, "environmentId": env, "command": ["bash", "-lc", command]})
+    return int(got.get("exitCode", 1)), (got.get("stdout") or "") + (got.get("stderr") or "")
+
+
+def thread_turn(rpc: Rpc, thread: str, text: str, model: str | None, effort: str | None, timeout: float) -> str:
+    """Send a turn and return the thread's final message once the turn completes."""
+    rpc.call(
+        "turn/addUserMessage",
+        {
+            "threadId": thread,
+            "clientUserMessageId": str(uuid.uuid4()),
+            "input": [{"type": "text", "text": text}],
+            "model": model,
+            "collaborationMode": {"mode": "default", "settings": {"model": model, "reasoning_effort": effort}},
+        },
+    )
+    rpc.until("turn/completed", timeout)
+    rpc.notes.clear()
+    items = rpc.call("thread/items/list", {"threadId": thread, "limit": 20, "sortDirection": "desc"}).get("data") or []
+    return next((x["item"].get("text") or "" for x in items if x["item"].get("type") == "agentMessage"), "")
+
+
+def thread_verify(pr: int, brief_file: Path, model: str | None, effort: str | None, thread: str | None, env: str) -> int:
+    """One pass on a Codex Cloud thread: clone the PR head (a later pass reuses the thread's checkout), run the brief,
+    read the report back from the thread's checkout, else take its final message, and write it at the brief's path."""
+    brief = brief_file.read_text()
+    out = report_path(brief)
+    token = host_token()
+    print(f"quota before: {quota(token)}")
+    rpc = Rpc(token)
+    if not thread:
+        thread, env = thread_start(rpc, model, effort)
+        print(f"thread {thread} env {env}")
+    head = run("gh", "pr", "view", str(pr), "--json", "headRefOid,headRepository,headRepositoryOwner", "--jq",
+               '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name').stdout.split()
+    code, said = thread_exec(
+        rpc, thread, env,
+        f"cd ~ && (test -d pr{pr} || gh repo clone {head[1]} pr{pr} -- -q) && cd pr{pr} "
+        f"&& git fetch -q origin {head[0]} && git checkout -q --detach {head[0]} && mkdir -p tmp/loop && pwd",
+    )
+    if code:
+        raise Unusable(f"the checkout of {head[0]} in the thread's VM failed: {said[-300:]}")
+    checkout = said.strip().splitlines()[-1]
+    final = thread_turn(
+        rpc, thread, f"Your checkout is {checkout}, at the PR's head. Run from it.\n\n{brief}", model, effort, 3600,
+    )
+    body = ""
+    if out:
+        code, body = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out))}")
+        body = body if not code else ""
+    body = body.strip() or final.strip()
+    print(f"quota after: {quota(token)}")
+    if "SATISFIED:" not in body:
+        print("the verifier wrote no report with a SATISFIED: line", file=sys.stderr)
+        return 1
+    target = out or Path(f"tmp/loop/pr{pr}-thread.md")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{signature(model, effort)}\n\n{body}\n" if not body.startswith("Verifier:") else body + "\n")
+    print(target)
+    return 0
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
@@ -571,15 +792,26 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--brief", type=Path, required=True)
     v.add_argument("--model")
     v.add_argument("--effort")
+    t = sub.add_parser(
+        "thread", help="run a Codex verifier pass on a Codex Cloud thread, driven from this host (route 1b)"
+    )
+    t.add_argument("--pr", type=int, required=True)
+    t.add_argument("--brief", type=Path, required=True)
+    t.add_argument("--model")
+    t.add_argument("--effort")
+    t.add_argument("--thread", help="a thread a pass before it started: the later pass runs on its machine")
+    t.add_argument("--env", default="", help="that thread's environment id, printed by its first pass")
     args = parser.parse_args(argv)
     try:
         if args.command == "login":
             return login()
         if args.command == "seed":
             return seed(args.env, args.min_days, args.host_min_days, args.host_refresh_days)
+        if args.command == "thread":
+            return thread_verify(args.pr, args.brief, args.model, args.effort, args.thread, args.env)
         return verify(args.pr, args.brief, args.model, args.effort)
     except Refused as e:
-        print(f"cloud_verifier: {e}", file=sys.stderr)
+        print(f"cloud_verifier: {e}" + (" (use route 2 or the host verifier)" if isinstance(e, Unusable) else ""), file=sys.stderr)
         return 2
 
 
