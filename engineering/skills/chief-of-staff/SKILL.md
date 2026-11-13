@@ -98,7 +98,9 @@ its landing order.
   Without `--console` it posts `Supervisor: <line>` for every piece of news instead (the
   table below reads those too). A lead that waits on another is started with `start --top-level
   --after <session>`: the supervisor tells it that lead's `DONE` itself, so you send it no line of
-  yours. A subscription wakes you with a full
+  yours. A project manager is started with `start --top-level --leads <its leads registry>`
+  (`<repo>-leads.registry` beside yours), so its `STILL WORKING` on its leads raises no deadline
+  while every one of them is running. A subscription wakes you with a full
   context on every turn end, and most of those change nothing, so it is the fallback:
   `start --top-level` without a registry subscribes you to the lead it starts, and Omnigent posts
   `[System: session <title> (<id>) ended its turn (completed|cancelled|failed). Read it with
@@ -213,6 +215,7 @@ the foreground and never poll the lead afterwards:
 | 0 | Delivered, or already in the lead's history unanswered (a rerun sends no second copy) | Tell the owner it went |
 | 5 | Queued: the lead holds it until its current step ends, or until the approval prompt it names is answered; the line says which | Tell the owner it lands when that clears; for a prompt, which session waits and on what |
 | 4 | Not deliverable: archived, a failed revive, or lost; the line says which | Tell the owner, and start a new lead when the ask still stands |
+| 7 | Posted, not confirmed: a read after the post failed | Tell the owner it went but is unconfirmed; run the same relay again, it posts no second copy |
 
 A lead blocked only on a question (its own ask of the owner) holds every message behind it
 until it is answered, so relay the owner's answer to it with `relay --answer`, which gives the
