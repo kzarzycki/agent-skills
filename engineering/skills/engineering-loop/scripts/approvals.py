@@ -7,6 +7,7 @@
 
     uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing proof, exit 1; waiting: exit 3
     uv run scripts/approvals.py check build --issue <n>   # before the PR exists: the issue's build proofs; exit 0 or 1
+    uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run scripts/approvals.py check queue <pr> --head <sha>  # deprecated: may that head enter a project's own queue
     uv run scripts/approvals.py batch <pr> --merge <sha> --batch <sha> --exit <n> --log <path>  # deprecated: its proof
     uv run scripts/approvals.py land [<pr> [--only]] [--wait]  # land every landable PR as one gated batch; exit 0, 1 or 3
@@ -85,7 +86,8 @@ the label may be the delegated approver's: `delegate <pr>` adds it, then a recor
 `By: delegate`), and refuses a PR into the default branch, where a label is no go. A PR from a branch
 into the default branch is high risk while any PR merged into that branch carries `risk:high`, so a feature
 branch's merge waits for the owner.
-Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names, else the one
+Every proof held: exit 0. Before the PR exists, `check build` judges the issue `--issue <n>` names (or a positional
+number no PR has), else the one
 the branch's name starts a segment with (`loop/329-fix`), the same way, and claims nothing; with neither it exits 1,
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in loop.md, a person may keep their PRs out of the loop: `check merge` on a PR that
@@ -3515,6 +3517,10 @@ def reverted(number: int) -> str | None:
     return None
 
 
+# what GitHub says of a PR number no PR has: GraphQL's refusal, REST's 404
+NO_PULL = ("Could not resolve to a PullRequest", "Not Found")
+
+
 def check(point: str, pr: int | None, head: str | None = None, issue: int | None = None) -> int:
     tracker, loop = project()
     if issue is not None:
@@ -3530,7 +3536,14 @@ def check(point: str, pr: int | None, head: str | None = None, issue: int | None
             return unbuilt(issue, tracker, loop)
         print("no PR for this branch yet: nothing to gate")
         return 0
-    pull = pull_request(pr)
+    try:
+        pull = pull_request(pr)
+    except subprocess.CalledProcessError as exc:
+        if point == "build" and any(text in (exc.stderr or "") for text in NO_PULL):
+            return unbuilt(
+                pr, tracker, loop
+            )  # a number no PR has is the issue's, as `--issue` reads it
+        raise
     if point == "queue" and head is not None:
         return queueable(pull, head, tracker, loop)
     if point == "merge" and (why := outside(pull, loop)):

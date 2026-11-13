@@ -488,6 +488,20 @@ def test_check_build_before_the_pr_judges_the_issue(
     assert build()[0] == 1
     assert build("7", "--issue", "2") == (1, ["--issue goes with check build and no PR number"])
 
+    # a positional number no PR has is the issue, printing what --issue prints; a PR's number is unchanged
+    def pull_request(n: int) -> dict[str, Any]:
+        if n != 5:
+            raise subprocess.CalledProcessError(
+                1, ["gh"], stderr=f"Could not resolve to a PullRequest with the number of {n}"
+            )
+        return {"number": 5, "labels": {"nodes": []}}
+
+    monkeypatch.setattr(approvals, "pull_request", pull_request)
+    monkeypatch.setattr(approvals, "gated", lambda *a: (["gated"], []))
+    assert build("2") == build("--issue", "2") == (1, unapproved)
+    assert build("3") == build("--issue", "3") == (0, ["#3: every build proof holds; no PR yet"])
+    assert build("5") == (1, ["gated"])
+
 
 def test_every_closing_issue_specced_lands() -> None:
     assert (
