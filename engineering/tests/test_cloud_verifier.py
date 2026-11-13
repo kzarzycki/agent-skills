@@ -176,7 +176,7 @@ def test_seed_falls_back_to_the_seed_home_when_the_host_login_has_too_little_lef
 
 
 def test_seed_with_neither_login_usable_exits_2_and_names_both(seeded, host, capsys) -> None:
-    path, calls = seeded
+    _, calls = seeded
     host.write_text(json.dumps(login(0.5)))
     assert cv.main(["seed", "--env", "env_1"]) == 2
     err = capsys.readouterr().err
