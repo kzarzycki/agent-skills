@@ -1,6 +1,7 @@
 """omnigent_agent.py start refuses a role child a workspace a live session uses on its host (#750)."""
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -249,3 +250,18 @@ def test_a_fork_pr_head_moves_a_launch_dir_through_the_pr_ref_not_a_same_named_o
     omnigent_agent.move_head(dest, 8)
     assert git("symbolic-ref", "HEAD", cwd=dest) == "refs/heads/fork-branch"
     assert git("rev-parse", "HEAD", cwd=dest) == git("rev-parse", "pr-branch", cwd=bare)
+
+
+def test_the_pr_is_looked_up_in_the_launch_dirs_repository_not_the_callers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stand-in `gh` answers with the name of the directory it runs in."""
+    bin_dir, other, launch = tmp_path / "bin", tmp_path / "caller", tmp_path / "launch"
+    for d in (bin_dir, other, launch):
+        d.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text('#!/bin/sh\necho "branch-of-$(basename "$PWD")"\n')
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.chdir(other)
+    assert omnigent_agent.pr_branch(7, launch) == "branch-of-launch"

@@ -5964,6 +5964,12 @@ def main(argv: list[str] | None = None) -> int:
                 move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
+        elif args.pr and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
+            print(
+                f"--pr {args.pr}: the launch dir is on another host, so its HEAD is not moved here:"
+                " the session starts on the branch that dir holds; name the PR's branch in the brief",
+                file=sys.stderr,
+            )
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # what the child's tree held before it ran: wait fails only on a change it made
