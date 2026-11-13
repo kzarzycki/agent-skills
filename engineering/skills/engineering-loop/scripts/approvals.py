@@ -101,12 +101,17 @@ repository's default branch, as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
 tip says the state: each lock commit holds the empty tree, its title says `landing lock: held` or `landing lock: free`
-with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid and a
-random value (no hostname, since the branch is public and never rewritten) (so two lands in the same second never make the same commit), and its commit date is its age. A land
-pushes a `held` child of a `free` tip (or the first lock commit, with no parent, where the branch is missing), leased on
-that tip with `--force-with-lease`, so of two lands from one tip one wins. A `held` tip is another land's: exit 3,
-naming its holder and age. One older than 2 hours is stale, left by a land that died: it is broken and taken in the same
-push, a `held` child of it. The lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128
+with `[skip ci]` (so a project whose workflows run on every branch push starts none), its body the pid, the host, the PR
+it lands (`land <pr>`'s, none for a bare `land`) and a random value (so two lands in the same second never make the same
+commit), and its commit date is its age. A land pushes a `held` child of a `free` tip (or the first lock commit, with no
+parent, where the branch is missing), leased on that tip with `--force-with-lease`, so of two lands from one tip one
+wins. Once its batch is gated, before its first merge, it moves the lock to a `held` child of its own naming the
+batch's last PR, leased on its own, so a lock taken by another land meanwhile stops it, merging nothing (exit 1). A
+`held` tip is another land's: exit 3, naming its holder and age. One naming a PR that GitHub reports merged, with its
+merge commit in origin's base, is released, left by a land that died after its merges: it is broken and taken in the
+same push, a `held` child of it. One naming no PR (a bare `land` before its merges, or a lock written before #901), an
+open one, or one GitHub can't read now waits; one older than 2 hours is stale, left by a land that died before its
+merges, and is broken the same way. The lock is released at the end whatever happened, a SIGTERM or SIGHUP included (exit 128
 plus the signal), by pushing a `free` child of ours leased on it, so a stale one broken and taken by another land stays
 theirs; SIGKILL leaves it to be broken as stale. No push deletes a ref or rewrites one, so the branch's history only
 grows. While the previous version's lock `refs/loop/landing` is on `origin` (read, never written), `land` waits on it
@@ -3807,12 +3812,12 @@ def landing_here(
     try:
         for sig in stoppable:  # a land under nohup still outlives a hangup
             signal.signal(sig, stopped)
-        taken = locked(base, held)
+        taken = locked(base, held, named["number"] if named else None)
         if not taken:
             return WAITING, True
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
         git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-        return batched(named, base, tracker, loop, only)
+        return batched(named, base, tracker, loop, only, held)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -3851,16 +3856,20 @@ def lock_name(base: str) -> str:
     return LOCK.format(base).removeprefix("refs/heads/")
 
 
-def lock_commit(title: str, parent: str | None) -> str:
+def lock_commit(title: str, parent: str | None, pr: int | None = None) -> str:
     """A landing lock commit: the empty tree, `title` (HELD or FREE) with [skip ci], `parent` the tip it moves on from,
-    and the pid and a random value in its body (no hostname: the branch is public and never rewritten), since two lands in the same second, under one identity, would
-    otherwise build one commit, and the second push of it would succeed as a no-op. Its commit date is its age."""
+    and in its body the pid, the host and the PR `pr` it lands last (so a waiting land knows which host to check, and
+    reads the lock as released once that PR merged: released), then a random value, since two lands in the same
+    second, under one identity, would otherwise build one commit, and the second push of it would succeed as a no-op.
+    Its commit date is its age."""
     empty = git("hash-object", "-t", "tree", "-w", os.devnull).strip()
+    landing = f", PR #{pr}" if pr is not None else ""
     return git(
         "commit-tree",
         *(["-p", parent] if parent else []),
         "-m",
-        f"{title} [skip ci]\n\npid {os.getpid()}, nonce {os.urandom(8).hex()}",
+        f"{title} [skip ci]\n\npid {os.getpid()}, host {socket.gethostname()}{landing},"
+        f" nonce {os.urandom(8).hex()}",
         empty,
     ).strip()
 
@@ -3893,10 +3902,11 @@ def unlock(base: str, ours: str) -> subprocess.CompletedProcess[str]:
     return leased(base, lock_commit(FREE, ours), ours, start_new_session=True)
 
 
-def locked(base: str, held: list[str]) -> bool:
-    """Take the base's landing lock: push a HELD child of its FREE tip (the first lock commit, with no parent, where the
-    branch is missing), leased on that tip. A HELD tip is another land's; one older than CEILING by its commit date is
-    stale, broken and taken by the same push of a HELD child. Each commit is put in `held` before its push, so a stop
+def locked(base: str, held: list[str], pr: int | None = None) -> bool:
+    """Take the base's landing lock, naming `pr`: push a HELD child of its FREE tip (the first lock commit, with no
+    parent, where the branch is missing), leased on that tip. A HELD tip is another land's; one older than CEILING by
+    its commit date is stale, and one naming a PR already merged into the base is released (released): either is
+    broken and taken by the same push of a HELD child. Each commit is put in `held` before its push, so a stop
     as it reaches origin still releases it. False, after saying who holds it since when, while another land holds it
     or LEGACY, the previous version's lock, is on origin and no older than CEILING."""
     ref, name = LOCK.format(base), lock_name(base)
@@ -3938,16 +3948,20 @@ def locked(base: str, held: list[str]) -> bool:
                 taken = int(stamp)
                 age = int(time.time()) - taken
                 holder = holder.strip().split(", nonce ")[0]
-                if age <= CEILING:
+                if age <= CEILING and (done := released(base, holder)):
+                    print(f"the landing lock {name} ({holder}) is released: {done}: broken")
+                elif age <= CEILING:
                     print(
                         f"another land holds the landing lock {name} ({holder}), taken {age // 60} minutes ago"
                         f" ({time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(taken))}): land --wait waits for it"
                     )
                     return False
-                print(
-                    f"the landing lock {name} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as stale"
-                )
-        held.append(lock_commit(HELD, tip))
+                else:
+                    print(
+                        f"the landing lock {name} is {age // 3600} hours old, past {CEILING // 3600} hours: broken as"
+                        " stale"
+                    )
+        held.append(lock_commit(HELD, tip, pr))
         pushed = leased(base, held[-1], tip)
         if not pushed.returncode:
             return True
@@ -3956,6 +3970,50 @@ def locked(base: str, held: list[str]) -> bool:
         f"other lands kept taking the landing lock {name} as this one tried to: land --wait waits for it"
     )
     return False
+
+
+def released(base: str, holder: str) -> str | None:
+    """Why a HELD lock whose body is `holder` is released though never freed: the PR it names (the last its land
+    merges) is merged and origin's base holds its merge commit, so its land's work is done; None for a lock naming no
+    PR (written before #901, waited on until CEILING), an open one, a merge the base lacks, or a PR GitHub can't read
+    now (waited on, so a GitHub outage breaks no live land's lock)."""
+    if (named := re.search(r"\bPR #(\d+)\b", holder)) is None:
+        return None
+    number = int(named[1])
+    try:
+        pull = merged_pull(number)
+    except subprocess.CalledProcessError:
+        return None
+    if pull is None or not (sha := pull.get("merge_commit_sha")):
+        return None
+    subprocess.run(
+        ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+        capture_output=True,
+        check=False,
+    )
+    contained = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", sha, f"refs/remotes/origin/{base}"],
+        capture_output=True,
+        check=False,
+    )
+    return f"PR #{number} merged into {base} as {sha}" if contained.returncode == 0 else None
+
+
+def repointed(base: str, held: list[str], pr: int) -> None:
+    """Before the batch's merges, move the lock to a HELD child of ours naming `pr`, the last PR it merges, leased on
+    ours: a lock naming an earlier PR would read as released once that one merged, with the rest still to merge. A
+    refused push means another land took the lock meanwhile (it read our PR as merged, merged by hand, or our lock as
+    stale), so nothing is merged and theirs is left alone: our commits are dropped from `held`, which nothing then
+    releases."""
+    ours = held[-1]
+    held.append(lock_commit(HELD, ours, pr))
+    pushed = leased(base, held[-1], ours)
+    if pushed.returncode:
+        held.clear()
+        raise Refused(
+            f"another land took the landing lock {lock_name(base)} before this one's merges, so nothing was merged:"
+            f" {' '.join(pushed.stderr.split())}"
+        )
 
 
 def landable(
@@ -4025,9 +4083,11 @@ def batched(
     tracker: str | None,
     loop: str | None,
     only: bool = False,
+    held: list[str] | None = None,
 ) -> tuple[int, bool]:
-    """Under the lock: merge every candidate's head onto `base` locally, oldest PR first, gate the result's tree once
-    (or reuse a pass on it), and merge each through GitHub in that order; a red batch lands one PR at a time."""
+    """Under the lock (`held`, its commits): merge every candidate's head onto `base` locally, oldest PR first, gate
+    the result's tree once (or reuse a pass on it), move the lock to name the last PR to land (repointed), and merge each
+    through GitHub in that order; a red batch lands one PR at a time."""
     # `loop:approvals` is check merge's own status, on the proofs land reads itself
     required = required_checks(base) - {APPROVALS}
     waits: dict[int, tuple[int, bool]] = {}
@@ -4053,6 +4113,8 @@ def batched(
             tip = run_in(work, "rev-parse", "HEAD")
             candidates = [pull for pull in candidates if pre_landed(pull, base, work, loop, failed)]
             landed = merge_batch(candidates, base, work, failed)
+            if landed and held:
+                repointed(base, held, landed[-1][0]["number"])
             if landed:
                 merges(landed, base, tip, work, loop, failed)
     number = named["number"] if named else None
