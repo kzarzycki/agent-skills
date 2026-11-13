@@ -1,8 +1,9 @@
-"""approvals.py: land finishes the kept --pr worker sessions of each PR it merged (#943)."""
+"""approvals.py: land finishes the kept --pr worker sessions of each PR it merged, detached (#943)."""
 
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -43,38 +44,53 @@ def test_a_land_that_merged_nothing_finishes_no_worker(
     assert finished == []
 
 
-def test_archive_workers_runs_reap_merged_for_the_pr(
+def test_archive_workers_starts_reap_merged_detached_and_does_not_wait(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    calls: list[list[str]] = []
+    started: list[tuple[list[str], dict[str, Any]]] = []
 
-    def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "s1 t: archived (idle)\n", "")
+    class Slow:
+        def __init__(self, cmd: list[str], **kw: Any) -> None:
+            started.append((cmd, kw))
 
-    monkeypatch.setattr(approvals.subprocess, "run", run)
+        def wait(self, *_: Any, **__: Any) -> int:
+            raise AssertionError("land waited on the archive")
+
+        communicate = poll = wait
+
+    monkeypatch.setattr(approvals.subprocess, "Popen", Slow)
     approvals.archive_workers(7)
-    assert calls[0][2:] == ["reap", "--merged", "--pr", "7"]
-    assert calls[0][1].endswith("orchestrating-agents/scripts/omnigent_agent.py")
-    assert "PR #7: worker sessions: s1 t: archived (idle)" in capsys.readouterr().out
+    ((cmd, kw),) = started
+    assert cmd[2:] == ["reap", "--merged", "--pr", "7"]
+    assert cmd[1].endswith("orchestrating-agents/scripts/omnigent_agent.py")
+    assert kw["start_new_session"] is True and kw["stdin"] == subprocess.DEVNULL
+    out = capsys.readouterr().out
+    assert "PR #7: finishing its worker sessions in the background, log " in out
+    log = Path(out.rsplit("log ", 1)[1].strip())
+    assert log.is_file()
+    log.unlink()
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        subprocess.CompletedProcess([], 1, "", "no Omnigent login"),
-        subprocess.TimeoutExpired([], 120),
-        OSError("no python"),
-    ],
-)
-def test_a_failed_archive_is_a_printed_line_only(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], failure: Any
+def test_a_start_that_fails_is_a_printed_line_only(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
-        if isinstance(failure, BaseException):
-            raise failure
-        return failure
+    def refuse(*_: Any, **__: Any) -> None:
+        raise OSError("no python")
 
-    monkeypatch.setattr(approvals.subprocess, "run", run)
+    monkeypatch.setattr(approvals.subprocess, "Popen", refuse)
     approvals.archive_workers(7)  # raises nothing
-    assert "PR #7: worker sessions not finished" in capsys.readouterr().out
+    assert "PR #7: worker sessions not finished: no python" in capsys.readouterr().out
+
+
+def test_a_checkout_without_the_script_prints_that_and_starts_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def never(*_: Any, **__: Any) -> None:
+        raise AssertionError("started")
+
+    monkeypatch.setattr(approvals.subprocess, "Popen", never)
+    monkeypatch.setattr(approvals.Path, "is_file", lambda self: False)
+    approvals.archive_workers(7)
+    assert "PR #7: no worker sessions finished: omnigent_agent.py is not installed" in (
+        capsys.readouterr().out
+    )

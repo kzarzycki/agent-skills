@@ -171,8 +171,7 @@ PR n of this checkout's repository (`gh repo view`, checked against the comment'
 `issue_url`) counts, since the link is only what the worker typed: another PR's or another
 repository's counts for nothing. The nudge asks for the comment, and a second turn ending
 without one fails. `run` and `wait` with `--pr` keep the worker once its report is in (`--no-keep` finishes it;
-`--keep` is still accepted), and `reap` finishes it once its PR is merged or closed or the newest verifier
-review of its head says `SATISFIED: yes` (Finished sessions): a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
+`--keep` is still accepted), and `reap` finishes it once its PR is merged or closed (Finished sessions): a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
 round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
 child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
@@ -799,11 +798,12 @@ It archives the session, a sub-agent too: Omnigent leaves the runner it shares w
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
-each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker (`start --pr` labels the session `omni.pr=<n>`) while that PR is
-open with no satisfied verifier verdict on its head, saying why, and finishes it once the PR is merged or
-closed or the head's newest verdict is `SATISFIED: yes`. `reap --merged [--pr <n>]` also finishes every live
-`--pr` worker whose PR is merged or closed, leaving an open PR's; `approvals.py land` runs it for each PR it
-merged, and a failure there is a printed line only. A finish that fails is printed and the rest still run, and
+each and `already archived` for one finished before, and prints which it kept. It keeps a `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`
+labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
+`reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A
+verdict does not release it, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
+finishes every live `--pr` worker whose PR is merged or closed, leaving an open PR's; `approvals.py land` starts it
+detached for each PR it merged, so a slow server never holds the land, and the outcome goes to a log it names. A finish that fails is printed and the rest still run, and
 `reap` then exits 1. It cannot tell an idle child whose report is still
 to come from a finished one, so a child whose `run` died is re-attached with `wait` (above),
 which finishes it on return, never reaped. Run `reap --children

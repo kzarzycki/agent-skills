@@ -273,6 +273,12 @@ REAL_TRIAGE = omnigent_agent.triage
 
 
 @pytest.fixture(autouse=True)
+def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The checkout's GitHub repository, so a `--pr` start labels its worker without `gh`."""
+    monkeypatch.setattr(omnigent_agent, "repo_slug", lambda: "o/r")
+
+
+@pytest.fixture(autouse=True)
 def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The small model faked: never a real call. Each event it is asked about is recorded, and
     it answers ``none`` (mid-work)."""
