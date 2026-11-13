@@ -129,6 +129,9 @@ class FakeOmnigent:
     def models(self, agent: str, host_id: str | None = None) -> list[str]:
         if "models" in self.fail:
             raise omnigent_agent.Fail("GET model-options: HTTP 502 Bad Gateway")
+        # an ACP agent's list comes from its own session; claude-cloud runs acp even unregistered
+        if agent == "claude-cloud" or self.harness(agent).startswith("acp:"):
+            raise omnigent_agent.Fail("HTTP 502: model options are unsupported for harness 'acp'")
         return self.listed
 
     def effort_levels(
@@ -154,13 +157,7 @@ class FakeOmnigent:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
-        self.overrides[sid] = (
-            model
-            or (
-                agent in omnigent_agent.AGENTS and os.environ.get(f"OMNIGENT_MODEL_{agent.upper()}")
-            )
-            or None
-        )
+        self.overrides[sid] = omnigent_agent.model_for(agent, model)[0]  # as the real body
         self.top_level.append(top_level)
         self.roles.append(role)
         self.efforts[sid] = effort
@@ -1810,6 +1807,61 @@ def test_the_model_is_the_flag_else_the_agents_environment_variable_else_the_har
     omnigent_agent.Omnigent().create("codex", "t")
     omnigent_agent.Omnigent().create("codex", "t", "from-flag")
     assert [body.get("model_override") for body in bodies] == [None, "from-env", "from-flag"]
+
+
+@pytest.mark.parametrize(
+    ("agent", "flag", "env", "expected"),
+    [
+        ("claude-cloud", None, None, "sonnet"),  # the server refuses acp without a model (#896)
+        ("claude-cloud", None, "from-env", "from-env"),
+        ("claude-cloud", "from-flag", "from-env", "from-flag"),
+        ("claude", None, None, None),
+        ("codex", None, None, None),
+        ("antigravity", None, "from-env", None),  # only the aliases and claude-cloud read one
+    ],
+)
+def test_a_cloud_session_always_names_a_model_and_the_others_only_when_given_one(
+    monkeypatch: pytest.MonkeyPatch,
+    agent: str,
+    flag: str | None,
+    env: str | None,
+    expected: str | None,
+) -> None:
+    bodies: list[dict] = []
+
+    def call(self, method: str, path: str, body: dict | None = None) -> object:
+        if body is not None:
+            bodies.append(body)
+        return {
+            "/v1/agents": [{"name": n, "id": n} for n in ("claude-native-ui", "codex-native-ui")],
+            "/v1/agents?scope=user": [
+                {"name": n, "id": n} for n in ("claude-cloud", "antigravity")
+            ],
+            "/v1/projects": [],
+        }.get(path, {"id": "s1"})
+
+    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
+    monkeypatch.setattr(
+        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
+    )
+    for name in ("CLAUDE", "CODEX", "CLAUDE_CLOUD"):
+        monkeypatch.delenv(f"OMNIGENT_MODEL_{name}", raising=False)
+    if env:
+        monkeypatch.setenv(f"OMNIGENT_MODEL_{agent.upper().replace('-', '_')}", env)
+    omnigent_agent.Omnigent().create(agent, "t", flag)
+    assert bodies[-1].get("model_override") == expected
+
+
+def test_start_claude_cloud_checks_its_default_model_and_passes_it_unchecked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An acp harness has no host model list, so the default goes on as the env one would."""
+    monkeypatch.delenv("OMNIGENT_MODEL_CLAUDE_CLOUD", raising=False)
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, pr=7)
+    assert "default sonnet: the host has no model list for claude-cloud" in capsys.readouterr().err
+    assert list(og.overrides.values()) == ["sonnet"]
 
 
 @pytest.mark.parametrize(

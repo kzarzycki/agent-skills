@@ -62,8 +62,9 @@ rewritten after the launch. `start` refuses one, since the `wait` after it has n
 time to compare.
 
 **Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
-`OMNIGENT_MODEL_CLAUDE`), else its harness's default (Codex: `~/.codex/config.toml`), a
-verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
+`OMNIGENT_MODEL_CLAUDE`, `OMNIGENT_MODEL_CLAUDE_CLOUD`), else `sonnet` for `claude-cloud`, whose
+server refuses an ACP session that names no model, else its harness's default (Codex:
+`~/.codex/config.toml`), a verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
 (`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
 `claude-sonnet-5-5` both pass), naming the ids it does, and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
 Omnigent launches an unlisted id on the harness default with no error. Pass `--model` on every start: the owner's model, the project's, else one fit for the job (engineering-loop SKILL.md, Models). A
