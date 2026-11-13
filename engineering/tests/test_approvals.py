@@ -129,7 +129,9 @@ def refs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
         pushed[name] = {**record, "env": record.get("env", approvals.gate()[2])}
         return approvals.RECORD_BRANCH.format(name)
 
-    def read(held: str, command: str, env: dict[str, str]) -> dict[str, Any] | None:
+    def read(
+        held: str, command: str, env: dict[str, str], _why: list[str] | None = None
+    ) -> dict[str, Any] | None:
         found = pushed.get(approvals.record_name(held, command))
         if found is None or (found["tree"], found["command"], found["env"]) != (held, command, env):
             return None
@@ -8901,7 +8903,7 @@ def test_check_merge_and_land_reuse_a_record_branch_with_no_status_at_every_risk
         **pull(reviews=(verdict_on(head),), labels=(*OWNED, *risk), checks=()),
         "headRefOid": head,
     }
-    monkeypatch.setattr(approvals, "record_ref", lambda _held, _command, _env: None)
+    monkeypatch.setattr(approvals, "record_ref", lambda *_args: None)
     assert NO_LOCAL_CHECK in merge(pr, [approved(1, "area:web")], no_ci)  # without the record
     real_refs(monkeypatch)
     lines = merge(pr, [approved(1, "area:web")], no_ci)
@@ -8929,10 +8931,14 @@ def test_a_green_gate_status_naming_the_tree_with_no_record_branch_is_not_reused
     assert approvals.reusable(head) is None
 
 
-def forged(tmp_path: Path, head: str, name: str, *, tree: str, line: str, env: str) -> None:
-    """Push to origin, under `name`, a record whose content is what the test says, as anyone who can push may."""
+def forged(
+    tmp_path: Path, head: str, name: str, *, tree: str, line: str, env: str, more: tuple[str, ...] = ()
+) -> None:
+    """Push to origin, under `name`, a record whose content is what the test says, as anyone who can push may;
+    `more` are parents beside `head`."""
     a = tmp_path / "a"
-    commit = git_in(a, "commit-tree", tree, "-p", head, "-m", f"{line}\n\nEnv: {env}\n").strip()
+    parents = [arg for parent in (head, *more) for arg in ("-p", parent)]
+    commit = git_in(a, "commit-tree", tree, *parents, "-m", f"{line}\n\nEnv: {env}\n").strip()
     git_in(a, "push", "-q", "-f", "origin", f"{commit}:refs/heads/loop-gate/{name}")
 
 
@@ -8963,6 +8969,50 @@ def test_a_ref_whose_content_is_not_the_pass_asked_for_is_not_reused(
     forged(tmp_path, head, name_of(head), **fields)
     git_in(tmp_path / "b", "fetch", "-q", "origin")
     assert (approvals.reusable(head) is None) == (wrong != "none")
+
+
+@pytest.mark.parametrize(
+    ("wrong", "said"),
+    [
+        ("another tree", "its commit holds the tree {other}, not {held}"),
+        ("another env", """its message lacks the line 'Env: {{}}'"""),
+        ("another command", "its description reads '{line} --tier', not '{line}'"),
+        ("two parents", "its commit has 2 parents, not the one commit the pass ran on"),
+    ],
+)
+def test_local_ci_refusing_a_found_record_branch_says_it_was_found_and_why_it_was_rejected(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wrong: str,
+    said: str,
+) -> None:
+    """#862 user story 2: a record branch origin holds under the expected name but whose content is not the pass
+    asked for is named in the refusal with what was wrong, so the lead can tell the worker what to push, and the
+    gate does not run."""
+    head, _ = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
+    held = approvals.tree_of(head)
+    other = git_in(tmp_path / "a", "rev-parse", "HEAD~1^{tree}").strip()
+    line = f"Tree {held} on {head[:12]}: true"
+    forged(
+        tmp_path,
+        head,
+        name_of(head),
+        tree=other if wrong == "another tree" else held,
+        line=f"{line} --tier" if wrong == "another command" else line,
+        env='{"TIER": "light"}' if wrong == "another env" else "{}",
+        more=(git_in(tmp_path / "a", "rev-parse", "HEAD~1").strip(),) if wrong == "two parents" else (),
+    )
+    monkeypatch.setattr(approvals, "run_local_ci", lambda *_a: pytest.fail("the gate ran"))
+    assert approvals.main(["local-ci", "7"]) == 1
+    out = capsys.readouterr().out
+    assert (
+        f"origin holds the record branch {branch_of(head)}, but it is not this pass: "
+        + said.format(other=other, held=held, line=line)
+    ) in out
+    assert github == []
 
 
 def test_a_ref_for_another_tree_or_command_is_not_reused_and_the_refusal_names_its_command(

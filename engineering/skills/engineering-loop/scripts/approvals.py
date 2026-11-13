@@ -4836,11 +4836,13 @@ def env_line(env: dict[str, str | None]) -> str:
     return f"Env: {' '.join(named) or 'default'}\n"
 
 
-def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, Any] | None:
+def reusable(
+    head: str, passed: list[str] | tuple[str, ...] = (), why: list[str] | None = None
+) -> dict[str, Any] | None:
     """A green pass on `head`'s tree under today's gate command (with `passed`, gate), or None: this clone's record,
     made on any commit with that tree, else one another clone pushed to origin for that tree (published). The record's `head` is the
     commit the pass ran on. A record without `env` (0.23.1 wrote none) never matches, since nothing says what tier it
-    ran."""
+    ran. With `why`, the reason origin's record branch, found, was rejected is appended to it (record_ref)."""
     if (held := tree_of(head)) is None:
         return None
     command, _, env = gate(passed)
@@ -4856,17 +4858,21 @@ def reusable(head: str, passed: list[str] | tuple[str, ...] = ()) -> dict[str, A
         == (held, command, 0, env)
     ):
         return record
-    return published(head, held, command, env)
+    return published(head, held, command, env, why)
 
 
 def published(
-    head: str, held: str, command: str, env: dict[str, str] | None = None
+    head: str,
+    held: str,
+    command: str,
+    env: dict[str, str] | None = None,
+    why: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """A pass of `command` (setting `env`, default the gate's) on `head`'s tree `held` that a clone pushed to origin
     as its record branch (publish, record_ref), as a record, or None. It is the one route another clone's pass is read
     by: a `gate` status is only shown, never read, since anyone who can write one may type it. A reader that finds the
     record writes the `gate` status on `head`, so the PR shows the pass, where the token allows."""
-    record = record_ref(held, command, env if env is not None else gate()[2])
+    record = record_ref(held, command, env if env is not None else gate()[2], why)
     if record is not None:
         shown(head, record)
     return record
@@ -4886,12 +4892,16 @@ def record_message(record: dict[str, Any]) -> str:
     )
 
 
-def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] | None:
+def record_ref(
+    held: str, command: str, env: dict[str, str], why: list[str] | None = None
+) -> dict[str, Any] | None:
     """A pass of `command` under `env` on tree `held` pushed to origin as its record branch (push_record), as a
     record, or None. Only origin is read, the repo `land` pushes its lock to, so a branch on a PR's fork never counts:
     one in the base repo is its write access. The branch's commit must hold `held` as its tree, its parent the commit
     its description names, and the env line `env`, so a record whose content is not what its name says counts for
-    nothing. origin unreachable: None, so the check runs."""
+    nothing. origin unreachable: None, so `local-ci <pr>` refuses unless it is given `--run`. With `why`, a line
+    naming the branch found and why it was rejected (or that origin could not be read) is appended to it, so the
+    refusal says what to push."""
     name = record_name(held, command)
     ref = RECORD_BRANCH.format(name)
     try:
@@ -4900,7 +4910,10 @@ def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] |
             return None
         git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
         body = git("cat-file", "commit", listed[listed.index(ref) - 1])
-    except (subprocess.CalledProcessError, OSError):
+    except (subprocess.CalledProcessError, OSError) as exc:
+        if why is not None:
+            cause = " ".join((getattr(exc, "stderr", None) or str(exc)).split())
+            why.append(f"origin's record branch {ref} could not be read: {cause}")
         return None
     header, _, message = body.partition("\n\n")
     fields = [line.split(" ", 1) for line in header.splitlines()]
@@ -4908,14 +4921,23 @@ def record_ref(held: str, command: str, env: dict[str, str]) -> dict[str, Any] |
     parents = [value for key, value in fields if key == "parent"]
     committed = [value for key, value in fields if key == "committer"]
     lines = message.splitlines()
-    if (
-        trees != [held]
-        or len(parents) != 1
-        or not lines
-        or lines[0] != described(held, parents[0], command)
-        or f"Env: {json.dumps(env, sort_keys=True)}" not in lines[1:]
-        or not committed
-    ):
+    env_wanted = f"Env: {json.dumps(env, sort_keys=True)}"
+    if trees != [held]:
+        rejected = f"its commit holds the tree {' '.join(trees) or 'none'}, not {held}"
+    elif len(parents) != 1:
+        rejected = f"its commit has {len(parents)} parents, not the one commit the pass ran on"
+    elif not lines or lines[0] != described(held, parents[0], command):
+        found = repr(lines[0]) if lines else "nothing"
+        rejected = f"its description reads {found}, not {described(held, parents[0], command)!r}"
+    elif env_wanted not in lines[1:]:
+        rejected = f"its message lacks the line {env_wanted!r}, the env the gate runs under now"
+    elif not committed:
+        rejected = "its commit names no committer, so its time is unknown"
+    else:
+        rejected = ""
+    if rejected:
+        if why is not None:
+            why.append(f"origin holds the record branch {ref}, but it is not this pass: {rejected}")
         return None
     when = int(committed[0].rsplit(" ", 2)[1])
     return {
@@ -5179,9 +5201,10 @@ def reused(record: dict[str, Any]) -> str:
     return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}{pushed}, not run again."
 
 
-def no_pass(head: str) -> str:
-    """Why `local-ci <pr>` found no usable pass for `head`: the head, its tree, the record branch looked for, and what
-    was wrong with a record found (a missing field, another command or env), one line each."""
+def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
+    """Why `local-ci <pr>` found no usable pass for `head`: the head, its tree, the record branch looked for, what
+    was wrong with this clone's record (a missing field, another command or env), and `why`, the reasons reusable()
+    gave for rejecting origin's record branch, one line each."""
     held = tree_of(head)
     if held is None:
         return f"no pass for {head}: its tree is unknown here (fetch the head)"
@@ -5206,6 +5229,7 @@ def no_pass(head: str) -> str:
             for key, want in (("tree", held), ("command", command), ("exit", 0), ("env", env)):
                 if record.get(key) != want:
                     lines.append(f"this clone's record has {key} {record.get(key)!r}, not {want!r}")
+    lines.extend(why)
     lines.append(
         "push the record (`local-ci --record` on the head) or run the gate here with `local-ci <pr> --run`"
     )
@@ -5240,13 +5264,14 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = Fa
             publish(head, record)
         return 0
     head = pull_request(pr)["headRefOid"]
-    if record := reusable(head):
+    why: list[str] = []
+    if record := reusable(head, why=why):
         source = f"{reused(record)}\n"
     elif run:
         record = run_local_ci(pr, head)
         source = ""
     else:
-        raise Refused(no_pass(head))
+        raise Refused(no_pass(head, why))
     if not record.get("published"):
         publish(head, record)
     comment(
