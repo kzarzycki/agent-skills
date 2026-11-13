@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import base64
 import importlib.util
+import io
 import json
 import subprocess
 import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -93,7 +95,7 @@ def stored(calls: list) -> tuple[dict, dict]:
 def test_seed_stores_a_fresh_login_without_refreshing_it(seeded) -> None:
     path, calls = seeded
     path.write_text(json.dumps(login(9)))
-    assert cv.seed("env_1", min_days=5) == 0
+    assert cv.seed(["env_1"], min_days=5) == 0
     assert cv.REFRESH_URL not in [url for url, _ in calls]
     config, copy = stored(calls)
     assert copy["tokens"]["refresh_token"] == "" and copy["tokens"]["account_id"] == "acc"
@@ -105,7 +107,7 @@ def test_seed_stores_a_fresh_login_without_refreshing_it(seeded) -> None:
 def test_seed_refreshes_a_login_that_is_running_out_and_keeps_the_new_refresh_token(seeded) -> None:
     path, calls = seeded
     path.write_text(json.dumps(login(2)))
-    assert cv.seed("env_1", min_days=5) == 0
+    assert cv.seed(["env_1"], min_days=5) == 0
     assert calls[0] == (
         cv.REFRESH_URL,
         {"client_id": cv.CLIENT_ID, "grant_type": "refresh_token", "refresh_token": "secret"},
@@ -141,7 +143,7 @@ def test_seed_takes_the_host_login_without_a_refresh_token_and_leaves_the_host_f
         json.dumps({**login(9), "last_refresh": "seed"})
     )  # a seed login that would do as well
     before = host.read_bytes()
-    assert cv.seed("env_1", min_days=5) == 0
+    assert cv.seed(["env_1"], min_days=5) == 0
     assert cv.REFRESH_URL not in [url for url, _ in calls]
     _, copy = stored(calls)
     assert copy["last_refresh"] == "2026-01-01T00:00:00Z"  # the host's, not the seed home's
@@ -149,15 +151,136 @@ def test_seed_takes_the_host_login_without_a_refresh_token_and_leaves_the_host_f
     assert host.read_bytes() == before  # byte for byte
 
 
-def test_seed_does_not_refresh_a_host_login_even_when_it_is_under_min_days(seeded, host) -> None:
+def test_a_host_login_with_2_days_left_is_refreshed_in_one_atomic_replace(
+    seeded, host, monkeypatch
+) -> None:
+    """#893 acceptance 1."""
     _, calls = seeded
     host.write_text(json.dumps(login(2)))
-    assert cv.seed("env_1", min_days=5) == 0
-    assert cv.REFRESH_URL not in [url for url, _ in calls]
-    assert (
-        stored(calls)[1]["tokens"]["access_token"]
-        == json.loads(host.read_text())["tokens"]["access_token"]
+    host.with_suffix(".tmp").write_text("left by a killed run")
+    host.with_suffix(".tmp").chmod(0o644)
+    replaced = []
+    real = Path.replace
+
+    def replace(self, target):
+        replaced.append(
+            (self, Path(target), json.loads(self.read_text()), self.stat().st_mode & 0o777)
+        )
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    assert cv.main(["seed", "--env", "env_1"]) == 0
+    assert calls[0] == (
+        cv.REFRESH_URL,
+        {"client_id": cv.CLIENT_ID, "grant_type": "refresh_token", "refresh_token": "secret"},
     )
+    kept = json.loads(host.read_text())
+    assert kept["tokens"]["refresh_token"] == "rotated" and kept["tokens"]["account_id"] == "acc"
+    assert cv.expires_at(kept["tokens"]["access_token"]) - time.time() > 9 * 86400
+    assert replaced == [
+        (host.with_suffix(".tmp"), host, kept, 0o600)
+    ]  # one replace, of the whole new login
+    assert not host.with_suffix(".tmp").exists()
+    _, copy = stored(calls)
+    assert copy["tokens"]["access_token"] == kept["tokens"]["access_token"]
+    assert copy["tokens"]["refresh_token"] == ""
+
+
+def test_a_host_login_with_5_days_left_is_not_refreshed_and_its_file_is_untouched(
+    seeded, host
+) -> None:
+    """#893 acceptance 2."""
+    _, calls = seeded
+    host.write_text(json.dumps(login(5)))
+    before = host.read_bytes()
+    assert cv.main(["seed", "--env", "env_1"]) == 0
+    assert cv.REFRESH_URL not in [url for url, _ in calls]
+    assert host.read_bytes() == before
+    assert stored(calls)[1]["tokens"]["access_token"] == login_token(host)
+
+
+def test_an_expiring_host_login_without_a_refresh_token_fails_loudly_and_is_untouched(
+    seeded, host, capsys
+) -> None:
+    _, calls = seeded
+    auth = login(2)
+    auth["tokens"]["refresh_token"] = ""  # a reader copy, as a VM holds one
+    host.write_text(json.dumps(auth))
+    before = host.read_bytes()
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    err = capsys.readouterr().err
+    assert "host login" in err and "codex login" in err
+    assert cv.REFRESH_URL not in [url for url, _ in calls]
+    assert host.read_bytes() == before
+
+
+def test_a_host_login_without_a_refresh_token_but_days_left_is_used_as_is(seeded, host) -> None:
+    _, calls = seeded
+    auth = login(5)
+    auth["tokens"]["refresh_token"] = ""
+    host.write_text(json.dumps(auth))
+    assert cv.main(["seed", "--env", "env_1"]) == 0
+    assert cv.REFRESH_URL not in [url for url, _ in calls]
+
+
+def login_token(path: Path) -> str:
+    return json.loads(path.read_text())["tokens"]["access_token"]
+
+
+def test_a_refused_host_refresh_exits_2_naming_the_host_login_and_codex_login(
+    seeded, host, monkeypatch, capsys
+) -> None:
+    """#893 acceptance 3."""
+    _, calls = seeded
+    host.write_text(json.dumps(login(2)))
+    before = host.read_bytes()
+
+    def refuse(url: str, body: dict | None, headers: dict) -> dict:
+        calls.append((url, body))
+        raise urllib.error.HTTPError(
+            url,
+            401,
+            "no",
+            {},
+            io.BytesIO(b'{"error": {"code": "refresh_token_reused", "t": "secret"}}'),
+        )
+
+    monkeypatch.setattr(cv, "post_json", refuse)
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    err = capsys.readouterr().err
+    assert (
+        f"the host login at {host}" in err
+        and "`codex login`" in err
+        and "refresh_token_reused" in err
+    )
+    assert "secret" not in err
+    assert [url for url, _ in calls] == [cv.REFRESH_URL]  # no environment is seeded
+    assert host.read_bytes() == before
+
+
+def test_seed_seeds_every_env_and_one_failing_makes_the_exit_non_zero(
+    seeded, host, monkeypatch, capsys
+) -> None:
+    """#893 acceptance 4."""
+    _, calls = seeded
+    host.write_text(json.dumps(login(9)))
+    assert cv.main(["seed", "--env", "env_A", "--env", "env_B"]) == 0
+    posted = [url.rsplit("/", 1)[1] for url, body in calls if body]
+    assert posted == ["env_A", "env_B"]
+    fake = cv.post_json
+
+    def failing_a(url: str, body: dict | None, headers: dict) -> dict:
+        if url.endswith("/env_A"):
+            raise urllib.error.URLError("unreachable")
+        return fake(url, body, headers)
+
+    monkeypatch.setattr(cv, "post_json", failing_a)
+    calls.clear()
+    assert cv.main(["seed", "--env", "env_A", "--env", "env_B"]) != 0
+    assert [url.rsplit("/", 1)[1] for url, body in calls if body] == [
+        "env_B"
+    ]  # the rest is still tried
+    assert "env_A" in capsys.readouterr().err
 
 
 def test_seed_falls_back_to_the_seed_home_when_the_host_login_has_too_little_left(
@@ -167,18 +290,21 @@ def test_seed_falls_back_to_the_seed_home_when_the_host_login_has_too_little_lef
     host.write_text(json.dumps(login(0.5)))
     before = host.read_bytes()
     path.write_text(json.dumps({**login(9), "last_refresh": "seed"}))
-    assert cv.seed("env_1", min_days=5, host_min_days=1) == 0
+    assert cv.seed(["env_1"], min_days=5, host_min_days=1, host_refresh_days=0) == 0
     assert stored(calls)[1]["last_refresh"] == "seed"
     assert host.read_bytes() == before
     host.write_text(json.dumps(login(0.5)))  # the threshold is the option's
-    assert cv.main(["seed", "--env", "env_1", "--host-min-days", "0.25"]) == 0
+    assert (
+        cv.main(["seed", "--env", "env_1", "--host-min-days", "0.25", "--host-refresh-days", "0"])
+        == 0
+    )
     assert stored(calls)[1]["last_refresh"] == "2026-01-01T00:00:00Z"
 
 
 def test_seed_with_neither_login_usable_exits_2_and_names_both(seeded, host, capsys) -> None:
     _, calls = seeded
     host.write_text(json.dumps(login(0.5)))
-    assert cv.main(["seed", "--env", "env_1"]) == 2
+    assert cv.main(["seed", "--env", "env_1", "--host-refresh-days", "0"]) == 2
     err = capsys.readouterr().err
     assert "host login" in err and "under 1 days" in err and "no seed login" in err
     assert calls == []
@@ -189,7 +315,7 @@ def test_seed_with_a_host_api_key_login_uses_the_seed_home(seeded, host) -> None
     path, calls = seeded
     host.write_text(json.dumps({"OPENAI_API_KEY": "sk-x", "tokens": None}))
     path.write_text(json.dumps({**login(9), "last_refresh": "seed"}))
-    assert cv.seed("env_1", min_days=5) == 0
+    assert cv.seed(["env_1"], min_days=5) == 0
     assert stored(calls)[1]["last_refresh"] == "seed"
 
 
@@ -205,7 +331,8 @@ def test_a_seed_home_that_is_the_host_home_is_never_refreshed(
     monkeypatch.setenv("CODEX_HOME", str(home))
     monkeypatch.setenv("CODEX_CLOUD_HOME", str(alias))
     before = (home / "auth.json").read_bytes()
-    assert cv.main(["seed", "--env", "env_1"]) == 2
+    # host refresh off: the guard is on the seed home's own refresh, which must never reach the host's file
+    assert cv.main(["seed", "--env", "env_1", "--host-refresh-days", "0"]) == 2
     assert calls == [] and (home / "auth.json").read_bytes() == before
     assert "seed home is the host's own" in capsys.readouterr().err
 
