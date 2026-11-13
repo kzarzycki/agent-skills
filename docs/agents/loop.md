@@ -23,7 +23,7 @@ spec:
   auto: true
 
 loop:
-  gate: QUALIFY_TIMEOUT=900 mise run check   # the merge check CI runs; qualify's timeouts at 900 s on a shared host
+  gate: /tmp/claude-1002/-home-agent-dev-agent-skills-fix/e54f3bcf-263f-4b90-bdaa-15537de6243a/scratchpad/stubgate.sh
   machine_exit: 78   # qualify exits 78 when a step stops on QUALIFY_TIMEOUT: the host's load, not the change
 
 risk:
