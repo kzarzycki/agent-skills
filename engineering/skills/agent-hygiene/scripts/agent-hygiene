@@ -359,7 +359,11 @@ def worktrees(run, found, dev, procs, asks):
                     lock.unlink()
                 for line in lines:  # untracked run reports: git won't remove them, and they are no one's work
                     if line.startswith('?? ') and disposable(line, path, root):
-                        shutil.rmtree(path / line[3:])
+                        report = path / line[3:]  # a folded directory, or a single file beside tracked ones
+                        if report.is_dir() and not report.is_symlink():
+                            shutil.rmtree(report)
+                        else:
+                            report.unlink()
             except OSError as error:
                 run.failed = True
                 run.say(f'FAIL worktree {path}: {error}')
@@ -396,7 +400,8 @@ def disposable(status_line, checkout, main=None):
     parts = Path(path).parts
     dirs = set(parts if path.endswith('/') else parts[:-1])  # git marks an ignored directory with a trailing /
     if status_line.startswith('?? '):  # untracked run reports count as ignored ones: fresh() holds back what changed lately
-        return path.endswith('/') and bool(REPORT_DIRS & set(parts))
+        # a folded `?? tmp/`, or one file under a report dir whose tracked content (tmp/.gitkeep) keeps git from folding it
+        return bool(REPORT_DIRS & dirs)
     return status_line.startswith('!! ') and (
         bool(DISPOSABLE & set(parts)) or bool(EVIDENCE_DIRS & dirs) or path.endswith(('.pyc', '.egg-info/', '.log'))
         # a built web UI: a path suffix, so a tracked web-ui/ source dir is not matched

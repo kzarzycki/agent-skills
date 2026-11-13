@@ -53,7 +53,8 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   - no process has its cwd or a file in it (a held lock file included) or names it;
   - its `tmp/` and `.bootstrap-state/` (run reports, ignored or untracked) haven't changed in
     24 hours, since a lead may still read a report there over ssh, where the process scan
-    can't see it; stale untracked ones go with the worktree;
+    can't see it; stale untracked ones go with the worktree, file by file beside a tracked
+    `tmp/.gitkeep`;
   - every ignored file in it is one of: an environment; build output (also a SwiftPM
     `.build/`, a directory holding `CACHEDIR.TAG`, a file whose first line says it is
     generated and not to be edited, an `*.xcodeproj/` beside the `project.yml` XcodeGen

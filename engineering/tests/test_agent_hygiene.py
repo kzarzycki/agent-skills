@@ -204,6 +204,8 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         "copydir",
         "tmpold",
         "tmpnew",
+        "tmpkeep",
+        "tmpkeepmix",
     ):
         git(repo, "worktree", "add", "-q", "-b", branch, str(dev / f"wt-{branch}"))
         wt = dev / f"wt-{branch}"
@@ -219,6 +221,9 @@ def test_agent_hygiene(tmp_path, monkeypatch):
             "tmp"
         ):  # a repo that does not ignore tmp/: its reports are untracked, `?? tmp/`
             (wt / ".gitignore").write_text((repo / ".gitignore").read_text() + "!tmp\n")
+        if branch.startswith("tmpkeep"):  # a tracked tmp/.gitkeep: git lists each report, `?? tmp/old.md`
+            (wt / "tmp").mkdir()
+            (wt / "tmp/.gitkeep").write_text("")
         if branch.startswith("apm"):  # what `apm install` deployed, as its lockfile lists it
             (wt / "apm.lock.yaml").write_text(
                 "dependencies:\n- repo_url: o/skills\n  deployed_files:\n"
@@ -258,6 +263,8 @@ def test_agent_hygiene(tmp_path, monkeypatch):
             "copydir",
             "tmpold",
             "tmpnew",
+            "tmpkeep",
+            "tmpkeepmix",
         ):
             git(wt, "push", "-q", "origin", branch)
         merged[branch] = git(wt, "rev-parse", "HEAD")
@@ -308,6 +315,13 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         os.utime(
             path, (old, old)
         )  # an untracked tmp/ a day old goes; one changed today stays, unasked
+    (dev / "wt-tmpkeep/tmp/link").symlink_to("..")  # a link to a directory goes as a link, not by rmtree
+    os.utime(dev / "wt-tmpkeep/tmp/link", (old, old), follow_symlinks=False)
+    for name in ("tmpkeep", "tmpkeepmix"):  # untracked files beside a tracked one count like a folded tmp/
+        (dev / f"wt-{name}/tmp/old.md").write_text("proof")
+        for path in (dev / f"wt-{name}/tmp/old.md", dev / f"wt-{name}/tmp"):
+            os.utime(path, (old, old))
+    (dev / "wt-tmpkeepmix/tmp/new.md").write_text("today")  # changed today: the worktree stays, unasked
     (dev / "wt-fresh/tmp/loop").mkdir(parents=True)  # a lead may still read today's report
     (dev / "wt-fresh/tmp/loop/report.md").write_text("proof")
     for name in ("apm", "apm-mine", "apm-bad"):
@@ -560,6 +574,9 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "wt-swift-foo",
             "wt-fresh/tmp/loop/report.md",
             "wt-tmpnew/tmp/loop/report.md",
+            "wt-tmpkeepmix/tmp/old.md",
+            "wt-tmpkeepmix/tmp/new.md",
+            "wt-tmpkeepmix/tmp/.gitkeep",
             "wt-apm-mine/.claude/skills/mine/SKILL.md",
             "wt-held/held.lock",
             "wt-apm-bad/.claude/skills/mine/SKILL.md",
@@ -604,6 +621,7 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "wt-nest",
             "wt-squashed",
             "wt-tmpold",
+            "wt-tmpkeep",
             "wt-apm",
             "wt-locks",
             "wt-lockdir",
@@ -681,6 +699,8 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
         ),
         f"skip worktree {dev}/wt-fresh (o/r#7 merged): its tmp/ changed in the last 24 h",
         f"skip worktree {dev}/wt-tmpnew (o/r#7 merged): its tmp/ changed in the last 24 h",
+        f"skip worktree {dev}/wt-tmpkeepmix (o/r#7 merged): its tmp/ changed in the last 24 h\n",
+        f"removed worktree {dev}/wt-tmpkeep (o/r#7 merged)",
         f"skip worktree {dev}/wt-apm-mine (o/r#7 merged): ignored files that may not rebuild: .claude/skills/mine/SKILL.md\n",
         f"skip worktree {dev}/wt-held (o/r#7 merged): a process has it open",
         f"skip worktree {dev}/wt-deep-tmp (o/r#7 merged): its tmp/ changed in the last 24 h",
