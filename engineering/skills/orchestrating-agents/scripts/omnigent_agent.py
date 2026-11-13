@@ -4168,6 +4168,31 @@ class Recorded:
         return items
 
 
+CARD_POLICY = "sys_ask_user_question"  # a question card's ``params.policy_name``
+
+
+class Uncarded:
+    """``og`` with each session's question cards (``params.policy_name`` ``CARD_POLICY``) taken out
+    of its ``pending_elicitations`` and kept in ``cards``: a card returns at once and its user
+    answers it in their Inbox, so it blocks nothing and holds no step for the parent. A
+    harness's own question (Claude's AskUserQuestion, Codex's requestUserInput) stays."""
+
+    def __init__(self, og: Omnigent) -> None:
+        self.og, self.cards = og, {}
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.og, name)
+
+    def info(self, sid: str) -> dict:
+        info = self.og.info(sid)
+        pending = info.get("pending_elicitations") or []
+        cards = [e for e in pending if (e.get("params") or {}).get("policy_name") == CARD_POLICY]
+        self.cards[sid] = cards
+        if not cards:
+            return info
+        return {**info, "pending_elicitations": [e for e in pending if e not in cards]}
+
+
 def fresh_state() -> dict:
     """An empty ``state.json``."""
     return {
@@ -4370,6 +4395,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "a session owing a report: its outcome"
     if kind == "notice":
         return "rule", "record", "the supervisor's own revive or resume line"
+    if kind == "asked":
+        return "rule", "record", "a question card to its user, who answers it in their Inbox"
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -4542,6 +4569,7 @@ def supervise_registry(
     (``deliver``); with ``fyi`` ``post`` every line is posted as without it too. The standing
     decisions the small model weighs are ``decisions``' (``standing``).
     """
+    og = Uncarded(og)
     rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
@@ -4573,6 +4601,7 @@ def supervise_registry(
     resumed: dict[str, float] = {}
     idle_since: dict[str, tuple] = {}  # followed leads, as ``follow`` keeps them
     told: dict = {}
+    asked: set[str] = set()  # the question cards already said, by event id
     holding: dict[str, tuple[tuple, float]] = {}
     unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
@@ -4987,6 +5016,15 @@ def supervise_registry(
         outbox.append((line, event, eid, sid, kind))
         flush()
 
+    def cards(sid: str) -> None:
+        """Say each question card ``sid`` posted to its user once, by its id: news, not a step."""
+        for e in og.cards.get(sid, []):
+            eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
+            if eid not in asked:
+                asked.add(eid)
+                what = "; ".join(prompts_of({"pending_elicitations": [e]}))
+                say(f"{sid}: asked its user: {what}", sid, eid, "asked")
+
     def track(
         sid: str,
         report: Path,
@@ -5376,6 +5414,7 @@ def supervise_registry(
                         log(sid, None)
                         if console:
                             label(sid, lead)
+                        cards(sid)
                         if event:
                             window = time.monotonic()
                             say(event, sid, eid, kind)
@@ -5393,6 +5432,7 @@ def supervise_registry(
                     )
                     if console:
                         label(sid, track(sid, report, briefs, followed, after, direct, leads))
+                    cards(sid)
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
