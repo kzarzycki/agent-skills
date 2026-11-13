@@ -1409,3 +1409,70 @@ def test_dead_terminals(tmp_path, monkeypatch):
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(p.pid, signal.SIGKILL)
             p.wait()
+
+
+def uv_lock_setup(tmp_path, monkeypatch, holders, ps, txt):
+    """agent-hygiene with only the uv cache, and stubbed uv, lsof and ps; a plain prune hangs, a forced one works."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hygiene = load("agent_hygiene_uv_lock")
+    cache = (tmp_path / "uvcache").resolve()
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    stubs = {
+        "uv": f'[ "$1 $2" = "cache dir" ] && {{ echo {cache}; exit 0; }}\n'
+        'case "$*" in *--force*) echo forced; exit 0;; esac\nexec sleep 5',
+        "ps": f"cat {tmp_path}/ps.txt",
+        "lsof": 'case "$*" in\n'
+        f'  *.lock) printf "{holders}";;\n'
+        + "".join(f'  *-p\\ {pid}) printf "{out}";;\n' for pid, out in txt.items())
+        + "esac",
+    }
+    for name, body in stubs.items():
+        (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_ / name).chmod(0o755)
+    (tmp_path / "ps.txt").write_text(ps)
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    monkeypatch.setattr(hygiene, "CACHES", [("uv", ["uv", "cache", "prune"], 1, None)])
+    run = hygiene.Run(False, tmp_path / "log")
+    hygiene.caches(run, [], [])
+    return cache, (tmp_path / "log").read_text()
+
+
+def test_uv_lock_held_only_by_old_uv_run_forces_the_prune(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 /venv/bin/python server.py\n21 1 1-02:00:00 /bin/uvx tool\n"
+    _, said = uv_lock_setup(
+        tmp_path,
+        monkeypatch,
+        r"p11\np21\n",
+        ps,
+        {11: r"n/usr/bin/uv\n", 12: r"n/venv/bin/python\n", 21: r"n/usr/bin/uvx\n"},
+    )
+    assert "uv cache lock held by pid 11 (uv run server.py) started " in said, said
+    assert "uv cache lock held by pid 21 (/bin/uvx tool) started " in said, said
+    assert "uv: uv cache prune --force: freed" in said and "skip" not in said, said
+
+
+def test_uv_lock_holder_running_from_the_cache_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run --script s.py\n12 11 05:00 python s.py\n"
+    cache = tmp_path.resolve() / "uvcache"
+    _, said = uv_lock_setup(
+        tmp_path,
+        monkeypatch,
+        r"p11\n",
+        ps,
+        {11: r"n/usr/bin/uv\n", 12: rf"n{cache}/environments-v2/s-abc/bin/python\n"},
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert "skip uv: still running after 1s, in use; pid 11 (uv run --script s.py) runs " in said, (
+        said
+    )
+    assert "environments-v2/s-abc/bin/python from the cache" in said, said
+
+
+def test_uv_lock_held_by_another_process_keeps_the_skip(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n31 1 09:00 uv sync\n"
+    _, said = uv_lock_setup(tmp_path, monkeypatch, r"p11\np31\n", ps, {11: "", 31: ""})
+    assert "forcing" not in said and "--force" not in said, said
+    assert (
+        "skip uv: still running after 1s, in use; the lock is held by pid 31 (uv sync)" in said
+    ), said

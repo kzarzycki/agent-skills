@@ -38,7 +38,10 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   daemon answers). A tool that isn't installed is skipped. A tool with a running process
   is skipped, and one still running after its timeout is stopped and logged as in use:
   `uv cache prune` waits for every other uv process, so a long `uv run` turns it into a
-  skip, never a wait. A uv cache shared with another account, which owns part of it, stops
+  skip, never a wait, unless every holder of the cache's `.lock` is a `uv run` or `uvx`
+  older than the wait with no interpreter under the cache dir: the prune is then retried
+  once with `--force`, each holder logged (pid, start time, command); any other holder, or
+  one running from the cache, keeps the skip and is named in it. A uv cache shared with another account, which owns part of it, stops
   the prune at that account's files (`Permission denied`): the round doesn't fail on it, and
   tells the chief of staff once, naming the cache folder and how to share or split it; it
   changes no ownership or permissions itself.

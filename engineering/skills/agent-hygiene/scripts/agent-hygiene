@@ -196,6 +196,73 @@ def dead_terminals(run):
         run.say(f'WARN terminals: {ptys} ptys of {limit}, another source is leaking them')
 
 
+def attempt(args, timeout):
+    """The finished command, or None when it outlasts timeout."""
+    try:
+        return subprocess.run(args, text=True, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def seconds(etime):
+    """ps's [[dd-]hh:]mm:ss elapsed time in seconds."""
+    days, _, clock = etime.rpartition('-')
+    parts = [int(p) for p in clock.split(':')]
+    return (int(days or 0) * 24 + (parts[-3] if len(parts) > 2 else 0)) * 3600 + parts[-2] * 60 + parts[-1]
+
+
+def is_uv_run(command):
+    """uv run, uv tool run or uvx: launchers that hold the lock only while the program they run lives."""
+    words = command.split()
+    rest = [w for w in words[1:] if not w.startswith('-')]
+    name = os.path.basename(words[0]) if words else ''
+    return name == 'uvx' or (name == 'uv' and (rest[:1] == ['run'] or rest[:2] == ['tool', 'run']))
+
+
+def uv_force(run, wait):
+    """(forced prune command or None, why it was not forced) after a uv prune waited out `wait` on the cache lock.
+    Every holder must be a uv run older than the wait, none with an interpreter inside the cache, since
+    prune removes only unreferenced entries but a script's or uvx's environment lives there."""
+    cache = (sh(['uv', 'cache', 'dir']) or '').strip()
+    held = sh(['lsof', '-w', '-n', '-P', '-Fp', f'{cache}/.lock']) if cache else None
+    table = sh(['ps', '-axww', '-o', 'pid=,ppid=,etime=,command='])
+    pids = [int(l[1:]) for l in (held or '').split() if l[:1] == 'p' and l[1:].isdigit()]
+    if not pids or table is None:
+        return None, ''
+    procs = {}
+    for line in table.splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4 and fields[0].isdigit() and fields[1].isdigit():
+            procs[int(fields[0])] = (int(fields[1]), fields[2], fields[3])
+    cache, now, seen = os.path.realpath(cache), time.time(), []
+    for pid in pids:
+        ppid, etime, command = procs.get(pid, (0, '', ''))
+        try:
+            age = seconds(etime)
+        except (ValueError, IndexError):
+            age = -1
+        who = f'pid {pid} ({command or "unknown"})'
+        if not is_uv_run(command) or age <= wait:
+            return None, f'; the lock is held by {who}, not a uv run older than the wait'
+        family, grew = {pid}, True
+        while grew:  # the holder and the programs it started
+            grew = False
+            for child, (parent, _, _) in procs.items():
+                if parent in family and child not in family:
+                    family.add(child)
+                    grew = True
+        for member in sorted(family):
+            files = sh(['lsof', '-w', '-n', '-P', '-d', 'txt', '-Fn', '-p', str(member)]) or ''
+            inside = [l[1:] for l in files.splitlines() if l[:1] == 'n'
+                      and os.path.commonpath([os.path.realpath(l[1:]), cache]) == cache]
+            if inside:
+                return None, f'; {who} runs {inside[0]} from the cache'
+        seen.append(f'{who} started {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - age))}')
+    for holder in seen:
+        run.say(f'uv cache lock held by {holder}; forcing the prune')
+    return ['uv', 'cache', 'prune', '--force'], ''
+
+
 def caches(run, commands, asks):
     for name, args, timeout, busy in CACHES:
         if not shutil.which(args[0]):
@@ -218,11 +285,13 @@ def caches(run, commands, asks):
             run.say(f'would run {" ".join(args)}')
             continue
         before = free()
-        try:
-            done = subprocess.run(args, text=True, capture_output=True, timeout=timeout,
-                                  stdin=subprocess.DEVNULL)
-        except subprocess.TimeoutExpired:
-            run.say(f'skip {name}: still running after {timeout}s, in use')
+        done, why = attempt(args, timeout), ''
+        if done is None and name == 'uv':
+            forced, why = uv_force(run, timeout)
+            done = forced and attempt(forced, timeout)
+            args = forced or args
+        if done is None:
+            run.say(f'skip {name}: still running after {timeout}s, in use{why}')
             continue
         if done.returncode and name == 'uv' and 'Permission denied' in done.stderr:  # a cache another account shares
             where = (sh(['uv', 'cache', 'dir']) or '').strip() or 'the uv cache'
