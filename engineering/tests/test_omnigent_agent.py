@@ -10674,3 +10674,40 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
     label = omnigent_agent.service_label(one)
     assert [c[:2] for c in calls] == [["launchctl", "bootout"], ["launchctl", "bootstrap"]]
     assert calls[0][2].endswith(f"/{label}") and calls[1][3].endswith(f"/{label}.plist")
+
+
+def test_supervise_install_arms_its_pairs_and_uninstall_removes_the_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through main: --install arms its <session>=<report> pairs in the registry, not in the
+    unit's ExecStart, and --uninstall stops and removes the unit or plist. The one runner
+    function is recorded, so neither systemctl nor launchctl runs."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        omnigent_agent, "_service_call", lambda cmd, check=True: calls.append(cmd) or ""
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    registry, log = tmp_path / "r.registry", tmp_path / "s.log"
+    name, label = omnigent_agent.service_name(registry), omnigent_agent.service_label(registry)
+    unit = tmp_path / "home/.config/systemd/user" / f"{name}.service"
+    plist = tmp_path / "home/Library/LaunchAgents" / f"{label}.plist"
+    supervise = ["supervise", "--registry", str(registry)]
+
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "linux")
+    assert omnigent_agent.main([*supervise, "--install", "--log", str(log), "S1=rep.md"]) == 0
+    assert "S1" in omnigent_agent.registered(registry)[0]
+    assert f"S1={tmp_path / 'rep.md'}" in registry.read_text()
+    exec_start = next(x for x in unit.read_text().splitlines() if x.startswith("ExecStart="))
+    assert "S1" not in exec_start and "rep.md" not in exec_start
+    calls.clear()
+    assert omnigent_agent.main([*supervise, "--uninstall"]) == 0
+    assert ["systemctl", "--user", "disable", "--now", name] in calls
+    assert ["systemctl", "--user", "daemon-reload"] in calls and not unit.exists()
+
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "darwin")
+    assert omnigent_agent.main([*supervise, "--install", "--log", str(log)]) == 0
+    assert plist.is_file()
+    calls.clear()
+    assert omnigent_agent.main([*supervise, "--uninstall"]) == 0
+    assert [c[:2] for c in calls] == [["launchctl", "bootout"]] and not plist.exists()
