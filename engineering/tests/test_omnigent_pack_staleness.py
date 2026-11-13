@@ -247,6 +247,7 @@ ESCAPED = [
     "loop:\n  pack_staleness: Refuse\n",
     "loop:\n  pack_staleness: refuse now\n",
     'loop:\n  "a b": 3\n',
+    "loop: {cap: 3\n",
     "loop:\n  a.b: 3\n",
     'loop:\n  pack_staleness: refuse\n  gate: "a\\tb"\n',
     "loop:\n  <<: *base\n",
