@@ -683,7 +683,10 @@ What needs the notified session waits in the state's `attention` queue and goes 
 at most one per 5 minutes (`rate.next_post_at`, written before the post), so a restart or a
 successor keeps the window: `Supervisor [act] b-<id>: <n> events`, or `[owner]` when one is the
 owner's, one line per event with why, then each lead's status row and the first 5 lines of its
-report (read through the file API, from any host; a failed read is noted). The post is pending in
+report (read through the file API, from any host; a failed read is noted). A row gives a turn end
+(`turn ended: <last line>`) once per turn, keyed on its last message's id (else its time) in the
+lead's `told_turn`, and never one written before the run that first saw the lead (`seen_from`), so
+a lead that never settles is not news in every post; the row then reads `idle`. The post is pending in
 the state with its batch id before the send and delivered after, and its events leave the queue
 only then, so nothing waiting for the owner is dropped; a session owing a report has its event
 written to the queue before its registry line is dropped. A pending post (a crash or a failed send
