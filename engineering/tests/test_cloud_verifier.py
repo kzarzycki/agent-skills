@@ -76,6 +76,9 @@ def seeded(tmp_path, monkeypatch):
         return json.loads(json.dumps(environment))
 
     monkeypatch.setenv("CODEX_CLOUD_HOME", str(tmp_path))
+    monkeypatch.setenv(
+        "CODEX_HOME", str(tmp_path / "no-host")
+    )  # no host login unless a test writes one
     monkeypatch.setattr(cv, "post_json", post_json)
     monkeypatch.setattr(cv, "claude_headers", dict)
     return tmp_path / "auth.json", calls
@@ -118,6 +121,101 @@ def test_seed_refreshes_a_login_that_is_running_out_and_keeps_the_new_refresh_to
 def test_seed_without_a_login_says_to_log_in(seeded, capsys) -> None:
     assert cv.main(["seed", "--env", "env_1"]) == 2
     assert "cloud_verifier.py login" in capsys.readouterr().err
+
+
+@pytest.fixture
+def host(tmp_path, monkeypatch):
+    """The host's own Codex home, under CODEX_HOME."""
+    home = tmp_path / "host"
+    home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    return home / "auth.json"
+
+
+def test_seed_takes_the_host_login_without_a_refresh_token_and_leaves_the_host_file_alone(
+    seeded, host
+) -> None:
+    path, calls = seeded
+    host.write_text(json.dumps(login(9)))
+    path.write_text(
+        json.dumps({**login(9), "last_refresh": "seed"})
+    )  # a seed login that would do as well
+    before = host.read_bytes()
+    assert cv.seed("env_1", min_days=5) == 0
+    assert cv.REFRESH_URL not in [url for url, _ in calls]
+    _, copy = stored(calls)
+    assert copy["last_refresh"] == "2026-01-01T00:00:00Z"  # the host's, not the seed home's
+    assert copy["tokens"]["refresh_token"] == "" and copy["tokens"]["account_id"] == "acc"
+    assert host.read_bytes() == before  # byte for byte
+
+
+def test_seed_does_not_refresh_a_host_login_even_when_it_is_under_min_days(seeded, host) -> None:
+    _, calls = seeded
+    host.write_text(json.dumps(login(2)))
+    assert cv.seed("env_1", min_days=5) == 0
+    assert cv.REFRESH_URL not in [url for url, _ in calls]
+    assert (
+        stored(calls)[1]["tokens"]["access_token"]
+        == json.loads(host.read_text())["tokens"]["access_token"]
+    )
+
+
+def test_seed_falls_back_to_the_seed_home_when_the_host_login_has_too_little_left(
+    seeded, host
+) -> None:
+    path, calls = seeded
+    host.write_text(json.dumps(login(0.5)))
+    before = host.read_bytes()
+    path.write_text(json.dumps({**login(9), "last_refresh": "seed"}))
+    assert cv.seed("env_1", min_days=5, host_min_days=1) == 0
+    assert stored(calls)[1]["last_refresh"] == "seed"
+    assert host.read_bytes() == before
+    host.write_text(json.dumps(login(0.5)))  # the threshold is the option's
+    assert cv.main(["seed", "--env", "env_1", "--host-min-days", "0.25"]) == 0
+    assert stored(calls)[1]["last_refresh"] == "2026-01-01T00:00:00Z"
+
+
+def test_seed_with_neither_login_usable_exits_2_and_names_both(seeded, host, capsys) -> None:
+    _, calls = seeded
+    host.write_text(json.dumps(login(0.5)))
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    err = capsys.readouterr().err
+    assert "host login" in err and "under 1 days" in err and "no seed login" in err
+    assert calls == []
+    assert "secret" not in err
+
+
+def test_seed_with_a_host_api_key_login_uses_the_seed_home(seeded, host) -> None:
+    path, calls = seeded
+    host.write_text(json.dumps({"OPENAI_API_KEY": "sk-x", "tokens": None}))
+    path.write_text(json.dumps({**login(9), "last_refresh": "seed"}))
+    assert cv.seed("env_1", min_days=5) == 0
+    assert stored(calls)[1]["last_refresh"] == "seed"
+
+
+def test_a_seed_home_that_is_the_host_home_is_never_refreshed(
+    seeded, tmp_path, monkeypatch, capsys
+) -> None:
+    _, calls = seeded
+    home = tmp_path / "shared"
+    home.mkdir()
+    (home / "auth.json").write_text(json.dumps(login(0.5)))
+    alias = tmp_path / "alias"
+    alias.symlink_to(home)  # the same directory under another name
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("CODEX_CLOUD_HOME", str(alias))
+    before = (home / "auth.json").read_bytes()
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    assert calls == [] and (home / "auth.json").read_bytes() == before
+    assert "seed home is the host's own" in capsys.readouterr().err
+
+
+def test_exit_2_labels_an_unusable_host_login_as_the_host_login(seeded, host, capsys) -> None:
+    host.write_text(json.dumps({"OPENAI_API_KEY": "sk-x", "tokens": None}))
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    err = capsys.readouterr().err
+    assert "the host login at" in err and "not a ChatGPT login" in err and "no seed login" in err
+    assert "sk-x" not in err
 
 
 def git(cwd: Path, *args: str) -> str:
