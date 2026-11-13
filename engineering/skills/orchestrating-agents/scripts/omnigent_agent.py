@@ -1543,8 +1543,15 @@ def send(
 
     # ponytail: compares the server's item clock with the local question file's; a skewed server
     # clock can resend an answer that already landed. Upgrade: a client id, once Omnigent has one.
+    # Any item after a copy that the session wrote (a reply, a tool call, a reasoning step) means it
+    # took that copy up: a repeat of the same words is a new message, not "already landed", or a
+    # session that works through tool calls alone never sees the repeat (#878).
     replied = max(
-        (n for n, i in enumerate(items) if i.get("type") == "message" and i.get("role") != "user"),
+        (
+            n
+            for n, i in enumerate(items)
+            if i.get("type") != "resource_event" and i.get("role") != "user"
+        ),
         default=-1,
     )
     if (
