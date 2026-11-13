@@ -1408,8 +1408,7 @@ def ended_on_monitor(info: dict, items: list[dict]) -> bool:
 
 def live_tasks(info: dict) -> list[dict]:
     """The background tasks of a session still running, a ``monitor`` (the live updates a
-    published Artifact arms) apart: work whose result goes to the session when it ends, so
-    archiving the session first strands it (#879)."""
+    published Artifact arms) apart: work whose result goes to the session when it ends."""
     return [
         t
         for t in info.get("background_tasks") or []
@@ -3195,16 +3194,13 @@ def reap(
                 f" {info.get('workspace') or '(workspace unknown)'}"
             )
             continue
-        tasks = live_tasks(info)
-        if status in RUNNING or prompts_of(info) or info.get("pending_inputs") or tasks:
+        if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
             busy = (
                 "blocked on a prompt"
                 if prompts_of(info)
                 else status
                 if status in RUNNING
                 else "input pending"
-                if info.get("pending_inputs")
-                else "background work live"
             )
             note = " (running with recent activity, not stuck)" if force and busy == status else ""
             lines.append(f"{sid} {info.get('title') or ''}: kept ({busy}){note}")
@@ -5020,13 +5016,6 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
     """Finish a session whose report or verdict came back (``Omnigent.archive``): its agent process
     frees the runner's file descriptors. A failed finish is reported, not fatal."""
     try:
-        if tasks := live_tasks(og.info(sid)):
-            print(
-                f"session {sid} delivered but kept: {len(tasks)} background task(s) still running,"
-                " whose result has nowhere to go once it is archived; `reap` it when they end",
-                file=sys.stderr,
-            )
-            return
         og.archive(sid)
     except Fail as e:
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)

@@ -6059,24 +6059,6 @@ def test_relay_rerun_after_the_copy_landed_unanswered_sends_nothing(
     assert og.posts == 1
 
 
-def test_wait_and_reap_leave_a_session_with_live_background_work_unarchived(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    og = FakeOmnigent(reply="done")
-    og.tasks = [{"type": "shell", "status": "running"}]
-    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    monkeypatch.chdir(tmp_path)
-    sid = og.create("claude", "sched")
-    omnigent_agent.archive_delivered(og, sid)
-    assert og.archived == []
-    assert "kept: 1 background task(s) still running" in capsys.readouterr().err
-    lines, failed = omnigent_agent.reap(og, [sid])
-    assert og.archived == [] and not failed and "kept (background work live)" in lines[0]
-    og.tasks = [{"type": "monitor", "status": "running"}, {"type": "shell", "status": "done"}]
-    omnigent_agent.archive_delivered(og, sid)  # a monitor or an ended task holds nothing back
-    assert og.archived == [sid]
-
-
 def test_relay_to_an_archived_session_names_its_state_and_where_its_work_continues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
