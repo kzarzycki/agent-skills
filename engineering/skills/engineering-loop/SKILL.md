@@ -584,8 +584,12 @@ or the owner's private network.
   installed tools, the build and the running containers instead of paying for them again on a host.
   `scripts/cloud_verifier.py` does it, and its docstring has each command. On the host, `login` once, then
   `seed` before starting the worker: it stores a copy without the refresh token in the cloud environment,
-  of the host's own Codex login when that has a day left (read only, never refreshed), else of a login of its own
-  that it keeps fresh, so no VM can break a login for the others. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
+  of the host's own Codex login when that has a day left, else of a login of its own that it keeps fresh, so no VM
+  can break a login for the others. A host login with under `--host-refresh-days` left (default 3) is refreshed in
+  place, the way the Codex CLI does it, in one atomic replace of the host's `auth.json`; a refused refresh exits 2
+  and names `codex login`. `--env` repeats, to seed every environment in one run. To keep them fresh without the
+  owner, run `seed` every 2 days as an Omnigent scheduled task on the host that holds the login, on a small model,
+  keeping the run (`sys_session_keep`) when it exits non-zero. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
   the pass: the lead sends it the brief `approvals.py brief` prints, with `send --pr`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
