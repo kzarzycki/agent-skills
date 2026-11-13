@@ -10663,4 +10663,7 @@ def test_a_pr_or_issue_reference_after_waiting_on_is_a_named_wait() -> None:
     assert wait_of("STILL WORKING: waiting on [#916](https://github.com/o/r/pull/916)") == "#916"
     assert wait_of("STILL WORKING: waiting on [owner/repo#12](url)") == "owner/repo#12"
     assert wait_of("STILL WORKING: this waits for owner/repo#12") == "owner/repo#12"
+    assert (
+        wait_of("STILL WORKING: waiting on the/repo#12") == "the/repo#12"
+    )  # an owner named like a pronoun
     assert wait_of("STILL WORKING: on it") == "unknown"

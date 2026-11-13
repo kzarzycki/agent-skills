@@ -391,7 +391,7 @@ WAIT = re.compile(
 REF = r"(?:[\w.-]+/[\w.-]+)?#\d+"
 NAMED = re.compile(
     r"STILL WORKING\b.*?\b(?i:wait(?:s|ing)?\s+(?:on|for)\s+(?:(?:the|an?|your|my|our|their|its)\s+)?`?)"
-    rf"(?!(?i:it|this|that|these|those|them|me|you|the|an?|your|my|our|their|its)\b)"
+    rf"(?:(?=\[?{REF})|(?!(?i:it|this|that|these|those|them|me|you|the|an?|your|my|our|their|its)\b))"
     rf"(?:\[(?={REF}\]))?({REF}|[\w'-]+)",
     re.DOTALL,
 )
