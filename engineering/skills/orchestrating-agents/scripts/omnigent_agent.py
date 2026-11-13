@@ -3892,8 +3892,9 @@ def write_state(path: Path, state: dict) -> None:
 
 def lead_status(info: dict, items: list[dict]) -> dict:
     """A session's state (``running``, ``idle``, ``blocked``, ``failed``, ``archived``), its last
-    message's ending and first line, and what it waits on: ``parked``, the wait its ``STILL
-    WORKING`` names, else ``unknown``."""
+    message's ending and first line, what it waits on: ``parked``, the wait its ``STILL
+    WORKING`` names, else ``unknown``; and its turn, the key of that message (its id, else its
+    ``created_at``) with ``turn_at``, when it was written."""
     said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
     text = text_of(said[-1]).strip() if said else ""
     e = info.get("last_task_error") or {}
@@ -3913,6 +3914,8 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "ending": ending_of(text),
         "wait": wait_of(text, said[-1].get("created_at") if said else None),
         "last_line": text.splitlines()[0][:200] if text else "",
+        "turn": str(said[-1].get("id") or said[-1].get("created_at") or "") if said else "",
+        "turn_at": float(said[-1].get("created_at") or 0) if said else 0.0,
     }
 
 
@@ -4130,18 +4133,19 @@ def standing(path: Path | None) -> str:
     return own
 
 
-def status_line(lead: dict) -> str:
+def status_line(lead: dict, turn: bool = True) -> str:
     """A lead's ``status.line`` label: its state in one short line, under 200 characters, since
-    Omnigent cuts a label value to its first 256 without an error."""
+    Omnigent cuts a label value to its first 256 without an error. Without ``turn`` a lead not
+    running reads ``idle``, with no last line: its turn end is not news."""
     if lead["state"] == "blocked":
         line = "blocked on a prompt"
     elif lead["state"] == "failed":
         line = f"failed: {lead['error']}"
     else:
-        line = "running" if lead["state"] == "running" else "turn ended"
+        line = "running" if lead["state"] == "running" else "turn ended" if turn else "idle"
         if lead["wait"] not in ("unknown", "parked"):
             line += f" · {waits(lead['wait'])}"
-        if lead["state"] != "running" and lead["last_line"]:
+        if turn and lead["state"] != "running" and lead["last_line"]:
             line += f": {lead['last_line']}"
     return line if len(line) < 200 else line[:198] + "…"
 
@@ -4247,6 +4251,7 @@ def supervise_registry(
     repos: dict[str, str] = {}  # each followed lead's repo, empty for none; read once
     headed: dict[str, float] = {}  # when each repo's default-branch head was last read
     window = time.monotonic()
+    started = time.time()  # a lead first seen in this run reports no turn end from before it
     script = script or Path(os.path.realpath(__file__))
     try:
         ran = script.stat().st_mtime_ns
@@ -4494,7 +4499,11 @@ def supervise_registry(
         print(stamp(f"{eid}: {by}: {action} ({why})"), flush=True)
 
     def compose(bid: str, events: list[dict]) -> str:
-        """A post of ``events``: one line each, then each lead's status row and report head."""
+        """A post of ``events``: one line each, then each lead's status row and report head. A
+        row gives a turn end (``turn ended: <last line>``) once per turn, kept in the lead's
+        ``told_turn``, and never one written before the run that first saw the lead
+        (``seen_from``), so an old last message of a lead that never settles is no news in every
+        post; the row then reads ``idle``."""
         to = "owner" if any(e["route"] == "owner" for e in events) else "act"
         n = len(events)
         lines = [f"Supervisor [{to}] {bid}: {n} event{'s' * (n > 1)}"]
@@ -4503,7 +4512,13 @@ def supervise_registry(
             lead = state["leads"].get(sid) or {}
             if "state" not in lead:
                 continue  # gone from the registry, or never read
-            lines += ["", f"{sid} {lead['title']}: {status_line(lead)}"]
+            new = lead.get("turn") != lead.get("told_turn") and float(
+                lead.get("turn_at") or 0
+            ) >= float(lead.get("seen_from") or 0)
+            row = status_line(lead, turn=new)
+            if row != status_line(lead, turn=False):  # it gave the turn end: once
+                lead["told_turn"] = lead.get("turn")
+            lines += ["", f"{sid} {lead['title']}: {row}"]
             if lead.get("cloud"):  # its file stays in the VM: the head its last message gave
                 read = lead.get("report_read") or {}
                 if read.get("head"):
@@ -4635,8 +4650,17 @@ def supervise_registry(
         seen = rec.seen.pop(sid, {})
         looks[sid] = (seen.get("info") or {}, seen.get("items") or [])
         lead = state["leads"].setdefault(
-            sid, {"nudges": 0, "revives": 0, "waits_on": [], "label": {}, "occurrences": 0}
+            sid,
+            {
+                "nudges": 0,
+                "revives": 0,
+                "waits_on": [],
+                "label": {},
+                "occurrences": 0,
+                "seen_from": started,
+            },
         )
+        lead.setdefault("seen_from", started)  # a state written before it was kept
         if "info" not in seen or "items" not in seen:
             return lead
         info, items = seen["info"], seen["items"]
