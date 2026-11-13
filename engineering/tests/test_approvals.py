@@ -3630,6 +3630,19 @@ def test_a_pr_red_alone_once_is_a_flake_and_lands(lands: dict[str, Any]) -> None
     assert (lands["runs"](), lands["merged"]()) == (4, ["7", "8"])
 
 
+def test_a_one_pr_batch_red_runs_its_gate_twice_then_evicts(lands: dict[str, Any]) -> None:
+    red = lands["open"](7, {"red.txt": "red\n"})
+    code, lines = lands["land"]()
+    assert code == 1, lines
+    # the batch is its first run alone, then once more: two runs of the PR's tree, then the bare base's own
+    assert (lands["runs"](), lands["merged"]()) == (3, [])
+    assert sum("exited 1 (log" in line for line in lines) == 2
+    assert sum("once more, in case it was a flake" in line for line in lines) == 1
+    assert ("pr", "ready", "--undo", "7") in lands["calls"]
+    [(number, body)] = lands["comments"]
+    assert number == 7 and body.startswith(f"{approvals.EVICTED}\nHead: {red}\n")
+
+
 def test_a_red_bare_base_evicts_nobody(lands: dict[str, Any]) -> None:
     work = lands["work"]
     (work / "red.txt").write_text("red\n")
@@ -3692,8 +3705,8 @@ def test_without_machine_exit_a_gate_exiting_78_is_red(lands: dict[str, Any]) ->
     lands["open"](7, {"machine.txt": "9"})
     code, _ = lands["land"]("7")
     assert code == 1
-    # the batch, #7 alone twice, then the bare base, which is green: #7 is evicted
-    assert (lands["runs"](), lands["merged"]()) == (4, [])
+    # the batch is #7's first run alone, then once more, then the bare base, which is green: #7 is evicted
+    assert (lands["runs"](), lands["merged"]()) == (3, [])
     assert ("pr", "ready", "--undo", "7") in lands["calls"]
 
 

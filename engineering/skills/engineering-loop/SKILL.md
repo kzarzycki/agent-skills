@@ -453,7 +453,7 @@ it was never gated on:
   date with the base, with a pass on its head, runs no gate.
 - Green: it merges each PR through GitHub in the same order, pinned to its head, checks the
   base ended at the gated tree, publishes the pass on the new tip, and comments `Landed` on each.
-- Red: it lands one PR at a time on the last green commit. A PR red alone twice is evicted
+- Red: it lands one PR at a time on the last green commit (a one-PR batch's red run is its first run alone). A PR red alone twice is evicted
   (back to draft, with its log's tail), and when the first PR is red twice the bare base is
   gated: red there stops the run and evicts nobody, since the fault is on the base.
 
