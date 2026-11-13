@@ -219,6 +219,14 @@ def is_uv_run(command):
     return name == 'uvx' or (name == 'uv' and (rest[:1] == ['run'] or rest[:2] == ['tool', 'run']))
 
 
+def in_cache(path, roots):
+    """Whether path, as written or with its links followed, is under any of roots (the cache dir as uv names it and resolved)."""
+    if not path.startswith(('/', '.', '~')) and '/' not in path:
+        return False
+    return any(os.path.commonpath([p, r]) == r for p in (os.path.abspath(path), os.path.realpath(path))
+               for r in {*roots, *map(os.path.realpath, roots)})
+
+
 def uv_force(run, wait):
     """(forced prune command or None, why it was not forced) after a uv prune waited out `wait` on the cache lock.
     Every holder must be a uv run older than the wait, none with an interpreter inside the cache, since
@@ -234,7 +242,8 @@ def uv_force(run, wait):
         fields = line.split(None, 3)
         if len(fields) == 4 and fields[0].isdigit() and fields[1].isdigit():
             procs[int(fields[0])] = (int(fields[1]), fields[2], fields[3])
-    cache, now, seen = os.path.realpath(cache), time.time(), []
+    roots, now, seen = {cache, os.path.realpath(cache)}, time.time(), []
+    lock = {f'{r}/.lock' for r in roots}
     for pid in pids:
         ppid, etime, command = procs.get(pid, (0, '', ''))
         try:
@@ -252,14 +261,19 @@ def uv_force(run, wait):
                     family.add(child)
                     grew = True
         for member in sorted(family):
-            files = sh(['lsof', '-w', '-n', '-P', '-d', 'txt', '-Fn', '-p', str(member)])
+            # every open or mapped file, not the interpreter alone: lsof reports a link's target, so a python
+            # started through a link in the cache shows no cache path, but its libraries and cwd still do
+            files = sh(['lsof', '-w', '-n', '-P', '-Fn', '-p', str(member)])
             if files is None:
-                return None, f'; the interpreter lookup for pid {member} of {who} failed'
-            # the path as opened too: a link inside the cache to a system python is still its environment
-            inside = [l[1:] for l in files.splitlines() if l[:1] == 'n' and any(
-                os.path.commonpath([p, cache]) == cache for p in (os.path.abspath(l[1:]), os.path.realpath(l[1:])))]
+                return None, f'; the open-file lookup for pid {member} of {who} failed'
+            inside = [l[1:] for l in files.splitlines() if l[:1] == 'n' and l[1:] not in lock
+                      and in_cache(l[1:], roots)]
             if inside:
                 return None, f'; {who} runs {inside[0]} from the cache'
+            args = procs[member][2]
+            named = [w for w in args.split() for w in (w, w.partition('=')[2]) if w and in_cache(w, roots)]
+            if named or any(r in args for r in roots):
+                return None, f'; {who} names {(named or [cache])[0]} in its command line, inside the cache'
         seen.append(f'{who} started {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - age))}')
     for holder in seen:
         run.say(f'uv cache lock held by {holder}; forcing the prune')

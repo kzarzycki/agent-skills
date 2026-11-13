@@ -7,12 +7,15 @@ import io
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 SKILL = Path(__file__).resolve().parents[1] / "skills/agent-hygiene"
 SCRIPT = SKILL / "scripts/agent-hygiene"
@@ -1494,7 +1497,7 @@ def test_uv_lock_with_a_failed_interpreter_lookup_is_not_forced(tmp_path, monkey
     ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
     _, said = uv_lock_setup(tmp_path, monkeypatch, r"p11\n", ps, {11: r"n/usr/bin/uv\n", 12: None})
     assert "forcing" not in said and "--force" not in said, said
-    assert "the interpreter lookup for pid 12 of pid 11 (uv run server.py) failed" in said, said
+    assert "the open-file lookup for pid 12 of pid 11 (uv run server.py) failed" in said, said
 
 
 def test_uv_lock_holder_with_a_symlinked_interpreter_in_the_cache_is_not_forced(
@@ -1511,3 +1514,75 @@ def test_uv_lock_holder_with_a_symlinked_interpreter_in_the_cache_is_not_forced(
     )
     assert "forcing" not in said and "--force" not in said, said
     assert f"runs {link} from the cache" in said, said
+
+
+def test_uv_lock_holder_with_a_library_or_cwd_in_the_cache_is_not_forced(tmp_path, monkeypatch):
+    """lsof names a link's target, so only the files a python maps or sits in show its environment."""
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    for name, entry in (
+        ("lib", "archive-v0/x/site-packages/numpy/core.so"),
+        ("cwd", "environments-v2/s"),
+    ):
+        root = tmp_path / name
+        root.mkdir()
+        cache = root.resolve() / "uvcache"
+        _, said = uv_lock_setup(
+            root,
+            monkeypatch,
+            r"p11\n",
+            ps,
+            {11: r"n/usr/bin/uv\n", 12: rf"n/usr/bin/python3\nn{cache}/{entry}\n"},
+        )
+        assert "forcing" not in said and "--force" not in said, said
+        assert f"runs {cache}/{entry} from the cache" in said, said
+
+
+def uv_real_holder(tmp_path, monkeypatch, alias):
+    """uv_force against the real lsof and ps and a real process holding the lock through a link in the cache."""
+    hygiene = load("agent_hygiene_uv_real")
+    real = tmp_path.resolve() / "real"
+    (real / "env/bin").mkdir(parents=True)
+    (real / "env/bin/uv").symlink_to(sys.executable)
+    shown = real
+    if alias:
+        shown = tmp_path.resolve() / "alias"
+        shown.symlink_to(real)
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    (bin_ / "uv").write_text(f"#!/bin/sh\necho {shown}\n")
+    (bin_ / "uv").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_}:{os.environ['PATH']}")
+    ready = tmp_path / "ready"
+    script = tmp_path / "hold.py"
+    script.write_text(
+        f"import time\nlock = open({str(real / '.lock')!r}, 'a')\n"
+        f"open({str(ready)!r}, 'w').close()\ntime.sleep(60)\n"
+    )
+    # the command reads `uv -X run ...`: a one-word-argument python launched through the cache link
+    code = 'exec(open(__import__("sys").argv[1]).read())'.replace(" ", "")
+    child = subprocess.Popen(
+        [str(shown / "env/bin/uv"), "-X", "run", "-c", code, str(script)],
+        stdin=subprocess.DEVNULL,
+    )
+    try:
+        for _ in range(100):
+            if ready.exists():
+                break
+            time.sleep(0.1)
+        assert ready.exists()
+        time.sleep(2)  # ps shows whole seconds: older than a wait of 0
+        run = hygiene.Run(False, tmp_path / "log")
+        return hygiene.uv_force(run, 0), child.pid
+    finally:
+        child.kill()
+        child.wait()
+
+
+@pytest.mark.skipif(not shutil.which("lsof"), reason="needs the real lsof")
+@pytest.mark.parametrize("alias", [False, True])
+def test_uv_lock_holder_started_through_a_cache_link_is_not_forced_by_real_lsof(
+    tmp_path, monkeypatch, alias
+):
+    (forced, why), pid = uv_real_holder(tmp_path, monkeypatch, alias)
+    assert forced is None, why
+    assert f"pid {pid}" in why and "cache" in why, why
