@@ -527,7 +527,7 @@ verifier, review angles run as native subagents, never as full harness sessions.
 
 One rule, for every project and every machine. Heavy steps (implementation, the gate, the verifier) go, in this order:
 
-1. To the cloud worker the project's `docs/agents/loop.md` names (`Cloud worker:`), with the gate and the verifier on the same machine as the worker, which shares its checkout and build. The loop.md line `Placement:` sets where the verifier runs: `same machine` (the default when the line is absent), `hosts: <name>, <name>` or `CI`. It replaces the older `Cloud verifier:` and `Verifier hosts:` lines, which keep their meaning where a project still has one; the new line wins. A worker's machine that can't take the verifier (no Codex login, a PR that needs a Claude verifier) goes to a Codex Cloud thread, then a host.
+1. To the cloud worker the project's `docs/agents/loop.md` names (`Cloud worker:`), with the gate and the verifier on the same machine as the worker, which shares its checkout and build. The loop.md line `Placement:` sets where the verifier runs: `same machine` (the default when the line is absent), `hosts: <name>, <name>` or `CI`. It replaces the older `Cloud verifier:` and `Verifier hosts:` lines, which keep their meaning where a project still has one; the new line wins. For a host worker the same default means that worker's own host. A worker's machine that can't take the verifier (no Codex login, a PR that needs a Claude verifier) goes to a Codex Cloud thread, then a host.
 2. Else to a host that offers the harness the step needs. A `start` in a cloud session without `--host` follows `Placement:`: the first online host it names, and a refusal naming `--host` where it names none, never the host the bridge runs on.
 3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
 
@@ -535,14 +535,14 @@ When a launch fails, for any reason (refused, no capacity, unreachable), take th
 
 ## Cloud worker
 
-With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead and the verifier run on
-the host and only the workers run in the cloud, as sessions of `<agent>`, a registered
+With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
+the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where heavy steps run), as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line nothing
 in this section applies and every role file reads as written. The split takes coding,
 compiling and unit tests off the host. What stays there is what the VM can't do: every
 thread resolution, since GitHub's GraphQL API answers 403 in the VM (`approvals.py` reads REST
 there, so its `check`, `local-ci` and `verdict` also run in the VM, but `land` does not); the signed land, since the VM holds no key; a verifier of the other family, since Codex
-has no cloud bridge, unless loop.md places it in the worker's VM (Verifier in the worker's VM, below); anything that needs a device, a simulator, an emulator, a browser login
+has no cloud bridge, unless it runs in the worker's VM, the default (Verifier in the worker's VM, below); anything that needs a device, a simulator, an emulator, a browser login
 or the owner's private network.
 
 - **Who does what.** The lead runs intent, spec, the branch and draft PR, `check build`,
@@ -557,7 +557,7 @@ or the owner's private network.
   peer's brief is not that; no brief names another push target. A worker's `local-ci --record`
   pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
   `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
-  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs on the host in a detached worktree at the head, or on another host loop.md's `Verifier hosts:` line lists, as lead.md step 7 says, or in the worker's VM where loop.md says so.
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where heavy steps run), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch. Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected

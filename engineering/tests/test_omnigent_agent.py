@@ -10975,9 +10975,35 @@ def test_a_cloud_start_without_host_follows_the_placement_line_never_the_bridge_
     )
     assert omnigent_agent.main(START_CLOUD) == 0
     assert og.hosts_of["s0"] == "mac"
-    # an explicit --host works as before, and outside a cloud session nothing changes
+    # an explicit --host works as before, even when the setting names another and in a cloud session
+    (tmp_path / "docs/agents/loop.md").write_text("Placement: hosts: here, mac\n")
+    assert omnigent_agent.main([*START_CLOUD, "--host", "mac"]) == 0
+    assert og.hosts_of["s1"] == "mac"
+    # outside a cloud session nothing changes: this host
     monkeypatch.delenv("CLAUDE_CODE_REMOTE")
     (tmp_path / "docs/agents/loop.md").write_text("Placement: same machine\n")
     argv = ["start", "claude", "w2", "do Y", str(tmp_path / "tmp/r2.md"), "--top-level"]
     assert omnigent_agent.main([*argv, "--workspace", str(tmp_path), "--confirm-seconds", "0"]) == 0
-    assert og.hosts_of["s1"] == "h"
+    assert og.hosts_of["s2"] == "h"
+
+
+@pytest.mark.parametrize(
+    ("line", "host", "code"),
+    [
+        ("Placement: hosts: box, mac\n", "mac", 0),
+        ("Placement: hosts: box, other\n", "mac", 1),
+        ("Verifier hosts: mac\nPlacement: hosts: box\n", "mac", 1),
+        ("Verifier hosts: box\nPlacement: hosts: mac\n", "mac", 0),
+        ("Verifier hosts: box\nPlacement: same machine\n", "mac", 0),
+    ],
+)
+def test_a_verifier_start_on_a_host_follows_the_placement_line_over_the_old_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line: str, host: str, code: int
+) -> None:
+    """A Placement hosts: list limits a verifier's host as Verifier hosts: did, and the new line
+    wins; a Placement that names no hosts (same machine) limits nothing, as no line did."""
+    og = far_verifier(tmp_path, monkeypatch, line)
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = host
+    assert omnigent_agent.main(argv) == code
+    assert bool(og.sessions) == (code == 0)

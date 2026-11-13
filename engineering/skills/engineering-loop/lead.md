@@ -113,7 +113,7 @@ design, wireframes included for a UI, and delegate the rest.
    proof the spec's acceptance needs whose log names another commit, since the verifier
    counts it as missing and the pass is spent on it:
    `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Where loop.md places the verifier in the worker's VM, the pass runs there
+   prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
    brief already in that checkout. Where else it runs is SKILL.md, Where heavy steps run.
    A verifier on a host starts on that pushed
