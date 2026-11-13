@@ -200,3 +200,33 @@ def test_start_for_a_pr_moves_a_launch_dirs_head_but_never_a_checkouts(
     git("clone", "-q", f"file://{bare}", str(full), cwd=tmp_path)
     omnigent_agent.move_head(full, 7)
     assert git("symbolic-ref", "--short", "HEAD", cwd=full) == "main"  # it has files: left alone
+
+
+def test_start_pr_on_a_cloud_agent_moves_the_launch_dir_head_and_leaves_a_checkout(
+    tmp_path: Path, bare: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setattr(omnigent_agent, "pr_branch", lambda pr: "pr-branch")  # PR 7's head
+    dest, full = tmp_path / "launch", tmp_path / "full"
+    omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest)
+    git("clone", "-q", f"file://{bare}", str(full), cwd=tmp_path)
+    (full / ".claude").mkdir()
+    (full / ".claude" / "settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_1"}}'
+    )
+    for tree in (dest, full):
+        argv = [
+            "start",
+            "claude-cloud",
+            f"t-{tree.name}",
+            "do X",
+            str(tree / "tmp" / "loop" / "r.md"),
+        ]
+        argv += ["--pr", "7", "--confirm-seconds", "0", "--workspace", str(tree)]
+        (tree / "tmp" / "loop").mkdir(parents=True, exist_ok=True)
+        assert omnigent_agent.main(argv) == 0
+    assert git("symbolic-ref", "HEAD", cwd=dest) == "refs/heads/pr-branch"
+    assert not (dest / "b.txt").exists()
+    assert git("symbolic-ref", "HEAD", cwd=full) == "refs/heads/main"
