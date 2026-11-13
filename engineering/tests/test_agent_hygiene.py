@@ -222,7 +222,9 @@ def test_agent_hygiene(tmp_path, monkeypatch):
             "tmp"
         ):  # a repo that does not ignore tmp/: its reports are untracked, `?? tmp/`
             (wt / ".gitignore").write_text((repo / ".gitignore").read_text() + "!tmp\n")
-        if branch.startswith("tmpkeep"):  # a tracked tmp/.gitkeep: git lists each report, `?? tmp/old.md`
+        if branch.startswith(
+            "tmpkeep"
+        ):  # a tracked tmp/.gitkeep: git lists each report, `?? tmp/old.md`
             (wt / "tmp").mkdir()
             (wt / "tmp/.gitkeep").write_text("")
         if branch.startswith("apm"):  # what `apm install` deployed, as its lockfile lists it
@@ -317,15 +319,24 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         os.utime(
             path, (old, old)
         )  # an untracked tmp/ a day old goes; one changed today stays, unasked
-    (dev / "wt-tmpkeep/tmp/link").symlink_to("..")  # a link to a directory goes as a link, not by rmtree
+    (dev / "wt-tmpkeep/tmp/link").symlink_to(
+        ".."
+    )  # a link to a directory goes as a link, not by rmtree
     os.utime(dev / "wt-tmpkeep/tmp/link", (old, old), follow_symlinks=False)
-    for name in ("tmpkeep", "tmpkeepmix"):  # untracked files beside a tracked one count like a folded tmp/
+    for name in (
+        "tmpkeep",
+        "tmpkeepmix",
+    ):  # untracked files beside a tracked one count like a folded tmp/
         (dev / f"wt-{name}/tmp/old.md").write_text("proof")
         for path in (dev / f"wt-{name}/tmp/old.md", dev / f"wt-{name}/tmp"):
             os.utime(path, (old, old))
-    (dev / "wt-tmpfile/tmp").write_text("mine")  # an untracked file named tmp is not a tmp/ directory
+    (dev / "wt-tmpfile/tmp").write_text(
+        "mine"
+    )  # an untracked file named tmp is not a tmp/ directory
     os.utime(dev / "wt-tmpfile/tmp", (old, old))
-    (dev / "wt-tmpkeepmix/tmp/new.md").write_text("today")  # changed today: the worktree stays, unasked
+    (dev / "wt-tmpkeepmix/tmp/new.md").write_text(
+        "today"
+    )  # changed today: the worktree stays, unasked
     (dev / "wt-fresh/tmp/loop").mkdir(parents=True)  # a lead may still read today's report
     (dev / "wt-fresh/tmp/loop/report.md").write_text("proof")
     for name in ("apm", "apm-mine", "apm-bad"):
