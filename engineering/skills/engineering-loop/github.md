@@ -60,7 +60,7 @@ it by hand, `--dry-run` first, only to resync between setups. Its docstring says
 
 ## Assignee
 
-The calls behind issues.md, Assignee. `uv run <this skill's folder>/scripts/approvals.py check build <pr>` reads
+The calls behind issues.md, Assignee. `uv run <this skill's folder>/scripts/approvals.py check build <pr>` (a number no PR has is read as the issue, like `--issue`) reads
 who added `approved:spec` (the approver) from the issue's timeline, refuses an issue
 assigned to anyone else, and, once every build proof holds, assigns the approver where no
 one is and the PR its issue's assignees. Before assigning it comments `Assigned: @<login>`
