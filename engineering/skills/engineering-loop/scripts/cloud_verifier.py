@@ -763,7 +763,8 @@ def thread_verify(
         return 1
     target = out or Path(f"tmp/loop/pr{pr}-thread.md")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(f"{signature(model, effort)}\n\n{body}\n" if not body.startswith("Verifier:") else body + "\n")
+    body = re.sub(r"\A\s*Verifier:[^\n]*\n", "", body)  # the signature is the command line's, not the model's own claim
+    target.write_text(f"Verifier: {signature(model, effort)}, pass {(re.search(r'pass (\d+)', brief) or [0, 1])[1]}\n\n{body.strip()}\n")
     print(target)
     return 0
 
