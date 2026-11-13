@@ -1074,6 +1074,8 @@ def test_a_merge_waits_for_check_and_the_owners_go_and_fails_a_missing_proof(
         code = approvals.main(["check", "merge", "7"])
         return code, capsys.readouterr().out.splitlines()
 
+    comments: list[tuple[int, str]] = []
+    monkeypatch.setattr(approvals, "comment", lambda number, body: comments.append((number, body)))
     monkeypatch.chdir(PROJECT)
     running = pull(reviews=(VERDICT,), checks=(("check", "IN_PROGRESS"),), files=("billing/a.py",))
     assert gated(running) == (
@@ -1535,6 +1537,8 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     def gh(*args: str, data: str | None = None) -> str:
         path = next(arg for arg in args if arg.startswith("repos/"))
         asked.append(path)
+        if path.endswith("/comments") and "body=@-" in args:  # flag()'s reason
+            return ""
         name = re.sub(r"^repos/\{owner\}/\{repo\}/pulls/(\d+)(/files)?.*", r"pull-\1\2", path)
         name = re.sub(r"^repos/\{owner\}/\{repo\}/git/trees/(\w+)\?recursive=1$", r"tree-\1", name)
         name = re.sub(r"^repos/\{owner\}/\{repo\}/(compare)/", r"\1-", name)
@@ -3311,6 +3315,8 @@ def landing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return "".join(f"{name}\n" for name in state["rulesets"])
         if args[1] == "repos/{owner}/{repo}/branches/main":
             return "".join(f"{name}\n" for name in state["protection"])
+        if args[1].endswith("/comments"):  # flag()'s reason
+            return ""
         raise AssertionError(args)
 
     monkeypatch.setattr(approvals, "gh", gh)
@@ -7158,6 +7164,8 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
         reviews=(at_cap, verdict_on(HEAD, heading="Verifier (claude), pass 6")), files=("app.py",)
     )
     pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
+    comments: list[tuple[int, str]] = []
+    monkeypatch.setattr(approvals, "comment", lambda number, body: comments.append((number, body)))
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
     monkeypatch.chdir(PROJECT)
     capped_line = (
@@ -7167,6 +7175,7 @@ def test_check_merge_adds_risk_high_on_a_cap_hold_and_a_refused_label_is_reporte
     assert approvals.main(["check", "merge", "7"]) == approvals.WAITING
     assert capsys.readouterr().out.splitlines() == [capped_line]
     assert added == [(7, "risk:high", True)]
+    assert comments == [(7, f"`risk:high` added, since {capped_line.removeprefix(HELD)}.\n")]
 
     def refused(number: int, name: str, add: bool) -> None:
         raise subprocess.CalledProcessError(
