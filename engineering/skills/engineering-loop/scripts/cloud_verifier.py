@@ -12,7 +12,7 @@ In the VM, from the checkout:
 
 On a host with no worker VM (route 1b), a Codex Cloud thread driven with the host's own login:
 
-    python3 scripts/cloud_verifier.py thread --pr N --brief FILE [--model M] [--effort E] [--thread ID --env ID]
+    python3 scripts/cloud_verifier.py thread --pr N --brief FILE [--model M] [--effort E] [--thread ID --env ID] [--head SHA]
 
 `thread` starts a thread, checks out the PR's head in its VM, sends the brief as a turn and writes the report (read
 back from the thread's checkout, else its final message; one without a `SATISFIED:` line is not written) at the
@@ -715,7 +715,9 @@ def thread_turn(rpc: Rpc, thread: str, text: str, model: str | None, effort: str
     return next((x["item"].get("text") or "" for x in items if x["item"].get("type") == "agentMessage"), "")
 
 
-def thread_verify(pr: int, brief_file: Path, model: str | None, effort: str | None, thread: str | None, env: str) -> int:
+def thread_verify(
+    pr: int, brief_file: Path, model: str | None, effort: str | None, thread: str | None, env: str, pending_head: str | None = None
+) -> int:
     """One pass on a Codex Cloud thread: clone the PR head (a later pass reuses the thread's checkout), run the brief,
     read the report back from the thread's checkout, else take its final message, and write it at the brief's path."""
     brief = brief_file.read_text()
@@ -728,6 +730,7 @@ def thread_verify(pr: int, brief_file: Path, model: str | None, effort: str | No
         print(f"thread {thread} env {env}")
     head = run("gh", "pr", "view", str(pr), "--json", "headRefOid,headRepository,headRepositoryOwner", "--jq",
                '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name').stdout.split()
+    head[0] = pending_head or head[0]
     code, said = thread_exec(
         rpc, thread, env,
         f"cd ~ && (test -d pr{pr} || gh repo clone {head[1]} pr{pr} -- -q) && cd pr{pr} "
@@ -800,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--model")
     t.add_argument("--effort")
     t.add_argument("--thread", help="a thread a pass before it started: the later pass runs on its machine")
+    t.add_argument("--head", help="check out this commit instead of the PR's head (a pass on an earlier head)")
     t.add_argument("--env", default="", help="that thread's environment id, printed by its first pass")
     args = parser.parse_args(argv)
     try:
@@ -808,7 +812,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "seed":
             return seed(args.env, args.min_days, args.host_min_days, args.host_refresh_days)
         if args.command == "thread":
-            return thread_verify(args.pr, args.brief, args.model, args.effort, args.thread, args.env)
+            return thread_verify(args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head)
         return verify(args.pr, args.brief, args.model, args.effort)
     except Refused as e:
         print(f"cloud_verifier: {e}" + (" (use route 2 or the host verifier)" if isinstance(e, Unusable) else ""), file=sys.stderr)
