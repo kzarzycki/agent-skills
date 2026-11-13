@@ -168,6 +168,17 @@ Three threads in the default environment of a Pro-tier account. The first was st
 - **Quota.** The account's weekly figure stayed at 90% across all of it. The turns were tiny, so this gives no per-pass cost.
 - **Not tested:** a pass with a full verifier brief, a published environment, how long an idle VM runs before it is saved and stopped, a resume after that, the CLI's own `--remote` client against this endpoint, and two clients on one thread.
 
+### A verifier pass through the runner (`cloud_verifier.py thread`, #872)
+
+The runner drives a Codex Cloud thread with the host's own Codex login. One real pass on an open PR's head that a host verifier had already passed (a small change, 86 added lines), with the same kind of brief `approvals.py brief` prints.
+
+- **Handshake and frames.** The WebSocket subprotocols are `codex-app-server` and `openai-bearer.<token>`, with an `Origin` of `https://chatgpt.com`. `thread/start` answers with the thread and, under it, `environments[].environmentId`, which `command/exec` takes as `environmentId` beside `threadId`. `turn/addUserMessage` needs a `clientUserMessageId`, answers at once and ends with a `turn/completed` notification. The final message is the first `agentMessage` item of `thread/items/list` in descending order.
+- **The thread starts read-only.** The first pass could not run its mutation checks or write its report. `thread/start` with `sandbox: danger-full-access` and `approvalPolicy: never`, and the same on the turn, fixes it: the VM is the sandbox.
+- **What the pass did.** In the thread's VM it ran the focused tests (44 passed) and eight mutations (all killed), and then, with no host login for the project's orchestration service, stopped on a question (`<report>.question`) asking for the proof only a host can give. A second turn on the same thread, with that proof supplied by the lead, found the checkout and the verifier's earlier work in place and wrote the report: 0 blocker, 0 major, 0 minor, satisfied, risk low. The host verifier's pass on that head said the same.
+- **Wall time.** The first turn took 150 s with the thread start, the clone and the question; the second turn 37 s. The host pass's wall time is not recorded in its review.
+- **Quota.** The weekly figure from the usage endpoint read 13% before and after both turns: the allowance is shown in whole percent, so a pass costs under a point.
+- **Lifetime.** Two threads were alive 65 to 70 minutes after their last turn, with the same hostname, the same checkout and the same boot time.
+
 ### Codex CLI in an Anthropic cloud VM
 
 One cloud session in an environment that allows `chatgpt.com`, `auth.openai.com` and `api.openai.com`, installs `@openai/codex` in its setup script, and holds no secret.
@@ -201,6 +212,6 @@ One kept cloud session in the same environment. The carrier started `codex login
 
 1. **Keeping the login: settled for route 2.** `cloud_verifier.py seed` (#832, #889) takes the host's own Codex login when its access token has at least a day left, and stores a copy without the refresh token in the environment. It only reads the host's file, so it never rotates that login out from under the host. When the host's login is too short it falls back to a login of its own on the host (`login`) and refreshes that one. No VM can rotate a login, and a copy that expires fails with a 401 until the next seed. The environment then holds a ChatGPT access token, which a project accepts when it adds the `Cloud verifier:` line.
 2. **The carrier's cost.** How much Claude quota a carrier session spends on a full verifier pass was not measured.
-3. **A verifier pass on route 1b.** The probe showed every piece a pass needs, and no pass with a real verifier brief has run on a Codex Cloud thread. A bridge with `start`, `turn`, `exec` and `report` verbs, and one pass through it on a real PR, would settle whether it replaces route 2.
+3. **A verifier pass on route 1b: done (#872).** One pass with a real brief, through the runner, matched the host verifier on the same head (see its spike section).
 4. **Route 1b's lifetime.** How long an idle VM runs before it is saved, whether a resumed one has its Docker images and running services, and what a pass costs in weekly quota.
 5. **Stability of route 1b.** The endpoint is the web app's. Whether `codex --remote` or OpenAI's access tokens for automation (Business and Enterprise workspaces, [access tokens](https://learn.chatgpt.com/docs/enterprise/access-tokens.md)) give a supported way in is unread beyond the docs.
