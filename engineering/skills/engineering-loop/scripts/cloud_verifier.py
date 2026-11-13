@@ -527,14 +527,15 @@ def verify(pr: int, brief_file: Path, model: str | None, effort: str | None) -> 
             p: text(p) for p in (report, question) if p and written(p) not in (None, before[p])
         }
         wrote[final] = text(final)
-        named = wrote.get(report, "").strip() and wrote[report] or wrote[final]
-        # Codex may have written the report elsewhere and ended on a link to it: read it before the checkout goes back
-        if not re.search(r"^SATISFIED:", named, re.MULTILINE) and (
-            linked := linked_report(wrote[final], Path.cwd())
-        ):
-            print(f"the report is read from {linked[0]}, which the final message names")
-            wrote[final] = linked[1]
-            wrote.pop(report, None)
+        # A verdict of its own in the report file, else in the final message, wins. Failing both, Codex may have
+        # written the report elsewhere and ended on a link to it: read it before the checkout goes back.
+        if not re.search(r"^SATISFIED:", wrote.get(report, ""), re.MULTILINE):
+            if re.search(r"^SATISFIED:", wrote[final], re.MULTILINE):
+                wrote.pop(report, None)
+            elif linked := linked_report(wrote[final], Path.cwd()):
+                print(f"the report is read from {linked[0]}, which the final message names")
+                wrote[final] = linked[1]
+                wrote.pop(report, None)
     finally:
         # The script never deletes or restores a file: git can't say which leftover hides something older (an
         # ignored file, a folder with its own repository), so a tree the verifier changed stays as it is,
@@ -871,6 +872,10 @@ def thread_verify(
         code, body = thread_exec(rpc, thread, env, f"cat {shlex.quote(checkout + '/' + str(out))}")
         body = body if not code else ""
     body = body.strip() or final.strip()
+    if (
+        "SATISFIED:" not in body and "SATISFIED:" in final
+    ):  # the final message's own verdict beats a link
+        body = final.strip()
     print(f"quota after: {quota(token)}")
     if (
         out and "SATISFIED:" not in body
