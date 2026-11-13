@@ -43,6 +43,7 @@ branch's merge to main waits for the owner.
 ## Cloud worker
 
 Cloud worker: claude-cloud, gate test
+Cloud verifier: worker session
 
 Workers run in an environment that holds no secrets, so their compute leaves the owner's
 machines. The live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`) need
