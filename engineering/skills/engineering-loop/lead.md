@@ -92,7 +92,7 @@ design, wireframes included for a UI, and delegate the rest.
    role: `worker.md` in the `engineering-loop` skill". Point at the spec, notes and
    earlier commits rather than copying them. The brief asks for no PR and no posted spec:
    both are yours (worker.md, Gates and push). Its model: SKILL.md, Models.
-   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker):
+   With loop.md's `Cloud worker:` line, workers run in the cloud (SKILL.md, Cloud worker; Where heavy steps run for every step's placement):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch.
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never

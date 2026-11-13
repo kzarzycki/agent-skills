@@ -524,6 +524,16 @@ verifier, review angles run as native subagents, never as full harness sessions.
 
 ## Cloud worker
 
+### Where heavy steps run
+
+One rule, for every project and every machine. Heavy steps (implementation, the gate, the verifier) go, in this order:
+
+1. To the cloud worker or cloud verifier the project's `docs/agents/loop.md` names (`Cloud worker:`, `Cloud verifier:`).
+2. Else to a host that offers the harness the step needs.
+3. A step that must touch a machine itself (a production service, a device, an Apple build) stays on that machine.
+
+When a launch is refused, by the server or by the host, take the next option on this list. Never fall back to running the step locally on the host that refused: whether a host accepts local work is that host's own configuration, enforced at launch, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Role files and briefs point here instead of restating it.
+
 With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead and the verifier run on
 the host and only the workers run in the cloud, as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line nothing
