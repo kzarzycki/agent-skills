@@ -330,6 +330,40 @@ def test_status_passes_only_when_every_step_the_run_had_to_pass_is_recorded(
     assert "exited 0 without recording a pass" in capsys.readouterr().out
 
 
+def test_a_step_run_takes_the_slot_and_tells_its_command_it_is_held(
+    steps: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[dict[str, str]] = []
+
+    def run(words: list[str], check: bool, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        seen.append(env)
+        return subprocess.CompletedProcess(words, 0)
+
+    monkeypatch.setattr(approvals.subprocess, "run", run)
+    assert approvals.ran_step(approvals.gate_plan()[0]) == (0, 0, 0)
+    assert seen[0][approvals.SLOT_HELD] == approvals.slot_path()
+
+
+def test_a_record_of_a_failed_step_is_never_reused(steps: dict[str, Any]) -> None:
+    """A failed step writes no record; one found anyway (hand-written, another version's) holding a non-zero exit
+    counts for nothing, and the step runs."""
+    for name in ("lint", "unit", "apple"):
+        record = {
+            "head": steps["head"],
+            "tree": steps["tree"],
+            "command": steps["commands"][name],
+            "exit": 1 if name == "unit" else 0,
+            "env": {},
+            "time": "2026-01-01T00:00:00Z",
+        }
+        path = approvals.recorded(steps["tree"], steps["commands"][name])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record))
+    assert approvals.reusable(steps["head"]) is None
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert steps["ran"]() == ["unit"]
+
+
 def test_a_pushed_record_carries_its_seconds_and_a_record_pushed_before_them_still_counts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
