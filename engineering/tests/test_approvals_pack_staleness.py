@@ -90,7 +90,9 @@ def test_refuse_setting_is_read_from_the_policy(monkeypatch: pytest.MonkeyPatch)
 def test_main_warns_then_refuses(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(approvals, "pack_behind", lambda _: "tool.py: 3 commits behind: run `git pull`")
+    monkeypatch.setattr(
+        approvals, "pack_behind", lambda _: "tool.py: 3 commits behind: run `git pull`"
+    )
     monkeypatch.setattr(approvals, "refuses_stale", lambda: True)
     assert approvals.main(["report", "nonexistent.md"]) == 1
     assert "git pull" in capsys.readouterr().err

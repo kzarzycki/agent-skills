@@ -10,7 +10,11 @@ import pytest
 
 spec = importlib.util.spec_from_file_location(
     "omnigent_agent_stale",
-    Path(__file__).resolve().parents[1] / "skills" / "orchestrating-agents" / "scripts" / "omnigent_agent.py",
+    Path(__file__).resolve().parents[1]
+    / "skills"
+    / "orchestrating-agents"
+    / "scripts"
+    / "omnigent_agent.py",
 )
 assert spec and spec.loader
 agent = importlib.util.module_from_spec(spec)
@@ -68,15 +72,21 @@ def test_no_upstream_is_silent(tmp_path: Path) -> None:
 def test_refuse_line_in_the_project_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / "docs" / "agents").mkdir(parents=True)
-    (tmp_path / "docs" / "agents" / "loop.md").write_text("## Settings\n\n```yaml\nloop:\n  pack_staleness: refuse\n```\n")
+    (tmp_path / "docs" / "agents" / "loop.md").write_text(
+        "## Settings\n\n```yaml\nloop:\n  pack_staleness: refuse\n```\n"
+    )
     monkeypatch.chdir(tmp_path)
     assert agent.refuses_stale() is True
     (tmp_path / "docs" / "agents" / "loop.md").write_text("## Settings\n")
     assert agent.refuses_stale() is False
 
 
-def test_main_refuses_when_stale_and_set(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    monkeypatch.setattr(agent, "pack_behind", lambda _: "omnigent_agent.py: 4 commits behind: run `git pull`")
+def test_main_refuses_when_stale_and_set(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        agent, "pack_behind", lambda _: "omnigent_agent.py: 4 commits behind: run `git pull`"
+    )
     monkeypatch.setattr(agent, "refuses_stale", lambda: True)
     assert agent.main(["signature"]) == 1
     assert "git pull" in capsys.readouterr().err
