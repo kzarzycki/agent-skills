@@ -1431,7 +1431,11 @@ def archived_note(og: Omnigent, sid: str, info: dict) -> str:
         " relay to the session that started it"
     )
     tasks = live_tasks(info)
-    work = f"; {len(tasks)} background task(s) were still running when it was archived" if tasks else ""
+    work = (
+        f"; {len(tasks)} background task(s) were still running when it was archived"
+        if tasks
+        else ""
+    )
     return (
         f"session {sid} is archived (title {info.get('title') or '?'!r}, status"
         f" {info.get('status') or '?'}{work}); {where}"
