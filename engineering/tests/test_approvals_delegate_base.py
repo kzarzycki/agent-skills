@@ -145,7 +145,7 @@ def test_mains_gatekeeper_md_policy_is_read_as_the_checkouts_would_be(
 
 
 def test_a_delegates_go_counts_only_while_mains_policy_still_permits_it(
-    checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     status = {
         "context": "owner",
@@ -159,6 +159,13 @@ def test_a_delegates_go_counts_only_while_mains_policy_still_permits_it(
     pr = pull(files=(".github/ci.yml",))
     checkout["main"](ALL)
     assert approvals.go_on(pr, HEAD, approvals.project()[1]) == "delegate"
+    approvals.main(["check", "merge", "7"])
+    counted = capsys.readouterr().out
+    assert "waits for the owner's go" not in counted
     checkout["main"](RULE)  # main drops `delegate: all`
     committed(checkout["work"], ALL)  # the branch keeps it
     assert approvals.go_on(pr, HEAD, approvals.project()[1]) == ""
+    # the same through the user's path: `check merge` no longer finds the delegate's go
+    code = approvals.main(["check", "merge", "7"])
+    out = capsys.readouterr().out
+    assert code == 1 and "waits for the owner's go" in out
