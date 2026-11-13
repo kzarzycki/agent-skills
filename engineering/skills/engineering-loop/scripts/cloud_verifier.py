@@ -683,7 +683,7 @@ def thread_start(rpc: Rpc, model: str | None, effort: str | None) -> tuple[str, 
     cfg = {"model_reasoning_effort": effort} if effort else {}
     got = rpc.call(
         "thread/start",
-        {"model": model, "config": cfg, "serviceName": "codex_cloud", "environments": [{"environmentConfigId": None}]},
+        {"model": model, "config": cfg, "sandbox": "danger-full-access", "approvalPolicy": "never", "serviceName": "codex_cloud", "environments": [{"environmentConfigId": None}]},
     )
     try:
         thread = got["thread"]["id"]
@@ -706,6 +706,8 @@ def thread_turn(rpc: Rpc, thread: str, text: str, model: str | None, effort: str
             "clientUserMessageId": str(uuid.uuid4()),
             "input": [{"type": "text", "text": text}],
             "model": model,
+            "approvalPolicy": "never",
+            "sandboxPolicy": {"type": "dangerFullAccess"},  # the thread's VM is the sandbox; a verifier needs Docker and writes
             "collaborationMode": {"mode": "default", "settings": {"model": model, "reasoning_effort": effort}},
         },
     )
@@ -749,7 +751,7 @@ def thread_verify(
     body = body.strip() or final.strip()
     print(f"quota after: {quota(token)}")
     if "SATISFIED:" not in body:
-        print("the verifier wrote no report with a SATISFIED: line", file=sys.stderr)
+        print(f"the verifier wrote no report with a SATISFIED: line; its last message: {final.strip()[-500:]}", file=sys.stderr)
         return 1
     target = out or Path(f"tmp/loop/pr{pr}-thread.md")
     target.parent.mkdir(parents=True, exist_ok=True)
