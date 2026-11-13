@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 import test_omnigent_agent as base  # the faked server and gh
 
 omnigent_agent = base.omnigent_agent
