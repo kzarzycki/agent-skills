@@ -253,7 +253,9 @@ The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, def
 `OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default
 1536), and per host the `HOST_LIMITS` table in the script, keyed by Omnigent host name, whose row
 gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
-field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. A row's
+field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. Any host named `epic-*` (a burst box, 4 vCPU and 8 GB) has the `HOST_PREFIX_LIMITS` row
+1500 MB, load 6 and `max_sessions` 4: a start is refused once the box has that many live sessions,
+counted from the session list, so it holds where load and memory can't be read. A row's
 `max_load` decides another host's load in place of load per core, and on this host refuses on
 top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
 (the name upper-cased, `-` as `_`) override one row. A
