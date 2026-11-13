@@ -318,6 +318,9 @@ TRANSIENT_ERRORS = (
     r"Attention Required",  # a Cloudflare challenge page (a 403)
     r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
     r"overloaded",
+    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
+    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
+    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
 )
 TRANSIENT_FAILURE = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
 BACKOFF_MINUTES = (2, 5, 10, 20)

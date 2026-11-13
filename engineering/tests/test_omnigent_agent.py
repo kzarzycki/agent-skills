@@ -5413,7 +5413,7 @@ def test_the_same_failure_again_after_a_recovery_is_news_and_a_restart_posts_nei
 ) -> None:
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
-    og.snap = {"status": "failed", "last_task_error": {"message": "runner lost"}}
+    og.snap = {"status": "failed", "last_task_error": {"message": "the gate found a failing test"}}
 
     def recover_then_fail(poll: int) -> None:
         og.snap["status"] = "running" if poll == 1 else "failed"
@@ -5422,15 +5422,15 @@ def test_the_same_failure_again_after_a_recovery_is_news_and_a_restart_posts_nei
         og, registry, monkeypatch, 3, recover_then_fail, notify="cos", console=True, fyi="post"
     )
     failures = [p.split("\n")[0] for p in fyis(og)]
-    assert failures == ["Supervisor: a t-a: failed: runner lost"] * 2
+    assert failures == ["Supervisor: a t-a: failed: the gate found a failing test"] * 2
     og.inbox.clear()
     supervised(
         og, registry, monkeypatch, 2, notify="cos", console=True, fyi="post"
     )  # a restart, still failed
     assert fyis(og) == []
     assert [i for i in state_of(registry)["settled"]["a"] if i.startswith("failed:")] == [
-        "failed:a:1:runner lost",
-        "failed:a:2:runner lost",
+        "failed:a:1:the gate found a failing test",
+        "failed:a:2:the gate found a failing test",
     ]
 
 
@@ -7685,7 +7685,7 @@ def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
 ) -> None:
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending("STILL WORKING: building", 50))
-    og.snap = {"status": "failed", "last_task_error": {"message": "runner lost"}}
+    og.snap = {"status": "failed", "last_task_error": {"message": "the gate found a failing test"}}
     states = {1: "running", 2: "failed"}
     supervised(
         og,
@@ -7698,7 +7698,9 @@ def test_a_failed_lead_is_revived_once_then_goes_to_the_chief_of_staff(
     )
     assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_REVIVE]
     [post] = posted(og)
-    assert "[act] a t-a: failed: runner lost (failed again after its revive)" in post
+    assert (
+        "[act] a t-a: failed: the gate found a failing test (failed again after its revive)" in post
+    )
     assert state_of(registry)["leads"]["a"]["revives"] == 1
 
 
@@ -7743,6 +7745,9 @@ def failing_lead(
         "claude --cloud create: HTTP 503 Service Unavailable",
         "HTTP 500 Internal Server Error",
         "API error: Overloaded",
+        "runner lost",  # a turn whose host went away: a reboot, a restart or a lost runner
+        "host rebooted",
+        "cloud session x made no progress for 1800s; it is left as it is",
     ],
 )
 def test_a_transient_provider_failure_is_revived_with_backoff_and_reported_only_at_the_cap(
@@ -7762,10 +7767,14 @@ def test_a_transient_provider_failure_is_revived_with_backoff_and_reported_only_
 def test_a_failure_that_is_no_transient_provider_error_is_still_reported_after_one_revive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    og, registry, failed, revived = failing_lead(tmp_path, monkeypatch, "runner lost", 10)
+    og, registry, failed, revived = failing_lead(
+        tmp_path, monkeypatch, "the gate found a failing test", 10
+    )
     assert len(revived) == 1 and len(failed) == 2
     [post] = posted(og)
-    assert "[act] a t-a: failed: runner lost (failed again after its revive)" in post
+    assert (
+        "[act] a t-a: failed: the gate found a failing test (failed again after its revive)" in post
+    )
     assert "retrying" not in state_of(registry)["leads"]["a"]
 
 
