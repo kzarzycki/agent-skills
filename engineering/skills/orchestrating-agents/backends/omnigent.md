@@ -45,7 +45,8 @@ stderr line saying so.
 exit 3 prints that path. Answer from the spec and the owner's stated intent, or ask the
 owner only when neither settles it, then run
 `python3 scripts/omnigent_agent.py send <session> <answer-file> <report>` in the
-background. It continues the same session while its cache is warm and waits as `run`
+background (a bare `&` is not woken by its exit: set `LOOP_NOTIFY` and add `--notify`, or use the
+harness's own background-run support). It continues the same session while its cache is warm and waits as `run`
 does; add `--verdict` when the child is a verifier, because `send` and `wait` are not
 given the role. A child still in a turn gets the answer at its next tool boundary; until
 then `send` reports it queued and waits, and a rerun of the same `send` waits for the
@@ -230,7 +231,9 @@ It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTI
 once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with
 `omnigent_agent.py wait-for --log <log> --notify` and the session that set `LOOP_NOTIFY="python3
 <this skill>/scripts/omnigent_agent.py relay --from gate <its session id>"` gets one message
-when it ends; unset, nothing is sent.
+when it ends; unset, nothing is sent. `run`, `send` and `wait`, which can wait hours on a child,
+take the same `--notify`: once they end, however they end, `$LOOP_NOTIFY` gets one line, `exit <code>:`
+and the report path, or the failure's first line.
 
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so

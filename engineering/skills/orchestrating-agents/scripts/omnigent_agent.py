@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
-    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
+    python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
-    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
-    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
+    python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep] [--notify]
+   python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N]
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
     python3 scripts/omnigent_agent.py broadcast <message-file> [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -36,7 +36,8 @@ REST and end its turn with the comment's URL, and tells it that its checkout is 
 workspace it started from and that a foreground command stops at 10 minutes; ``wait --pr N`` then writes that comment's body to the report path,
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
-exit is the wake. ``send`` answers that question in the same session, also mid-turn, then waits the
+exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. ``send`` answers that question in the same session, also mid-turn, then waits the
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
@@ -71,7 +72,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile, and ends at the first of: the log's ``exit <n>`` line (the detached
+call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -447,6 +448,7 @@ EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
+LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the landing lock's wait
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
@@ -3112,6 +3114,33 @@ def exit_of(log: Path, run: str | None = None) -> int | None:
     return int(ends[-1][1]) if ends else None
 
 
+def lock_wait(log: Path, run: str | None = None) -> str | None:
+    """The lock path of a run's last ``lock <path>`` line when no ``locked`` line follows it (the
+    run waits on the host's gate slot, so its budget has not started), else None."""
+    lines = run_lines(log, run) or []
+    for line in reversed(lines):
+        if line.strip() == "locked":
+            return None
+        if line.startswith("lock "):
+            return line[5:].strip()
+    return None
+
+
+def lock_holder(lock: str) -> str:
+    """The pid the lock file names while that process lives, else ``unknown``."""
+    try:
+        text = Path(lock).read_text().strip()
+    except OSError:
+        return "unknown"
+    return text if text.isdigit() and alive(int(text)) else "unknown"
+
+
+def lock_text(log: Path, run: str | None) -> str | None:
+    """``waiting on the gate lock (held by <pid>)`` while the log shows a lock wait, else None."""
+    lock = lock_wait(log, run)
+    return None if lock is None else f"waiting on the gate lock (held by {lock_holder(lock)})"
+
+
 def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
     ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
@@ -3170,9 +3199,29 @@ def wait_for(
             return None
         return code, log_outcome(log, code, run)
 
+    def gave_up() -> tuple[int, str] | None:
+        """A lock wait past ``LOCK_CEILING`` (the lock line is the log's last write): no verdict."""
+        if not log or lock_wait(log, run_of(pid) if pid else None) is None:
+            return None
+        try:
+            waited = time.time() - log.stat().st_mtime
+        except OSError:
+            return None
+        if waited > LOCK_CEILING:
+            return (
+                LIMIT,
+                f"gave up waiting on the gate lock after {waited:.0f}s: the check has not run",
+            )
+        return None
+
+    queued = False
     while True:
-        if outcome := ended():
+        if outcome := ended() or gave_up():
             return outcome
+        waiting = bool(log) and lock_wait(log, run_of(pid) if pid else None) is not None
+        if queued and not waiting:  # the lock came during this wait: the budget starts here
+            deadline = time.monotonic() + budget
+        queued = waiting
         if pr is not None:
             if (left := deadline - time.monotonic()) <= 0:
                 return None
@@ -5401,6 +5450,22 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one command; with ``--notify`` on run, send or wait, tell ``$LOOP_NOTIFY`` how it ended."""
+    ended: dict[str, str] = {}
+    try:
+        code = command(argv, ended)
+    except BaseException as e:
+        # an uncaught exception is an ending too: exit 1, as Python gives, and its first line
+        if "report" in ended:
+            ended.setdefault("failure", (str(e).splitlines() or [type(e).__name__])[0])
+            notify(f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}")
+        raise
+    if "report" in ended:
+        notify(f"exit {code}: {ended.get('failure') or ended['report']}")
+    return code
+
+
+def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -5677,6 +5742,12 @@ def main(argv: list[str] | None = None) -> int:
                 type=int,
                 help="a cloud worker's PR: it reports as a comment there, which wait writes to the report path",
             )
+        if p.prog.split()[-1] in ("run", "send", "wait"):
+            p.add_argument(
+                "--notify",
+                action="store_true",
+                help="once it ends, run $LOOP_NOTIFY <outcome> (unset: nothing)",
+            )
         if p.prog.split()[-1] in ("run", "wait"):
             p.add_argument(
                 "--keep",
@@ -5711,6 +5782,8 @@ def main(argv: list[str] | None = None) -> int:
                 " finished session from (default: $OMNIGENT_SUPERVISE_REGISTRY)",
             )
     args = ap.parse_args(argv)
+    if getattr(args, "notify", False) and args.cmd in ("run", "send", "wait"):
+        ended["report"] = str(args.report.resolve())
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
     unreported: Path | None = None
     stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
@@ -5758,7 +5831,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise usage
             ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
             if ended is None:
-                print("still running")
+                waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
+                print(waiting or "still running")
                 return LIMIT
             code, outcome = ended
             print(outcome)
@@ -6113,6 +6187,7 @@ def main(argv: list[str] | None = None) -> int:
         elif unreported:
             write_failed(og, sid, unreported, e)
         print(e, file=sys.stderr)
+        ended["failure"] = (str(e).splitlines() or [""])[0]
         return e.code
     finally:
         for s, handler in handlers.items():

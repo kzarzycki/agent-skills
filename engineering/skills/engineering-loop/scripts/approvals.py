@@ -1159,9 +1159,10 @@ def linked(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
 
 
 def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
-    """Add `risk:high` to a high-risk PR that lacks it, so the board shows why it waits; a line when GitHub refuses,
+    """Add `risk:high` to a high-risk PR that lacks it, so the board shows why it waits: take off every other `risk:*`
+    label, since two give the board two answers, and comment the reason risk() gave. A line when GitHub refuses,
     never a failure, since the merge already waits for the owner either way. Added for the verifier's `Risk:` line,
-    it comes with a FLAGGED comment, and comes off once a later pass judges the risk low (unflag)."""
+    the comment is FLAGGED, and the label comes off once a later pass judges the risk low (unflag)."""
     if RISK_LABEL in names(pull):
         return unflag(pull, issues, loop)
     if (why := risk(pull, issues, loop)) is None:
@@ -1173,17 +1174,25 @@ def flag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
         return [
             f"{where}: could not add `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): add it by hand"
         ]
-    if (verdict := judged(pull, loop)) and verdict in why:
+    found = []
+    for other in sorted(n for n in names(pull) if n.startswith("risk:")):
         try:
-            comment(
-                pull["number"],
-                f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n",
-            )
+            label(pull["number"], other, add=False)
         except subprocess.CalledProcessError as exc:
-            return [
-                f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it ({exc})"
-            ]
-    return []
+            found.append(
+                f"{where}: could not remove `{other}` beside `{RISK_LABEL}` ({(exc.stderr or '').strip() or exc}): remove it by hand"
+            )
+    if (verdict := judged(pull, loop)) and verdict in why:
+        body = f"{FLAGGED}, since {why}. A later pass that says `Risk: low` takes it off.\n"
+        failed = f"{where}: could not comment why the gate added `{RISK_LABEL}`, so it stays until a person removes it"
+    else:
+        body = f"`{RISK_LABEL}` added, since {why}.\n"
+        failed = f"{where}: could not comment why `{RISK_LABEL}` was added ({why})"
+    try:
+        comment(pull["number"], body)
+    except subprocess.CalledProcessError as exc:
+        found.append(f"{failed} ({exc})")
+    return found
 
 
 def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
