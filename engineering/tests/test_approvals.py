@@ -5040,7 +5040,7 @@ def checkout(
 def test_a_passing_check_on_the_clean_head_is_recorded(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert github == [
         (
             "comment",
@@ -5080,7 +5080,7 @@ def test_a_check_off_the_head_failed_or_changing_the_tree_records_nothing(
     said: str,
 ) -> None:
     checkout.update(change)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert github == []
     assert said in capsys.readouterr().out
     assert not (checkout["common"] / "approvals").exists()
@@ -5148,7 +5148,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
     assert approvals.main(["local-ci", "--record"]) == 0
     record = json.loads(record_at().read_text())
     checkout["head"] = "c" * 40  # the checkout moved on: the record still proves the PR's head
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -5173,7 +5173,7 @@ def test_a_local_ci_comment_names_no_host(
     assert approvals.main(["local-ci", "--record"]) == 0
     record = json.loads(record_at().read_text())
     assert record["host"] == "owner-MacBook.local"  # the local record keeps it
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     [body] = sent
     assert "owner-MacBook" not in body and "/Users/owner" not in body
     merged = pull(reviews=(VERDICT,), comments=(body,), labels=OWNED, checks=())
@@ -5196,7 +5196,7 @@ def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
     where = approvals.recorded(file, "mise run check:all")
     where.parent.mkdir(parents=True)
     where.write_text(json.dumps({**record, "head": HEAD, "env": {}, "time": "t", "host": "h"}))
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -5205,6 +5205,45 @@ def test_a_record_for_another_tree_or_command_or_a_failed_run_runs_the_check(
             f"{approvals.CHECKED}\nHead: {HEAD}\nCommand: mise run check:all\nEnv: default\n",
         )
     ]
+
+
+def test_local_ci_with_no_record_refuses_without_running_the_gate(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["local-ci", "7"]) == 1
+    out = capsys.readouterr().out
+    name = approvals.RECORD_BRANCH.format(approvals.record_name(TREE, "mise run check:all"))
+    assert (checkout["runs"], github) == (0, [])
+    assert HEAD in out and TREE in out and name in out and "--run" in out
+
+
+def test_local_ci_with_a_record_missing_its_time_refuses_and_names_the_field(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    where = approvals.recorded(TREE, "mise run check:all")
+    where.parent.mkdir(parents=True)
+    where.write_text(
+        json.dumps(
+            {
+                "head": HEAD,
+                "tree": TREE,
+                "command": "mise run check:all",
+                "exit": 0,
+                "env": {},
+                "host": "h",
+            }
+        )
+    )
+    assert approvals.main(["local-ci", "7"]) == 1
+    assert (checkout["runs"], github) == (0, [])
+    assert "lacks its `time` field" in capsys.readouterr().out
+
+
+def test_local_ci_run_alone_is_refused_without_a_pr(
+    github: list[tuple[Any, ...]], checkout: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["local-ci", "--record", "--run"]) == 1
+    assert checkout["runs"] == 0
 
 
 ENV_LOOP = add(LOOP, "loop", "local_ci_env:\n  - GATE_UI_TESTS\n  - GATE_SCOPE\n")
@@ -5231,7 +5270,7 @@ def test_the_gate_runs_with_the_names_local_ci_env_lists_cleared_so_an_ambient_t
     assert "GATE_UI_TESTS" not in checkout["env"] and checkout["env"]["UNLISTED"] == "kept"
     assert recorded_pass(checkout)["env"] == {}
     monkeypatch.setenv("GATE_UI_TESTS", "full")
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     [(_, _, body)] = github
     assert "Env: default\nReused by tree" in body
@@ -5243,7 +5282,7 @@ def test_a_gate_that_sets_a_name_runs_with_it_and_names_it(
     checkout["loop"] = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
     monkeypatch.setenv("GATE_UI_TESTS", "full")
     monkeypatch.setenv("GATE_SCOPE", "changed")
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["env"]["GATE_UI_TESTS"] == "0" and "GATE_SCOPE" not in checkout["env"]
     assert github == [
         (
@@ -5365,7 +5404,7 @@ def test_a_name_added_to_local_ci_env_keeps_every_pass(
     assert approvals.main(["local-ci", "--record"]) == 0
     checkout["loop"] = ENV_LOOP
     assert approvals.reusable(HEAD) is not None
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
 
 
@@ -5388,7 +5427,7 @@ def test_a_gate_that_runs_nothing_or_sets_no_variable_is_refused(
     gate: str,
 ) -> None:
     checkout["loop"] = add(LOOP, "loop", f"gate: {gate}\n")
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (checkout["runs"], github) == (0, [])
     assert "loop.md's `gate`" in capsys.readouterr().out
 
@@ -5470,7 +5509,7 @@ def test_a_record_without_env_runs_the_check_again(
         "host": "h",
     }
     where.write_text(json.dumps(old))  # as 0.23.1 wrote it, but for the tree
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert recorded_pass(checkout)["env"] == {}
 
@@ -5496,7 +5535,7 @@ def test_an_incomplete_record_runs_the_check_again(
     }
     record = {k: v for k, v in {**full, **drop}.items() if v is not None}
     where.write_text(json.dumps(record))
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
     assert github == [
         (
@@ -5515,7 +5554,7 @@ def test_a_local_ci_env_that_is_no_list_of_variable_names_is_refused(
     names: str,
 ) -> None:
     checkout["loop"] = add(LOOP, "loop", f"local_ci_env:{names}\n")
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (checkout["runs"], github) == (0, [])
     assert "`local_ci_env`" in capsys.readouterr().out
 
@@ -5531,7 +5570,7 @@ def test_local_ci_takes_a_pr_or_record(
 def test_a_local_ci_record_is_the_merge_proof_without_ci(
     github: list[tuple[Any, ...]], checkout: dict[str, Any]
 ) -> None:
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
     assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
@@ -5592,7 +5631,7 @@ def test_a_change_the_status_config_hides_still_records_nothing(
     head = git_in(repo, "rev-parse", "HEAD").strip()
     monkeypatch.setattr(approvals, "pull_request", lambda _n: {**pull(), "headRefOid": head})
     monkeypatch.chdir(repo)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert github == []
     assert "the tree has changes" in capsys.readouterr().out
 
@@ -5782,7 +5821,7 @@ def test_a_pass_recorded_on_one_host_is_reused_on_another_for_the_same_head_and_
 
     monkeypatch.setattr(approvals, "run_local_ci", never)
     assert approvals.reusable(head)["head"] == head  # check queue, batch and check merge read this
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     [(_, _, body)] = github
     assert f"Reused by tree from the pass recorded on {head} at 2026-" in body
     assert {s["description"] for s in hub[head]} == {line}  # B shows the same pass
@@ -5816,7 +5855,7 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
     assert merge(merged, [approved(1, "area:web")], no_ci) == [
         f"{NO_LOCAL_CHECK}; its tree passed under `true`, and the gate is now `true --another-tier`"
     ]
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (ran, github) == ([head], [])
 
 
@@ -5831,7 +5870,7 @@ def test_a_green_gate_status_with_no_record_branch_is_no_pass(
     monkeypatch.setattr(approvals, "writer", lambda login: login == "maintainer")
     hub[HEAD] = [status("gate", f"Tree {TREE} on {HEAD[:12]}: mise run check:all", by="maintainer")]
     assert approvals.reusable(HEAD) is None
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert checkout["runs"] == 1
 
 
@@ -8198,7 +8237,7 @@ def test_a_clean_merge_of_main_carries_the_verdict_but_never_the_local_ci_record
     head, merge_sha = case["head"], case["merge"]
     gated_head(head)
     posting["pull"] = carried_pull(case)
-    assert approvals.main(["local-ci", "7"]) == 1
+    assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (posting["ran"], posting["posted"]) == ([merge_sha], [])
     capsys.readouterr()
     on_head = f"{approvals.CHECKED}\nHead: {head}\nCommand: mise run check:all\nEnv: default\n"
@@ -8834,7 +8873,7 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
 
     monkeypatch.setattr(approvals, "run_local_ci", never)
     assert approvals.reusable(head)["ref"] == branch
-    assert approvals.main(["local-ci", "7"]) == 0
+    assert approvals.main(["local-ci", "7", "--run"]) == 0
     [(_, _, body)] = github
     assert f"Reused by tree from the pass recorded on {head} at 2026-" in body
     assert f"and pushed as {branch}, not run again." in body

@@ -16,7 +16,7 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py brief <pr> [--priorities <file>] [--proof <log>]...  # a verifier pass's brief
-    uv run scripts/approvals.py local-ci <pr>              # with `ci: false`: run `mise run check:all` on the PR head
+    uv run scripts/approvals.py local-ci <pr> [--run]      # with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record          # the same on HEAD, the gate before each push; reused by tree
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's tier: loop.md's head proof
@@ -5179,8 +5179,42 @@ def reused(record: dict[str, Any]) -> str:
     return f"Reused by tree from the pass recorded on {record['head']} at {record['time']}{pushed}, not run again."
 
 
-def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
-    """With a PR: post a pass on its head, from a recorded pass on its tree or from a run now. Without one: on a
+def no_pass(head: str) -> str:
+    """Why `local-ci <pr>` found no usable pass for `head`: the head, its tree, the record branch looked for, and what
+    was wrong with a record found (a missing field, another command or env), one line each."""
+    held = tree_of(head)
+    if held is None:
+        return f"no pass for {head}: its tree is unknown here (fetch the head)"
+    command, _, env = gate()
+    ref = RECORD_BRANCH.format(record_name(held, command))
+    lines = [
+        f"no pass for the head {head}, tree {held}: looked for the record branch {ref} on origin"
+    ]
+    try:
+        record = json.loads(recorded(held, command).read_text())
+    except OSError:
+        lines.append("this clone holds no record for that tree and gate command")
+    except ValueError:
+        lines.append("this clone's record is not JSON")
+    else:
+        if not isinstance(record, dict):
+            lines.append("this clone's record is not an object")
+        else:
+            for key in ("head", "time"):
+                if not isinstance(record.get(key), str):
+                    lines.append(f"this clone's record lacks its `{key}` field")
+            for key, want in (("tree", held), ("command", command), ("exit", 0), ("env", env)):
+                if record.get(key) != want:
+                    lines.append(f"this clone's record has {key} {record.get(key)!r}, not {want!r}")
+    lines.append(
+        "push the record (`local-ci --record` on the head) or run the gate here with `local-ci <pr> --run`"
+    )
+    return "\n".join(lines)
+
+
+def local_ci(pr: int | None, proof: dict[str, Any] | None = None, run: bool = False) -> int:
+    """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
+    none, and without it refuse then (no_pass). Without a PR: on a
     clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
     check and record nothing. Either publishes a pass this clone holds (publish). With `proof`, loop.md's
     `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
@@ -5208,9 +5242,11 @@ def local_ci(pr: int | None, proof: dict[str, Any] | None = None) -> int:
     head = pull_request(pr)["headRefOid"]
     if record := reusable(head):
         source = f"{reused(record)}\n"
-    else:
+    elif run:
         record = run_local_ci(pr, head)
         source = ""
+    else:
+        raise Refused(no_pass(head))
     if not record.get("published"):
         publish(head, record)
     comment(
@@ -5357,6 +5393,7 @@ def main(argv: list[str]) -> int:
     recording = commands.add_parser("local-ci")
     recording.add_argument("pr", type=int, nargs="?")
     recording.add_argument("--record", action="store_true")
+    recording.add_argument("--run", action="store_true")
     recording.add_argument("--status", metavar="HEAD")
     recording.add_argument("--head-proof", action="store_true")
     merging = commands.add_parser("land")
@@ -5412,6 +5449,8 @@ def main(argv: list[str]) -> int:
                 if args.pr is not None or args.record:
                     raise Refused("local-ci --status takes a head alone")
                 return local_ci_status(args.status)
+            if args.run and args.pr is None:
+                raise Refused("local-ci --run goes with a PR: --record already runs the gate")
             if (args.pr is None) != args.record:
                 raise Refused(
                     "local-ci takes a PR number, or --record to record a run on HEAD before one exists"
@@ -5421,7 +5460,7 @@ def main(argv: list[str]) -> int:
                 raise Refused("loop.md sets no `head_proof`: --head-proof has no status to publish")
             if args.head_proof and not args.record:
                 raise Refused("--head-proof goes with --record: the head proof is the checkout's")
-            return local_ci(args.pr, proof) if leads_its_session() else detach(argv)
+            return local_ci(args.pr, proof, args.run) if leads_its_session() else detach(argv)
         if args.command == "land":
             if args.only and args.pr is None:
                 parser.error("land --only needs a PR: there is nothing to restrict to")
