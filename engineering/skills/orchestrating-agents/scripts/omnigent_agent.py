@@ -5313,6 +5313,42 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
 
 
+def pack_behind(script: Path | str) -> str | None:
+    """One line, or None: how far the checkout holding ``script`` is behind its upstream's last fetched tip, when
+    ``script`` itself differs there. Never fetches, so it stays fast and offline-safe; a checkout with no upstream,
+    one not behind, or one whose script is unchanged upstream is None. A short copy of this lives in
+    engineering-loop's approvals.py (`pack_behind`), since skills install separately and neither may import
+    the other: change both together."""
+    here = Path(script).resolve()
+
+    def ask(*args: str) -> str | None:
+        done = subprocess.run(
+            ["git", "-C", str(here.parent), *args], capture_output=True, text=True, check=False
+        )
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    behind = ask("rev-list", "--count", "HEAD..@{upstream}")
+    if not behind or not behind.isdigit() or int(behind) == 0:
+        return None
+    if ask("diff", "--name-only", "HEAD", "@{upstream}", "--", str(here)) in (None, ""):
+        return None
+    return f"{here.name}: this checkout is {behind} commits behind its upstream and the script changed there: run `git pull`"
+
+
+def refuses_stale() -> bool:
+    """Whether the project's gatekeeper.md or loop.md (``docs/agents/``, at the root of the current checkout) holds a
+    ``pack_staleness: refuse`` line, which approvals.py parses as YAML; a line match is enough here."""
+    root = checkout_root(os.getcwd())
+    for name in ("gatekeeper.md", "loop.md"):
+        try:
+            text = (Path(root) / "docs" / "agents" / name).read_text() if root else ""
+        except OSError:
+            continue
+        if re.search(r"^[ \t]+pack_staleness:[ \t]*refuse[ \t]*(#.*)?$", text, re.MULTILINE):
+            return True
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -5613,6 +5649,10 @@ def main(argv: list[str] | None = None) -> int:
                 " finished session from (default: $OMNIGENT_SUPERVISE_REGISTRY)",
             )
     args = ap.parse_args(argv)
+    if stale := pack_behind(__file__):
+        print(stale, file=sys.stderr)
+        if refuses_stale():
+            return 1
     sid, registry = getattr(args, "session", None), getattr(args, "registry", None)
     unreported: Path | None = None
     stops = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)

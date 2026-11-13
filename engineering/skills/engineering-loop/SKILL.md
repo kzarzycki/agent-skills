@@ -94,6 +94,7 @@ loop:
   machine_exit: 78   # the gate's exit for "this machine isn't ready": land runs it again, then stops
   pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
   delegate: all   # the delegated approver's go on a head covers a PR into the default branch too; default feature
+  pack_staleness: refuse   # a script whose checkout is behind its upstream and changed there exits 1 at start; default warn
   head_proof:      # the status land requires on each head, and the names its recording takes from the caller
     status: gate-ui
     env:
