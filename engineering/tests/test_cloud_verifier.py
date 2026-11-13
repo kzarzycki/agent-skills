@@ -684,3 +684,249 @@ def test_a_return_that_fails_without_a_word_is_still_reported(
 def test_output_that_is_no_utf8_is_shown_not_a_failure() -> None:
     """A verifier can leave a file whose name is no UTF-8; the status that names it must still be read."""
     assert cv.run("printf", r"?? caf\351.txt").stdout == "?? caf\ufffd.txt"
+
+
+# ── route 1b: a Codex Cloud thread, against a fake endpoint speaking the same frames ─────────────────────────────────
+
+import base64 as _b64
+import hashlib
+import socket
+import threading
+
+
+class FakeCloud:
+    """A one-connection WebSocket server that answers the app-server calls a verifier pass makes."""
+
+    def __init__(self, report: str, question: str = "", **quirks) -> None:
+        self.report, self.question, self.seen, self.proto = report, question, [], ""
+        self.quirks, self.turned = quirks, False
+        self.srv = socket.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.url = f"ws://127.0.0.1:{self.srv.getsockname()[1]}/"
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def frame(self, obj: dict) -> bytes:
+        data = json.dumps(obj).encode()
+        return (
+            b"\x81"
+            + (bytes([len(data)]) if len(data) < 126 else b"\x7e" + len(data).to_bytes(2, "big"))
+            + data
+        )
+
+    def read(self, conn: socket.socket, buf: bytearray) -> dict:
+        def need(n: int) -> bytes:
+            while len(buf) < n:
+                buf.extend(conn.recv(65536))
+            out = bytes(buf[:n])
+            del buf[:n]
+            return out
+
+        _, b1 = need(2)
+        n = b1 & 0x7F
+        n = int.from_bytes(need(2), "big") if n == 126 else n
+        mask = need(4)
+        return json.loads(bytes(b ^ mask[i % 4] for i, b in enumerate(need(n))))
+
+    def serve(self) -> None:
+        conn, _ = self.srv.accept()
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += conn.recv(4096)
+        text = head.decode()
+        key = next(
+            x.split(": ")[1] for x in text.split("\r\n") if x.startswith("Sec-WebSocket-Key")
+        )
+        self.proto = next(x for x in text.split("\r\n") if x.startswith("Sec-WebSocket-Protocol"))
+        accept = _b64.b64encode(
+            hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
+        ).decode()
+        conn.sendall(
+            f"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n".encode()
+        )
+        buf = bytearray()
+        while True:
+            try:
+                msg = self.read(conn, buf)
+            except OSError, ValueError:
+                return
+            method = msg.get("method")
+            self.seen.append(method)
+            if "id" not in msg:
+                continue
+            result: dict = {}
+            if method == "thread/start":
+                result = {"thread": {"id": "t1", "environments": [{"environmentId": "e1"}]}}
+            elif method == "command/exec":
+                cmd = msg["params"]["command"][-1]
+                if self.quirks.get("rm_fails") and cmd.startswith("rm "):
+                    conn.sendall(
+                        self.frame(
+                            {
+                                "id": msg["id"],
+                                "result": {"exitCode": 1, "stdout": "", "stderr": "denied"},
+                            }
+                        )
+                    )
+                    continue
+                result = {
+                    "exitCode": 0,
+                    "stdout": (self.question if cmd.endswith(".question") else self.report)
+                    if cmd.startswith("cat ")
+                    else "/home/agent/pr1\n",
+                    "stderr": "",
+                }
+            elif method == "thread/items/list":
+                old = {
+                    "turnId": "u0",
+                    "item": {"id": "i1", "type": "agentMessage", "text": "SATISFIED: yes"},
+                }
+                new = {
+                    "turnId": "u1",
+                    "item": {"id": "i2", "type": "agentMessage", "text": "final message"},
+                }
+                result = {
+                    "data": [new, old] if self.turned and not self.quirks.get("silent") else [old]
+                }
+            if method == "command/exec" and self.quirks.get("garbage") and cmd.startswith("cat "):
+                conn.sendall(b"\x81\x03abc")  # not JSON
+                return
+            if method == "turn/addUserMessage" and self.quirks.get("error_echo"):
+                conn.sendall(self.frame({"id": msg["id"], "error": {"message": self.proto}}))
+                continue
+            conn.sendall(self.frame({"id": msg["id"], "result": result}))
+            if method == "turn/addUserMessage":
+                self.turned = True
+                status = self.quirks.get("status", "completed")
+                conn.sendall(
+                    self.frame({"method": "turn/completed", "params": {"turn": {"status": status}}})
+                )
+
+
+@pytest.fixture
+def route_1b(tmp_path, monkeypatch):
+    token = jwt(5)
+    home = tmp_path / "codex"
+    home.mkdir()
+    (home / "auth.json").write_text(
+        json.dumps(login(5) | {"tokens": {"access_token": token, "refresh_token": "r"}})
+    )
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setattr(cv, "USAGE_URL", "http://127.0.0.1:9/")
+    real = cv.run
+    monkeypatch.setattr(
+        cv,
+        "run",
+        lambda *a, **k: (
+            subprocess.CompletedProcess(a, 0, "abc123 o/r\n", "")
+            if a[:3] == ("gh", "pr", "view")
+            else real(*a, **k)
+        ),
+    )
+    brief = tmp_path / "brief.md"
+    brief.write_text(f"Review.\n- Report: {tmp_path}/out/pr1-v1.md\n")
+    return token, brief, tmp_path / "out" / "pr1-v1.md"
+
+
+def test_a_thread_pass_writes_the_report_read_from_the_vm_and_no_token_is_printed(
+    route_1b, monkeypatch, capsys
+) -> None:
+    token, brief, out = route_1b
+    fake = FakeCloud("Head: abc123\nVERDICT: 0 blocker\nSATISFIED: yes\n")
+    monkeypatch.setattr(cv, "WS_URL", fake.url)
+    code = cv.main(
+        [
+            "thread",
+            "--pr",
+            "1",
+            "--brief",
+            str(brief),
+            "--model",
+            "gpt-6.1-terra",
+            "--effort",
+            "medium",
+        ]
+    )
+    shown = capsys.readouterr()
+    assert code == 0
+    assert (
+        out.read_text().startswith("Verifier: codex/terra-6.1/med, pass 1")
+        and "SATISFIED: yes" in out.read_text()
+    )
+    assert (
+        token in fake.proto and token not in shown.out + shown.err
+    )  # the login goes to the endpoint only
+    assert fake.seen.count("command/exec") == 3 and "turn/addUserMessage" in fake.seen
+
+
+def test_a_thread_pass_without_a_satisfied_line_writes_no_report(route_1b, monkeypatch) -> None:
+    _, brief, out = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("no verdict here").url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 1
+    assert not out.exists()
+
+
+def test_a_dead_endpoint_fails_closed_naming_the_other_routes(
+    route_1b, monkeypatch, capsys
+) -> None:
+    _, brief, out = route_1b
+    monkeypatch.setattr(cv, "WS_URL", "ws://127.0.0.1:9/")
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
+    assert "route 2 or the host verifier" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_verifier_that_stops_on_a_question_gets_it_written_and_exit_3(
+    route_1b, monkeypatch
+) -> None:
+    _, brief, out = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", "# a question\nPlease run X").url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 3
+    assert "Please run X" in out.with_name(out.name + ".question").read_text()
+    assert not out.exists()
+
+
+def test_a_failed_turn_or_one_with_no_new_message_never_passes_on_an_earlier_verdict(
+    route_1b, monkeypatch
+) -> None:
+    _, brief, out = route_1b
+    for quirks in ({"status": "failed"}, {"silent": True}):
+        monkeypatch.setattr(cv, "WS_URL", FakeCloud("", **quirks).url)
+        assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) in (1, 2)
+        assert not out.exists()  # the earlier turn's "SATISFIED: yes" was not taken
+
+
+def test_an_endpoint_error_that_echoes_the_token_does_not_print_it(
+    route_1b, monkeypatch, capsys
+) -> None:
+    token, brief, _ = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", error_echo=True).url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
+    shown = capsys.readouterr()
+    assert token not in shown.out + shown.err and "***" in shown.err
+
+
+def test_a_malformed_frame_exits_2_not_with_a_traceback(route_1b, monkeypatch, capsys) -> None:
+    _, brief, _ = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", garbage=True).url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
+    assert "route 2 or the host verifier" in capsys.readouterr().err
+
+
+def test_thread_exec_runs_a_command_in_the_vm_and_returns_its_exit_code(
+    route_1b, monkeypatch, capsys
+) -> None:
+    fake = FakeCloud("")
+    monkeypatch.setattr(cv, "WS_URL", fake.url)
+    assert cv.main(["thread-exec", "--thread", "t1", "--env", "e1", "--", "echo", "hi"]) == 0
+    assert "/home/agent/pr1" in capsys.readouterr().out and "turn/addUserMessage" not in fake.seen
+
+
+def test_a_report_that_cannot_be_cleared_stops_the_pass_before_the_turn(
+    route_1b, monkeypatch
+) -> None:
+    _, brief, out = route_1b
+    fake = FakeCloud("SATISFIED: yes", rm_fails=True)
+    monkeypatch.setattr(cv, "WS_URL", fake.url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
+    assert "turn/addUserMessage" not in fake.seen and not out.exists()

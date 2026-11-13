@@ -27,7 +27,7 @@ branch's merge to main waits for the owner.
 
 Cloud worker: claude-cloud, gate test
 
-Cloud verifier: worker session
+Cloud verifier: worker session, else codex thread
 
 Workers run in an environment that holds one secret, so their compute leaves the owner's
 machines: a ChatGPT access token for the verifier, which lasts up to 10 days and carries no
