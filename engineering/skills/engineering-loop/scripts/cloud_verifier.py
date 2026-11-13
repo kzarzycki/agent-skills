@@ -14,6 +14,7 @@ On a host with no worker VM (route 1b), a Codex Cloud thread driven with the hos
 
     python3 scripts/cloud_verifier.py thread --pr N --brief FILE [--model M] [--effort E] [--thread ID --env ID] [--head SHA]
 
+`thread-exec --thread ID --env ID -- CMD` runs a command in a thread's VM without a model turn.
 `thread` starts a thread, checks out the PR's head in its VM, sends the brief as a turn and writes the report (read
 back from the thread's checkout, else its final message; one without a `SATISFIED:` line is not written) at the
 brief's `- Report:` path. Exit 0 report written, 1 no report, 3 the verifier stopped on a question (written at `<report>.question`), 2 route 1b unusable (the endpoint is undocumented):
@@ -558,6 +559,11 @@ WS_URL = os.environ.get("CODEX_CLOUD_WS", "wss://codex-cloud-backend.chatgpt.com
 USAGE_URL = os.environ.get("CODEX_CLOUD_USAGE", "https://chatgpt.com/backend-api/wham/usage")
 
 
+SECRET: list[
+    str
+] = []  # the access token in use: an endpoint error that echoes it must not reach the output
+
+
 class Unusable(Refused):
     """Route 1b does not answer as the probe saw it: use route 2 or the host verifier."""
 
@@ -641,7 +647,10 @@ class Socket:
             elif op in (0, 1):
                 text += data
                 if b0 & 0x80:
-                    return json.loads(text)
+                    msg = json.loads(text)
+                    if not isinstance(msg, dict):
+                        raise Unusable(f"the endpoint sent {type(msg).__name__}, not an object")
+                    return msg
 
 
 class Rpc:
@@ -688,6 +697,7 @@ def host_token() -> str:
         raise Unusable(f"route 1b needs the host's own Codex login: {why}")
     if expires_at(auth["tokens"]["access_token"]) < time.time() + 600:
         raise Unusable("the host's Codex login has run out: run `codex login` on the host")
+    SECRET.append(auth["tokens"]["access_token"])
     return auth["tokens"]["access_token"]
 
 
@@ -736,34 +746,42 @@ def thread_turn(
     rpc: Rpc, thread: str, text: str, model: str | None, effort: str | None, timeout: float
 ) -> str:
     """Send a turn and return the thread's final message once the turn completes."""
-    rpc.call(
-        "turn/addUserMessage",
-        {
-            "threadId": thread,
-            "clientUserMessageId": str(uuid.uuid4()),
-            "input": [{"type": "text", "text": text}],
-            "model": model,
-            "approvalPolicy": "never",
-            "sandboxPolicy": {
-                "type": "dangerFullAccess"
-            },  # the thread's VM is the sandbox; a verifier needs Docker and writes
-            "collaborationMode": {
-                "mode": "default",
-                "settings": {"model": model, "reasoning_effort": effort},
-            },
+    turn = {
+        "threadId": thread,
+        "clientUserMessageId": str(uuid.uuid4()),
+        "input": [{"type": "text", "text": text}],
+        "model": model,
+        "approvalPolicy": "never",
+        "sandboxPolicy": {
+            "type": "dangerFullAccess"
+        },  # the thread's VM is the sandbox; a verifier needs Docker and writes
+        "collaborationMode": {
+            "mode": "default",
+            "settings": {"model": model, "reasoning_effort": effort},
         },
-    )
-    rpc.until("turn/completed", timeout)
+    }
+    before = newest_item(rpc, thread)
+    rpc.call("turn/addUserMessage", turn)
+    done = rpc.until("turn/completed", timeout)
+    status = ((done.get("params") or {}).get("turn") or {}).get("status", "completed")
+    if status != "completed":
+        raise Unusable(f"the turn ended as {status}")
     rpc.notes.clear()
-    items = (
-        rpc.call(
-            "thread/items/list", {"threadId": thread, "limit": 20, "sortDirection": "desc"}
-        ).get("data")
-        or []
-    )
-    return next(
-        (x["item"].get("text") or "" for x in items if x["item"].get("type") == "agentMessage"), ""
-    )
+    for item in thread_items(rpc, thread):
+        if item["id"] == before:
+            break
+        if item.get("type") == "agentMessage":
+            return item.get("text") or ""
+    return ""  # nothing new from this turn: never an earlier turn's message
+
+
+def thread_items(rpc: Rpc, thread: str) -> list[dict]:
+    got = rpc.call("thread/items/list", {"threadId": thread, "limit": 30, "sortDirection": "desc"})
+    return [x["item"] for x in got.get("data") or []]
+
+
+def newest_item(rpc: Rpc, thread: str) -> str:
+    return next(iter(thread_items(rpc, thread)), {}).get("id", "")
 
 
 def thread_verify(
@@ -806,6 +824,9 @@ def thread_verify(
     if code:
         raise Unusable(f"the checkout of {head[0]} in the thread's VM failed: {said[-300:]}")
     checkout = said.strip().splitlines()[-1]
+    if out:  # an earlier pass's report in a reused checkout is never this pass's
+        stale = shlex.quote(f"{checkout}/{out}")
+        thread_exec(rpc, thread, env, f"rm -f {stale} {stale}.question")
     final = thread_turn(
         rpc,
         thread,
@@ -905,21 +926,42 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument(
         "--env", default="", help="that thread's environment id, printed by its first pass"
     )
+    x = sub.add_parser(
+        "thread-exec", help="run a shell command in a thread's VM, without a model turn"
+    )
+    x.add_argument("--thread", required=True)
+    x.add_argument("--env", required=True)
+    x.add_argument("cmd", nargs=argparse.REMAINDER, help="the command, after --")
     args = parser.parse_args(argv)
     try:
         if args.command == "login":
             return login()
         if args.command == "seed":
             return seed(args.env, args.min_days, args.host_min_days, args.host_refresh_days)
+        if args.command == "thread-exec":
+            code, said = thread_exec(
+                Rpc(host_token()),
+                args.thread,
+                args.env,
+                shlex.join(args.cmd[args.cmd[:1] == ["--"] :]),
+            )
+            print(said, end="")
+            return code
         if args.command == "thread":
             return thread_verify(
                 args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head
             )
         return verify(args.pr, args.brief, args.model, args.effort)
-    except Refused as e:
+    except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        if not args.command.startswith("thread") and not isinstance(e, Refused):
+            raise
+        why = f"{e}" if isinstance(e, Refused) else f"unexpected answer from the endpoint: {e!r}"
+        for secret in SECRET:
+            why = why.replace(secret, "***")
         print(
-            f"cloud_verifier: {e}"
-            + (" (use route 2 or the host verifier)" if isinstance(e, Unusable) else ""),
+            f"cloud_verifier: {why} (use route 2 or the host verifier)"
+            if args.command.startswith("thread")
+            else f"cloud_verifier: {why}",
             file=sys.stderr,
         )
         return 2

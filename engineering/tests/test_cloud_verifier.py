@@ -697,8 +697,9 @@ import threading
 class FakeCloud:
     """A one-connection WebSocket server that answers the app-server calls a verifier pass makes."""
 
-    def __init__(self, report: str, question: str = "") -> None:
+    def __init__(self, report: str, question: str = "", **quirks) -> None:
         self.report, self.question, self.seen, self.proto = report, question, [], ""
+        self.quirks, self.turned = quirks, False
         self.srv = socket.socket()
         self.srv.bind(("127.0.0.1", 0))
         self.srv.listen(1)
@@ -766,14 +767,30 @@ class FakeCloud:
                     "stderr": "",
                 }
             elif method == "thread/items/list":
-                result = {
-                    "data": [
-                        {"turnId": "u", "item": {"type": "agentMessage", "text": "final message"}}
-                    ]
+                old = {
+                    "turnId": "u0",
+                    "item": {"id": "i1", "type": "agentMessage", "text": "SATISFIED: yes"},
                 }
+                new = {
+                    "turnId": "u1",
+                    "item": {"id": "i2", "type": "agentMessage", "text": "final message"},
+                }
+                result = {
+                    "data": [new, old] if self.turned and not self.quirks.get("silent") else [old]
+                }
+            if method == "command/exec" and self.quirks.get("garbage") and cmd.startswith("cat "):
+                conn.sendall(b"\x81\x03abc")  # not JSON
+                return
+            if method == "turn/addUserMessage" and self.quirks.get("error_echo"):
+                conn.sendall(self.frame({"id": msg["id"], "error": {"message": self.proto}}))
+                continue
             conn.sendall(self.frame({"id": msg["id"], "result": result}))
             if method == "turn/addUserMessage":
-                conn.sendall(self.frame({"method": "turn/completed", "params": {}}))
+                self.turned = True
+                status = self.quirks.get("status", "completed")
+                conn.sendall(
+                    self.frame({"method": "turn/completed", "params": {"turn": {"status": status}}})
+                )
 
 
 @pytest.fixture
@@ -829,7 +846,7 @@ def test_a_thread_pass_writes_the_report_read_from_the_vm_and_no_token_is_printe
     assert (
         token in fake.proto and token not in shown.out + shown.err
     )  # the login goes to the endpoint only
-    assert fake.seen.count("command/exec") == 2 and "turn/addUserMessage" in fake.seen
+    assert fake.seen.count("command/exec") == 3 and "turn/addUserMessage" in fake.seen
 
 
 def test_a_thread_pass_without_a_satisfied_line_writes_no_report(route_1b, monkeypatch) -> None:
@@ -857,3 +874,39 @@ def test_a_verifier_that_stops_on_a_question_gets_it_written_and_exit_3(
     assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 3
     assert "Please run X" in out.with_name(out.name + ".question").read_text()
     assert not out.exists()
+
+
+def test_a_failed_turn_or_one_with_no_new_message_never_passes_on_an_earlier_verdict(
+    route_1b, monkeypatch
+) -> None:
+    _, brief, out = route_1b
+    for quirks in ({"status": "failed"}, {"silent": True}):
+        monkeypatch.setattr(cv, "WS_URL", FakeCloud("", **quirks).url)
+        assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) in (1, 2)
+        assert not out.exists()  # the earlier turn's "SATISFIED: yes" was not taken
+
+
+def test_an_endpoint_error_that_echoes_the_token_does_not_print_it(
+    route_1b, monkeypatch, capsys
+) -> None:
+    token, brief, _ = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", error_echo=True).url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
+    shown = capsys.readouterr()
+    assert token not in shown.out + shown.err and "***" in shown.err
+
+
+def test_a_malformed_frame_exits_2_not_with_a_traceback(route_1b, monkeypatch, capsys) -> None:
+    _, brief, _ = route_1b
+    monkeypatch.setattr(cv, "WS_URL", FakeCloud("", garbage=True).url)
+    assert cv.main(["thread", "--pr", "1", "--brief", str(brief)]) == 2
+    assert "route 2 or the host verifier" in capsys.readouterr().err
+
+
+def test_thread_exec_runs_a_command_in_the_vm_and_returns_its_exit_code(
+    route_1b, monkeypatch, capsys
+) -> None:
+    fake = FakeCloud("")
+    monkeypatch.setattr(cv, "WS_URL", fake.url)
+    assert cv.main(["thread-exec", "--thread", "t1", "--env", "e1", "--", "echo", "hi"]) == 0
+    assert "/home/agent/pr1" in capsys.readouterr().out and "turn/addUserMessage" not in fake.seen
