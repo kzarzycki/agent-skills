@@ -253,7 +253,9 @@ The limits are knobs set for the hardware: `OMNIGENT_MIN_CPU_IDLE` (percent, def
 `OMNIGENT_MAX_LOAD_PER_CORE` (default 4, the fallback) and `OMNIGENT_MIN_AVAILABLE_MB` (default
 1536), and per host the `HOST_LIMITS` table in the script, keyed by Omnigent host name, whose row
 gives `min_mb` and `max_load` (the 1-minute load average, absolute, not per core; a missing
-field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. A row's
+field takes the default): `cc-experiments` 2500 MB and load 40, `oz` load 10. Any host named `epic-*` (a burst box, 4 vCPU and 8 GB) has the `HOST_PREFIX_LIMITS` row
+1500 MB, load 6 and `max_sessions` 4: a start is refused once the box has that many live sessions,
+counted from the session list, so it holds where load and memory can't be read. A row's
 `max_load` decides another host's load in place of load per core, and on this host refuses on
 top of the idle-CPU judgement. `OMNIGENT_MIN_AVAILABLE_MB_<HOST>` and `OMNIGENT_MAX_LOAD_<HOST>`
 (the name upper-cased, `-` as `_`) override one row. A
@@ -618,7 +620,14 @@ is only a report's path takes its ending and wait from the report's first line, 
 last message (a failed read is logged once and leaves them as the message gave them). None for a
 parked lead, which waits on capacity, also while a lost turn end leaves it reading running; and
 none while the lead is out of its turn with `DONE` or `USER NEEDED`, blocked or failed, since it
-then waits on its follower, who was told. Each deadline is one event per
+then waits on its follower, who was told. None either while every session the wait names is
+running: not archived, its status running and updated within 20 minutes, since the lead is
+waiting, not stalled. A wait names a session by its full id (not the `--notify` session's, the
+chief of staff, which is outside its follow set), or, for a project manager started with `start
+--top-level --leads <file>` (a `leads=<file>` field on its registry line, kept on a re-arm), its
+leads as a group: `lead` names every lead that registry follows. A named session idle, ended or
+not read, a registry not read, and a wait on anything else (the owner, a word) leave the deadline
+as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
 `direct` field (`omnigent_agent.py direct <session>`, `--off` clears it), one the owner drives in
 its own session, has no deadline at all: its quiet ends and `USER NEEDED` are recorded, not
