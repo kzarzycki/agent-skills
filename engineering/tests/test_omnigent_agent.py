@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import ssl
 import subprocess
 import sys
@@ -54,6 +55,7 @@ class FakeOmnigent:
         self.posts = 0
         self.sessions: dict[str, list[dict]] = {}
         self.archived: list[str] = []
+        self.interrupted: list[str] = []
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
@@ -67,7 +69,9 @@ class FakeOmnigent:
         self.subscriptions: list[tuple[str, str]] = []
         self.roots: dict[str, str] = {}  # a session's root_conversation_id, when not its own
         self.resolved: list[tuple[str, str, str, dict | None]] = []
-        self.host_id = "h"  # this host
+        self.host_id = "h"  # this host, named "host"
+        self.host_names: dict[str, str] = {}  # other hosts' names, by id
+        self.procs: dict[str, dict[str, str]] = {}  # each host's /proc files, by host id
         self.harnesses: dict[str, str] = {}  # a registered agent's harness, by its name
         self.listed = [
             "opus",
@@ -107,6 +111,18 @@ class FakeOmnigent:
 
     def harness(self, agent: str) -> str:
         return self.harnesses.get(agent, "")
+
+    def hosts(self) -> dict[str, str]:
+        return {self.host_id: "host", **self.host_names}
+
+    def read_file(self, sid: str, path: str) -> str:  # a host's /proc, by host, else none
+        proc = self.procs.get(self.hosts_of.get(sid) or self.host_of(sid), {})
+        if path not in proc:
+            raise omnigent_agent.Gone(f"{path}: not found")
+        return proc[path]
+
+    def host_of(self, sid: str) -> str:
+        return next((str(o.get("host_id")) for o in self.others if o.get("id") == sid), "")
 
     def models(self, agent: str, host_id: str | None = None) -> list[str]:
         if "models" in self.fail:
@@ -234,6 +250,9 @@ class FakeOmnigent:
         self.resolved.append((sid, eid, action, content))
         self.prompts = [e for e in self.prompts if e["elicitation_id"] != eid]
 
+    def interrupt(self, sid: str) -> None:
+        self.interrupted.append(sid)
+
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
             raise omnigent_agent.Fail(f"PATCH {sid}: HTTP 503")
@@ -259,7 +278,9 @@ def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
     monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
     monkeypatch.delenv("OMNIGENT_SUPERVISE_REGISTRY", raising=False)  # else run arms a real one
-    monkeypatch.setattr(omnigent_agent, "capacity", lambda: (True, ""))  # else a busy host waits
+    monkeypatch.setattr(
+        omnigent_agent, "capacity", lambda **_: (True, "")
+    )  # else a busy host waits
 
 
 def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
@@ -1070,6 +1091,7 @@ def test_stalled_server_timeout_reaches_cleanup(
     class Local(omnigent_agent.Omnigent):
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
+            self.host_id = "h"
 
         def create(self, *args: object) -> str:
             return "s0"
@@ -1206,6 +1228,7 @@ def test_stalled_error_body_reaches_cleanup(
     class Local(omnigent_agent.Omnigent):
         def __init__(self, base: str) -> None:
             self.base, self._token, self.archived = base, "synthetic", []
+            self.host_id = "h"
 
         def create(self, *args: object) -> str:
             return "s0"
@@ -1453,7 +1476,10 @@ def test_start_refuses_an_effort_for_antigravity_and_ignores_the_variables(
 @pytest.mark.parametrize(
     ("agent", "harness", "effort", "refused"),
     [
-        ("cloud", "acp:claude-cloud", "max", "applies no effort"),  # its executor drops it
+        ("cloud", "acp:claude-cloud", "ultra", "runs only low, medium, high, xhigh, max"),
+        ("cloud", "acp:claude-cloud", "max", None),
+        ("cloud", "acp:claude-cloud", "low", None),
+        ("agy", "antigravity-native", "high", "applies no effort"),
         ("claude", "", "ultra", "runs only low, medium, high, xhigh, max"),  # its launch drops it
         ("native", "claude-native", "none", "runs only low"),
         ("claude", "", "max", None),
@@ -2279,6 +2305,100 @@ def test_a_get_retries_a_server_restarting_and_a_post_does_not(
     with pytest.raises(omnigent_agent.Fail):
         og.call("POST", "/x", {})
     assert calls == ["POST"]
+
+
+def test_a_get_retries_a_name_resolution_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def urlopen(req: Request, timeout: float) -> io.BytesIO:
+        calls.append(req.get_method())
+        if len(calls) == 1:
+            raise URLError(socket.gaierror(-3, "Temporary failure in name resolution"))
+        return io.BytesIO(b'{"ok": true}')
+
+    monkeypatch.setattr(omnigent_agent, "urlopen", urlopen)
+    monkeypatch.setattr(omnigent_agent, "RETRY_SECONDS", (0, 0))
+    og = object.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://omnigent.test", "synthetic"
+    assert og.call("GET", "/x") == {"ok": True}
+    assert calls == ["GET", "GET"]
+
+
+def test_send_exits_7_when_the_post_went_out_and_the_next_read_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        reads[0] += 1
+        if og.posts and reads[0] > 1:  # the poll after the post
+            raise omnigent_agent.Fail("GET info: Temporary failure in name resolution")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.SENT_UNCONFIRMED == 7
+    err = capsys.readouterr().err
+    assert "the message was posted" in err and "`send` again is safe" in err
+    assert og.posts == 1
+    og.info = info  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 0  # the rerun finds the copy
+    assert og.posts == 1
+
+
+def test_send_with_a_report_exits_7_when_the_confirming_history_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    items = og.items
+    seen = [0]
+
+    def flaky(s: str) -> list[dict]:
+        seen[0] += 1
+        if og.posts:
+            raise omnigent_agent.Fail("GET items: ConnectionResetError")
+        return items(s)
+
+    og.items = flaky  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.SentUnconfirmed) as caught:
+        omnigent_agent.send(og, sid, "use main", tmp_path / "r.md", 0)
+    assert caught.value.code == 7
+    assert og.posts == 1
+
+
+def test_send_keeps_exit_1_when_the_post_itself_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    og.fail.add("send")
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 0
+
+
+def test_send_keeps_exit_1_when_a_read_before_the_post_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+
+    def down(s: str) -> list[dict]:
+        raise omnigent_agent.Fail("GET items: Temporary failure in name resolution")
+
+    og.items = down  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 0
+
+
+def test_a_broadcast_target_posted_but_unconfirmed_is_no_failure() -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "lead")
+    items = og.items
+    og.items = lambda s: (_ for _ in ()).throw(omnigent_agent.Fail("x")) if og.posts else items(s)  # type: ignore[method-assign]
+    assert omnigent_agent.broadcast(og, [(sid, "lead")], "hi", 0, "cos") is False
 
 
 def test_a_get_answered_404_fails_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3163,23 +3283,232 @@ def test_send_pr_delivers_to_a_session_whose_workspace_is_on_another_host(
     assert (tmp_path / "tmp" / "r.md").read_text() == "the fix report"
 
 
-def test_a_start_on_another_host_does_not_wait_on_this_host_s_load(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_start_waits_on_the_host_its_load_lands_on_a_cloud_bridge_s_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(omnigent_agent, "capacity", lambda: (False, "cpu 2% idle"))
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "cpu 2% idle"))
     monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
     og = FakeOmnigent()
-    sid, _ = omnigent_agent.start(
+    og.host_names = {"far": "far"}
+    sid, _ = omnigent_agent.start(  # this host's load is not far's, which nothing here can read
         og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=True, host_id="far"
     )
     assert sid in og.sessions
+    assert "far: load and memory not readable (" in capsys.readouterr().err
     with pytest.raises(omnigent_agent.Fail, match="host over capacity"):
         omnigent_agent.start(
             og, "claude", "u", "do Y", tmp_path / "u.md", None, 0, top_level=True, host_id="h"
         )
-    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # bridged here, run in a cloud VM
-    sid, _ = omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
-    assert sid in og.sessions
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}  # its bridge runs here, in a VM beyond
+    with pytest.raises(omnigent_agent.Fail, match="host over capacity for 0s: cpu 2% idle"):
+        omnigent_agent.start(og, "claude-cloud", "c", "do Z", tmp_path / "c.md", None, 0)
+
+
+def far_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str, **proc: str
+) -> FakeOmnigent:
+    """A FakeOmnigent run from host ``h``, whose own load is too high, beside host ``far`` called
+    ``name`` with a live session ``x1`` whose ``/proc`` files are ``proc`` (``meminfo``,
+    ``loadavg``, ``stat``)."""
+    monkeypatch.setattr(omnigent_agent, "capacity", lambda **_: (False, "cpu 1% idle"))
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
+    og = FakeOmnigent()
+    og.host = lambda n: {name: "far"}[n]  # type: ignore[method-assign]
+    og.host_names = {"far": name}
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    og.others = [{"id": "x1", "host_id": "far", "status": "idle", "updated_at": 1}]
+    og.procs = {"far": {f"/proc/{k}": v for k, v in proc.items()}}
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    return og
+
+
+def far_start(agent: str, host: str) -> list[str]:
+    return ["start", agent, "t", "b.md", "/there/repo/r.md", "--top-level", "--host", host]
+
+
+def mem(mb: int) -> str:
+    return f"MemTotal: 64000000 kB\nMemAvailable: {mb * 1024} kB\n"
+
+
+def test_a_cloud_start_waits_on_its_bridge_host_s_memory_by_its_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "cc-experiments", meminfo=mem(2000), loadavg="3.00 2 1")
+    argv = [*far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1
+    err = capsys.readouterr().err
+    assert (
+        "cc-experiments over capacity for 0s: load 3.0 (max 40), 2000 MB available (min 2500)"
+        in err
+    )
+    assert og.sessions == {}
+    og.procs["far"]["/proc/meminfo"] = mem(2500)
+    assert omnigent_agent.main(argv) == 0  # the minimum itself is room
+    og.archived = ["s0"]
+    og.procs["far"]["/proc/meminfo"] = mem(3000)
+    assert omnigent_agent.main(argv) == 0  # this host's own load is not the bridge host's
+    assert og.hosts_of == {"s0": "far", "s1": "far"}
+
+
+def test_a_host_s_row_overridden_by_its_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "cc-experiments", meminfo=mem(2000), loadavg="3.00 2 1")
+    monkeypatch.setenv("OMNIGENT_MIN_AVAILABLE_MB_CC_EXPERIMENTS", "1500")
+    argv = [*far_start("claude-cloud", "cc-experiments"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+    monkeypatch.setenv("OMNIGENT_MAX_LOAD_CC_EXPERIMENTS", "2.5")
+    assert omnigent_agent.main(argv) == 1  # load 3 over its overridden max
+
+
+def test_a_start_on_a_linux_host_waits_on_its_row_s_absolute_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "oz", meminfo=mem(9000), loadavg="10.50 9 8 3/400 7")
+    argv = [*far_start("claude", "oz"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1
+    assert "oz over capacity for 0s: load 10.5 (max 10), 9000 MB available (min 1536)" in (
+        capsys.readouterr().err
+    )
+    og.procs["far"]["/proc/loadavg"] = "10.00 9 8 3/400 7"
+    assert omnigent_agent.main(argv) == 1  # a load of 10 or more refuses
+    og.procs["far"]["/proc/loadavg"] = "9.50 9 8 3/400 7"
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+
+
+def test_a_host_without_a_row_is_judged_per_core_and_waited_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stat = "cpu  1 2 3 4\ncpu0 1 2 3 4\ncpu1 1 2 3 4\nintr 5\n"
+    og = far_host(monkeypatch, tmp_path, "box", meminfo=mem(1000), loadavg="10.0 1 1", stat=stat)
+    argv = [*far_start("claude", "box"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1
+    assert "box over capacity for 0s: load 5.0 per core (max 4), 1000 MB available (min 1536)" in (
+        capsys.readouterr().err
+    )
+    og.procs["far"]["/proc/meminfo"] = mem(2000)
+    assert omnigent_agent.main(argv) == 1  # 5 per core over 2 cores
+    og.procs["far"]["/proc/loadavg"] = "8.0 1 1"
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 60)
+    reads = iter(["9.0 1 1", "8.0 1 1"])  # over, then exactly the most per core
+    real = og.read_file
+    og.read_file = lambda sid, path: (  # type: ignore[method-assign]
+        next(reads) if path == "/proc/loadavg" else real(sid, path)
+    )
+    assert omnigent_agent.main(argv) == 0
+    assert "box over capacity, waiting: load 4.5 per core (max 4)" in capsys.readouterr().err
+
+
+def test_a_host_without_proc_starts_unchecked_saying_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "mac")  # a Mac: no /proc
+    argv = [*far_start("claude", "mac"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+    err = capsys.readouterr().err
+    assert "mac: load and memory not readable (no /proc/meminfo); starting unchecked" in err
+    og.others, og.archived = [], ["s0"]  # no live session there now
+    assert omnigent_agent.main([*argv[:2], "u", *argv[3:]]) == 0
+    assert "mac: load and memory not readable (no live session there)" in capsys.readouterr().err
+
+
+def test_another_host_is_read_through_its_newest_live_sessions_up_to_three(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    og = FakeOmnigent()
+    og.others = [
+        {"id": "old", "host_id": "far", "status": "idle", "updated_at": 1},
+        {"id": "gone", "host_id": "far", "status": "idle", "updated_at": 9, "archived": True},
+        {"id": "dead", "host_id": "far", "status": "failed", "updated_at": 9},
+        {"id": "here", "host_id": "h", "status": "idle", "updated_at": 9},
+        {"id": "a", "host_id": "far", "status": "idle", "updated_at": 5},
+        {"id": "b", "host_id": "far", "status": "running", "created_at": 4},
+        {"id": "c", "host_id": "far", "status": "idle", "updated_at": 3},
+    ]
+    files = {"/proc/meminfo": mem(4000), "/proc/loadavg": "1.0 1 1", "/proc/stat": "cpu0 1\n"}
+    tried: list[str] = []
+    broken = {"a", "b", "c"}
+
+    def read_file(sid: str, path: str) -> str:
+        tried.append(sid)
+        if sid in broken:
+            raise omnigent_agent.Fail(f"GET {path}: HTTP 502")
+        return files[path]
+
+    og.read_file = read_file  # type: ignore[method-assign]
+    assert omnigent_agent.far_capacity(og, "far", 1536, None) == (
+        None,
+        "read failed: GET /proc/meminfo: HTTP 502",
+    )
+    assert tried == ["a", "b", "c"]  # newest first, three at most, none archived, failed or here
+    broken, tried[:] = {"a"}, []
+    assert omnigent_agent.far_capacity(og, "far", 1536, None) == (
+        True,
+        "load 1.0 per core (max 4), 4000 MB available (min 1536)",
+    )
+    assert tried == ["a", "b", "b", "b"]
+    files["/proc/meminfo"] = "MemTotal: 1 kB\n"
+    assert omnigent_agent.far_capacity(og, "far", 1536, 5) == (
+        True,
+        "load 1.0 (max 5), memory not measured (min 1536)",
+    )
+    files["/proc/loadavg"] = ""
+    assert omnigent_agent.far_capacity(og, "far", 1536, 5) == (None, "/proc/loadavg unreadable")
+
+
+def test_capacity_host_judges_another_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "oz", meminfo=mem(9000), loadavg="10.50 9 8")
+    assert omnigent_agent.main(["capacity", "--host", "oz"]) == 1
+    assert capsys.readouterr().out == "oz: load 10.5 (max 10), 9000 MB available (min 1536)\n"
+    og.procs["far"]["/proc/loadavg"] = "2.0 1 1"
+    assert omnigent_agent.main(["capacity", "--host", "oz"]) == 0
+    og.procs = {}
+    assert omnigent_agent.main(["capacity", "--host", "oz"]) == 0
+    assert "oz: load and memory not readable (no /proc/meminfo)" in capsys.readouterr().out
+
+
+def test_this_host_s_row_adds_its_absolute_load_and_memory_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.undo()  # the real capacity check, on a faked host
+    monkeypatch.setattr(omnigent_agent, "POLL_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "TURN_END_SECONDS", 0)
+    monkeypatch.setattr(omnigent_agent, "CAPACITY_WAIT_SECONDS", 0)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(mem(2400))
+    monkeypatch.setattr(omnigent_agent, "MEMINFO", meminfo)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (41.3, 0.0, 0.0))
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 40.0)
+    og = FakeOmnigent()
+    og.host_names = {"h": "cc-experiments"}
+    with pytest.raises(omnigent_agent.Fail) as refused:
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    assert str(refused.value) == (
+        "cc-experiments over capacity for 0s:"
+        " cpu 40% idle (min 10), load 41.3 (max 40), 2400 MB available (min 2500)"
+    )
+    meminfo.write_text(mem(2600))
+    with pytest.raises(omnigent_agent.Fail, match="load 41.3 \\(max 40\\), 2600 MB"):
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (40.0, 0.0, 0.0))
+    with pytest.raises(omnigent_agent.Fail, match="load 40.0 \\(max 40\\)"):  # 40 or more refuses
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    monkeypatch.setattr(omnigent_agent.os, "getloadavg", lambda: (39.0, 0.0, 0.0))
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: 3.0)
+    with pytest.raises(omnigent_agent.Fail, match="cpu 3% idle"):  # idle CPU still decides
+        omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "r.md", None, 0)
+    monkeypatch.setattr(omnigent_agent, "cpu_idle", lambda: None)  # the row's load alone
+    assert omnigent_agent.capacity(min_mb=2500, max_load=40) == (
+        True,
+        "load 39.0 (max 40), 2600 MB available (min 2500)",
+    )
+    og.host_names = {}
+    og.hosts = lambda: (_ for _ in ()).throw(omnigent_agent.Fail("GET /v1/hosts: HTTP 502"))  # type: ignore[method-assign]
+    assert omnigent_agent.host_name(og, "h") == "h"
 
 
 def test_run_with_a_report_older_than_the_launch_waits_for_a_new_one(
@@ -3280,7 +3609,7 @@ def test_a_run_process_killed_mid_wait_leaves_its_failed_line_within_one_poll(
         f"import sys; sys.path.insert(0, {str(Path(__file__).parent)!r})\n"
         "import test_omnigent_agent as t\n"
         "t.omnigent_agent.Omnigent = lambda: t.FakeOmnigent(status='running')\n"
-        "t.omnigent_agent.capacity = lambda: (True, '')\n"  # its real 5 s poll stays
+        "t.omnigent_agent.capacity = lambda **_: (True, '')\n"  # its real 5 s poll stays
         "sys.exit(t.omnigent_agent.main(['run', 'claude', 't', 'b.md', 'r.md',"
         " '--confirm-seconds', '0']))\n"
     )
@@ -6975,6 +7304,82 @@ def test_a_waiting_lead_on_a_question_is_not_told_so_its_question_gets_no_answer
     assert "the supervisor's tell was not delivered: it waits on a prompt" in posted(og)[0]
 
 
+def test_a_supervisor_action_posted_but_unconfirmed_is_not_reported_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = follows(tmp_path, "a", "b", after={"b": "a"})
+    og = Leads(a=[told("brief", 60), ending("DONE: merged", 5)], b=[told("brief", 60)])
+
+    def unconfirmed(*a: object, **k: object) -> str:
+        raise omnigent_agent.SentUnconfirmed("session b: the message was posted but unconfirmed")
+
+    monkeypatch.setattr(omnigent_agent, "relay", unconfirmed)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert not any("was not delivered" in p for p in posted(og))
+
+
+def test_a_relay_queued_after_its_own_post_exits_7_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        if og.posts:
+            reads[0] += 1
+            if reads[0] == 2:  # the read that says why it is queued
+                raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.SENT_UNCONFIRMED
+    assert og.posts == 1
+
+
+def test_a_relay_queued_behind_an_earlier_copy_keeps_exit_1_when_the_status_read_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.send(sid, "[relayed by cos]\ngo")  # an earlier copy, pending
+    info = og.info
+    reads = [0]
+
+    def flaky(s: str) -> dict:
+        reads[0] += 1
+        if reads[0] == 4:  # relay's, send's, its poll's, then the one after the queued return
+            raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert reads[0] == 4 and og.posts == 1
+
+
+def test_a_send_whose_copy_was_already_there_and_whose_poll_fails_is_exit_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent(hold=10**6)
+    sid = og.create("claude", "lead")
+    og.send(sid, "[relayed by cos]\ngo")  # an earlier copy, pending
+    og.items = lambda s: (_ for _ in ()).throw(omnigent_agent.Fail("GET items: down"))  # type: ignore[method-assign]
+    info = og.info
+    calls = [0]
+
+    def flaky(s: str) -> dict:
+        calls[0] += 1
+        if calls[0] > 2:
+            raise omnigent_agent.Fail("GET info: down")
+        return info(s)
+
+    og.items = lambda s: og.sessions[s]  # type: ignore[method-assign]
+    og.info = flaky  # type: ignore[method-assign]
+    assert relay(og, sid, tmp_path, monkeypatch) == 1
+    assert og.posts == 1
+
+
 @pytest.mark.parametrize("why", ["model failed", "allowance spent"])
 def test_a_quiet_end_the_model_could_not_route_goes_to_the_chief_of_staff_not_a_nudge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, why: str
@@ -8556,6 +8961,23 @@ def test_the_supervisor_never_sends_a_cloud_child_the_file_path_lines(tmp_path: 
     assert og.retried == ["a"] and og.sent and all(str(report) not in m for m in og.sent)
 
 
+def test_the_cloud_preamble_asks_for_a_demo_line_and_the_gate_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A visible change reports its demo, and an unpushed gate pass ends the report with its record."""
+    demo = "Demo: for a user-visible change, state in the report the command you ran and its output"
+    record = "end the report with the `local-ci --record` JSON (head, tree, exit, command, env) as its last lines"
+    for held in (False, True):
+        if held:
+            monkeypatch.setenv("LOOP_DENY_LIST", str(tmp_path / "deny.txt"))
+        else:
+            monkeypatch.delenv("LOOP_DENY_LIST", raising=False)
+        brief = omnigent_agent.pr_preamble()
+        assert demo in brief and "`Demo: none`" in brief
+        assert record in brief and "`loop-gate/` ref" in brief
+        assert ("which you don't post" in brief) is held
+
+
 def test_a_cloud_worker_s_delivered_brief_freezes_its_branch_after_hand_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -8795,10 +9217,10 @@ def test_send_dedupes_against_a_remote_sessions_question_on_its_host(
     here = omnigent_agent.question_of(report)
     here.parent.mkdir(parents=True)
     here.write_text("another session's")
-    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True) == "already"
+    assert omnigent_agent.send(og, sid, "use main", report, 0, far=True)[0] == "already"
     assert og.posts == 1
     assert "tmp/loop/r.md.question" not in og.files  # answered: deleted on its host
-    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True) == "delivered"
+    assert omnigent_agent.send(og, sid, "use dev", report, 0, far=True)[0] == "delivered"
     assert here.read_text() == "another session's"
 
 
@@ -9099,3 +9521,341 @@ def test_a_worktree_s_repo_is_read_from_its_common_dir_on_any_host() -> None:
         assert omnigent_agent.origin_repo(f'[remote "origin"]\n\turl = {url}\n') == "o/r"
     upstream_only = '[remote "upstream"]\n\turl = https://github.com/x/y\n'
     assert omnigent_agent.origin_repo(upstream_only) == ""
+
+
+def running_session(age: float) -> FakeOmnigent:
+    """A fake whose only session ``k`` is running, its newest item ``age`` seconds old."""
+    og = FakeOmnigent()
+    og.create("claude", "kid")
+    og.sessions["k"] = [
+        {"id": "i1", "type": "message", "role": "user", "created_at": time.time() - age}
+    ]
+    og.info = lambda s: {  # type: ignore[method-assign]
+        "status": "running",
+        "title": "kid",
+        "workspace": "/w/kid",
+    }
+    return og
+
+
+def test_status_and_observe_call_a_running_session_stuck_only_past_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "STUCK_SECONDS", 1800)
+    key, line = omnigent_agent.observe(running_session(2 * 3600), "k", {}, baseline=True)
+    assert key == ("stuck", "i1")
+    assert line.startswith("k kid: stuck (no activity for 120 min)")
+    assert omnigent_agent.observe(running_session(1700), "k", {})[0] == ("running",)
+    assert omnigent_agent.observe(running_session(1900), "k", {})[0] == ("stuck", "i1")
+
+
+def test_an_idle_session_with_an_old_item_is_not_stuck() -> None:
+    og = running_session(10**5)
+    og.info = lambda s: {"status": "idle", "title": "kid"}  # type: ignore[method-assign]
+    assert omnigent_agent.observe(og, "k", {}, baseline=True)[0][0] == "ended"
+
+
+def test_stuck_minutes_is_none_for_a_session_that_is_not_running() -> None:
+    old = [{"id": "i1", "created_at": time.time() - 10**5}]
+    assert omnigent_agent.stuck_minutes({"status": "idle"}, old) is None
+    assert omnigent_agent.stuck_minutes({"status": "failed"}, old) is None
+    assert omnigent_agent.stuck_minutes({"status": "running"}, old) is not None
+
+
+def test_a_session_whose_items_carry_no_date_is_not_stuck() -> None:
+    og = running_session(0)
+    og.sessions["k"] = [{"id": "i1", "type": "message", "role": "assistant"}]
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+
+
+def test_watch_reports_a_session_that_goes_stuck_once() -> None:
+    og = running_session(60)
+    polls = []
+
+    def items(sid: str) -> list[dict]:
+        polls.append(sid)  # the first poll is the baseline; the item ages by the second
+        age = 60 if len(polls) < 2 else 10**5
+        return [{"id": "i1", "type": "message", "role": "user", "created_at": time.time() - age}]
+
+    og.items = items  # type: ignore[method-assign]
+    lines = omnigent_agent.watch(og, ["k"], timeout=5)
+    assert len(lines) == 1 and "stuck (no activity for" in lines[0]
+
+
+def test_follow_leaves_a_quiet_running_lead_to_its_progress_deadline() -> None:
+    og = running_session(10**5)
+    assert omnigent_agent.follow(og, "k", {}, {}, {}) == ("", ("running",))
+
+
+def test_reap_force_stops_and_archives_a_stuck_session_and_names_its_workspace() -> None:
+    og = running_session(10**5)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed
+    assert og.interrupted == ["k"] and og.archived == ["k"]
+    assert lines == ["k kid: archived (stuck); check git status in /w/kid"]
+
+
+def test_reap_force_keeps_a_running_session_with_recent_activity() -> None:
+    og = running_session(60)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.interrupted == [] and og.archived == []
+    assert lines == ["k kid: kept (running) (running with recent activity, not stuck)"]
+
+
+def test_reap_without_force_keeps_a_stuck_session() -> None:
+    og = running_session(10**5)
+    lines, _ = omnigent_agent.reap(og, ["k"])
+    assert og.archived == [] and lines == ["k kid: kept (running)"]
+
+
+def test_reap_force_reports_a_failed_stop_and_goes_on() -> None:
+    og = running_session(10**5)
+
+    def refuse(sid: str) -> None:
+        raise omnigent_agent.Fail("POST events: HTTP 503")
+
+    og.interrupt = refuse  # type: ignore[method-assign]
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert failed and og.archived == []
+    assert lines == ["k kid: finish failed: POST events: HTTP 503"]
+
+
+def test_the_real_interrupt_posts_the_interrupt_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple] = []
+    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
+    og.call = lambda m, p, b=None: calls.append((m, p, b)) or {}  # type: ignore[method-assign]
+    og.interrupt("s1")
+    assert calls == [("POST", "/v1/sessions/s1/events", {"type": "interrupt"})]
+
+
+def test_reap_force_is_a_flag_of_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    og = running_session(10**5)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    assert omnigent_agent.main(["reap", "k", "--force"]) == 0
+    assert og.archived == ["k"]
+
+
+@pytest.mark.parametrize("ages", [(10**5, 60), (60, 10**5)])
+def test_a_session_with_an_old_and_a_recent_item_is_running_and_kept_by_reap_force(
+    ages: tuple[float, float],
+) -> None:
+    og = running_session(60)
+    og.sessions["k"] = [
+        {"id": f"i{n}", "type": "message", "role": "user", "created_at": time.time() - age}
+        for n, age in enumerate(ages)
+    ]
+    assert omnigent_agent.observe(og, "k", {})[0] == ("running",)
+    lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and og.interrupted == [] and og.archived == []
+    assert lines[0].startswith("k kid: kept (running)")
+
+
+def test_check_tells_a_stuck_child_owing_a_report_once_naming_reap_force(
+    tmp_path: Path,
+) -> None:
+    og = running_session(3600)
+    og.active = lambda sid: 0.0  # type: ignore[attr-defined]
+    og.send = lambda sid, text: None  # type: ignore[method-assign]
+    said: list[str] = []
+    resumed: dict[str, float] = {}
+
+    def look() -> str:
+        return omnigent_agent.check(
+            og, "k", tmp_path / "absent", 10**6, resumed, set(), said.append
+        )[0]
+
+    assert look() == "" and look() == ""
+    assert len(said) == 1
+    assert "stuck (no activity for 60 min)" in said[0] and "reap --force k" in said[0]
+    og.sessions["k"] = [{"id": "i2", "type": "message", "role": "user", "created_at": time.time()}]
+    assert look() == "" and len(said) == 1 and "stuck:k" not in resumed
+    og.sessions["k"] = [
+        {"id": "i3", "type": "message", "role": "user", "created_at": time.time() - 7200}
+    ]
+    look()
+    assert len(said) == 2  # a new stretch is news again
+
+
+def test_check_does_not_call_a_child_stuck_while_its_own_workers_are_active(
+    tmp_path: Path,
+) -> None:
+    og = running_session(3600)
+    og.active = lambda sid: time.time() - 5  # type: ignore[attr-defined]
+    said: list[str] = []
+    omnigent_agent.check(og, "k", tmp_path / "absent", 10**6, {}, set(), said.append)
+    assert said == []
+
+
+class FarVerifierHost(FarFiles, FakeOmnigent):
+    """Hosts ``here`` (this one, ``h``) and ``mac``, where every session runs; each brief that lands
+    records which files were already there."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.there_at_brief: list[list[str]] = []
+
+    def host(self, name: str) -> str:
+        return {"here": "h", "h": "h", "mac": "mac"}[name]
+
+    def hosts(self) -> dict[str, str]:
+        return {"h": "here", "mac": "mac"}
+
+    def land(self, sid: str, text: str) -> None:
+        self.there_at_brief.append(sorted(self.files))
+        super().land(sid, text)
+
+
+def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) -> FarVerifierHost:
+    og = FarVerifierHost()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs/agents/loop.md").write_text(f"# Loop\n\n{hosts}")
+    (tmp_path / "b.md").write_text(
+        "Review PR #7 as the verifier; first `git worktree add --detach`"
+    )
+    (tmp_path / "gate.log").write_text("abc\nok\n")
+    return og
+
+
+VERIFY_FAR = ["start", "claude", "v", "b.md", "/there/repo/tmp/loop/pr7-v1.md", "--top-level"]
+VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", "roles/verifier.md"]
+VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
+
+
+def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_reports_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Its --pr names the PR it reviews, not a cloud report channel: the brief goes inline to a
+    top-level session on that host, the proof log is there before the brief, and wait reads its
+    report through the file API and writes it to tmp/loop/ here, the only file made here."""
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, mac\n")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 0
+    assert (
+        og.top_level == [True] and og.workspaces == ["/there/repo"] and og.hosts_of["s0"] == "mac"
+    )
+    brief = omnigent_agent.text_of(og.sessions["s0"][1])
+    assert brief.startswith("Work on v. Your brief:") and "git worktree add --detach" in brief
+    assert "issues/7/comments" not in brief  # no PR preamble: its report is a file there
+    assert og.there_at_brief == [["/there/repo/tmp/loop/gate.log"]]
+    assert og.files["/there/repo/tmp/loop/gate.log"] == "abc\nok\n"
+    report = "VERDICT: 0 blocker\nSATISFIED: yes\n"
+    og.files["/there/repo/tmp/loop/pr7-v1.md"] = report
+    capsys.readouterr()
+    argv = ["wait", "s0", "/there/repo/tmp/loop/pr7-v1.md", "--verdict", "--timeout", "5"]
+    assert omnigent_agent.main(argv) == 0
+    out, err = capsys.readouterr()
+    home = tmp_path / "tmp" / "loop" / "pr7-v1.md"
+    assert out.strip() == str(home) and home.read_text() == report
+    assert "tracked changes are not checked here" in err
+    made = {p for p in tmp_path.rglob("*") if ".git" not in p.parts}
+    assert made - {tmp_path / p for p in ("docs", "docs/agents", "docs/agents/loop.md")} == {
+        tmp_path / "b.md",
+        tmp_path / "gate.log",
+        tmp_path / "tmp",
+        tmp_path / "tmp/loop",
+        home,
+    }
+
+
+@pytest.mark.parametrize("host", ["mac", "h"])
+def test_a_verifier_on_a_host_loop_md_does_not_list_is_refused_with_the_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], host: str
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: box, other\n")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = host
+    assert omnigent_agent.main(argv) == 1
+    assert f"--host {host} is no verifier host loop.md lists: box, other" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_without_a_verifier_hosts_line_a_verifier_starts_on_any_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "Owner: someone\n")
+    assert omnigent_agent.main(VERIFY_FAR) == 0
+    assert og.hosts_of["s0"] == "mac"
+
+
+def test_a_lead_names_a_host_by_its_id_and_a_file_needs_another_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The line lists names; a host given by its id is checked by its name. --file is refused for
+    a session here, which reads its own worktree."""
+    og = far_verifier(tmp_path, monkeypatch, "Verifier hosts: here\n")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("mac")] = "h"
+    argv[argv.index("/there/repo")] = str(tmp_path)
+    argv[4] = str(tmp_path / "tmp/loop/pr7-v1.md")
+    assert omnigent_agent.main([*argv, "--file", "gate.log"]) == 1
+    assert "--file is for a session on another host" in capsys.readouterr().err
+    assert omnigent_agent.main(argv) == 0
+    assert og.hosts_of["s0"] == "h"
+
+
+def test_a_far_file_that_is_missing_here_or_fails_there_starts_no_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing file is refused before any session; a write the far host refuses abandons the
+    session it made, before its brief names a file that is not there."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "absent.log"]) == 1
+    assert "--file: no file at absent.log" in capsys.readouterr().err
+    assert og.sessions == {}
+
+    def refuse(sid: str, path: str, method: str = "GET", body: object = None) -> dict:
+        raise omnigent_agent.Fail("PUT: HTTP 403")
+
+    og.filesystem = refuse  # type: ignore[method-assign]
+    assert omnigent_agent.main([*VERIFY_FAR, "--file", "gate.log"]) == 1
+    assert "a --file did not reach its host: PUT: HTTP 403" in capsys.readouterr().err
+    assert og.archived == ["s0"] and og.there_at_brief == []
+
+
+def test_a_role_that_only_names_verifier_keeps_the_worker_pr_meaning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Only the verifier's role file (verifier.md) takes --pr as the PR it reviews: another role
+    whose path holds the word is a worker, refused --pr on a native agent."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    argv = [*VERIFY_FAR]
+    argv[argv.index("roles/verifier.md")] = "roles/not-a-verifier-helper.md"
+    assert omnigent_agent.main(argv) == 1
+    assert "is not a cloud agent" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A far verifier works in a worktree of its own under the clone, so a lead holding the clone
+    does not stop it; a worker there, or a verifier on this host, is still refused."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    og.others = [
+        {
+            "id": "L",
+            "title": "lead",
+            "host_id": "mac",
+            "workspace": "/there/repo",
+            "status": "idle",
+        },
+        {"id": "M", "title": "lead", "host_id": "h", "workspace": str(tmp_path), "status": "idle"},
+    ]
+    assert omnigent_agent.main(VERIFY_FAR) == 0
+    assert "the verifier works in its own worktree" in capsys.readouterr().err
+    worker = [*VERIFY_FAR]
+    worker[worker.index("roles/verifier.md")] = "roles/worker.md"
+    worker[worker.index("--pr") : worker.index("--pr") + 2] = []
+    worker[1] = "w"
+    assert omnigent_agent.main(worker) == 1
+    err = capsys.readouterr().err
+    assert "is in use on host mac by live session" in err and "L lead" in err
+    here = [*VERIFY_FAR]
+    here[here.index("mac")] = "h"
+    here[here.index("/there/repo")] = str(tmp_path)
+    here[1], here[4] = "u", str(tmp_path / "tmp/loop/pr7-v1.md")
+    assert omnigent_agent.main(here) == 1
+    err = capsys.readouterr().err
+    assert "is in use on host h by live session" in err and "M lead" in err

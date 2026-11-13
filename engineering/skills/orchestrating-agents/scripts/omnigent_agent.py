@@ -2,7 +2,7 @@
 """Start an engineering-loop agent through Omnigent and wait for its report.
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep]
-    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID] [--after SESSION]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION]] [--workspace DIR]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep]
     python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
@@ -14,7 +14,7 @@
     python3 scripts/omnigent_agent.py status <session>...
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
-    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]
+    python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force]
     python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
@@ -39,10 +39,14 @@ exit is the wake. ``send`` answers that question in the same session, also mid-t
 same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
+``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
+it is out, delivery unconfirmed, and running ``send`` again is safe, since it finds the earlier
+copy before it posts; a failure before the post stays exit 1.
 ``relay`` posts a message that owes no report (an owner's words for a lead) and returns at once:
 exit 0 once it is in the history (or a copy the session has not answered yet already is: no second
 one), 5 while the session holds it (a step, or an approval prompt, in progress), 4 when it cannot be
-delivered (archived, a failed revive, neither pending nor in the history). A session blocked only
+delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
+a later read failed (delivered, unconfirmed: run it again, it posts no second copy). A session blocked only
 on questions (``ask_user_question``) holds the message behind them too (exit 5); ``relay
 --answer`` gives it as each question's answer instead, exit 0, since its pending inputs wait on
 the answer; an approval prompt it never answers. ``relay --from <name>`` is a notice from a task
@@ -127,7 +131,10 @@ finishing it, so the supervisor posts no ``archived`` for a finish its notified 
 question, nor one given ``--keep``, which a fix round then reaches with ``send``; ``reap`` finishes each one that is done (not running, no prompt or input waiting) and keeps
 the rest, exiting 1 when a finish failed; it cannot tell a child still owing its report from a finished one, so it runs once every
 report is in. Finishing archives the session, which keeps its transcript; nothing here deletes a
-session.
+session. A session running with no new history item for ``OMNIGENT_STUCK_SECONDS`` (default 1800, longer than a foreground
+command or a heavy-slot wait) is stuck: ``status`` and ``watch`` report it once as ``stuck (no activity for N min)`` (``run``'s and ``supervise``'s look at a child owing a report says so once too, naming ``reap --force``), and
+``reap --force`` stops its turn and archives it, printing its workspace to check with ``git status`` (a dead mutation run can
+leave its patch applied); a running session with recent activity stays kept.
 
 Uses the local Omnigent server's HTTP API (the ``omnigent`` CLI has no session create/send):
 ``POST /v1/sessions`` (created empty: a child created with queued ``initial_items`` can stay idle
@@ -146,7 +153,15 @@ starts a ``--top-level`` lead on another Omnigent host, by name or id (``GET /v1
 child always runs on its parent's runner. On a host other than this one ``--workspace`` and the
 report are absolute paths there, unchecked here, the brief goes inline in the first message since
 its file would be here, and the report is written there, so follow the lead with ``watch``. With ``--pr`` it starts a cloud worker there, whose report is the file ``wait --pr``
-writes here. A session on another host waits on no capacity here. ``AGENT`` is a registered
+writes here. A verifier (a ``--role`` whose file is ``verifier.md``) takes ``--pr`` as the PR it
+reviews, not a report channel, starts on another host's clone however many sessions hold it (it
+works in a worktree of its own), and runs on another host only when the project's loop.md has no
+``Verifier hosts: <name>, <name>`` line or that line lists the host; ``--file`` writes a local
+file (a proof log, the previous report) beside its report there before its brief, and
+``wait --verdict`` copies its report to ``tmp/loop/`` here and prints that path,
+saying it left the far worktree's tracked changes unchecked, since the file API runs no git.
+``start`` waits for room on the host the new session's load lands on: ``--host``'s, else this one,
+for a cloud start too, whose bridge runs there; another host is read through a live session on it. ``AGENT`` is a registered
 agent's name or id; a name several agents hold starts the newest when their records and configs match
 apart from identity and bookkeeping (copies of one spec), else fails, listing their ids. A ``GET`` is retried on a timeout or reset; a ``POST`` never is. ``start`` refuses a
 brief with an empty backtick span (a name an unquoted heredoc ran). Every brief or message argument is a
@@ -231,6 +246,7 @@ TRANSIENT = (
     ConnectionRefusedError,
     ConnectionAbortedError,
     ssl.SSLEOFError,
+    socket.gaierror,  # name resolution on an overloaded host
 )
 TRANSIENT_HTTP = (502, 503, 504)  # a proxy or server that cannot serve right now
 # Writes Omnigent holds for the owner's approval when made as a tool call: the client refuses
@@ -399,6 +415,8 @@ LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
 # could revive, or relay could not deliver; relay left the message queued in the session
+# send or relay posted the message, then a read that confirms it failed (6 is wait-for's)
+SENT_UNCONFIRMED = 7
 # A relayed copy pending this long is queued, not landing: a step or a prompt holds it.
 QUEUED_SECONDS = 10.0
 BROADCAST_WORKERS = 8  # sessions a broadcast relays to at once
@@ -409,8 +427,20 @@ MAX_LOAD_PER_CORE = float(os.environ.get("OMNIGENT_MAX_LOAD_PER_CORE") or 4)  # 
 MIN_AVAILABLE_MB = float(os.environ.get("OMNIGENT_MIN_AVAILABLE_MB") or 1536)
 # start waits this long for room, then fails; a queue runner sets it longer
 CAPACITY_WAIT_SECONDS = float(os.environ.get("OMNIGENT_CAPACITY_WAIT_SECONDS") or 600)
+# A running session whose newest history item is older than this is stuck. A long foreground
+# command writes no item, so the default outlasts the 10-minute tool limit and the heavy-slot wait.
+STUCK_SECONDS = float(os.environ.get("OMNIGENT_STUCK_SECONDS") or 1800)
 MEMINFO = Path("/proc/meminfo")
 PROC_STAT = Path("/proc/stat")
+# Each host's limits where its hardware or its job sets its own line, keyed by Omnigent host name:
+# ``min_mb`` available memory and ``max_load`` the 1-minute load average, absolute, not per core.
+# A missing field takes the default above; OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
+# OMNIGENT_MAX_LOAD_<HOST> (the name upper-cased, ``-`` as ``_``) override one row.
+HOST_LIMITS: dict[str, dict[str, float]] = {
+    "cc-experiments": {"min_mb": 2500, "max_load": 40},  # it serves Omnigent and the managers
+    "oz": {"max_load": 10},  # its 8 threads
+}
+FAR_READS = 3  # live sessions on another host tried for its load and memory, newest first
 
 # The detach the preambles prescribe: Perl's setsid, since macOS has no setsid command.
 DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
@@ -431,6 +461,8 @@ Your checkout is a clone of the branch checked out in the workspace this session
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
 Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (GraphQL, and so `gh pr comment`, answers 403 here). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
+Demo: for a user-visible change, state in the report the command you ran and its output (or the demo skill's recording); otherwise say `Demo: none`, since a reviewer judges a visible change without checking out the branch.
+Gate record: when the passing gate was not pushed as a `loop-gate/` ref, end the report with the `local-ci --record` JSON (head, tree, exit, command, env) as its last lines, since the lead has no other proof which head the pass covers.
 Never address the owner, and never call an interactive question tool, since its prompt waits on someone who never sees it: if you need a decision the brief, the spec and the repo do not settle, put the question in the report and stop.
 Never publish a page or artifact, since it waits on a permission nobody can give here: put its content in the report.
 End each commit message with the co-author line only, with no session link, since the commit reaches a public repository.
@@ -628,6 +660,13 @@ class Undeleted(Fail):
 
 class Queued(Fail):
     code = QUEUED
+
+
+class SentUnconfirmed(Fail):
+    """The message was posted and a later read failed: it is out, delivery unconfirmed. ``send``
+    again is safe, since it finds an earlier copy before it posts."""
+
+    code = SENT_UNCONFIRMED
 
 
 def question_of(report: Path) -> Path:
@@ -1124,6 +1163,10 @@ class Omnigent:
             raise
         return out
 
+    def interrupt(self, sid: str) -> None:
+        """Stop ``sid``'s running turn, as the owner's stop does."""
+        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
+
     def archive(self, sid: str) -> None:
         """Finish ``sid``: archive it, which ends its agent process and keeps its transcript. Never
         DELETE, which erases the transcript. A sub-agent's archive leaves the runner it shares
@@ -1177,20 +1220,7 @@ class Omnigent:
             norm = os.path.realpath if here else os.path.normpath
             return norm(str(path)) == norm(workspace)
 
-        path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
-        while True:
-            page = self.call("GET", path + (f"&after={after}" if after else ""))
-            found += [
-                s
-                for s in page.get("data", [])
-                if str(s.get("host_id") or "") == host_id
-                and not s.get("archived")
-                and s.get("status") != "failed"
-                and same(s.get("workspace"))
-            ]
-            if not (page.get("has_more") and page.get("last_id")):
-                return found
-            after = str(page["last_id"])
+        return [s for s in live_sessions(self, host_id) if same(s.get("workspace"))]
 
     def children(self, sid: str) -> list[str]:
         page = self.call("GET", f"/v1/sessions/{sid}/child_sessions?limit=100")
@@ -1465,9 +1495,9 @@ def send(
     confirm_seconds: float,
     queued_after: float | None = None,
     far: bool = False,
-) -> str:
+) -> tuple[str, bool]:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
-    ``delivered``, or ``already`` when a copy had landed before. With ``queued_after`` (a relay),
+    ``delivered``, or ``already`` when a copy had landed before, and whether this call posted. With ``queued_after`` (a relay),
     ``queued`` once the copy has been pending that long instead. ``far``: the session runs on
     another host (``elsewhere``), where ``report`` and its question are.
 
@@ -1481,6 +1511,7 @@ def send(
     not replied to yet is that first copy.
     """
     text, question = brief.strip(), question_of(report) if report else None
+    posted = False  # set once this call's POST has returned
     # Read once, first: the sender of the first copy deletes the question once that copy lands,
     # on the session's host (``far``: another one), where it reads it.
     at = file_mtime(og, sid, question, far) if question else None
@@ -1519,7 +1550,7 @@ def send(
         print(f"session {sid}: this message already landed", file=sys.stderr)
         if question:
             file_unlink(og, sid, question, far)
-        return "already"
+        return "already", False
     # or it landed between the two reads
     if pending(info) or any(str(i.get("id")) not in old for i in copies(og.items(sid))):
         print(
@@ -1527,10 +1558,20 @@ def send(
         )
     else:
         send_to_confirm(og, sid, brief)
+        posted = True
     deadline, held = time.monotonic() + confirm_seconds, None
     while True:
-        info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
-        if any(str(i.get("id")) not in old for i in copies(og.items(sid))):
+        try:
+            info = og.info(sid)  # before the history: a copy leaves pending only once it has landed
+            landed = any(str(i.get("id")) not in old for i in copies(og.items(sid)))
+        except Fail as e:
+            if not posted:  # a copy already there was no post of ours: a plain failure
+                raise
+            raise SentUnconfirmed(
+                f"session {sid}: the message was posted but its delivery is unconfirmed ({e});"
+                " `send` again is safe, it finds the copy before it posts"
+            ) from e
+        if landed:
             break
         if pending(info):
             if held is None and queued_after is None:  # relay says it once it returns queued
@@ -1541,7 +1582,7 @@ def send(
                 )
             held = held or time.monotonic()
             if queued_after is not None and time.monotonic() - held >= queued_after:
-                return "queued"
+                return "queued", posted
             deadline = time.monotonic() + confirm_seconds
         elif time.monotonic() >= deadline:
             raise Gone(
@@ -1551,7 +1592,7 @@ def send(
         time.sleep(POLL_SECONDS)
     if question:  # kept until the answer lands, for the fresh run
         file_unlink(og, sid, question, far)
-    return "delivered"
+    return "delivered", posted
 
 
 def relay(
@@ -1592,9 +1633,17 @@ def relay(
         return f"session {sid}: answered its open question: {'; '.join(asks)}"
     if by and not source:
         text = f"{RELAYED.format(who=by)}\n{text}"
-    outcome = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
+    outcome, posted = send(og, sid, text, None, confirm_seconds, QUEUED_SECONDS)
     if outcome == "queued":
-        info = og.info(sid)
+        try:
+            info = og.info(sid)
+        except Fail as e:
+            if not posted:  # an earlier copy, not this call's post: a plain failure
+                raise
+            raise SentUnconfirmed(
+                f"session {sid}: the message was posted but its delivery is unconfirmed ({e});"
+                " `send` again is safe, it finds the copy before it posts"
+            ) from e
         asks = questions_of(info)
         approvals = [p for p in prompts_of(info) if p not in asks]
         held = []
@@ -1765,6 +1814,8 @@ def broadcast(
             )
         except Queued as e:
             return str(e).removeprefix(f"session {sid}: ")
+        except SentUnconfirmed as e:  # out, only unconfirmed: not a failure
+            return f"delivered, unconfirmed: {str(e).removeprefix(f'session {sid}: ')}"
         except Exception as e:  # noqa: BLE001 - one target's failure is its line, never the others'
             return f"failed: {reason(e)}"
 
@@ -1850,24 +1901,126 @@ def cpu_idle() -> float | None:
         return None
 
 
-def capacity() -> tuple[bool, str]:
+def capacity(min_mb: float | None = None, max_load: float | None = None) -> tuple[bool, str]:
     """Whether this host has room for another session, and a line saying what it carries. CPU is
     judged by idle share, not the load average, which on macOS also counts threads waiting on I/O
-    and memory and so overstates CPU use several times over; load decides only when idle cannot
-    be measured."""
-    # ponytail: this host only, the one start's config names.
+    and memory and so overstates CPU use several times over; load per core decides only when idle
+    cannot be measured. A host row's ``max_load`` (absolute) also refuses, and ``min_mb`` replaces
+    the default memory line (``host_limits``)."""
+    min_mb = MIN_AVAILABLE_MB if min_mb is None else min_mb
     idle, mb = cpu_idle(), available_mb()
-    if idle is None:
+    parts, room = [], True
+    if idle is not None:
+        parts.append(f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})")
+        room = idle >= MIN_CPU_IDLE
+    if max_load is not None:
+        load = os.getloadavg()[0]
+        parts.append(f"load {load:.1f} (max {max_load:g})")
+        room = room and load < max_load
+    elif idle is None:
         load = os.getloadavg()[0] / (os.cpu_count() or 1)
-        cpu, room = (
-            f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g})",
-            load <= MAX_LOAD_PER_CORE,
-        )
-    else:
-        cpu, room = f"cpu {idle:.0f}% idle (min {MIN_CPU_IDLE:g})", idle >= MIN_CPU_IDLE
+        parts.append(f"load {load:.1f} per core (max {MAX_LOAD_PER_CORE:g})")
+        room = load <= MAX_LOAD_PER_CORE
     memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
-    line = f"{cpu}, {memory} (min {MIN_AVAILABLE_MB:g})"
-    return room and (mb is None or mb >= MIN_AVAILABLE_MB), line
+    line = f"{', '.join(parts)}, {memory} (min {min_mb:g})"
+    return room and (mb is None or mb >= min_mb), line
+
+
+def host_limits(name: str) -> tuple[float, float | None]:
+    """Host ``name``'s ``min_mb`` and ``max_load`` (None: judged per core, or by idle CPU here):
+    its ``HOST_LIMITS`` row over the defaults, under its OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
+    OMNIGENT_MAX_LOAD_<HOST> overrides."""
+    row, key = HOST_LIMITS.get(name, {}), re.sub(r"\W", "_", name.upper())
+    min_mb = os.environ.get(f"OMNIGENT_MIN_AVAILABLE_MB_{key}") or row.get("min_mb")
+    max_load = os.environ.get(f"OMNIGENT_MAX_LOAD_{key}") or row.get("max_load")
+    return (
+        MIN_AVAILABLE_MB if min_mb is None else float(min_mb),
+        None if max_load is None else float(max_load),
+    )
+
+
+def live_sessions(og: Omnigent, host_id: str) -> list[dict]:
+    """The live sessions (not archived, not failed) on host ``host_id``, sub-agents included."""
+    path, found, after = "/v1/sessions?kind=any&limit=1000", [], ""
+    while True:
+        page = og.call("GET", path + (f"&after={after}" if after else ""))
+        found += [
+            s
+            for s in page.get("data", [])
+            if str(s.get("host_id") or "") == host_id
+            and not s.get("archived")
+            and s.get("status") != "failed"
+        ]
+        if not (page.get("has_more") and page.get("last_id")):
+            return found
+        after = str(page["last_id"])
+
+
+def far_capacity(
+    og: Omnigent, host_id: str, min_mb: float, max_load: float | None
+) -> tuple[bool | None, str]:
+    """``capacity`` for another host, read through a live session there: its ``/proc/meminfo``
+    (``MemAvailable``) and ``/proc/loadavg`` (the 1-minute load), judged by ``max_load`` when its
+    row names one, else per core over its ``/proc/stat``'s ``cpuN`` lines. None and why when it
+    can't be read: no live session, every read failing, or no ``/proc`` (a Mac)."""
+    # ponytail: a host's load and memory read through one of its sessions, since the server reads
+    # no host-level file (GET /v1/hosts/<id>/filesystem/<file> answers 404 "path is not a
+    # directory") and GET /v1/hosts carries no load or memory. Upgrade: either one, which would
+    # also give a Mac's load.
+    sessions = sorted(
+        live_sessions(og, host_id),
+        key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
+        reverse=True,
+    )
+    why = "no live session there"
+    for s in sessions[:FAR_READS]:
+        sid = str(s["id"])
+        try:
+            meminfo = og.read_file(sid, "/proc/meminfo")
+            loadavg = og.read_file(sid, "/proc/loadavg")
+            stat = "" if max_load is not None else og.read_file(sid, "/proc/stat")
+        except Gone as e:
+            return None, f"no {str(e).split(':', 1)[0]}"
+        except Fail as e:
+            why = f"read failed: {e}"
+            continue
+        found = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.MULTILINE)
+        try:
+            load = float(loadavg.split()[0])
+        except (IndexError, ValueError):
+            return None, "/proc/loadavg unreadable"
+        if max_load is not None:
+            cpu, room = f"load {load:.1f} (max {max_load:g})", load < max_load
+        else:
+            cores = len(re.findall(r"^cpu\d+\s", stat, re.MULTILINE)) or 1
+            per = load / cores
+            cpu = f"load {per:.1f} per core (max {MAX_LOAD_PER_CORE:g})"
+            room = per <= MAX_LOAD_PER_CORE
+        mb = int(found.group(1)) / 1024 if found else None
+        memory = "memory not measured" if mb is None else f"{mb:.0f} MB available"
+        return room and (mb is None or mb >= min_mb), f"{cpu}, {memory} (min {min_mb:g})"
+    return None, why
+
+
+def host_name(og: Omnigent, host_id: str) -> str:
+    """Host ``host_id``'s name, which ``HOST_LIMITS`` is keyed by; its id when unknown."""
+    try:
+        return og.hosts().get(host_id, host_id)
+    except Fail:
+        return host_id
+
+
+def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, str]:
+    """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
+    through a session on another (``far_capacity``, None when unreadable)."""
+    min_mb, max_load = host_limits(name)
+    if host_id == og.host_id:
+        return capacity(min_mb=min_mb, max_load=max_load)
+    return far_capacity(og, host_id, min_mb, max_load)
+
+
+def unchecked(name: str, why: str) -> str:
+    return f"{name}: load and memory not readable ({why}); starting unchecked"
 
 
 def taken(e: Fail) -> bool:
@@ -1884,6 +2037,7 @@ CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EFFORTS = {
     "claude": CLAUDE_EFFORTS,
     "claude-native": CLAUDE_EFFORTS,
+    CLOUD_HARNESS: CLAUDE_EFFORTS,  # passed to the server as reasoning_effort, Claude's levels
     "codex": None,
     "codex-native": None,
 }
@@ -2060,12 +2214,15 @@ def start(
     subscribe: bool = True,
     subscriber: str = "",
     pr: int | None = None,
+    files: list[Path] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
     supervisor follows it instead.
     With ``pr``, the child reports as a comment on that PR (``PR_PREAMBLE``), top-level or not. A
-    session on another host or in the cloud is not held back by this host's load."""
+    session on another host or in the cloud is not held back by this host's load. ``files`` (local
+    paths, for a session on another host) are written beside ``report`` on that host through the
+    session's file API before its brief is sent, so it finds them when it starts."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
     if permission_mode and agent != "claude" and not (agy and permission_mode == BYPASS):
@@ -2128,13 +2285,16 @@ def start(
                     " so its signature would name an effort it doesn't run"
                 )
     effort = picked
-    # its load lands there, not here: on another host, or in a cloud VM bridged from this one
-    elsewhere = harness == CLOUD_HARNESS or (bool(host_id) and host_id != og.host_id)
-    deadline = time.monotonic() + CAPACITY_WAIT_SECONDS
-    while not elsewhere and not (room := capacity())[0]:
+    # its load lands on the host --host names, else this one: a cloud start's bridge runs there too
+    target = host_id or og.host_id
+    name, deadline = host_name(og, target), time.monotonic() + CAPACITY_WAIT_SECONDS
+    while not (room := host_capacity(og, target, name))[0]:
+        if room[0] is None:
+            print(unchecked(name, room[1]), file=sys.stderr)
+            break
         if time.monotonic() >= deadline:
-            raise Fail(f"host over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
-        print(f"host over capacity, waiting: {room[1]}", file=sys.stderr)
+            raise Fail(f"{name} over capacity for {CAPACITY_WAIT_SECONDS:.0f}s: {room[1]}")
+        print(f"{name} over capacity, waiting: {room[1]}", file=sys.stderr)
         time.sleep(POLL_SECONDS * 6)
     if span := EMPTY_SPAN.search(brief):
         line = brief[: span.start()].count("\n") + 1
@@ -2181,7 +2341,14 @@ def start(
     # without a role (a lead) coordinates from a shared checkout.
     if role and harness != CLOUD_HARNESS:
         place, on = workspace or os.getcwd(), host_id or og.host_id
-        if users := og.users(place, on):
+        if reviews(role) and on != og.host_id:
+            # it fetches and works in a detached worktree of its own under the clone, never
+            # switching the clone's branch, so the leads that hold the clone keep it
+            print(
+                f"workspace {place} on host {on} may be in use: the verifier works in its own worktree",
+                file=sys.stderr,
+            )
+        elif users := og.users(place, on):
             named = ", ".join(f"{s.get('id')} {s.get('title') or ''}".rstrip() for s in users)
             raise Fail(
                 f"workspace {place} is in use on host {on} by live session {named}: give each"
@@ -2257,6 +2424,12 @@ def start(
         if by_file:
             brief_file.parent.mkdir(parents=True, exist_ok=True)
             brief_file.write_text(full)
+        try:
+            for local in files or []:  # before the brief, which names them
+                file_write(og, sid, report.parent / local.name, local.read_text(), True)
+        except Fail as e:
+            abandon(sid)
+            raise failed(f"start failed: {sid}: a --file did not reach its host: {e}") from e
         if top_level and subscribe:
             # A top-level lead has no parent to tell: the root of the starter's session tree hears
             # its turn ends and prompts instead, revived if its runner was reaped. Not the starter:
@@ -2517,6 +2690,12 @@ def wait(
             )
         time.sleep(POLL_SECONDS)
     workspace = info.get("workspace")
+    if verdict and elsewhere(og, info) and not pr:
+        # the file API reads and writes files, it runs no git: its own worktree is the verifier's
+        print(
+            f"session {sid} runs on another host: its worktree's tracked changes are not checked here",
+            file=sys.stderr,
+        )
     if workspace and not elsewhere(og, info) and not pr and not cloud:
         before = set(baseline or [])
         if left := [line for line in tracked_changes(Path(workspace)) if line not in before]:
@@ -2936,7 +3115,11 @@ def merged_since(repo: str, old: str, new: str) -> str:
 
 
 def reap(
-    og: Omnigent, sessions: list[str], parent: str | None = None, registry: Path | None = None
+    og: Omnigent,
+    sessions: list[str],
+    parent: str | None = None,
+    registry: Path | None = None,
+    force: bool = False,
 ) -> tuple[list[str], bool]:
     """Finish (``Omnigent.archive``) each finished session of ``sessions`` and, with ``parent``, of
     its sub-agents: not running, no prompt waiting and no input pending. Return a line per session
@@ -2945,13 +3128,31 @@ def reap(
     finishes first leaves ``registry``: the caller is the one the supervisor would tell.
 
     An idle child whose report is still to come looks finished here too, so reap only once the
-    reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it."""
+    reports are in; a child whose ``run`` died is re-attached with ``wait``, which finishes it.
+
+    ``force`` also finishes a stuck session (``stuck_minutes``): it stops the turn first, then
+    archives it, and names the session's workspace, since a dead run can leave a patch applied
+    there. A running session that is not stuck stays kept, and the line says so."""
     lines, failed = [], False
     for sid in dict.fromkeys(sessions + (og.children(parent) if parent else [])):
         info = og.info(sid)
         status = str(info.get("status"))
         if info.get("archived"):
             lines.append(f"{sid} {info.get('title') or ''}: already archived")
+            continue
+        if force and status in RUNNING and stuck_minutes(info, og.items(sid)) is not None:
+            arm_quietly(registry, sid)
+            try:
+                og.interrupt(sid)
+                og.archive(sid)
+            except Fail as e:
+                lines.append(f"{sid} {info.get('title') or ''}: finish failed: {e}")
+                failed = True
+                continue
+            lines.append(
+                f"{sid} {info.get('title') or ''}: archived (stuck); check git status in"
+                f" {info.get('workspace') or '(workspace unknown)'}"
+            )
             continue
         if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
             busy = (
@@ -2961,7 +3162,8 @@ def reap(
                 if status in RUNNING
                 else "input pending"
             )
-            lines.append(f"{sid} {info.get('title') or ''}: kept ({busy})")
+            note = " (running with recent activity, not stuck)" if force and busy == status else ""
+            lines.append(f"{sid} {info.get('title') or ''}: kept ({busy}){note}")
             continue
         # ponytail: a supervisor that read the registry just before this drop can still post
         # `archived` once, and a finish that then fails leaves the session unfollowed; reap again.
@@ -2974,6 +3176,16 @@ def reap(
             continue
         lines.append(f"{sid} {info.get('title') or ''}: archived ({status})")
     return lines, failed
+
+
+def stuck_minutes(info: dict, items: list[dict]) -> int | None:
+    """Whole minutes a running session has written no history item, once that passes
+    ``STUCK_SECONDS``, else None. A history with no dated item says nothing, so it is not stuck."""
+    if str(info.get("status")) not in RUNNING:
+        return None
+    dated = [float(i["created_at"]) for i in items if i.get("created_at")]
+    quiet = time.time() - max(dated, default=time.time())
+    return int(quiet // 60) if quiet > STUCK_SECONDS else None
 
 
 def observe(
@@ -3014,6 +3226,9 @@ def observe(
         or time.monotonic() - idle_since[sid][1] >= IDLE_GRACE_SECONDS
     ):
         return ("ended", str(last.get("id")) if last else ""), f"{head}: turn ended{tail}"
+    if (quiet := stuck_minutes(info, items)) is not None:
+        # keyed by the newest item, so one stuck stretch is news once and a new item ends it
+        return ("stuck", str(lid)), f"{head}: stuck (no activity for {quiet} min){tail}"
     return ("running",), f"{head}: {status}{tail}"
 
 
@@ -3198,6 +3413,22 @@ def file_write(og: Omnigent, sid: str, path: Path, text: str, far: bool) -> None
         path.write_text(text)
 
 
+def bring_home(og: Omnigent, sid: str, report: Path) -> Path:
+    """Copy a verifier's report on another host (``report``, a path there) to ``tmp/loop/`` here,
+    under its own name, and return the copy: ``approvals.py verdict`` and the next pass's previous
+    report read a local file."""
+    home = Path("tmp/loop") / report.name
+    home.parent.mkdir(parents=True, exist_ok=True)
+    home.write_text(og.read_file(sid, str(report)))
+    return home.resolve()
+
+
+def reviews(role: str | None) -> bool:
+    """Whether ``role`` is the verifier's role file (``verifier.md``): only that one reviews a PR,
+    so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
+    return bool(role) and Path(str(role)).name == "verifier.md"
+
+
 def file_unlink(og: Omnigent, sid: str, path: Path, far: bool) -> None:
     """Remove ``path`` on ``sid``'s host (``far``: another one), if it is there."""
     if not far:
@@ -3240,7 +3471,8 @@ def check(
     once when an input already waits undelivered (a resume line would queue behind it). Each of
     those is told to ``say`` at once. ``resumed`` holds when this process sent each resume line,
     since one held in ``pending_inputs`` is not in the history yet; ``unsent`` the revived sessions
-    whose revive line did not go out, sent again at their next look; ``ended`` when each session
+    whose revive line did not go out, sent again at their next look; a stuck session (``stuck_minutes``)
+    is told to ``say`` once, naming ``reap --force``, and its mark in ``resumed`` ends with its stretch; ``ended`` when each session
     was first seen out of its turn (``settled``), across looks.
     """
     # ponytail: compares the server's item clock with local time and file times, as send does; a
@@ -3305,6 +3537,13 @@ def check(
         og.send(sid, revive_line(report, briefs_for(report, briefs or [], far), cloud))
         unsent.discard(sid)
         return "", since
+    stuck = f"stuck:{sid}"  # told once per stuck stretch; a new history item ends it
+    if (minutes := stuck_minutes(info, items)) is None:
+        resumed.pop(stuck, None)
+    elif stuck not in resumed and time.time() - og.active(sid) > STUCK_SECONDS:
+        # a session waiting on its own worker writes nothing meanwhile, so its subtree counts too
+        say(f"{head}: stuck (no activity for {minutes} min); `reap --force {sid}` closes it")
+        resumed[stuck] = time.time()
     resent = max(resent, resumed.get(sid, 0.0))
     last = max((float(i.get("created_at") or 0) for i in items), default=0.0)
     quiet = time.time() - max(last, resent)
@@ -3369,6 +3608,8 @@ def follow(
     ``holding`` the end not yet held; all are the caller's across looks.
     """
     key, line = observe(og, sid, idle_since)
+    if key[0] == "stuck":  # a followed lead has its progress deadline, which says this already
+        key = ("running",)
     if key[0] == "archived":
         return line, key
     if key[0] != "ended":
@@ -4115,8 +4356,8 @@ def supervise_registry(
                 if prompts_of(og.info(sid)):  # the text would wait unread behind it
                     raise Fail("it waits on a prompt, which the supervisor never answers")
                 relay(og, sid, text, ACTION_SECONDS)
-            except Queued:
-                pass  # held by the session's current step: it lands when the step ends
+            except (Queued, SentUnconfirmed):
+                pass  # held by the session's current step, or out and unconfirmed: it landed or lands
             except Exception as e:  # noqa: BLE001 - never fatal; the chief of staff is told
                 intent["status"] = "failed"
                 head = f"{sid} {state['leads'].get(sid, {}).get('title') or ''}".rstrip()
@@ -4803,8 +5044,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         p.add_argument(
             "--host",
-            help="with --top-level, the Omnigent host (name or id) to start the lead, or the --pr"
-            " cloud worker, on",
+            help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
+            " cloud worker, or a verifier (one loop.md's Verifier hosts: line lists) on",
+        )
+        p.add_argument(
+            "--file",
+            type=Path,
+            action="append",
+            default=[],
+            help="with --host on another host, a local file (a proof log, the previous report)"
+            " written beside the report there before the brief",
         )
         p.add_argument(
             "--after",
@@ -4857,7 +5106,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", action="append", default=[], metavar="NAME", help="only this host")
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
-    sub.add_parser("capacity", description="exit 0 when this host has room for another session")
+    p = sub.add_parser(
+        "capacity", description="exit 0 when this host, or --host, has room for another session"
+    )
+    p.add_argument(
+        "--host", metavar="NAME|ID", help="judge that host, read through a session there"
+    )
     sub.add_parser(
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
@@ -4890,6 +5144,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("reap")
     p.add_argument("sessions", nargs="*")
     p.add_argument("--children", metavar="PARENT", help="also reap this session's sub-agents")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="also stop and finish a session that is running but stuck (no item past OMNIGENT_STUCK_SECONDS)",
+    )
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -5051,11 +5310,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.notify:
                 notify(outcome)
             return code
-        if args.cmd == "capacity":
+        if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
             print(line)
             return 0 if ok else 1
         og = Omnigent(args.server) if args.server else Omnigent()
+        if args.cmd == "capacity":
+            target = og.host(args.host)
+            name = host_name(og, target)
+            ok, line = host_capacity(og, target, name)
+            print(unchecked(name, line) if ok is None else f"{name}: {line}")
+            return 1 if ok is False else 0
         if args.cmd in ("relay", "send", "report"):
             sid = args.session = og.session_id(args.session)
         if args.cmd == "status":
@@ -5139,7 +5404,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "reap":
             if not args.sessions and not args.children:
                 raise Fail("reap needs a session or --children <parent>")
-            lines, failed = reap(og, args.sessions, args.children, args.registry)
+            lines, failed = reap(og, args.sessions, args.children, args.registry, args.force)
             print("\n".join(lines))
             return 1 if failed else 0
         if args.cmd == "supervise":
@@ -5164,12 +5429,25 @@ def main(argv: list[str] | None = None) -> int:
             # a path on the session's host, which this one neither resolves nor reads (as start's)
             far = not args.pr and elsewhere(og, og.info(args.session))
             report = args.report if far else args.report.resolve()
-            print(wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr))
+            got = wait(og, args.session, report, args.timeout, args.verdict, pr=args.pr)
+            print(bring_home(og, args.session, report) if far and args.verdict else got)
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             if not args.keep:
                 archive_delivered(og, args.session)
             return 0
+        # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
+        # writes its report file as any child does (on another host, there, read back by wait).
+        verifier = args.cmd in ("run", "start") and reviews(args.role)
+        if verifier and args.pr and og.harness(args.agent) != CLOUD_HARNESS:
+            args.pr = None
+        if verifier and args.host:
+            allowed = [h.strip() for h in project_line(os.getcwd(), "Verifier hosts").split(",")]
+            allowed = [h for h in allowed if h]
+            if allowed and not {args.host, og.hosts().get(og.host(args.host), "")} & set(allowed):
+                raise Fail(
+                    f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
+                )
         # a follow-up's paths are its session's host's, wherever that runs
         session = og.info(args.session) if args.cmd == "send" else {}
         host = og.host(args.host) if getattr(args, "host", None) else og.host_id
@@ -5264,7 +5542,10 @@ def main(argv: list[str] | None = None) -> int:
                 " worker, or drop --pr for one on this host"
             )
         brief = text_or_file(args.brief)[0]
-        verifier = bool(args.role and "verifier" in args.role)
+        if args.file and not remote:
+            raise Fail("--file is for a session on another host: one here reads its own worktree")
+        if missing := [str(f) for f in args.file if not f.is_file()]:
+            raise Fail(f"--file: no file at {', '.join(missing)}")
         if args.author == args.agent and verifier and not args.same_family:
             raise Fail(
                 f"{args.agent} would verify {args.author}-written code; pass --same-family to allow it"
@@ -5328,6 +5609,7 @@ def main(argv: list[str] | None = None) -> int:
                 subscribe=not (registry and args.top_level and not args.pr),
                 subscriber=lead,
                 pr=args.pr,
+                files=args.file,
             )
             survivors.extend(abandoned)
             # a supervisor reads the report file, which for --pr only wait writes: it would revive

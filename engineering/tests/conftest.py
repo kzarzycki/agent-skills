@@ -17,6 +17,8 @@ def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
         "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
         "LOOP_HEAVY_LOCK",
         "OMNIGENT_PERMISSION_MODE",
+        # a cloud session's marker: land refuses there without a landing key, so tests run as a host's
+        "CLAUDE_CODE_REMOTE",
         # the host's defaults for a child's model and effort
         *(v for v in os.environ if v.startswith(("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_"))),
     ):
