@@ -84,7 +84,8 @@ def seed_home() -> Path:
 
 
 def run(*cmd: str, check: bool = True, **kw) -> subprocess.CompletedProcess:
-    done = subprocess.run(cmd, capture_output=True, text=True, check=False, **kw)
+    # errors=replace: a file name that is no UTF-8 must show in a status, not fail the read
+    done = subprocess.run(cmd, capture_output=True, text=True, errors="replace", check=False, **kw)
     if check and done.returncode:
         raise Refused(
             f"`{' '.join(cmd)}` exited {done.returncode}: {(done.stderr or done.stdout).strip()[-600:]}"

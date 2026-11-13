@@ -454,3 +454,8 @@ def test_a_return_that_fails_without_a_word_is_still_reported(
     assert "exited 137" in capsys.readouterr().err
     assert ("cmd" in seen) is not before_codex
     assert git(work, "rev-parse", "HEAD") == head
+
+
+def test_output_that_is_no_utf8_is_shown_not_a_failure() -> None:
+    """A verifier can leave a file whose name is no UTF-8; the status that names it must still be read."""
+    assert cv.run("printf", r"?? caf\351.txt").stdout == "?? caf\ufffd.txt"
