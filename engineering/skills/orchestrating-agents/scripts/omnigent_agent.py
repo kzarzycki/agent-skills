@@ -385,10 +385,14 @@ WAIT = re.compile(
 )
 # Else any wait it names after "waiting on"/"waits for" ("waiting on deployment", a child's session
 # id "waiting on ef38cdf6"): that word. Not after a bare "on"/"for", so "STILL WORKING: on it"
-# names none and "verifier pass 2 on 188a4278" (a commit) stays the verifier's.
+# names none and "verifier pass 2 on 188a4278" (a commit) stays the verifier's. A PR or issue
+# reference there ("#916", "owner/repo#916", either as a markdown link's text "[#916](url)") is that
+# reference, since agents told to link what they name write the link form on every turn (#919).
+REF = r"(?:[\w.-]+/[\w.-]+)?#\d+"
 NAMED = re.compile(
     r"STILL WORKING\b.*?\b(?i:wait(?:s|ing)?\s+(?:on|for)\s+(?:(?:the|an?|your|my|our|their|its)\s+)?`?)"
-    r"(?!(?i:it|this|that|these|those|them|me|you|the|an?|your|my|our|their|its)\b)([\w'-]+)",
+    rf"(?!(?i:it|this|that|these|those|them|me|you|the|an?|your|my|our|their|its)\b)"
+    rf"(?:\[(?={REF}\]))?({REF}|[\w'-]+)",
     re.DOTALL,
 )
 # What a report keeps for routing (``report_head``): an ending line, not one quoted in a code

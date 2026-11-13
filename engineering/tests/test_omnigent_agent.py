@@ -10586,3 +10586,16 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     assert omnigent_agent.main(here) == 1
     err = capsys.readouterr().err
     assert "is in use on host h by live session" in err and "M lead" in err
+
+
+# --- a wait on a PR or issue reference is a named wait (#919) ---
+
+
+def test_a_pr_or_issue_reference_after_waiting_on_is_a_named_wait() -> None:
+    """`#N`, `owner/repo#N`, or either as a markdown link's text: the wait is that reference."""
+    wait_of = omnigent_agent.wait_of
+    assert wait_of("STILL WORKING: waiting on #916 and #908") == "#916"
+    assert wait_of("STILL WORKING: waiting on [#916](https://github.com/o/r/pull/916)") == "#916"
+    assert wait_of("STILL WORKING: waiting on [owner/repo#12](url)") == "owner/repo#12"
+    assert wait_of("STILL WORKING: this waits for owner/repo#12") == "owner/repo#12"
+    assert wait_of("STILL WORKING: on it") == "unknown"
