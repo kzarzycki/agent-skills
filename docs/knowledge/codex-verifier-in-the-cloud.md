@@ -199,7 +199,7 @@ One kept cloud session in the same environment. The carrier started `codex login
 
 ## Still open
 
-1. **Keeping the login: settled for route 2.** `cloud_verifier.py seed` (#832) keeps a login of its own on a host, refreshes it there, and stores a copy without the refresh token in the environment, so no VM can replace the login and an older copy stays valid until its expiry. The environment then holds a ChatGPT access token, which the owner accepted for their own repositories.
+1. **Keeping the login: settled for route 2.** `cloud_verifier.py seed` (#832) keeps a login of its own on a host, refreshes it there, and stores a copy without the refresh token in the environment, so no VM can replace the login and an older copy stays valid until its expiry. The environment then holds a ChatGPT access token, which a project accepts when it adds the `Cloud verifier:` line.
 2. **The carrier's cost.** How much Claude quota a carrier session spends on a full verifier pass was not measured.
 3. **A verifier pass on route 1b.** The probe showed every piece a pass needs, and no pass with a real verifier brief has run on a Codex Cloud thread. A bridge with `start`, `turn`, `exec` and `report` verbs, and one pass through it on a real PR, would settle whether it replaces route 2.
 4. **Route 1b's lifetime.** How long an idle VM runs before it is saved, whether a resumed one has its Docker images and running services, and what a pass costs in weekly quota.
