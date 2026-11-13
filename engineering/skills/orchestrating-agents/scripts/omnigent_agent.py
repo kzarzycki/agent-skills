@@ -5314,8 +5314,9 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
 
 
 def pack_behind(script: Path | str) -> str | None:
-    """One line, or None: how far the checkout holding ``script`` is behind its upstream's last fetched tip, when
-    ``script`` itself differs there. Never fetches, so it stays fast and offline-safe; a checkout with no upstream,
+    """One line, or None: how many commits its upstream's last fetched tip holds that the checkout lacks and that
+    changed ``script``, counted since the merge base, so a local commit to it, or upstream changes elsewhere, say
+    nothing. Never fetches, so it stays fast and offline-safe; a checkout with no upstream,
     one not behind, or one whose script is unchanged upstream is None. A short copy of this lives in
     engineering-loop's approvals.py (`pack_behind`), since skills install separately and neither may import
     the other: change both together."""
@@ -5330,25 +5331,50 @@ def pack_behind(script: Path | str) -> str | None:
             return None
         return done.stdout.strip() if done.returncode == 0 else None
 
-    behind = ask("rev-list", "--count", "HEAD..@{upstream}")
-    if not behind or not behind.isdigit() or int(behind) == 0:
+    behind = ask("rev-list", "--count", "HEAD..@{upstream}", "--", str(here))
+    if behind is None or int(behind) == 0:
         return None
-    if ask("diff", "--name-only", "HEAD", "@{upstream}", "--", str(here)) in (None, ""):
-        return None
-    return f"{here.name}: this checkout is {behind} commits behind its upstream and the script changed there: run `git pull`"
+    return (
+        f"{here.name}: this checkout is behind its upstream, where {behind} commit(s) changed this script: "
+        "run `git pull`"
+    )
 
 
 def refuses_stale() -> bool:
-    """Whether the project's gatekeeper.md or loop.md (``docs/agents/``, at the root of the current checkout) holds a
-    ``pack_staleness: refuse`` line, which approvals.py parses as YAML; a line match is enough here."""
+    """Whether the project's settings block sets ``pack_staleness: refuse`` under its ``loop`` mapping: the first fenced
+    ``yaml`` block under ``## Policy`` of ``docs/agents/gatekeeper.md``, else under ``## Settings`` of ``loop.md``, the
+    file approvals.py reads. A small reader of that one block, with no YAML dependency, so an example elsewhere in the
+    Markdown, or in another section or mapping, is never read as the setting."""
     root = checkout_root(os.getcwd())
-    for name in ("gatekeeper.md", "loop.md"):
+    if not root:
+        return False
+    for name, heading in (("gatekeeper.md", "Policy"), ("loop.md", "Settings")):
         try:
-            text = (Path(root) / "docs" / "agents" / name).read_text() if root else ""
+            text = (Path(root) / "docs" / "agents" / name).read_text()
         except OSError:
             continue
-        if re.search(r"^[ \t]+pack_staleness:[ \t]*refuse[ \t]*(#.*)?$", text, re.MULTILINE):
-            return True
+        under = re.search(rf"^## {heading}[ \t]*\n(.*?)(?=^## |\Z)", text, re.DOTALL | re.MULTILINE)
+        fenced = re.search(
+            r"^```yaml[ \t]*\n(.*?)^```[ \t]*$",
+            under.group(1) if under else "",
+            re.DOTALL | re.MULTILINE,
+        )
+        if not fenced:
+            continue  # no block here: approvals.py reads the next file's
+        inside, child = False, None
+        for line in fenced.group(1).splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent == 0:
+                inside, child = re.match(r"loop:[ \t]*(#.*)?$", line) is not None, None
+            elif inside:
+                child = indent if child is None else child
+                if indent == child and re.match(
+                    r"pack_staleness:[ \t]*refuse[ \t]*(#.*)?$", line.lstrip()
+                ):
+                    return True
+        return False  # the block approvals.py reads, whether or not it sets the key
     return False
 
 

@@ -5793,8 +5793,9 @@ def leave_own_environment() -> None:
 
 
 def pack_behind(script: Path | str) -> str | None:
-    """One line, or None: how far the checkout holding ``script`` is behind its upstream's last fetched tip, when
-    ``script`` itself differs there. Never fetches, so it stays fast and offline-safe; a checkout with no upstream,
+    """One line, or None: how many commits its upstream's last fetched tip holds that the checkout lacks and that
+    changed ``script``, counted since the merge base, so a local commit to it, or upstream changes elsewhere, say
+    nothing. Never fetches, so it stays fast and offline-safe; a checkout with no upstream,
     one not behind, or one whose script is unchanged upstream is None. A short copy of this lives in
     orchestrating-agents' omnigent_agent.py (`pack_behind`), since skills install separately and neither may import
     the other: change both together."""
@@ -5809,12 +5810,13 @@ def pack_behind(script: Path | str) -> str | None:
             return None
         return done.stdout.strip() if done.returncode == 0 else None
 
-    behind = ask("rev-list", "--count", "HEAD..@{upstream}")
-    if not behind or not behind.isdigit() or int(behind) == 0:
+    behind = ask("rev-list", "--count", "HEAD..@{upstream}", "--", str(here))
+    if behind is None or int(behind) == 0:
         return None
-    if ask("diff", "--name-only", "HEAD", "@{upstream}", "--", str(here)) in (None, ""):
-        return None
-    return f"{here.name}: this checkout is {behind} commits behind its upstream and the script changed there: run `git pull`"
+    return (
+        f"{here.name}: this checkout is behind its upstream, where {behind} commit(s) changed this script: "
+        "run `git pull`"
+    )
 
 
 def refuses_stale() -> bool:

@@ -20,6 +20,7 @@ from approvals_harness import (
     refs,  # noqa: F401
     required,  # noqa: F401
 )
+from test_approvals import REPORT
 
 SCRIPT = "scripts/tool.py"
 
@@ -51,7 +52,7 @@ def test_behind_with_the_script_changed_warns(clone: tuple[Path, Path]) -> None:
     commit(origin, "other.txt", "x\n")
     fetched(origin, work)
     line = approvals.pack_behind(work / SCRIPT)
-    assert line is not None and "2 commits behind" in line and "git pull" in line
+    assert line is not None and "1 commit(s) changed this script" in line and "git pull" in line
 
 
 def test_behind_with_the_script_unchanged_is_silent(clone: tuple[Path, Path]) -> None:
@@ -96,3 +97,47 @@ def test_main_warns_then_refuses(
     monkeypatch.setattr(approvals, "refuses_stale", lambda: True)
     assert approvals.main(["report", "nonexistent.md"]) == 1
     assert "git pull" in capsys.readouterr().err
+
+
+def test_a_local_commit_to_the_script_with_upstream_moving_elsewhere_is_silent(
+    clone: tuple[Path, Path],
+) -> None:
+    origin, work = clone
+    commit(work, SCRIPT, "local edit\n")
+    commit(origin, "other.txt", "x\n")
+    fetched(origin, work)
+    assert approvals.pack_behind(work / SCRIPT) is None
+
+
+def test_a_local_commit_to_the_script_with_nothing_new_upstream_is_silent(
+    clone: tuple[Path, Path],
+) -> None:
+    _, work = clone
+    commit(work, SCRIPT, "local edit\n")
+    assert approvals.pack_behind(work / SCRIPT) is None
+
+
+def test_a_probe_that_fails_says_nothing(
+    clone: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, work = clone
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise OSError("no git")
+
+    monkeypatch.setattr(approvals.subprocess, "run", broken)
+    assert approvals.pack_behind(work / SCRIPT) is None
+
+
+def test_the_refusal_exits_non_zero_only_when_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On a command that otherwise exits 0 (`report` of a finished report), so only the refusal can fail it."""
+    report = tmp_path / "report.md"
+    report.write_text(REPORT)
+    monkeypatch.setattr(approvals, "pack_behind", lambda _: "tool.py: behind: run `git pull`")
+    monkeypatch.setattr(approvals, "refuses_stale", lambda: False)
+    assert approvals.main(["report", str(report)]) == 0
+    assert "git pull" in capsys.readouterr().err
+    monkeypatch.setattr(approvals, "refuses_stale", lambda: True)
+    assert approvals.main(["report", str(report)]) == 1
