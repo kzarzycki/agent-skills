@@ -10586,3 +10586,45 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     assert omnigent_agent.main(here) == 1
     err = capsys.readouterr().err
     assert "is in use on host h by live session" in err and "M lead" in err
+
+
+def test_supervise_install_writes_a_restarting_service_per_registry(tmp_path: Path) -> None:
+    """The unit and plist run the supervise command less --install and --log, restart it and
+    log to the file; each registry gets its own name. Neither systemctl nor launchctl runs."""
+    one, two = tmp_path / "a.registry", tmp_path / "b.registry"
+    log = tmp_path / "supervise.log"
+    argv = omnigent_agent.service_argv(
+        [
+            "supervise",
+            "--registry",
+            str(one),
+            "--notify",
+            "S",
+            "--install",
+            "--log",
+            str(log),
+            "X=r.md",
+        ],
+        ["X=r.md"],
+    )
+    assert argv[2:] == ["supervise", "--registry", str(one), "--notify", "S"]
+    name = omnigent_agent.service_name(one)
+    env = {"PATH": "/bin", "OMNIGENT_PROJECT": "p"}
+    unit = omnigent_agent.systemd_unit(argv, log, name, env, tmp_path)
+    exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+    assert f'"{one}" "--notify" "S"' in exec_start and "--install" not in exec_start
+    assert "--log" not in exec_start and "X=r.md" not in exec_start
+    assert "Restart=always" in unit and f"StandardOutput=append:{log}" in unit
+    assert f"StandardError=append:{log}" in unit and 'Environment="PATH=/bin"' in unit
+    plist = omnigent_agent.launchd_plist(
+        argv, log, omnigent_agent.service_label(one), env, tmp_path
+    )
+    assert plist["Label"] == "omnigent.supervise." + name.rsplit("-", 1)[1]
+    assert plist["ProgramArguments"] == argv and plist["KeepAlive"] and plist["RunAtLoad"]
+    assert plist["StandardOutPath"] == plist["StandardErrorPath"] == str(log)
+    assert plist["EnvironmentVariables"] == env
+    assert name.startswith("omnigent-supervise-") and name != omnigent_agent.service_name(two)
+    assert omnigent_agent.service_name(tmp_path / "x" / ".." / "a.registry") == name
+    assert "OMNIGENT_SESSION_ID" not in omnigent_agent.service_env(
+        {"OMNIGENT_SESSION_ID": "s", "PATH": "/bin", "HOME": "/h"}
+    )

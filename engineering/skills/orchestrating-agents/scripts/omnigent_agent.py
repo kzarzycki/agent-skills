@@ -18,6 +18,7 @@
     python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
+    python3 scripts/omnigent_agent.py supervise --registry <file> ... --install --log <file> | --uninstall
 
 ``run`` is ``start`` then ``wait`` in one process: exit 0 prints the report path (a verifier's
 only once it has its ``SATISFIED:`` line; ``send`` and ``wait`` take ``--verdict`` for that); exit 3 prints the
@@ -120,6 +121,15 @@ what its rules can't settle, and posts what needs the notified session or the ow
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
 minutes; ``--fyi post`` posts every line as without it too, ``--decisions`` names the owner's
 standing decisions for the small model. Without it, it writes none of these and posts every line.
+A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
+a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
+``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
+``omnigent.supervise.<hash>`` with ``KeepAlive`` on macOS; the hash is of the registry's resolved
+path, so each registry has one and installing again replaces it), carrying over ``PATH``,
+``RUNNER_SERVER_URL`` and the ``OMNIGENT_*`` settings but not the installing session's ids, appending
+its output to the log, then enables and starts it. Starting at boot without a login needs systemd
+lingering, which it reports and leaves to the owner. ``--uninstall`` with the same registry stops and
+removes it.
 ``run``, ``start`` and ``send`` arm the registry given by ``--registry``, else
 ``$OMNIGENT_SUPERVISE_REGISTRY``, once their message is in the history (``start`` with its brief
 file, ``send`` appending its message file, each marking a verifier's line as ``wait`` would
@@ -181,7 +191,9 @@ import hashlib
 import http.client
 import json
 import os
+import plistlib
 import posixpath
+import pwd
 import re
 import shlex
 import shutil
@@ -5308,6 +5320,158 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
 
 
+# Variables naming the session a command runs in: a service outlives that session, so it gets none.
+SESSION_VARIABLES = (
+    "OMNIGENT_SESSION_ID",
+    "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
+    "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
+)
+
+
+def service_name(registry: Path) -> str:
+    """The unit name for a registry, from its resolved path: one service per registry, so
+    installing again for the same one replaces it."""
+    digest = hashlib.sha1(str(registry.resolve()).encode()).hexdigest()[:8]
+    return f"omnigent-supervise-{digest}"
+
+
+def service_label(registry: Path) -> str:
+    """The launchd label for a registry, the same hash as ``service_name``."""
+    return "omnigent.supervise." + service_name(registry).rsplit("-", 1)[1]
+
+
+def service_argv(argv: list[str], owed: tuple[str, ...] | list[str] = ()) -> list[str]:
+    """The command a supervise service runs: this interpreter and script with ``argv`` less
+    ``--install``, ``--uninstall``, ``--log`` and the ``<session>=<report>`` pairs (the install
+    arms those in the registry, as a running supervisor does, so a restart reposts none)."""
+    kept, skip = [], False
+    for arg in argv:
+        if skip:
+            skip = False
+        elif arg in ("--install", "--uninstall") or arg.startswith("--log="):
+            pass
+        elif arg == "--log":
+            skip = True
+        elif arg not in owed:
+            kept.append(arg)
+    return [sys.executable, str(Path(__file__).resolve()), *kept]
+
+
+def service_env(env: dict[str, str]) -> dict[str, str]:
+    """What a service would lack from the install-time environment: ``PATH`` (to find
+    ``omnigent``, ``gh`` and ``claude``), ``RUNNER_SERVER_URL`` and the ``OMNIGENT_*`` settings,
+    less the ones naming the installing session."""
+    return {
+        k: v
+        for k, v in sorted(env.items())
+        if (k in ("PATH", "RUNNER_SERVER_URL") or k.startswith("OMNIGENT_"))
+        and k not in SESSION_VARIABLES
+    }
+
+
+def _systemd_quote(text: str) -> str:
+    """One word for a unit file: double-quoted, ``%`` and ``$`` escaped from expansion."""
+    text = text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{text}"'
+
+
+def systemd_unit(argv: list[str], log: Path, name: str, env: dict[str, str], cwd: Path) -> str:
+    """The systemd user unit running ``argv`` for ever, appending its output to ``log``."""
+    log_path = str(log).replace("%", "%%")
+    lines = [
+        "[Unit]",
+        f"Description=Omnigent supervisor {name}",
+        "",
+        "[Service]",
+        "ExecStart=" + " ".join(_systemd_quote(a).replace("$", "$$") for a in argv),
+        f"WorkingDirectory={_systemd_quote(str(cwd))}",
+        *(f"Environment={_systemd_quote(f'{k}={v}')}" for k, v in env.items()),
+        "Restart=always",
+        "RestartSec=5",
+        f"StandardOutput=append:{log_path}",
+        f"StandardError=append:{log_path}",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def launchd_plist(argv: list[str], log: Path, label: str, env: dict[str, str], cwd: Path) -> dict:
+    """The launchd agent running ``argv`` for ever, writing its output to ``log``."""
+    return {
+        "Label": label,
+        "ProgramArguments": list(argv),
+        "WorkingDirectory": str(cwd),
+        "EnvironmentVariables": dict(env),
+        "KeepAlive": True,
+        "RunAtLoad": True,
+        "StandardOutPath": str(log),
+        "StandardErrorPath": str(log),
+    }
+
+
+def _service_call(cmd: list[str], check: bool = True) -> str:
+    """Run one service-manager command; its stdout, or ``Fail`` with its stderr when ``check``."""
+    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if check and out.returncode:
+        raise Fail(f"{' '.join(cmd)} exited {out.returncode}: {out.stderr.strip()[-300:]}")
+    return out.stdout.strip()
+
+
+def install_service(argv: list[str], log: Path, registry: Path) -> None:
+    """Write the user service running ``argv`` (systemd on Linux, launchd on macOS), then
+    enable and start it, replacing the running one for the same registry."""
+    env, cwd, log = service_env(dict(os.environ)), Path.cwd(), log.resolve()
+    log.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "darwin":
+        label = service_label(registry)
+        plist = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        with plist.open("wb") as f:
+            plistlib.dump(launchd_plist(argv, log, label, env, cwd), f)
+        domain = f"gui/{os.getuid()}"
+        _service_call(["launchctl", "bootout", f"{domain}/{label}"], check=False)
+        _service_call(["launchctl", "bootstrap", domain, str(plist)])
+        print(f"installed and started {label}: {plist}, logging to {log}")
+        return
+    if not sys.platform.startswith("linux"):
+        raise Fail(f"supervise --install knows systemd and launchd, not {sys.platform}")
+    name = service_name(registry)
+    unit = Path.home() / ".config/systemd/user" / f"{name}.service"
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(systemd_unit(argv, log, name, env, cwd))
+    _service_call(["systemctl", "--user", "daemon-reload"])
+    _service_call(["systemctl", "--user", "enable", name])
+    _service_call(["systemctl", "--user", "restart", name])  # starts it, or restarts a re-install
+    user = pwd.getpwuid(os.getuid()).pw_name
+    linger = _service_call(["loginctl", "show-user", user, "-p", "Linger"], check=False)
+    print(f"installed and started {name}: {unit}, logging to {log}")
+    print(
+        f"{linger or 'Linger=unknown'}: starting at boot without a login needs lingering"
+        f" (`loginctl enable-linger {user}`), which the owner enables"
+    )
+
+
+def uninstall_service(registry: Path) -> None:
+    """Stop, disable and remove the registry's user service."""
+    if sys.platform == "darwin":
+        label = service_label(registry)
+        plist = Path.home() / "Library/LaunchAgents" / f"{label}.plist"
+        _service_call(["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], check=False)
+        plist.unlink(missing_ok=True)
+        print(f"removed {label}")
+        return
+    if not sys.platform.startswith("linux"):
+        raise Fail(f"supervise --uninstall knows systemd and launchd, not {sys.platform}")
+    name = service_name(registry)
+    _service_call(["systemctl", "--user", "disable", "--now", name], check=False)
+    (Path.home() / ".config/systemd/user" / f"{name}.service").unlink(missing_ok=True)
+    _service_call(["systemctl", "--user", "daemon-reload"])
+    print(f"removed {name}")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -5532,6 +5696,21 @@ def main(argv: list[str] | None = None) -> int:
         default=1800.0,
         help="no history item for this long: one resume line, then given up (default 1800)",
     )
+    service = p.add_mutually_exclusive_group()
+    service.add_argument(
+        "--install",
+        action="store_true",
+        help="with --registry and --log, install this command as a user service (systemd on"
+        " Linux, launchd on macOS) that restarts it and survives a reboot, then start it",
+    )
+    service.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="with --registry, stop and remove the user service --install wrote for it",
+    )
+    p.add_argument(
+        "--log", type=Path, help="with --install, the file the service appends its output to"
+    )
     p = sub.add_parser("wait")
     p.add_argument("session")
     p.add_argument("report", type=Path)
@@ -5615,6 +5794,26 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {s: signal.signal(s, interrupt) for s in stops} if launches else {}
     try:
         owed = {s: r.resolve() for s, r in map(pair, getattr(args, "owed", []))}
+        if args.cmd == "supervise" and (args.install or args.uninstall):
+            if not args.registry:
+                raise Fail(
+                    "--install and --uninstall need --registry: the service is the registry's"
+                )
+            if args.uninstall:
+                uninstall_service(args.registry)
+                return 0
+            if not args.log:
+                raise Fail("--install needs --log: a service has no terminal to print to")
+            for s, r in owed.items():
+                arm(args.registry, s, r)
+            install_service(
+                service_argv(sys.argv[1:] if argv is None else argv, args.owed),
+                args.log,
+                args.registry,
+            )
+            return 0
+        if args.cmd == "supervise" and args.log:
+            raise Fail("--log needs --install")
         if args.cmd == "supervise" and not (owed or args.registry):
             raise Fail("supervise needs <session>=<report> pairs or --registry")
         if args.cmd == "supervise" and (args.fyi or args.decisions) and not args.console:
