@@ -199,15 +199,28 @@ def test_a_host_login_with_5_days_left_is_not_refreshed_and_its_file_is_untouche
     assert stored(calls)[1]["tokens"]["access_token"] == login_token(host)
 
 
-def test_a_host_login_without_a_refresh_token_is_not_refreshed(seeded, host) -> None:
+def test_an_expiring_host_login_without_a_refresh_token_fails_loudly_and_is_untouched(
+    seeded, host, capsys
+) -> None:
     _, calls = seeded
     auth = login(2)
     auth["tokens"]["refresh_token"] = ""  # a reader copy, as a VM holds one
     host.write_text(json.dumps(auth))
     before = host.read_bytes()
-    assert cv.main(["seed", "--env", "env_1"]) == 0
+    assert cv.main(["seed", "--env", "env_1"]) == 2
+    err = capsys.readouterr().err
+    assert "host login" in err and "codex login" in err
     assert cv.REFRESH_URL not in [url for url, _ in calls]
     assert host.read_bytes() == before
+
+
+def test_a_host_login_without_a_refresh_token_but_days_left_is_used_as_is(seeded, host) -> None:
+    _, calls = seeded
+    auth = login(5)
+    auth["tokens"]["refresh_token"] = ""
+    host.write_text(json.dumps(auth))
+    assert cv.main(["seed", "--env", "env_1"]) == 0
+    assert cv.REFRESH_URL not in [url for url, _ in calls]
 
 
 def login_token(path: Path) -> str:

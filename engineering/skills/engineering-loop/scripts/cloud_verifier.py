@@ -270,7 +270,13 @@ def seed(
     host_refresh_days: float = 3,
 ) -> int:
     auth, where = host_login()
-    if auth and auth["tokens"].get("refresh_token") and days_left(auth) < host_refresh_days:
+    if auth and days_left(auth) < host_refresh_days and not auth["tokens"].get("refresh_token"):
+        # a scheduled run must not pass quietly on a login it cannot renew: fail while days remain
+        raise Refused(
+            f"the host login at {where} has under {host_refresh_days:g} days left and no refresh"
+            " token to renew it: run `codex login` on this host, then seed again"
+        )
+    if auth and days_left(auth) < host_refresh_days:
         # the one deliberate write of the host's file: Codex on this host re-reads it before its own refresh
         auth = refreshed(
             auth,
