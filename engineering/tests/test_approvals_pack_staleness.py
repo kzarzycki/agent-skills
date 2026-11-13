@@ -6,7 +6,20 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from approvals_harness import approvals, git_in, loop_md
+from approvals_harness import (
+    added,  # noqa: F401
+    approvals,
+    assigned,  # noqa: F401
+    attached,  # noqa: F401
+    git_in,
+    graphql_answers,  # noqa: F401
+    hub,  # noqa: F401
+    loop_md,
+    others_open,  # noqa: F401
+    pushed,  # noqa: F401
+    refs,  # noqa: F401
+    required,  # noqa: F401
+)
 
 SCRIPT = "scripts/tool.py"
 

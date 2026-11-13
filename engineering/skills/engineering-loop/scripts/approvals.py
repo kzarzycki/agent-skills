@@ -5801,9 +5801,12 @@ def pack_behind(script: Path | str) -> str | None:
     here = Path(script).resolve()
 
     def ask(*args: str) -> str | None:
-        done = subprocess.run(
-            ["git", "-C", str(here.parent), *args], capture_output=True, text=True, check=False
-        )
+        try:  # a probe that fails for any reason says nothing, since it must never stop a command
+            done = subprocess.run(
+                ["git", "-C", str(here.parent), *args], capture_output=True, text=True, check=False
+            )
+        except Exception:
+            return None
         return done.stdout.strip() if done.returncode == 0 else None
 
     behind = ask("rev-list", "--count", "HEAD..@{upstream}")
