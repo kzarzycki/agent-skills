@@ -9777,6 +9777,66 @@ def test_a_turn_end_in_the_run_is_posted_once_also_across_restarts(
     assert lead["told_turn"] == lead["turn"] == f"m{new}0"
 
 
+def test_a_turn_end_without_an_id_is_keyed_by_its_time_and_each_is_posted_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A last message with no id is keyed by its ``created_at``: two of them, written at two
+    times, are each the row of one post, and neither again after a restart."""
+    registry = following(tmp_path)
+    offset = skewed(monkeypatch)
+    anon = lambda text, ago: {k: v for k, v in ending(text, ago).items() if k != "id"}
+    og = Lead(told("brief", 600), anon("STILL WORKING: waiting on the verifier", 500))
+    in_checkout(og)
+    head = ["1" * 40]
+    heads_moving(monkeypatch, head)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # the run that saw it
+    first, second = "STILL WORKING: waiting on CI", "STILL WORKING: waiting on the verifier again"
+    offset[0] = 60.0
+    og.histories["a"].append(anon(first, 0))  # written while the supervisor is down
+    offset[0], head[0] = 120.0, "2" * 40
+
+    def land(poll: int) -> None:  # the second turn ends, then a landing a post window later
+        og.histories["a"].append(anon(second, 0))
+        offset[0], head[0] = 120.0 + 301.0, "3" * 40
+
+    supervised(og, registry, monkeypatch, 2, land, notify="cos", console=True)  # a restart
+    offset[0], head[0] = 120.0 + 602.0, "4" * 40
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # another restart
+    posts = posted(og)
+    assert len(posts) == 3 and all("its default branch moved" in p for p in posts)
+    assert [(first in p, second in p) for p in posts] == [
+        (True, False),
+        (False, True),
+        (False, False),
+    ]
+    lead = state_of(registry)["leads"]["a"]
+    assert lead["told_turn"] == lead["turn"] == str(og.histories["a"][-1]["created_at"])
+
+
+def test_a_state_kept_before_seen_from_reports_no_old_turn_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A state file written before ``seen_from`` was kept starts the lead's cutoff at the run that
+    reads it, so its old last message is not the turn end of the next post."""
+    registry = direct_lead(tmp_path)  # the owner drives it: no deadline, so it never settles
+    offset = skewed(monkeypatch)
+    old = "STILL WORKING: waiting on the verifier since last month"
+    og = Lead(told("brief", 30 * 86400), ending(old, 29 * 86400))
+    in_checkout(og)
+    head = ["1" * 40]
+    heads_moving(monkeypatch, head)
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    state = state_of(registry)
+    for key in ("seen_from", "told_turn"):  # as an older supervisor wrote it
+        state["leads"]["a"].pop(key, None)
+    registry.with_suffix(".state.json").write_text(json.dumps(state))
+    offset[0], head[0] = 120.0, "2" * 40
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)  # a restart
+    [post] = posted(og)
+    assert "its default branch moved" in post
+    assert "\na t-a: idle · " in post and old not in post and "turn ended" not in post
+
+
 def test_without_console_a_landing_is_posted_as_a_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
