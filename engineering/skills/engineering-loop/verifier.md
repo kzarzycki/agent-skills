@@ -59,10 +59,10 @@ yourself, keeping standards and spec as separate axes.
 - **A long or locked run is detached.** This is every role's rule for a long run, worker's
   and lead's too. A gate, repro or e2e run that may wait on a lock
   or a queue, or outlast one tool call, starts detached (in its own session) with its pid, output and exit code
-  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; flock <lock> <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
+  in files, `perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV' sh -c 'echo $$ > <pid>; echo "run $$" > <log>; echo "lock <lock>" >> <log>; flock <lock> sh -c "echo \$\$ > <lock>; echo locked; exec \"\$@\"" sh <cmd> >> <log> 2>&1; echo "exit $?" >> <log>; python3 <orchestrating-agents>/scripts/omnigent_agent.py wait-for --log <log> --pid $$ --notify' >/dev/null 2>&1`
   (Perl's `setsid`, since macOS has no `setsid` command; the `run <pid>` line marks where this
   run's log starts, so `wait-for --pid` never takes a previous run's `exit` line from a reused
-  log path; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
+  log path; `lock` and `locked` bracket the wait on the lock, so `wait-for` reads a run still queued behind another's gate as waiting, not as out of budget: its own budget starts at `locked`, and past 2 hours of waiting it ends "gave up waiting on the gate lock", which is no verdict on the change, so report the check as not yet run; the last step tells the session in `$LOOP_NOTIFY`, when set, how it ended),
   and is waited on up to a total budget you state, in as few calls as you can: each call is
   `omnigent_agent.py wait-for --log <log> --pid <pid>`, which blocks close to a 10-minute tool
   call (`--budget` for another limit) and prints only the outcome, never short polls or a sleep
@@ -73,7 +73,8 @@ yourself, keeping standards and spec as separate axes.
   the same turn, since that is less than a cold gate can take. A blocker that is only your own call timing out
   spends the pass on nothing, a held lock can outlast a foreground call, and Claude Code's low-memory reaper stops in-session
   background shells. Never end a turn saying you wait, since a background command's completion
-  never wakes you. A gate the machine allows
+  never wakes you, unless it is a `run`, `send` or `wait` started with `--notify` and `LOOP_NOTIFY`
+  set (or your harness's own background-run support), which tells you when it ends. A gate the machine allows
   by rule (a gate your role file says to run bare) is the exception: run it as the bare command
   (Gates and repros), since an allow rule matches only a plain command. A queued run or
   any other pending condition is waited on the same way, in the foreground (orchestrating-agents'

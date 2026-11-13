@@ -45,7 +45,8 @@ stderr line saying so.
 exit 3 prints that path. Answer from the spec and the owner's stated intent, or ask the
 owner only when neither settles it, then run
 `python3 scripts/omnigent_agent.py send <session> <answer-file> <report>` in the
-background. It continues the same session while its cache is warm and waits as `run`
+background (a bare `&` is not woken by its exit: set `LOOP_NOTIFY` and add `--notify`, or use the
+harness's own background-run support). It continues the same session while its cache is warm and waits as `run`
 does; add `--verdict` when the child is a verifier, because `send` and `wait` are not
 given the role. A child still in a turn gets the answer at its next tool boundary; until
 then `send` reports it queued and waits, and a rerun of the same `send` waits for the
@@ -229,7 +230,9 @@ It needs no session, so it serves every backend. Its `--notify` runs `$LOOP_NOTI
 once the run ends, as a merge queue tells a lane, so a detached run's wrapper ends with
 `omnigent_agent.py wait-for --log <log> --notify` and the session that set `LOOP_NOTIFY="python3
 <this skill>/scripts/omnigent_agent.py relay --from gate <its session id>"` gets one message
-when it ends; unset, nothing is sent.
+when it ends; unset, nothing is sent. `run`, `send` and `wait`, which can wait hours on a child,
+take the same `--notify`: once they end, however they end, `$LOOP_NOTIFY` gets one line, `exit <code>:`
+and the report path, or the failure's first line.
 
 **Waiting on a condition.** `python3 scripts/omnigent_agent.py wait-until --every <s> --limit
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
@@ -741,33 +744,43 @@ names one), with its own registry, set as `OMNIGENT_SUPERVISE_REGISTRY` for its 
 `send`. An in-session background command or a session cron dies when the session restarts,
 and with it every wake it owed. The one-shot form serves a single check in the foreground.
 
-**Running the supervisor detached.** The service manager keeps the supervisor running past
-the session it wakes. A job starts with a bare `PATH` (launchd's is `/usr/bin:/bin:/usr/sbin:/sbin`),
-so it sets one that finds `omnigent`, whose interpreter refreshes the token. Give each
-supervisor its own label or unit name. On macOS, until logout:
+**Running the supervisor detached.** A service manager keeps the supervisor running past
+the session it wakes, and past a reboot. Install it as a user service with the command line
+it would run, plus `--install` and the log it appends to:
 
 ```bash
-launchctl submit -l <label> -o <log>.out -e <log>.err -- /bin/sh -c \
-  "PATH=$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin exec /usr/bin/python3 <abs-path>/scripts/omnigent_agent.py --server $RUNNER_SERVER_URL supervise --registry <file> --notify <session>"
+python3 <abs-path>/scripts/omnigent_agent.py --server "$RUNNER_SERVER_URL" supervise \
+  --registry <file> --notify <session> --install --log <log>
 ```
 
-A job also starts without the session's `RUNNER_SERVER_URL`, so the command names the server
-(the shell expands it at submit time). `omnigent_agent.py` acts on the first of `--server`,
+It writes a service running that same command line less `--install` and `--log`, from this
+directory, then enables and starts it. On Linux that is a systemd user unit
+`~/.config/systemd/user/omnigent-supervise-<hash>.service` with `Restart=always` (`systemctl
+--user status omnigent-supervise-<hash>` shows it); on macOS a LaunchAgent
+`~/Library/LaunchAgents/omnigent.supervise.<hash>.plist` with `KeepAlive` and `RunAtLoad`
+(`launchctl print gui/$(id -u)/omnigent.supervise.<hash>`). The hash is of the registry's
+resolved path, so each registry gets its own service and installing again for the same one
+replaces and restarts it. `supervise --registry <file> --uninstall` stops and removes it.
+`<session>=<report>` pairs on the install line are armed in the registry first, not baked
+into the service, so a restart reposts none.
+
+A job starts with a bare environment (launchd's `PATH` is `/usr/bin:/bin:/usr/sbin:/sbin`)
+and without the session's `RUNNER_SERVER_URL`, so the service carries over, from the install's
+environment, only what the script reads: `RUNNER_SERVER_URL`, `OMNIGENT_USER_ID`, its
+`OMNIGENT_*` settings (`OMNIGENT_SUPERVISE_*`, `OMNIGENT_MODEL_*`, `OMNIGENT_STUCK_SECONDS`
+and the like, listed as `SERVICE_VARIABLES` and `SERVICE_PREFIXES` in the script) and `PATH`,
+which finds `omnigent`, whose interpreter refreshes the token, less its entries under a temp
+directory. The rest of a session's environment is its runner's state (ids, tokens, pids, log
+files), which the service outlives. Naming the server with
+`--server` keeps the command explicit. `omnigent_agent.py` acts on the first of `--server`,
 `$RUNNER_SERVER_URL` (set by the runner in every session), and the one login in
 `auth_tokens.json`. `config.yaml`'s `server:` is not read, because one account runs workloads on
 several servers and a single default sends some of them to the wrong one. Outside a session with
 several logins and no `--server`, the script refuses rather than guess.
 
-launchd restarts it if it exits; `launchctl print gui/$(id -u)/<label>` shows it and
-`launchctl remove <label>` stops it. For one that survives a reboot, write a LaunchAgent
-`~/Library/LaunchAgents/<label>.plist` with that command as `ProgramArguments`, `KeepAlive`
-and `RunAtLoad` true, `StandardOutPath` and `StandardErrorPath`, and `PATH` under
-`EnvironmentVariables`, and load it with `launchctl bootstrap gui/$(id -u) <plist>`
-(`launchctl bootout gui/$(id -u)/<label>` stops it). On Linux, a systemd user unit
-`~/.config/systemd/user/<name>.service` with `ExecStart=` the command, `Environment=PATH=…`,
-`Restart=always` and `WantedBy=default.target`, started with
-`systemctl --user enable --now <name>`; `loginctl enable-linger $USER` keeps it running while
-the user is logged out, and `journalctl --user -u <name>` shows its log.
+On Linux a user unit starts at boot only with lingering on: the install prints
+`loginctl show-user`'s `Linger` value and leaves `loginctl enable-linger $USER` to the owner,
+since it changes what runs on the host while nobody is logged in.
 
 An update needs no restart: when `omnigent_agent.py` is replaced on disk (a skills sync
 installing a new one), `supervise --registry` re-executes itself in place with the same
