@@ -443,6 +443,12 @@ HOST_LIMITS: dict[str, dict[str, float]] = {
     "cc-experiments": {"min_mb": 2500, "max_load": 40},  # it serves Omnigent and the managers
     "oz": {"max_load": 10},  # its 8 threads
 }
+# A row for every host whose name starts with the key, since burst boxes come and go every few days.
+# ``max_sessions`` counts the live sessions bound to the host (sub-agents included). An epic-* box
+# is 4 vCPU and 8 GB: about 4 sessions plus one gate; past that it thrashed and lost ssh.
+HOST_PREFIX_LIMITS: dict[str, dict[str, float]] = {
+    "epic-": {"min_mb": 1500, "max_load": 6, "max_sessions": 4},
+}
 FAR_READS = 3  # live sessions on another host tried for its load and memory, newest first
 
 # The detach the preambles prescribe: Perl's setsid, since macOS has no setsid command.
@@ -1929,11 +1935,18 @@ def capacity(min_mb: float | None = None, max_load: float | None = None) -> tupl
     return room and (mb is None or mb >= min_mb), line
 
 
+def host_row(name: str) -> dict[str, float]:
+    """Host ``name``'s limits row: ``HOST_LIMITS``, else the ``HOST_PREFIX_LIMITS`` row its name starts with."""
+    if name in HOST_LIMITS:
+        return HOST_LIMITS[name]
+    return next((r for p, r in HOST_PREFIX_LIMITS.items() if name.startswith(p)), {})
+
+
 def host_limits(name: str) -> tuple[float, float | None]:
     """Host ``name``'s ``min_mb`` and ``max_load`` (None: judged per core, or by idle CPU here):
     its ``HOST_LIMITS`` row over the defaults, under its OMNIGENT_MIN_AVAILABLE_MB_<HOST> and
     OMNIGENT_MAX_LOAD_<HOST> overrides."""
-    row, key = HOST_LIMITS.get(name, {}), re.sub(r"\W", "_", name.upper())
+    row, key = host_row(name), re.sub(r"\W", "_", name.upper())
     min_mb = os.environ.get(f"OMNIGENT_MIN_AVAILABLE_MB_{key}") or row.get("min_mb")
     max_load = os.environ.get(f"OMNIGENT_MAX_LOAD_{key}") or row.get("max_load")
     return (
@@ -2018,8 +2031,16 @@ def host_capacity(og: Omnigent, host_id: str, name: str) -> tuple[bool | None, s
     through a session on another (``far_capacity``, None when unreadable)."""
     min_mb, max_load = host_limits(name)
     if host_id == og.host_id:
-        return capacity(min_mb=min_mb, max_load=max_load)
-    return far_capacity(og, host_id, min_mb, max_load)
+        ok, line = capacity(min_mb=min_mb, max_load=max_load)
+    else:
+        ok, line = far_capacity(og, host_id, min_mb, max_load)
+    cap = host_row(name).get("max_sessions")
+    if cap is not None:
+        # from the session list, so it holds where load and memory can't be read
+        live = len(live_sessions(og, host_id))
+        if live >= cap:
+            return False, f"{live} live sessions (max {cap:g})" + (f"; {line}" if ok is not None else "")
+    return ok, line
 
 
 def unchecked(name: str, why: str) -> str:

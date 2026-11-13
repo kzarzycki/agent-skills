@@ -3471,6 +3471,46 @@ def test_capacity_host_judges_another_host(
     assert "oz: load and memory not readable (no /proc/meminfo)" in capsys.readouterr().out
 
 
+def test_an_epic_burst_box_is_refused_over_its_memory_load_or_session_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(1000), loadavg="1.0 1 1")
+    argv = [*far_start("claude", "epic-t1"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 1  # short of memory
+    assert "epic-t1 over capacity for 0s: load 1.0 (max 6), 1000 MB available (min 1500)" in (
+        capsys.readouterr().err
+    )
+    og.procs["far"]["/proc/meminfo"] = mem(6000)
+    og.procs["far"]["/proc/loadavg"] = "6.5 5 4"
+    assert omnigent_agent.main(argv) == 1  # over the load cap
+    assert "load 6.5 (max 6)" in capsys.readouterr().err
+    assert og.sessions == {}
+    og.procs["far"]["/proc/loadavg"] = "1.0 1 1"
+    assert omnigent_agent.main(argv) == 0 and og.sessions  # room: starts
+    capsys.readouterr()
+    og.sessions = {}
+    og.others = [  # four live sessions; an archived one doesn't count
+        {"id": f"x{i}", "host_id": "far", "status": "idle", "updated_at": i} for i in range(4)
+    ] + [{"id": "old", "host_id": "far", "status": "idle", "archived": True}]
+    assert omnigent_agent.main(argv) == 1  # a fifth is refused
+    assert "epic-t1 over capacity for 0s: 4 live sessions (max 4); load 1.0" in (
+        capsys.readouterr().err
+    )
+    assert og.sessions == {}
+    og.procs = {}  # load and memory unreadable: the session count still refuses
+    assert omnigent_agent.main(argv) == 1
+    assert "4 live sessions (max 4)" in capsys.readouterr().err
+
+
+def test_a_host_with_no_row_has_no_session_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "burst-1", meminfo=mem(6000), loadavg="1.0 1 1")
+    og.others = [{"id": f"x{i}", "host_id": "far", "status": "idle"} for i in range(9)]
+    argv = [*far_start("claude", "burst-1"), "--workspace", "/there/repo"]
+    assert omnigent_agent.main(argv) == 0 and og.sessions
+
+
 def test_this_host_s_row_adds_its_absolute_load_and_memory_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
