@@ -51,8 +51,9 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   - HEAD is on a remote branch, or is the PR's head (same commit or tree), or in it;
   - the worktree isn't locked (`git worktree lock`);
   - no process has its cwd or a file in it (a held lock file included) or names it;
-  - its `tmp/` and `.bootstrap-state/` (run reports) haven't changed in 24 hours, since a
-    lead may still read a report there over ssh, where the process scan can't see it;
+  - its `tmp/` and `.bootstrap-state/` (run reports, ignored or untracked) haven't changed in
+    24 hours, since a lead may still read a report there over ssh, where the process scan
+    can't see it; stale untracked ones go with the worktree;
   - every ignored file in it is one of: an environment; build output (also a SwiftPM
     `.build/`, a directory holding `CACHEDIR.TAG`, a file whose first line says it is
     generated and not to be edited, an `*.xcodeproj/` beside the `project.yml` XcodeGen
@@ -104,7 +105,9 @@ shell), a stale pack and drift.
 ## What it tells the chief of staff
 
 The run posts into the chief of staff's Omnigent session (project `Chief of staff`, label
-`omni.role=cos`), through the account's Omnigent CLI logins: the server in
+`omni.role=cos`), through the account's Omnigent CLI logins; a question about a repo's worktree
+goes instead to that repo's project manager (`omni.role=pm`, `omni.repos` naming the repo), the
+chief of staff when none is live. The server in
 `~/.omnigent/config.yaml` first, then every other server the account is logged in to. It
 posts in four cases, each question or finding once (`~/.local/state/agent-hygiene/asked`),
 at most 30 per message:

@@ -106,7 +106,7 @@ session as ``Supervisor: <line>`` (reviving it first when reaped). A terminal ev
 session's line once posted; an error or an event-less ``--timeout`` is logged and the loop goes on.
 It also raises one ``landed`` line per repo and new default-branch head of the repos its followed
 leads work in, whatever the leads write (``gh api``; the first head seen is only stored).
-With ``--console``, the chief of staff's console, each poll it also writes ``<registry
+With ``--console``, the chief of staff's or a project manager's console (it labels its own session ``omni.role=cos``, or, on ``<repo>-leads.registry``, ``omni.role=pm`` and ``omni.repos=<repo>``), each poll it also writes ``<registry
 stem>.state.json`` (schema ``cos-state/1``, loaded on start, so a restart re-posts no event it
 settled), appends each event to ``<registry stem>.events.jsonl``, labels each session with
 ``status.line`` and ``status.at``, and raises ``deadline`` for a followed lead with no progress for
@@ -4076,9 +4076,15 @@ def supervise_registry(
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
     state = load_state(state_path) if console else fresh_state()
-    if console and (me := parent_id()):  # only the chief of staff runs the console
+    if console and (me := parent_id()):
+        # the chief of staff's registry is leads.registry; a project manager's is <repo>-leads.registry
+        repo = (
+            registry.name.removesuffix("-leads.registry")
+            if registry.name.endswith("-leads.registry")
+            else ""
+        )
         try:
-            og.label(me, {"omni.role": "cos"})
+            og.label(me, {"omni.role": "pm", "omni.repos": repo} if repo else {"omni.role": "cos"})
         except Fail as e:
             print(f"{me}: role label not written: {e}", file=sys.stderr)
     if not isinstance(state["rate"].get("model_calls"), list):

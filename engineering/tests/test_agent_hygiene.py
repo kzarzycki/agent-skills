@@ -202,6 +202,8 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         "copydiff",
         "mystatic",
         "copydir",
+        "tmpold",
+        "tmpnew",
     ):
         git(repo, "worktree", "add", "-q", "-b", branch, str(dev / f"wt-{branch}"))
         wt = dev / f"wt-{branch}"
@@ -213,6 +215,10 @@ def test_agent_hygiene(tmp_path, monkeypatch):
         if branch == "webuisrc":  # a tracked web-ui/ source dir, with a local ignored file in it
             (wt / "web-ui").mkdir()
             (wt / "web-ui/app.js").write_text("source")
+        if branch.startswith(
+            "tmp"
+        ):  # a repo that does not ignore tmp/: its reports are untracked, `?? tmp/`
+            (wt / ".gitignore").write_text((repo / ".gitignore").read_text() + "!tmp\n")
         if branch.startswith("apm"):  # what `apm install` deployed, as its lockfile lists it
             (wt / "apm.lock.yaml").write_text(
                 "dependencies:\n- repo_url: o/skills\n  deployed_files:\n"
@@ -250,6 +256,8 @@ def test_agent_hygiene(tmp_path, monkeypatch):
             "copydiff",
             "mystatic",
             "copydir",
+            "tmpold",
+            "tmpnew",
         ):
             git(wt, "push", "-q", "origin", branch)
         merged[branch] = git(wt, "rev-parse", "HEAD")
@@ -293,6 +301,13 @@ def test_agent_hygiene(tmp_path, monkeypatch):
     (dev / "wt-squashed/pkg/mod.pyc").write_text("")
     for path in [*(dev / "wt-squashed/tmp").rglob("*"), dev / "wt-squashed/tmp"]:
         os.utime(path, (old, old))  # a day-old tmp/ goes
+    for name in ("tmpold", "tmpnew"):
+        (dev / f"wt-{name}/tmp/loop").mkdir(parents=True)
+        (dev / f"wt-{name}/tmp/loop/report.md").write_text("proof")
+    for path in [*(dev / "wt-tmpold/tmp").rglob("*"), dev / "wt-tmpold/tmp"]:
+        os.utime(
+            path, (old, old)
+        )  # an untracked tmp/ a day old goes; one changed today stays, unasked
     (dev / "wt-fresh/tmp/loop").mkdir(parents=True)  # a lead may still read today's report
     (dev / "wt-fresh/tmp/loop/report.md").write_text("proof")
     for name in ("apm", "apm-mine", "apm-bad"):
@@ -503,7 +518,10 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     )  # the real ones would fetch and run
     hygiene.CACHES = [(n, c, 1 if n == "go" else t, b) for n, c, t, b in hygiene.CACHES]
     told = []
-    hygiene.tell = lambda text: told.append(text) or "cos-session"
+    hygiene.told_to = []
+    hygiene.tell = lambda text, repo=None: (
+        told.append(text) or hygiene.told_to.append(repo) or "cos-session"
+    )
     pin = {"remote": {"defaultEnvironmentId": "env_1"}}
     for text, wanted in (
         (json.dumps(pin), True),
@@ -541,6 +559,7 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "wt-swift-dotbuild",
             "wt-swift-foo",
             "wt-fresh/tmp/loop/report.md",
+            "wt-tmpnew/tmp/loop/report.md",
             "wt-apm-mine/.claude/skills/mine/SKILL.md",
             "wt-held/held.lock",
             "wt-apm-bad/.claude/skills/mine/SKILL.md",
@@ -584,6 +603,7 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "wt-nest/.worktrees/agent",
             "wt-nest",
             "wt-squashed",
+            "wt-tmpold",
             "wt-apm",
             "wt-locks",
             "wt-lockdir",
@@ -621,6 +641,9 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
     assert not old_state.exists() and (home / ".local/state/agent-hygiene/carried").exists()
     code, out = run("--floor-gb", "0")
     assert code == 0, out
+    assert "o/r" in hygiene.told_to and any(  # a worktree question goes to its repo's manager
+        "wt-dirty" in text and "simulator" not in text for text in told
+    ), (hygiene.told_to, told)
     assert all(p.exists() for p in kept), out
     for name in ("swift-build", "swift-dotbuild", "swift-foo"):
         line = next(
@@ -657,6 +680,7 @@ def agent_hygiene_runs(home, dev, repo, git, monkeypatch):
             "another checkout is inside it"
         ),
         f"skip worktree {dev}/wt-fresh (o/r#7 merged): its tmp/ changed in the last 24 h",
+        f"skip worktree {dev}/wt-tmpnew (o/r#7 merged): its tmp/ changed in the last 24 h",
         f"skip worktree {dev}/wt-apm-mine (o/r#7 merged): ignored files that may not rebuild: .claude/skills/mine/SKILL.md\n",
         f"skip worktree {dev}/wt-held (o/r#7 merged): a process has it open",
         f"skip worktree {dev}/wt-deep-tmp (o/r#7 merged): its tmp/ changed in the last 24 h",
@@ -1156,6 +1180,59 @@ def test_tell(tmp_path, monkeypatch):
         for server in (work, moved, broken, echo, garbled):
             server.shutdown()
             server.server_close()
+
+
+def test_tell_sends_a_repos_question_to_its_project_manager(tmp_path, monkeypatch):
+    """Of a live chief of staff and a live manager of o/r, a question about o/r's worktree goes to the manager, the rest to
+    the chief of staff, and a repo no manager names goes to the chief of staff."""
+    monkeypatch.setenv("HOME", str(tmp_path.resolve()))
+    hygiene = load("agent_hygiene_route")
+    posts = []
+    sessions = [
+        {"id": "cos1", "labels": {"omni.role": "cos"}},
+        {"id": "pm-other", "labels": {"omni.role": "pm", "omni.repos": "other"}},
+        {"id": "pm-old", "labels": {"omni.role": "pm", "omni.repos": "r"}, "archived": True},
+        {"id": "pm1", "labels": {"omni.role": "pm", "omni.repos": "r"}},
+    ]
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def reply(self, body):
+            data = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            self.reply(
+                {"data": sessions}
+                if self.path.startswith("/v1/sessions?")
+                else {"runner_online": True}
+            )
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            posts.append(self.path)
+            self.reply({})
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    (tmp_path / ".omnigent").mkdir()
+    (tmp_path / ".omnigent/config.yaml").write_text(f"server: {url}\n")
+    hygiene.OMNIGENT_PYTHON = sys.executable
+    hygiene.LOGINS = f'import json; print(json.dumps({{"{url}": "t"}}))'
+    try:
+        assert hygiene.tell("about r", "kzarzycki/r") == f"pm1 on {url}"
+        assert hygiene.tell("about nobody", "o/none") == f"cos1 on {url}"
+        assert hygiene.tell("the rest") == f"cos1 on {url}"
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert posts == [f"/v1/sessions/{sid}/events" for sid in ("pm1", "cos1", "cos1")], posts
 
 
 def test_dead_terminals(tmp_path, monkeypatch):
