@@ -10642,6 +10642,18 @@ VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", "roles/verifier.md"]
 VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
 
 
+def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    argv = ["start", "claude-cloud", "w", "do X", str(tmp_path / "tmp" / "r.md"), "--top-level"]
+    argv += ["--host", "mac", "--pr", "7", "--workspace", "/there/repo", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    err = capsys.readouterr().err
+    assert "launch dir is on another host" in err and "HEAD is not moved" in err
+
+
 def test_a_verifier_starts_on_a_host_loop_md_lists_with_its_files_there_and_reports_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -10918,3 +10930,51 @@ def test_a_pr_or_issue_reference_after_waiting_on_is_a_named_wait() -> None:
         wait_of("STILL WORKING: waiting on the/repo#12") == "the/repo#12"
     )  # an owner named like a pronoun
     assert wait_of("STILL WORKING: on it") == "unknown"
+
+
+# --- a question card a session posts to its user is not an act for the parent (#920) ---
+
+
+def test_a_question_card_to_the_user_is_one_record_and_a_harness_question_still_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card (``policy_name`` ``sys_ask_user_question``) returns at once and its user answers it in
+    their Inbox: the session is not blocked, and the card is one record line per question id."""
+    registry = following(tmp_path)
+    monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
+    og = Lead(told("brief", 60), ending("STILL WORKING: on it", 50))
+    card = {
+        "elicitation_id": "q1",
+        "params": {
+            "policy_name": "sys_ask_user_question",
+            "ask_user_question": {"questions": [{"question": "Which base?"}]},
+            "message": "Which base?",
+        },
+    }
+    harness = {
+        "elicitation_id": "e2",
+        "params": {
+            "policy_name": "claude_native_permission",
+            "ask_user_question": {"questions": [{"question": "Go?"}]},
+            "message": "Go?",
+        },
+    }
+    og.snap = {"status": "running", "pending_elicitations": [card]}
+    states: list[str] = []
+
+    def later(poll: int) -> None:
+        states.append(state_of(registry)["leads"]["a"]["state"])
+        if poll == 3:
+            og.snap = {"status": "running", "pending_elicitations": [card, harness]}
+
+    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    assert states[:3] == ["running"] * 3  # the card alone blocks nothing
+    routed = [(e["kind"], e["action"], e["line"]) for e in events_of(registry)]
+    assert routed[0] == ("asked", "record", "a: asked its user: Which base?")
+    assert (events_of(registry)[0]["settled"], "Inbox" in events_of(registry)[0]["why"]) == (
+        "rule",
+        True,
+    )  # the card's own rule records it, not a guess about the lead's turn
+    assert [r[:2] for r in routed[1:]] == [("blocked", "act")]  # the card said once, never again
+    assert "Which base?" not in routed[1][2]  # the parent's act names only the harness question
+    assert not any("Which base?" in p for p in posted(og))

@@ -3,8 +3,9 @@
 
     python3 scripts/omnigent_agent.py run <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--pr N] [--keep] [--notify]
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE] [--effort LEVEL] [--pr N] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE]] [--workspace DIR]
+    python3 scripts/omnigent_agent.py launch-dir <remote> <branch> <env-id> <path> [--trust]
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep] [--notify]
-    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
+   python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed]) [--budget <s>] [--notify]
     python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>
@@ -2232,7 +2233,93 @@ def pin_environment(workspace: Path) -> None:
         + (f", nor does {main / SETTINGS}" if main else "")
         + ": the cloud session would land in the account's default environment; pin the"
         ' environment there ({"remote": {"defaultEnvironmentId": "<id>"}})'
+        + ("" if main else "; make a launch dir with `launch-dir` (no files checked out)")
     )
+
+
+def launch_dir(
+    remote: str, branch: str, env: str, path: Path, trust: bool = False, config: Path | None = None
+) -> None:
+    """A directory cloud sessions launch from, with no working tree: nothing on the cloud path reads
+    its files (the bridge checks for a git repo, the CLI bundles it and reads the pin), so a
+    blobless ``--no-checkout`` clone with HEAD on ``branch`` stands in for a full checkout. It holds
+    the pin (``remote.defaultEnvironmentId``) and the ``tmp/loop/`` that briefs and reports use. The
+    folder-trust entry in the user's Claude config (``config``, default ``~/.claude.json``) is
+    written only with ``trust``: trust is the user's decision, never this script's."""
+    if path.exists() and any(path.iterdir()):
+        raise Fail(f"{path} is not empty")
+    done = subprocess.run(
+        [
+            "git",
+            "clone",
+            "--no-checkout",
+            "--filter=blob:none",
+            "--branch",
+            branch,
+            remote,
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode:
+        raise Fail(f"git clone {remote} ({branch}): {done.stderr.strip()[-300:]}")
+    (path / SETTINGS).parent.mkdir(parents=True, exist_ok=True)
+    (path / SETTINGS).write_text(
+        json.dumps({"remote": {"defaultEnvironmentId": env}}, indent=2) + "\n"
+    )
+    (path / "tmp" / "loop").mkdir(parents=True, exist_ok=True)
+    if trust:
+        config = config or Path.home() / ".claude.json"
+        data = json.loads(config.read_text()) if config.exists() else {}
+        data.setdefault("projects", {}).setdefault(str(path.resolve()), {})[
+            "hasTrustDialogAccepted"
+        ] = True
+        config.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"launch dir {path}: {branch}, environment {env}" + (", trusted" * trust))
+
+
+def move_head(workspace: Path, pr: int) -> None:
+    """Point a launch dir's HEAD at PR ``pr``'s head branch (fetched from origin when needed) without checking
+    files out, so a cloud session starts on it. A directory with a working tree (it has an index)
+    is left alone: moving its HEAD under its files would corrupt it. It runs git where the launch dir
+    is, so a ``start`` for a workspace on another host (``remote``) leaves it: ponytail: run it on
+    the host that holds the launch dir, as that host's own ``start``; upgrade: a host-side verb."""
+    index = subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--path-format=absolute", "--git-path", "index"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    if not index or Path(index).exists():
+        return
+    branch = pr_branch(pr, workspace)
+    for cmd in (
+        # the PR's own ref, which a fork's branch has too and a same-named origin branch can't shadow
+        ["fetch", "-q", "origin", f"+refs/pull/{pr}/head:refs/remotes/origin/pr/{pr}"],
+        ["update-ref", f"refs/heads/{branch}", f"refs/remotes/origin/pr/{pr}"],
+        ["symbolic-ref", "HEAD", f"refs/heads/{branch}"],
+    ):
+        done = subprocess.run(
+            ["git", "-C", str(workspace), *cmd], capture_output=True, text=True, check=False
+        )
+        if done.returncode:
+            raise Fail(f"git {cmd[0]} for {branch} in {workspace}: {done.stderr.strip()[-300:]}")
+
+
+def pr_branch(pr: int, workspace: Path) -> str:
+    """The head branch name of PR ``pr`` in the repository ``workspace`` is a clone of."""
+    out = subprocess.run(
+        ["gh", "pr", "view", str(pr), "--json", "headRefName", "-q", ".headRefName"],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode or not out.stdout.strip():
+        raise Fail(f"PR {pr}: no head branch read ({out.stderr.strip()[-200:]})")
+    return out.stdout.strip()
 
 
 def briefed_by_file(og: Omnigent, agent: str, host_id: str | None) -> bool:
@@ -4081,6 +4168,31 @@ class Recorded:
         return items
 
 
+CARD_POLICY = "sys_ask_user_question"  # a question card's ``params.policy_name``
+
+
+class Uncarded:
+    """``og`` with each session's question cards (``params.policy_name`` ``CARD_POLICY``) taken out
+    of its ``pending_elicitations`` and kept in ``cards``: a card returns at once and its user
+    answers it in their Inbox, so it blocks nothing and holds no step for the parent. A
+    harness's own question (Claude's AskUserQuestion, Codex's requestUserInput) stays."""
+
+    def __init__(self, og: Omnigent) -> None:
+        self.og, self.cards = og, {}
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.og, name)
+
+    def info(self, sid: str) -> dict:
+        info = self.og.info(sid)
+        pending = info.get("pending_elicitations") or []
+        cards = [e for e in pending if (e.get("params") or {}).get("policy_name") == CARD_POLICY]
+        self.cards[sid] = cards
+        if not cards:
+            return info
+        return {**info, "pending_elicitations": [e for e in pending if e not in cards]}
+
+
 def fresh_state() -> dict:
     """An empty ``state.json``."""
     return {
@@ -4283,6 +4395,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "a session owing a report: its outcome"
     if kind == "notice":
         return "rule", "record", "the supervisor's own revive or resume line"
+    if kind == "asked":
+        return "rule", "record", "a question card to its user, who answers it in their Inbox"
     text = event.get("last") or ""
     if REPORT_PATH.fullmatch(text):
         if event.get("head") is None:
@@ -4455,6 +4569,7 @@ def supervise_registry(
     (``deliver``); with ``fyi`` ``post`` every line is posted as without it too. The standing
     decisions the small model weighs are ``decisions``' (``standing``).
     """
+    og = Uncarded(og)
     rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
     events_path = registry.with_suffix(".events.jsonl")
@@ -4486,6 +4601,7 @@ def supervise_registry(
     resumed: dict[str, float] = {}
     idle_since: dict[str, tuple] = {}  # followed leads, as ``follow`` keeps them
     told: dict = {}
+    asked: set[str] = set()  # the question cards already said, by event id
     holding: dict[str, tuple[tuple, float]] = {}
     unsent: set[str] = set()  # ponytail: in memory, so a restart loses a revive line still unsent
     logged: dict[object, str] = {}  # the error last logged per session (or registry, post, drop)
@@ -4900,6 +5016,15 @@ def supervise_registry(
         outbox.append((line, event, eid, sid, kind))
         flush()
 
+    def cards(sid: str) -> None:
+        """Say each question card ``sid`` posted to its user once, by its id: news, not a step."""
+        for e in og.cards.get(sid, []):
+            eid = f"asked:{sid}:{e.get('elicitation_id') or e}"
+            if eid not in asked:
+                asked.add(eid)
+                what = "; ".join(prompts_of({"pending_elicitations": [e]}))
+                say(f"{sid}: asked its user: {what}", sid, eid, "asked")
+
     def track(
         sid: str,
         report: Path,
@@ -5289,6 +5414,7 @@ def supervise_registry(
                         log(sid, None)
                         if console:
                             label(sid, lead)
+                        cards(sid)
                         if event:
                             window = time.monotonic()
                             say(event, sid, eid, kind)
@@ -5306,6 +5432,7 @@ def supervise_registry(
                     )
                     if console:
                         label(sid, track(sid, report, briefs, followed, after, direct, leads))
+                    cards(sid)
                     eid, kind = f"terminal:{sid}:{since}", "terminal"
             except Exception as e:  # noqa: BLE001 - one session's error skips no other
                 log(sid, f"{sid}: {reason(e)}")
@@ -5725,6 +5852,17 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("--dry-run", action="store_true", help="list the targets, send nothing")
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p = sub.add_parser(
+        "launch-dir",
+        description="make a directory cloud sessions launch from, with no files checked out",
+    )
+    p.add_argument("remote")
+    p.add_argument("branch")
+    p.add_argument("env", help="the claude.ai environment id to pin")
+    p.add_argument("path", type=Path)
+    p.add_argument(
+        "--trust", action="store_true", help="also write the folder-trust entry (the user's call)"
+    )
+    p = sub.add_parser(
         "capacity", description="exit 0 when this host, or --host, has room for another session"
     )
     p.add_argument(
@@ -5976,6 +6114,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             if args.notify:
                 notify(outcome)
             return code
+        if args.cmd == "launch-dir":
+            launch_dir(args.remote, args.branch, args.env, args.path, args.trust)
+            return 0
         if args.cmd == "capacity" and not args.host:
             ok, line = capacity()
             print(line)
@@ -6236,8 +6377,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # The aliases are native harnesses; a workspace on another host is that host's to check.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace)
+            if args.pr:
+                move_head(workspace, args.pr)
         elif not remote:
             refuse_pinned_checkout(args.agent, workspace)
+        elif args.pr and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
+            print(
+                f"--pr {args.pr}: the launch dir is on another host, so its HEAD is not moved here:"
+                " the session starts on the branch that dir holds; name the PR's branch in the brief",
+                file=sys.stderr,
+            )
         if here:  # a remote lead's report is written on its host, never read here
             report.parent.mkdir(parents=True, exist_ok=True)
         # what the child's tree held before it ran: wait fails only on a change it made

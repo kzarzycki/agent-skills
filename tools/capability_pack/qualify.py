@@ -1000,9 +1000,15 @@ def _validate_locked_reproduction(package: Path, proposed: Provenance) -> None:
         raise QualificationError("locked reproduction differs from committed legal files")
 
 
+LOCKED_TEST_COMMAND = "python -m pytest -q -m 'not live_agent' tests"
+LOCKED_TEST_SKIPPED = (
+    "NOT RUN (locked: the stage matches the committed package, which mise run test covers)"
+)
+
+
 def _run_package_tests(stage: Path) -> tuple[str, str]:
     tests = stage / "tests"
-    command_text = "python -m pytest -q -m 'not live_agent' tests"
+    command_text = LOCKED_TEST_COMMAND
     if not tests.is_dir():
         return command_text, "NOT RUN (no package tests)"
     env = os.environ.copy()
@@ -1233,7 +1239,16 @@ def qualify(
                 _version_magnitude(previous, source_tag, (*added, *retired)),
                 _released_version(package),
             )
-        test_command, test_result = _run_package_tests(staged)
+        if mode == "locked":
+            # An identical stage is the pass condition, so validate it first: the staged
+            # tests would run the files `mise run test` runs from the checkout.
+            _validate_locked_reproduction(package, proposed)
+            if previous and previous != proposed:
+                raise QualificationError("locked reproduction differs from committed provenance")
+            test_command = LOCKED_TEST_COMMAND
+            test_result = LOCKED_TEST_SKIPPED
+        else:
+            test_command, test_result = _run_package_tests(staged)
         summary = render_summary(
             previous,
             proposed,
@@ -1254,9 +1269,6 @@ def qualify(
             _replace_atomically(package, staged)
             changed = previous != proposed
         else:
-            _validate_locked_reproduction(package, proposed)
-            if previous and previous != proposed:
-                raise QualificationError("locked reproduction differs from committed provenance")
             if summary_path:
                 summary_path.write_text(summary)
             changed = False

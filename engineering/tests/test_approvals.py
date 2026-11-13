@@ -2498,6 +2498,8 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
 ) -> None:
     """The base is the merge-base with the default branch, the head the PR's, the pass one after the newest verdict
     review's, whose commit is the previous report's head; loop.md's `## Verifier brief` is appended."""
+    # no clone here, so the unforced-merge read's fetch of the made-up head fails at once
+    monkeypatch.chdir(tmp_path)
     earlier = "c" * 40
     reviews = (
         verdict_on(earlier, heading="Verifier (codex), pass 1"),
@@ -2575,6 +2577,8 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
     """A verifier on another host makes its own detached worktree at the head there: the brief gives the fetch and the
     worktree line, the role in that worktree, and the report, previous report and proof logs in its clone's tmp/loop/,
     where start --file writes them. A relative --far is no path there."""
+    # no clone here, so the unforced-merge read's fetch of the made-up head fails at once
+    monkeypatch.chdir(tmp_path)
     earlier = "c" * 40
     pr = pull(
         body="Closes #12.\n", reviews=(verdict_on(earlier, heading="Verifier (codex), pass 1"),)
@@ -2605,7 +2609,6 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         "- Proof log: /there/repo/tmp/loop/gate.log (its first line is the head)",
     ]
     # the previous pass saved its repros beside its report in the clone's tmp/loop/: named there by path
-    monkeypatch.chdir(tmp_path)
     (tmp_path / "tmp" / "loop").mkdir(parents=True)
     (tmp_path / "tmp/loop/pr7-v1.md").write_text(
         "Repro: `uv run pytest tmp/loop/pr7-v1-repro.py`, again tmp/loop/pr7-v1-repro.py,"
@@ -3563,7 +3566,18 @@ def lands(
             ).strip()
             git_in(origin, "update-ref", "refs/heads/main", squash, tip)
             pulls[number]["state"] = "MERGED"
+            state.setdefault("squashes", {})[number] = squash
             return ""
+        if args[0] == "api" and re.fullmatch(r"repos/\{owner\}/\{repo\}/pulls/\d+", args[1]):
+            # the PR as REST reads it, which land re-reads after a failed merge call (#923)
+            number = int(args[1].rsplit("/", 1)[1])
+            return json.dumps(
+                {
+                    "merged": pulls[number]["state"] == "MERGED",
+                    "head": {"sha": pulls[number]["headRefOid"]},
+                    "merge_commit_sha": state.get("squashes", {}).get(number),
+                }
+            )
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:

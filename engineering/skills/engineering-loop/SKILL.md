@@ -588,9 +588,15 @@ or the owner's private network.
 - **Nothing on GitHub names a host, a path or a session**: not the report, the verdict, the
   evidence or a brief's text quoted there, since a public repo publishes them.
   The commits too: the cloud harness tells each session to end every commit with a
-  `Claude-Session:` link, and a brief can't override it, so the project commits a
-  `.claude/settings.json` whose `attribution.commit` is only the co-author line (and
-  `attribution.pr` empty), which replaces that instruction in every session cloned from it.
+  `Claude-Session:` link, and neither a brief nor a committed `attribution.commit` in
+  `.claude/settings.json` removes that instruction. `land` drops the line from the squash
+  body, so `main` stays clean, but the PR branch's commits keep it. A private repo may accept
+  that. A public repo publishes its branch commits, so it strips the line at the source with
+  `approvals.py commit-msg <file>`, which removes every `Claude-Session:` line and folds the
+  blank lines as `land` does: its pre-commit config runs that command at the `commit-msg`
+  stage (a local hook, `stages: [commit-msg]`), and the cloud environment's setup installs
+  that hook type (`pre-commit install --hook-type commit-msg`), since a session's clone has
+  only the hook types its setup installed.
 - **Verifier in the worker's VM.** With the loop.md line `Cloud verifier: worker session`, the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host.

@@ -198,7 +198,11 @@ design, wireframes included for a UI, and delegate the rest.
      a verdict of its own. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
      the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
-     needed when `check merge` prints that the merge carries the head's verdict.
+     needed when `check merge` prints that the merge carries the head's verdict. When every
+     commit since the last verdict's head is a merge of main and `land` named none of those
+     heads in a conflict comment, `check merge` and the verifier brief print `unforced merge
+     of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
+     telling you to merge main after each landing is wrong, so leave the next one unmerged.
    - Write the PR body with the Land skill (SKILL.md, Practice), its proof under
      `## Evidence`. Where the change is high risk, the merge approval is also the owner's
      go on the head that lands (SKILL.md, Approvals and proof): `approvals.py approve merge
