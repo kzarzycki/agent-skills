@@ -2623,7 +2623,8 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
     naming it, whose first line says whose go it is; with `withdraw`, a newer failing status and record that take it
     back. The script writes every word, so no agent's description of the change travels with it. A head that moved is
     refused, since the approver saw the one they were asked about. The delegate's go into the default branch is
-    refused unless loop.md's `delegate` is `all`, since without it only the owner's go covers that branch, and on a PR
+    refused unless `delegate` is `all` in the policy on `origin/<base>` (base_policy), since without it only the owner's
+    go covers that branch and a branch's own edit is not the owner's, and on a PR
     touching a path `risk.merge_paths` names (owners_only) into any branch, since that merge is the owner's alone."""
     pull = pull_request(number)
     if pull["state"] != "OPEN":
@@ -2640,10 +2641,10 @@ def go(number: int, head: str, by: str = "owner", withdraw: bool = False) -> int
             raise Refused(
                 f"PR #{number}: the delegate's go is no go here, since {sole}: it waits for the owner's"
             )
-        if default(pull) and delegation(loop) != "all":
+        if default(pull) and delegation(base := base_policy(pull["baseRefName"], loop)) != "all":
             raise Refused(
                 f"PR #{number} targets {pull['baseRefName']}, the default branch: the delegate's go covers it only"
-                f" with `loop.delegate: all` in {source(loop)}, so it waits for the owner's"
+                f" with `loop.delegate: all` in {pull['baseRefName']}'s {source(base)}, so it waits for the owner's"
             )
     if withdraw:
         # the label off too, since into a feature branch it is a go of its own
@@ -3560,6 +3561,16 @@ def project() -> tuple[str | None, str | None]:
     tracker, loop, policy = (
         read(root / path) if (root / path).exists() else None for path in (TRACKER, LOOP, POLICY)
     )
+    loop = chosen(loop, policy)
+    if tracker is not None:
+        tracker_settings(tracker)
+    return tracker, loop
+
+
+def chosen(loop: str | None, policy: str | None) -> str | None:
+    """The policy of a loop.md and a gatekeeper.md's texts, None for one missing (project): gatekeeper.md's (a Policy),
+    else loop.md's `## Settings` block, read with a deprecation line; both holding one is refused, since two sources of
+    the bar would drift. Settings off their schema are refused here."""
     if policy is not None:
         if loop is not None and SETTINGS.search(section(loop, "Settings")):
             raise Refused(
@@ -3569,9 +3580,34 @@ def project() -> tuple[str | None, str | None]:
     elif loop is not None:
         moved()
     settings(loop)
-    if tracker is not None:
-        tracker_settings(tracker)
-    return tracker, loop
+    return loop
+
+
+def base_policy(base: str, checkout: str | None) -> str | None:
+    """The policy on `origin/<base>` after a fetch of it, chosen from its files as project() chooses the checkout's,
+    since a branch's own edit of the policy is not the one the owner approved; `checkout`, the running checkout's, when
+    that ref holds neither file (or no fetch ever made it), today's rule. A failed fetch reads the ref as last fetched."""
+    ref = f"refs/remotes/origin/{base}"
+    root = toplevel()
+    subprocess.run(
+        ["git", "-C", str(root), "fetch", "-q", "origin", f"+refs/heads/{base}:{ref}"],
+        capture_output=True,
+        check=False,
+    )
+
+    def shown(path: Path) -> str | None:
+        found = subprocess.run(
+            ["git", "-C", str(root), "show", f"{ref}:{path.as_posix()}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return found.stdout if found.returncode == 0 else None
+
+    loop, policy = shown(LOOP), shown(POLICY)
+    if loop is None and policy is None:
+        return checkout
+    return chosen(loop, policy)
 
 
 @functools.cache

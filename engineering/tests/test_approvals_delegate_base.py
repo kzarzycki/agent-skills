@@ -1,0 +1,117 @@
+"""approvals.py: `approve merge --by delegate` reads `loop.delegate` from the default branch's policy at
+`origin/<base>`, the one the owner approved, not from the checkout it runs in (#842)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+from approvals_harness import (
+    HEAD,
+    add,
+    added,  # noqa: F401
+    approvals,
+    assigned,  # noqa: F401
+    attached,  # noqa: F401
+    git_in,
+    graphql_answers,  # noqa: F401
+    hub,  # noqa: F401
+    loop_md,
+    others_open,  # noqa: F401
+    pull,
+    pushed,  # noqa: F401
+    refs,  # noqa: F401
+    required,  # noqa: F401
+)
+
+RULE = loop_md("risk:\n  paths:\n    - .github/**\n")
+ALL = add(RULE, "loop", "delegate: all\n")
+LOOP = Path("docs/agents/loop.md")
+
+
+def committed(where: Path, loop: str) -> None:
+    """`where`, a checkout whose last commit holds `loop` as its loop.md."""
+    (where / "docs" / "agents").mkdir(parents=True, exist_ok=True)
+    (where / LOOP).write_text(loop)
+    git_in(where, "add", "-A")
+    git_in(where, "commit", "-q", "-m", "policy")
+
+
+@pytest.fixture
+def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A clone of an origin whose main holds `RULE`, on a branch `feature`, run in; a PR #7 into main stubbed on
+    GitHub, each comment posted collected in `posted`. A test sets main's policy with `main(<loop.md>)` and the
+    branch's by writing its loop.md."""
+    origin, work = tmp_path / "origin", tmp_path / "work"
+    git_in(tmp_path, "init", "-q", "-b", "main", str(origin))
+    for where in (origin,):
+        git_in(where, "config", "user.email", "loop@example.com")
+        git_in(where, "config", "user.name", "loop")
+    committed(origin, RULE)
+    git_in(tmp_path, "clone", "-q", str(origin), str(work))
+    git_in(work, "checkout", "-q", "-b", "feature")
+    git_in(work, "config", "user.email", "loop@example.com")
+    git_in(work, "config", "user.name", "loop")
+
+    def main(loop: str) -> None:
+        git_in(origin, "checkout", "-q", "main")
+        committed(origin, loop)
+
+    pr = pull(files=(".github/ci.yml",))
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: posted.append(body))
+    monkeypatch.chdir(work)
+    return {"main": main, "posted": posted, "work": work}
+
+
+def delegate(capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
+    code = approvals.main(["approve", "merge", "7", "--head", HEAD, "--by", "delegate"])
+    return code, capsys.readouterr().out
+
+
+def test_a_branch_that_sets_delegate_all_gets_no_delegates_go_into_main_while_mains_policy_lacks_it(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    LOOP.write_text(ALL)  # the branch's own edit, which main never approved
+    code, out = delegate(capsys)
+    assert code == 1 and "`loop.delegate: all`" in out and "main" in out
+    assert (checkout["posted"], hub) == ([], {})
+    committed(checkout["work"], ALL)  # committed on the branch, all the same
+    assert delegate(capsys)[0] == 1
+    assert (checkout["posted"], hub) == ([], {})
+
+
+def test_mains_delegate_all_covers_a_branch_whose_policy_lacks_it(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    checkout["main"](ALL)  # main moved on after the branch was cut: the fetch reads it
+    assert LOOP.read_text() == RULE
+    assert delegate(capsys) == (
+        0,
+        f"PR #7: the delegate's go is on {HEAD}, under the owner's delegation\n",
+    )
+    assert [s["context"] for s in hub[HEAD]] == ["owner"]
+    assert len(checkout["posted"]) == 1
+
+
+def test_a_default_branch_with_no_policy_falls_back_to_the_checkouts(
+    checkout: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    origin = checkout["work"].parent / "origin"
+    git_in(origin, "rm", "-q", str(LOOP))
+    git_in(
+        origin, "commit", "-q", "-m", "no policy"
+    )  # main holds none: today's rule reads the checkout
+    LOOP.write_text(ALL)
+    assert delegate(capsys)[0] == 0
+    hub.clear()
+    LOOP.write_text(RULE)
+    assert delegate(capsys)[0] == 1

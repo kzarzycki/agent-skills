@@ -395,8 +395,9 @@ owner to say it where the landing runs, or record it as the delegate's. The dele
 approver's go may be relayed to the session where landing runs: `approve merge <pr> --head
 <sha> --by delegate` records it, pinned to that head the same way, with a status and a record
 that name it the delegate's, so the PR shows whose go landed it, and `check merge` and `land`
-print whose go they used. Into the default branch it is refused unless the policy sets
-`delegate: all` under `loop`, and there a delegate's go counts only while it does; without the
+print whose go they used. Into the default branch it is refused unless the policy on
+`origin/<base>` sets `delegate: all` under `loop` (a branch's own edit of it is not the owner's;
+a base with no policy file leaves the checkout's), and there a delegate's go counts only while it does; without the
 key (`feature`) the owner's go alone covers the default branch. A status covers one commit, so
 it never covers code the approver did not see; it carries to a head whose commits since are
 only merges of the base, once the verifier's pass there says `Logic change: none`. Into the default branch these are the only go:
