@@ -177,7 +177,7 @@ The runner drives a Codex Cloud thread with the host's own Codex login. One real
 - **What the pass did.** In the thread's VM it ran the focused tests (44 passed) and eight mutations (all killed), and then, with no host login for the project's orchestration service, stopped on a question (`<report>.question`) asking for the proof only a host can give. A second turn on the same thread, with that proof supplied by the lead, found the checkout and the verifier's earlier work in place and wrote the report: 0 blocker, 0 major, 0 minor, satisfied, risk low. The host verifier's pass on that head said the same.
 - **Wall time.** The first turn took 150 s with the thread start, the clone and the question; the second turn 37 s. The host pass's wall time is not recorded in its review.
 - **Quota.** The weekly figure from the usage endpoint read 13% before and after both turns: the allowance is shown in whole percent, so a pass costs under a point.
-- **Lifetime.** Two threads were alive 65 to 70 minutes after their last turn, with the same hostname, the same checkout and the same boot time.
+- **Lifetime.** Two threads were alive 65 to 70 minutes after their last turn, and one of them 100 minutes after, with the same hostname, checkout and boot time; a turn sent then ran on it.
 
 ### Codex CLI in an Anthropic cloud VM
 
