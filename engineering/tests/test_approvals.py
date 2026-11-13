@@ -3412,6 +3412,8 @@ def lands(
     onto origin's main as GitHub does. The gate fails on a tree holding `red.txt`, and twice on one holding
     `flaky.txt`, and changes `app.py` on one holding `dirty.txt`; on one holding `machine.txt`, it exits 78 the number of
     times the file says, leaving `leftover.txt`; `runs()` counts its runs. `land(*argv)` runs it: (exit, lines)."""
+    # a landed PR's worker sessions are Omnigent's, which no land here may reach (test_approvals_keep_pr_worker.py)
+    monkeypatch.setattr(approvals, "archive_workers", lambda _number: None)
     origin, work = tmp_path / "origin.git", tmp_path / "work"
     git_in(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
     (origin / "hooks" / "pre-receive").write_text(NO_REWRITE)
