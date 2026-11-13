@@ -2,12 +2,13 @@
 
 The loop's verifier is of the other model family from the author, so for Claude-written PRs it is Codex. Today it runs on a host, and it is the last step of a thread that has no cloud route (#809, #365). This note answers: can a Codex verifier run on a cloud machine from OpenAI or Anthropic, paid by the ChatGPT and Claude subscriptions rather than API keys, and still run the project's app and Docker images?
 
-Checked against codex-cli 0.167.1, Claude Code 2.1.322 and the vendor docs linked below. Routes 1 and 2 were then probed by runs; what the runs showed is under Spike results and overrides the docs where they differ. The last run was a real verifier pass by the Codex CLI inside an Anthropic VM, after a device login the owner approved.
+Checked against codex-cli 0.167.1, Claude Code 2.1.322 and the vendor docs linked below. Routes 1 and 2 were then probed by runs; what the runs showed is under Spike results and overrides the docs where they differ. The last run on route 2 was a real verifier pass by the Codex CLI inside an Anthropic VM, after a device login the owner approved. Route 1b was found afterwards, by watching what the ChatGPT web app sends when it runs a Cloud chat, and then probed from a host script.
 
 ## Short answer
 
 - **Lead candidate: the Codex CLI inside an Anthropic cloud VM.** The spike showed Docker and a Postgres image running there, Codex's sandbox starting, OpenAI's hosts reachable with streaming and WebSockets intact, and `codex login --device-auth` starting inside the VM. A real verifier pass then ran there on the host verifier's model: 91 s for the first pass with a test slice and a Postgres container, 13 s for a resumed second pass. What is left is how an unattended verifier gets its login, since a device login needs the owner at a browser and dies with the VM.
-- **A Codex Cloud task works, but as a weaker verifier.** It is on the subscription by construction and the report comes back. The spike also showed that containers can't run in it, that it ran on an older model than the host verifier with no way found to change it, and that each pass gets a fresh container. It fits a review plus tests that need no container.
+- **Strongest candidate once it has a bridge: a Codex Cloud thread driven over the app-server protocol (route 1b).** The current Codex Cloud gives each chat its own VM that keeps its files, installed tools and Docker images between turns. The web app drives it with the same JSON-RPC protocol as `codex app-server`, over a WebSocket, and a host script with the Codex CLI's stored ChatGPT login can do the same: start a thread on a chosen model and effort, add turns on the same machine, and run commands in the VM without a model turn. Docker runs, `gh` is signed in to the owner's GitHub account, and GitHub's GraphQL API answers. No ChatGPT login leaves the host. The endpoint is undocumented, and no pass with a full verifier brief has run on it yet.
+- **A legacy Codex Cloud task works, but as a weaker verifier.** This is what `codex cloud exec` submits. It is on the subscription by construction and the report comes back. The spike also showed that containers can't run in it, that it ran on an older model than the host verifier with no way found to change it, and that each pass gets a fresh container. OpenAI plans to deprecate it.
 - **Documented baseline: a rented verifier-only machine.** It is OpenAI's documented pattern and needs no change to the loop. It costs a VM and is a machine we operate. Not probed.
 - **`@codex review` is not a verifier.** It reviews the diff and reports only P0/P1 issues. It doesn't run the gate, a mutation or the app.
 
@@ -19,7 +20,7 @@ Checked against codex-cli 0.167.1, Claude Code 2.1.322 and the vendor docs linke
 - A later pass on the same PR that reviews only the delta, ideally in the same session, since a fresh pass costs about twice as much (#475).
 - A chosen model and effort, so the `Verifier model:` line and the signature (#529) hold.
 
-## Route 1: a Codex Cloud task
+## Route 1: a Codex Cloud task (legacy)
 
 `codex cloud exec --env <id> --branch <branch> "<brief>"` submits a task to OpenAI's cloud and prints its URL. `codex cloud status <id>` exits non-zero until the task is ready, so it can be polled. `codex cloud diff <id>` prints the task's diff.
 
@@ -41,7 +42,33 @@ What stands in the way:
 - **`codex cloud` is experimental and its HTTP API is undocumented**, so a bridge built on it can break without notice.
 - **A bridge is needed.** Omnigent has no agent that submits a Codex Cloud task, polls it and fetches the result. It is small: three CLI calls and the `--pr` report channel that cloud workers already use.
 
-The Codex desktop app has a Cloud mode, but only through its UI. Its deep links open local chats only, so it gives no programmatic route. [commands](https://developers.openai.com/codex/reference/commands.md)
+## Route 1b: a Codex Cloud thread over the app-server protocol
+
+The Codex Cloud that the ChatGPT web, desktop and mobile apps open under "Work in > Cloud" is a different product from route 1's tasks, which the docs now call Codex Cloud (Legacy). The CLI's `codex cloud` commands still talk to the legacy one.
+
+What the docs say:
+
+- **A task is a VM that keeps its state.** "Existing task: continues with its own saved files, including uncommitted changes and installed tools." A new task in a published environment "starts from the environment's prepared filesystem". [cloud environments](https://learn.chatgpt.com/docs/environments/cloud-environments.md)
+- **VM size and lifetime.** Plus: 2 vCPU, 8 GiB RAM, 8 GiB disk. Pro, Business, Enterprise: 4 vCPU, 16 GiB, 32 GiB. "A task's saved VM state is recoverable for up to seven days after you last start a turn or resume the task." [cloud environments](https://learn.chatgpt.com/docs/environments/cloud-environments.md)
+- **Network and secrets.** An environment has full public internet access or an allowlist, environment variables, network secrets that a proxy swaps in for allowed HTTPS hosts, a Tailscale connection to a private network, and OIDC identities for AWS and Google Cloud. [cloud environments](https://learn.chatgpt.com/docs/environments/cloud-environments.md)
+- **Repository skills are loaded.** "Skills stored in your repository are available in cloud tasks. Personal skills from your local computer aren't synced." Computer use is not supported yet.
+- **No documented way to drive it from a script.** The docs name the apps, Slack and Teams, and for the CLI only `codex cloud exec` and `codex cloud list`. [Codex Cloud](https://learn.chatgpt.com/docs/cloud.md)
+
+What the web app does, read from its network traffic:
+
+- It opens a WebSocket to `wss://codex-cloud-backend.chatgpt.com/` and speaks the app-server protocol that `codex app-server` documents: `initialize`, `model/list`, `thread/list`, `thread/start`, `turn/addUserMessage`, `thread/items/list`, `command/exec`, and the `item/*` and `turn/*` notifications. The server names itself `app-server-backend/0.1.0`. [app-server](https://learn.chatgpt.com/docs/app-server.md)
+- The login travels as a WebSocket subprotocol, `openai-bearer.<ChatGPT access token>`, beside `codex-app-server` and a client name. No cookie is sent.
+- `thread/start` carries the model, a `config` with `model_reasoning_effort`, `serviceName: "codex_cloud"` and `environments: [{"environmentConfigId": null}]`, where null is the default environment. A turn carries the model and effort again in `collaborationMode.settings`.
+
+What a host script could do with that (Spike results): everything the verifier needs from a runner, with the access token of the Codex CLI's own login on the host. So this route has the properties route 2 was chosen for (a kept machine, Docker, a chosen model, a later pass on the same files) without its two costs: no ChatGPT login in another vendor's VM, and no Claude session that carries the verdict.
+
+What stands in the way:
+
+- **The endpoint is undocumented.** The protocol is the documented app-server one, but the WebSocket address, the subprotocol login and the cloud-only fields of `thread/start` are read from the web app, so they can change without notice. Whether the CLI's own client (`codex --remote <address>`) connects to it was not tried.
+- **A bridge is needed.** Omnigent's Codex agent starts a local `codex app-server` and speaks this protocol to it. Pointing that client at the cloud endpoint, or a small script with `start`, `turn`, `exec` and `report` verbs, would make a Codex Cloud thread a worker or a verifier. The probe's client is about 40 lines of Python.
+- **Quota.** Cloud and local use share one weekly allowance, and the docs warn that cloud tasks may use more of it. The probe's turns were too small to measure.
+- **A published environment is made in the app.** The default environment was enough for the probe: it has full internet access and the tools below. A prepared one (the repository cloned, its tools installed) is created in a setup conversation in the web or desktop app; whether the protocol can create one was not tried.
+- **Terms.** Driving the service with a client of our own is not something OpenAI's docs describe. It uses the owner's login for the owner's tasks, as the apps do.
 
 ## Route 2: the Codex CLI inside an Anthropic cloud VM
 
@@ -90,17 +117,17 @@ Anthropic's self-hosted environments (public beta on Team and Enterprise) are a 
 
 ## Comparison
 
-| | Codex Cloud task | Codex CLI in Anthropic VM | Rented machine |
-|---|---|---|---|
-| Paid by | ChatGPT plan | ChatGPT plan, plus Claude plan for the carrier | ChatGPT plan, plus the VM |
-| ChatGPT login leaves our hands | No | Yes, into Anthropic's VM | No |
-| Docker and the app | No (spike) | Yes (spike) | Yes |
-| Model and effort chosen | No way found (spike) | Yes, same CLI as a host (spike) | Yes |
-| Later pass keeps the conversation | Yes (spike) | Yes, if the session is kept (spike) | Yes |
-| Later pass keeps the files | No, fresh container (spike) | Yes, if the session is kept (spike) | Yes |
-| Report channel | The task's record over HTTP (spike) | PR comment by the carrier (spike) | Host file, as today |
-| New code | A small Omnigent bridge on an undocumented API | An environment and a carrier brief | None |
-| Host step left | None | Keeping the login fresh | The machine itself |
+| | Codex Cloud thread (1b) | Legacy Codex Cloud task | Codex CLI in Anthropic VM | Rented machine |
+|---|---|---|---|---|
+| Paid by | ChatGPT plan | ChatGPT plan | ChatGPT plan, plus Claude plan for the carrier | ChatGPT plan, plus the VM |
+| ChatGPT login leaves our hands | No | No | Yes, into Anthropic's VM | No |
+| Docker and the app | Yes (spike) | No (spike) | Yes (spike) | Yes |
+| Model and effort chosen | Yes (spike) | No way found (spike) | Yes, same CLI as a host (spike) | Yes |
+| Later pass keeps the conversation | Yes (spike) | Yes (spike) | Yes, if the session is kept (spike) | Yes |
+| Later pass keeps the files | Yes, same VM (spike) | No, fresh container (spike) | Yes, if the session is kept (spike) | Yes |
+| Report channel | The thread's final message, or a file read with `command/exec` (spike) | The task's record over HTTP (spike) | PR comment by the carrier (spike) | Host file, as today |
+| New code | A small bridge on an undocumented endpoint | A small Omnigent bridge on an undocumented API | An environment and a carrier brief | None |
+| Host step left | Refreshing the host's own login | None | Keeping the login fresh | The machine itself |
 
 ## Spike results
 
@@ -122,6 +149,24 @@ One task with two follow-up turns, in an environment for this repo, on the branc
 - **The review was real.** Asked for defects in this note, it found three, all fair, and they are fixed here.
 - **Quota.** The weekly figure stayed at 70% across the three turns and a tiny fourth task. They were light, so this gives no per-pass cost for a real verifier pass.
 - **Not tested:** posting a PR comment with a network secret, the newer VM-based environments, and `codex cloud exec` itself, since the tasks were submitted over HTTP.
+
+### Codex Cloud thread over the app-server protocol
+
+Three threads in the default environment of a Pro-tier account. The first was started in the web app while its WebSocket frames were logged. Everything after it was sent from a host script that opens the same WebSocket with the access token of a Codex CLI login kept on the host. The script printed no token and no token went to the VM.
+
+- **The CLI's login is accepted.** `initialize`, `thread/list` and `model/list` answered. The model list has eight models, each with efforts from low to max or ultra, among them the host verifier's default-tier and mid-tier models.
+- **A thread starts from the script on a chosen model.** `thread/start` with the mid-tier model and `model_reasoning_effort: medium`, then one turn: done in 51 s, of which the turn was 42 s, on a VM that did not exist before. `thread/list` then shows that thread with that model and effort.
+- **A follow-up runs on the same machine.** A second turn on the first thread, sent from the script 90 s after the first and on another model, saw the same hostname and the file the first turn wrote.
+- **Commands run without a model turn.** `command/exec` with the thread's environment id ran a shell command in the VM and streamed its output back in 1.5 to 4 s. It saw the files and the pulled Docker image of the earlier turns.
+- **Machine.** 5 CPUs, 17 GB RAM, 32 GB disk, user `agent` without sudo, with git, python 3.12, node 24, uv, `gh` and a `codex` binary.
+- **Docker: yes.** A rootless daemon is running when the VM starts. `docker run hello-world` pulled from Docker Hub and ran, and the image was still there for the next call.
+- **Network.** `pypi.org`, `example.com` and `mise.run` answered 200, and `git clone` of a public GitHub repository worked: the default environment has full public internet access.
+- **GitHub.** `gh auth status` reports the owner's account through a `GH_TOKEN` the platform supplies, which expires after a few hours. The repository's permissions read as admin and push. `gh api graphql` answered a query on a PR's review threads, which the Anthropic VM's proxy refuses. Nothing was written to GitHub from the VM.
+- **The VM stays up with nobody connected.** Its uptime was continuous over 35 minutes with no model turn, including 10 minutes with no connection at all.
+- **This repo's full gate passes there.** After a clone of the PR's head and `mise install` (16 s), `QUALIFY_TIMEOUT=900 mise run check` exited 0 in 492 s, started with `command/exec` and left alone: 1391, 1632 and 12 tests passed, the same counts as on a host and in the Anthropic VM (472 s there).
+- **A background process needs its own session.** The same run started with `nohup … &` was killed a few minutes after the call that started it returned, with no exit line. Started with `setsid nohup … &` it ran to the end with nobody connected.
+- **Quota.** The account's weekly figure stayed at 90% across all of it. The turns were tiny, so this gives no per-pass cost.
+- **Not tested:** a pass with a full verifier brief, a published environment, how long an idle VM runs before it is saved and stopped, a resume after that, the CLI's own `--remote` client against this endpoint, and two clients on one thread.
 
 ### Codex CLI in an Anthropic cloud VM
 
@@ -156,4 +201,6 @@ One kept cloud session in the same environment. The carrier started `codex login
 
 1. **Keeping the login.** A device login needs the owner at a browser and dies with the VM. For unattended verifiers the environment has to hold an `auth.json` of its own (not the host's copy, since one copy must not be used from two machines), kept fresh from outside. That puts a ChatGPT login into an environment's settings, which is the owner's decision.
 2. **The carrier's cost.** How much Claude quota a carrier session spends on a full verifier pass was not measured.
-3. **Codex Cloud's newer environments.** Created in the Codex app. Whether they run containers and let a task pick its model would change the verdict on route 1.
+3. **A verifier pass on route 1b.** The probe showed every piece a pass needs, and no pass with a real verifier brief has run on a Codex Cloud thread. A bridge with `start`, `turn`, `exec` and `report` verbs, and one pass through it on a real PR, would settle whether it replaces route 2.
+4. **Route 1b's lifetime.** How long an idle VM runs before it is saved, whether a resumed one has its Docker images and running services, and what a pass costs in weekly quota.
+5. **Stability of route 1b.** The endpoint is the web app's. Whether `codex --remote` or OpenAI's access tokens for automation (Business and Enterprise workspaces, [access tokens](https://learn.chatgpt.com/docs/enterprise/access-tokens.md)) give a supported way in is unread beyond the docs.
