@@ -1424,7 +1424,10 @@ def uv_lock_setup(tmp_path, monkeypatch, holders, ps, txt):
         "ps": f"cat {tmp_path}/ps.txt",
         "lsof": 'case "$*" in\n'
         f'  *.lock) printf "{holders}";;\n'
-        + "".join(f'  *-p\\ {pid}) printf "{out}";;\n' for pid, out in txt.items())
+        + "".join(
+            f"  *-p\\ {pid}) " + ("exit 1" if out is None else f'printf "{out}"') + ";;\n"
+            for pid, out in txt.items()
+        )
         + "esac",
     }
     for name, body in stubs.items():
@@ -1476,3 +1479,35 @@ def test_uv_lock_held_by_another_process_keeps_the_skip(tmp_path, monkeypatch):
     assert (
         "skip uv: still running after 1s, in use; the lock is held by pid 31 (uv sync)" in said
     ), said
+
+
+def test_uv_lock_held_by_a_uv_run_younger_than_the_wait_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n41 1 00:00 uv run fresh.py\n"
+    _, said = uv_lock_setup(
+        tmp_path, monkeypatch, r"p11\np41\n", ps, {11: r"n/usr/bin/uv\n", 41: r"n/usr/bin/uv\n"}
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert "the lock is held by pid 41 (uv run fresh.py), not a uv run older than the wait" in said
+
+
+def test_uv_lock_with_a_failed_interpreter_lookup_is_not_forced(tmp_path, monkeypatch):
+    ps = "11 1 05:00 uv run server.py\n12 11 05:00 python server.py\n"
+    _, said = uv_lock_setup(tmp_path, monkeypatch, r"p11\n", ps, {11: r"n/usr/bin/uv\n", 12: None})
+    assert "forcing" not in said and "--force" not in said, said
+    assert "the interpreter lookup for pid 12 of pid 11 (uv run server.py) failed" in said, said
+
+
+def test_uv_lock_holder_with_a_symlinked_interpreter_in_the_cache_is_not_forced(
+    tmp_path, monkeypatch
+):
+    """A link inside the cache to a system python is still the holder's environment."""
+    cache = tmp_path.resolve() / "uvcache"
+    (cache / "environments-v2/s-abc/bin").mkdir(parents=True)
+    link = cache / "environments-v2/s-abc/bin/python"
+    link.symlink_to(sys.executable)
+    ps = "11 1 05:00 uv run --script s.py\n12 11 05:00 python s.py\n"
+    _, said = uv_lock_setup(
+        tmp_path, monkeypatch, r"p11\n", ps, {11: r"n/usr/bin/uv\n", 12: rf"n{link}\n"}
+    )
+    assert "forcing" not in said and "--force" not in said, said
+    assert f"runs {link} from the cache" in said, said

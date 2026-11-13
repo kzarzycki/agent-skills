@@ -252,9 +252,12 @@ def uv_force(run, wait):
                     family.add(child)
                     grew = True
         for member in sorted(family):
-            files = sh(['lsof', '-w', '-n', '-P', '-d', 'txt', '-Fn', '-p', str(member)]) or ''
-            inside = [l[1:] for l in files.splitlines() if l[:1] == 'n'
-                      and os.path.commonpath([os.path.realpath(l[1:]), cache]) == cache]
+            files = sh(['lsof', '-w', '-n', '-P', '-d', 'txt', '-Fn', '-p', str(member)])
+            if files is None:
+                return None, f'; the interpreter lookup for pid {member} of {who} failed'
+            # the path as opened too: a link inside the cache to a system python is still its environment
+            inside = [l[1:] for l in files.splitlines() if l[:1] == 'n' and any(
+                os.path.commonpath([p, cache]) == cache for p in (os.path.abspath(l[1:]), os.path.realpath(l[1:])))]
             if inside:
                 return None, f'; {who} runs {inside[0]} from the cache'
         seen.append(f'{who} started {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - age))}')
