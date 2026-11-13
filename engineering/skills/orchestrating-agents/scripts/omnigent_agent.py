@@ -125,8 +125,8 @@ A long-lived supervisor runs as ``supervise --registry <file> ... --install --lo
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
 ``omnigent-supervise-<hash>`` with ``Restart=always`` on Linux, a launchd agent
 ``omnigent.supervise.<hash>`` with ``KeepAlive`` on macOS; the hash is of the registry's resolved
-path, so each registry has one and installing again replaces it), carrying over ``PATH``,
-``RUNNER_SERVER_URL`` and the ``OMNIGENT_*`` settings but not the installing session's ids, appending
+path, so each registry has one and installing again replaces it), carrying over only the variables
+it reads (``SERVICE_VARIABLES``, ``SERVICE_PREFIXES``) and ``PATH`` less its temp-directory entries, appending
 its output to the log, then enables and starts it. Starting at boot without a login needs systemd
 lingering, which it reports and leaves to the owner. ``--uninstall`` with the same registry stops and
 removes it.
@@ -5320,11 +5320,33 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
 
 
-# Variables naming the session a command runs in: a service outlives that session, so it gets none.
-SESSION_VARIABLES = (
-    "OMNIGENT_SESSION_ID",
-    "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
-    "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
+# What a supervise service reads from its environment, carried over from the install: the
+# server and settings this script reads, and the small model's config. Everything else is left
+# out, since a session's environment also holds its runner's state (ids, tokens, pids, log
+# files), which a service outliving that session must not take for its own.
+SERVICE_VARIABLES = (
+    "RUNNER_SERVER_URL",
+    "OMNIGENT_USER_ID",
+    "OMNIGENT_PROJECT",
+    "OMNIGENT_PERMISSION_MODE",
+    "OMNIGENT_SMALL_MODEL",
+    "OMNIGENT_STUCK_SECONDS",
+    "OMNIGENT_VERIFIER_ROUTE",
+    "OMNIGENT_CAPACITY_WAIT_SECONDS",
+    "OMNIGENT_MIN_CPU_IDLE",
+    "OMNIGENT_MAX_LOAD_PER_CORE",
+    "OMNIGENT_MIN_AVAILABLE_MB",
+    "LOOP_DENY_LIST",
+    "LOOP_HEAVY_LOCK",
+    "XDG_CACHE_HOME",
+    "CLAUDE_CONFIG_DIR",
+)
+SERVICE_PREFIXES = (
+    "OMNIGENT_SUPERVISE_",
+    "OMNIGENT_MODEL_",
+    "OMNIGENT_EFFORT_",
+    "OMNIGENT_MIN_AVAILABLE_MB_",
+    "OMNIGENT_MAX_LOAD_",
 )
 
 
@@ -5358,15 +5380,29 @@ def service_argv(argv: list[str], owed: tuple[str, ...] | list[str] = ()) -> lis
 
 
 def service_env(env: dict[str, str]) -> dict[str, str]:
-    """What a service would lack from the install-time environment: ``PATH`` (to find
-    ``omnigent``, ``gh`` and ``claude``), ``RUNNER_SERVER_URL`` and the ``OMNIGENT_*`` settings,
-    less the ones naming the installing session."""
-    return {
+    """What a service would lack from the install-time ``env``: ``SERVICE_VARIABLES``, those
+    under ``SERVICE_PREFIXES``, and ``PATH`` (to find ``omnigent``, ``gh`` and ``claude``) less
+    its entries under a temp directory, which a session's terminal adds and a reboot removes."""
+    temps = {
+        os.path.realpath(t)
+        for t in ("/tmp", "/var/tmp", env.get("TMPDIR"), env.get("TMP"), env.get("TEMP"))
+        if t
+    }
+
+    def kept(entry: str) -> bool:
+        real = os.path.realpath(entry)
+        return os.path.isabs(entry) and not any(
+            real == t or real.startswith(t.rstrip("/") + "/") for t in temps
+        )
+
+    carried = {
         k: v
         for k, v in sorted(env.items())
-        if (k in ("PATH", "RUNNER_SERVER_URL") or k.startswith("OMNIGENT_"))
-        and k not in SESSION_VARIABLES
+        if k in SERVICE_VARIABLES or k.startswith(SERVICE_PREFIXES)
     }
+    if path := ":".join(e for e in env.get("PATH", "").split(":") if e and kept(e)):
+        carried = {"PATH": path, **carried}
+    return carried
 
 
 def _systemd_quote(text: str) -> str:
@@ -5377,14 +5413,14 @@ def _systemd_quote(text: str) -> str:
 
 def systemd_unit(argv: list[str], log: Path, name: str, env: dict[str, str], cwd: Path) -> str:
     """The systemd user unit running ``argv`` for ever, appending its output to ``log``."""
-    log_path = str(log).replace("%", "%%")
+    log_path = str(log).replace("%", "%%")  # append: takes the rest of the line, unquoted
     lines = [
         "[Unit]",
         f"Description=Omnigent supervisor {name}",
         "",
         "[Service]",
         "ExecStart=" + " ".join(_systemd_quote(a).replace("$", "$$") for a in argv),
-        f"WorkingDirectory={_systemd_quote(str(cwd))}",
+        f"WorkingDirectory={str(cwd).replace('%', '%%')}",  # systemd takes no quotes here
         *(f"Environment={_systemd_quote(f'{k}={v}')}" for k, v in env.items()),
         "Restart=always",
         "RestartSec=5",

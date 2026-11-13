@@ -762,11 +762,13 @@ replaces and restarts it. `supervise --registry <file> --uninstall` stops and re
 into the service, so a restart reposts none.
 
 A job starts with a bare environment (launchd's `PATH` is `/usr/bin:/bin:/usr/sbin:/sbin`)
-and without the session's `RUNNER_SERVER_URL`, so the service carries over the install-time
-`PATH`, which finds `omnigent`, whose interpreter refreshes the token, `RUNNER_SERVER_URL`
-and every `OMNIGENT_*` setting, but not the variables naming the installing session
-(`OMNIGENT_SESSION_ID`, `OMNIGENT_TERMINAL_LAUNCH_SESSION_ID`,
-`OMNIGENT_RUNNER_PRIMARY_SESSION_ID`), which the service outlives. Naming the server with
+and without the session's `RUNNER_SERVER_URL`, so the service carries over, from the install's
+environment, only what the script reads: `RUNNER_SERVER_URL`, `OMNIGENT_USER_ID`, its
+`OMNIGENT_*` settings (`OMNIGENT_SUPERVISE_*`, `OMNIGENT_MODEL_*`, `OMNIGENT_STUCK_SECONDS`
+and the like, listed as `SERVICE_VARIABLES` and `SERVICE_PREFIXES` in the script) and `PATH`,
+which finds `omnigent`, whose interpreter refreshes the token, less its entries under a temp
+directory. The rest of a session's environment is its runner's state (ids, tokens, pids, log
+files), which the service outlives. Naming the server with
 `--server` keeps the command explicit. `omnigent_agent.py` acts on the first of `--server`,
 `$RUNNER_SERVER_URL` (set by the runner in every session), and the one login in
 `auth_tokens.json`. `config.yaml`'s `server:` is not read, because one account runs workloads on

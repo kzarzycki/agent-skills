@@ -10590,9 +10590,10 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
 
 def test_supervise_install_writes_a_restarting_service_per_registry(tmp_path: Path) -> None:
     """The unit and plist run the supervise command less --install and --log, restart it and
-    log to the file; each registry gets its own name. Neither systemctl nor launchctl runs."""
+    log to the file, in directive forms systemd accepts; each registry gets its own name; only
+    the variables the script reads are carried over. Neither systemctl nor launchctl runs."""
     one, two = tmp_path / "a.registry", tmp_path / "b.registry"
-    log = tmp_path / "supervise.log"
+    log, cwd = tmp_path / "supervise.log", tmp_path / "work dir"
     argv = omnigent_agent.service_argv(
         [
             "supervise",
@@ -10609,22 +10610,46 @@ def test_supervise_install_writes_a_restarting_service_per_registry(tmp_path: Pa
     )
     assert argv[2:] == ["supervise", "--registry", str(one), "--notify", "S"]
     name = omnigent_agent.service_name(one)
-    env = {"PATH": "/bin", "OMNIGENT_PROJECT": "p"}
-    unit = omnigent_agent.systemd_unit(argv, log, name, env, tmp_path)
-    exec_start = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+    session_env = {
+        "PATH": "/tmp/terminal-shim/bin:/home/u/.local/bin:/usr/bin",
+        "TMPDIR": "/scratch/t",
+        "RUNNER_SERVER_URL": "http://server",
+        "OMNIGENT_USER_ID": "u1",
+        "OMNIGENT_SUPERVISE_REGISTRY": str(one),
+        "OMNIGENT_MODEL_CLAUDE": "m",
+        "OMNIGENT_STUCK_SECONDS": "900",
+        "OMNIGENT_RUNNER_ID": "runner-token",
+        "OMNIGENT_RUNNER_PARENT_PID": "41",
+        "OMNIGENT_ZYGOTE_SOCKET": "/tmp/z.sock",
+        "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID": "t1",
+        "OMNIGENT_SESSION_ID": "s1",
+        "OMNIGENT_PROCESS_LOG_FILE": "/tmp/p.log",
+        "OMNIGENT_CONNECT_MARKER": "m",
+        "HOME": "/home/u",
+    }
+    session_env["PATH"] += ":/scratch/t/x/bin"
+    env = omnigent_agent.service_env(session_env)
+    assert env == {
+        "PATH": "/home/u/.local/bin:/usr/bin",
+        "OMNIGENT_MODEL_CLAUDE": "m",
+        "OMNIGENT_STUCK_SECONDS": "900",
+        "OMNIGENT_SUPERVISE_REGISTRY": str(one),
+        "OMNIGENT_USER_ID": "u1",
+        "RUNNER_SERVER_URL": "http://server",
+    }
+    unit = omnigent_agent.systemd_unit(argv, log, name, env, cwd).splitlines()
+    exec_start = next(line for line in unit if line.startswith("ExecStart="))
     assert f'"{one}" "--notify" "S"' in exec_start and "--install" not in exec_start
     assert "--log" not in exec_start and "X=r.md" not in exec_start
-    assert "Restart=always" in unit and f"StandardOutput=append:{log}" in unit
-    assert f"StandardError=append:{log}" in unit and 'Environment="PATH=/bin"' in unit
-    plist = omnigent_agent.launchd_plist(
-        argv, log, omnigent_agent.service_label(one), env, tmp_path
-    )
+    # systemd takes these unquoted: a quoted WorkingDirectory is "not absolute"
+    assert f"WorkingDirectory={cwd}" in unit
+    assert f"StandardOutput=append:{log}" in unit and f"StandardError=append:{log}" in unit
+    assert "Restart=always" in unit and 'Environment="PATH=/home/u/.local/bin:/usr/bin"' in unit
+    assert not any(x in "\n".join(unit) for x in ("RUNNER_ID", "terminal-shim", "z.sock"))
+    plist = omnigent_agent.launchd_plist(argv, log, omnigent_agent.service_label(one), env, cwd)
     assert plist["Label"] == "omnigent.supervise." + name.rsplit("-", 1)[1]
     assert plist["ProgramArguments"] == argv and plist["KeepAlive"] and plist["RunAtLoad"]
     assert plist["StandardOutPath"] == plist["StandardErrorPath"] == str(log)
     assert plist["EnvironmentVariables"] == env
     assert name.startswith("omnigent-supervise-") and name != omnigent_agent.service_name(two)
     assert omnigent_agent.service_name(tmp_path / "x" / ".." / "a.registry") == name
-    assert "OMNIGENT_SESSION_ID" not in omnigent_agent.service_env(
-        {"OMNIGENT_SESSION_ID": "s", "PATH": "/bin", "HOME": "/h"}
-    )
