@@ -7311,7 +7311,8 @@ def test_a_word_wait_never_resolves_to_the_chief_of_staff_or_an_unknown_wait_to_
 def test_a_lead_word_without_a_leads_registry_names_a_child_titled_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    wait = "STILL WORKING: waiting on the queue lead. Report: m.md"
+    wait = "STILL WORKING: waiting on the lead. Report: m.md"
+    assert omnigent_agent.wait_of(wait) == "lead"
     registry, og = manager(tmp_path, wait, **{WORKER: {"title": "queue-lead"}})
     registry.write_text(f"m={tmp_path / 'm.md'}\tfollow\n")  # no leads= registry
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
