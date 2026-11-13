@@ -10779,6 +10779,131 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     assert "is in use on host h by live session" in err and "M lead" in err
 
 
+def test_supervise_install_writes_a_restarting_service_per_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unit and plist run the supervise command less --install and --log, restart it and
+    log to the file, in directive forms systemd accepts; each registry gets its own name; only
+    the variables the script reads are carried over. Neither systemctl nor launchctl runs."""
+    one, two = tmp_path / "a.registry", tmp_path / "b.registry"
+    log, cwd = tmp_path / "supervise.log", tmp_path / "work dir"
+    argv = omnigent_agent.service_argv(
+        [
+            "supervise",
+            "--registry",
+            str(one),
+            "--notify",
+            "S",
+            "--install",
+            "--log",
+            str(log),
+            "X=r.md",
+        ],
+        ["X=r.md"],
+    )
+    assert argv[2:] == ["supervise", "--registry", str(one), "--notify", "S"]
+    name = omnigent_agent.service_name(one)
+    session_env = {
+        "PATH": "/tmp/terminal-shim/bin:/home/u/.local/bin:/usr/bin",
+        "TMPDIR": "/scratch/t",
+        "RUNNER_SERVER_URL": "http://server",
+        "OMNIGENT_USER_ID": "u1",
+        "OMNIGENT_SUPERVISE_REGISTRY": str(one),
+        "OMNIGENT_MODEL_CLAUDE": "m",
+        "OMNIGENT_STUCK_SECONDS": "900",
+        "OMNIGENT_RUNNER_ID": "runner-token",
+        "OMNIGENT_RUNNER_PARENT_PID": "41",
+        "OMNIGENT_ZYGOTE_SOCKET": "/tmp/z.sock",
+        "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID": "t1",
+        "OMNIGENT_SESSION_ID": "s1",
+        "OMNIGENT_PROCESS_LOG_FILE": "/tmp/p.log",
+        "OMNIGENT_CONNECT_MARKER": "m",
+        "HOME": "/home/u",
+    }
+    session_env["PATH"] += ":/scratch/t/x/bin"
+    env = omnigent_agent.service_env(session_env)
+    assert env == {
+        "PATH": "/home/u/.local/bin:/usr/bin",
+        "OMNIGENT_MODEL_CLAUDE": "m",
+        "OMNIGENT_STUCK_SECONDS": "900",
+        "OMNIGENT_SUPERVISE_REGISTRY": str(one),
+        "OMNIGENT_USER_ID": "u1",
+        "RUNNER_SERVER_URL": "http://server",
+    }
+    unit = omnigent_agent.systemd_unit(argv, log, name, env, cwd).splitlines()
+    exec_start = next(line for line in unit if line.startswith("ExecStart="))
+    assert f'"{one}" "--notify" "S"' in exec_start and "--install" not in exec_start
+    assert "--log" not in exec_start and "X=r.md" not in exec_start
+    # systemd takes these unquoted: a quoted WorkingDirectory is "not absolute"
+    assert f"WorkingDirectory={cwd}" in unit
+    assert f"StandardOutput=append:{log}" in unit and f"StandardError=append:{log}" in unit
+    assert "Restart=always" in unit and 'Environment="PATH=/home/u/.local/bin:/usr/bin"' in unit
+    assert not any(x in "\n".join(unit) for x in ("RUNNER_ID", "terminal-shim", "z.sock"))
+    plist = omnigent_agent.launchd_plist(argv, log, omnigent_agent.service_label(one), env, cwd)
+    assert plist["Label"] == "omnigent.supervise." + name.rsplit("-", 1)[1]
+    assert plist["ProgramArguments"] == argv and plist["KeepAlive"] and plist["RunAtLoad"]
+    assert plist["StandardOutPath"] == plist["StandardErrorPath"] == str(log)
+    assert plist["EnvironmentVariables"] == env
+    assert name.startswith("omnigent-supervise-") and name != omnigent_agent.service_name(two)
+    assert omnigent_agent.service_name(tmp_path / "x" / ".." / "a.registry") == name
+
+    # A re-install must restart a running unit so it takes the new command line: `restart`, not
+    # `start` or `enable --now`. The one runner function is recorded, so nothing runs.
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        omnigent_agent, "_service_call", lambda cmd, check=True: calls.append(cmd) or ""
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "linux")
+    omnigent_agent.install_service(argv, log, one)
+    systemctl = [c[2:] for c in calls if c[:2] == ["systemctl", "--user"]]
+    assert systemctl == [["daemon-reload"], ["enable", name], ["restart", name]]
+    assert (tmp_path / "home/.config/systemd/user" / f"{name}.service").is_file()
+    calls.clear()
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "darwin")
+    omnigent_agent.install_service(argv, log, one)
+    label = omnigent_agent.service_label(one)
+    assert [c[:2] for c in calls] == [["launchctl", "bootout"], ["launchctl", "bootstrap"]]
+    assert calls[0][2].endswith(f"/{label}") and calls[1][3].endswith(f"/{label}.plist")
+
+
+def test_supervise_install_arms_its_pairs_and_uninstall_removes_the_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through main: --install arms its <session>=<report> pairs in the registry, not in the
+    unit's ExecStart, and --uninstall stops and removes the unit or plist. The one runner
+    function is recorded, so neither systemctl nor launchctl runs."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        omnigent_agent, "_service_call", lambda cmd, check=True: calls.append(cmd) or ""
+    )
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    registry, log = tmp_path / "r.registry", tmp_path / "s.log"
+    name, label = omnigent_agent.service_name(registry), omnigent_agent.service_label(registry)
+    unit = tmp_path / "home/.config/systemd/user" / f"{name}.service"
+    plist = tmp_path / "home/Library/LaunchAgents" / f"{label}.plist"
+    supervise = ["supervise", "--registry", str(registry)]
+
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "linux")
+    assert omnigent_agent.main([*supervise, "--install", "--log", str(log), "S1=rep.md"]) == 0
+    assert "S1" in omnigent_agent.registered(registry)[0]
+    assert f"S1={tmp_path / 'rep.md'}" in registry.read_text()
+    exec_start = next(x for x in unit.read_text().splitlines() if x.startswith("ExecStart="))
+    assert "S1" not in exec_start and "rep.md" not in exec_start
+    calls.clear()
+    assert omnigent_agent.main([*supervise, "--uninstall"]) == 0
+    assert ["systemctl", "--user", "disable", "--now", name] in calls
+    assert ["systemctl", "--user", "daemon-reload"] in calls and not unit.exists()
+
+    monkeypatch.setattr(omnigent_agent.sys, "platform", "darwin")
+    assert omnigent_agent.main([*supervise, "--install", "--log", str(log)]) == 0
+    assert plist.is_file()
+    calls.clear()
+    assert omnigent_agent.main([*supervise, "--uninstall"]) == 0
+    assert [c[:2] for c in calls] == [["launchctl", "bootout"]] and not plist.exists()
+
+
 # --- a wait on a PR or issue reference is a named wait (#919) ---
 
 
