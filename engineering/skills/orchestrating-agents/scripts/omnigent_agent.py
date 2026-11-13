@@ -1406,6 +1406,38 @@ def ended_on_monitor(info: dict, items: list[dict]) -> bool:
     )
 
 
+def live_tasks(info: dict) -> list[dict]:
+    """The background tasks of a session still running, a ``monitor`` (the live updates a
+    published Artifact arms) apart: work whose result goes to the session when it ends, so
+    archiving the session first strands it (#879)."""
+    return [
+        t
+        for t in info.get("background_tasks") or []
+        if t.get("type") != "monitor" and t.get("status", "running") == "running"
+    ]
+
+
+def archived_note(og: Omnigent, sid: str, info: dict) -> str:
+    """Why a relay to archived session ``sid`` goes nowhere: its state and where its work
+    continues, the live sub-agents it left (Omnigent records no successor session)."""
+    try:
+        kids = og.children(sid)
+    except Fail:
+        kids = []
+    where = (
+        f"its work continues in sub-agents {', '.join(kids)}: relay there"
+        if kids
+        else "no sub-agent or successor session is recorded for it: start a fresh run, or"
+        " relay to the session that started it"
+    )
+    tasks = live_tasks(info)
+    work = f"; {len(tasks)} background task(s) were still running when it was archived" if tasks else ""
+    return (
+        f"session {sid} is archived (title {info.get('title') or '?'!r}, status"
+        f" {info.get('status') or '?'}{work}); {where}"
+    )
+
+
 def last_message(items: list[dict]) -> dict | None:
     return next((i for i in reversed(items) if i.get("type") == "message"), None)
 
@@ -1525,7 +1557,7 @@ def send(
     old = frozenset(str(i.get("id")) for i in items)
     info = og.info(sid)
     if info.get("archived"):
-        raise Gone(f"session {sid} is archived")
+        raise Gone(archived_note(og, sid, info))
     if not info.get("runner_online", True):
         revive(og, sid)
 
@@ -3159,13 +3191,16 @@ def reap(
                 f" {info.get('workspace') or '(workspace unknown)'}"
             )
             continue
-        if status in RUNNING or prompts_of(info) or info.get("pending_inputs"):
+        tasks = live_tasks(info)
+        if status in RUNNING or prompts_of(info) or info.get("pending_inputs") or tasks:
             busy = (
                 "blocked on a prompt"
                 if prompts_of(info)
                 else status
                 if status in RUNNING
                 else "input pending"
+                if info.get("pending_inputs")
+                else "background work live"
             )
             note = " (running with recent activity, not stuck)" if force and busy == status else ""
             lines.append(f"{sid} {info.get('title') or ''}: kept ({busy}){note}")
@@ -4981,6 +5016,13 @@ def archive_delivered(og: Omnigent, sid: str) -> None:
     """Finish a session whose report or verdict came back (``Omnigent.archive``): its agent process
     frees the runner's file descriptors. A failed finish is reported, not fatal."""
     try:
+        if tasks := live_tasks(og.info(sid)):
+            print(
+                f"session {sid} delivered but kept: {len(tasks)} background task(s) still running,"
+                " whose result has nowhere to go once it is archived; `reap` it when they end",
+                file=sys.stderr,
+            )
+            return
         og.archive(sid)
     except Fail as e:
         print(f"session {sid} delivered but was not finished: {e}", file=sys.stderr)
