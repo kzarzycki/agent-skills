@@ -60,3 +60,7 @@ def test_a_message_without_a_link_is_left_as_written(tmp_path: Path) -> None:
     message.write_text(LINKED)
     assert approvals.main(["commit-msg", str(message)]) == 0
     assert message.read_text() == f"Fix the parser\n\nKeep the last field.\n\n{CO_AUTHOR}\n"
+    # the hook folds the blank lines itself, not only through git's cleanup of the message
+    message.write_text(f"Fix\n\nClaude-Session: https://example.com/s\n\n{CO_AUTHOR}\n")
+    assert approvals.main(["commit-msg", str(message)]) == 0
+    assert message.read_text() == f"Fix\n\n{CO_AUTHOR}\n"
