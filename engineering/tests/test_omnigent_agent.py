@@ -578,6 +578,25 @@ def test_wait_for_a_gate_returns_at_its_exit_line_or_still_running_with_no_log_t
     assert out[0] == "exit 2" and out[-1] == "FAILED test_x" and len(out) == 1 + 30
 
 
+def test_wait_for_reads_a_lock_wait_as_waiting_and_a_held_lock_past_budget_as_a_timeout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "WAIT_FOR_EVERY", 0.01)
+    log, lock = tmp_path / "gate.log", tmp_path / "gate.lock"
+    lock.write_text(f"{os.getpid()}\n")
+    argv = ["wait-for", "--log", str(log), "--budget", "0.05"]
+    log.write_text(f"run 1\nlock {lock}\n")  # queued: the run's budget has not started
+    assert omnigent_agent.main(argv) == 6
+    assert capsys.readouterr().out == f"waiting on the gate lock (held by {os.getpid()})\n"
+    log.write_text(f"run 1\nlock {lock}\nlocked\nrunning\n")  # holds it: out of budget
+    assert omnigent_agent.main(argv) == 6
+    assert capsys.readouterr().out == "still running\n"
+    log.write_text(f"lock {lock}\n")  # waiting past the lock ceiling: no verdict
+    os.utime(log, (time.time() - 7300, time.time() - 7300))
+    assert omnigent_agent.main(argv) == 6
+    assert capsys.readouterr().out.startswith("gave up waiting on the gate lock")
+
+
 def test_wait_for_a_pid_ends_when_the_run_is_gone(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
