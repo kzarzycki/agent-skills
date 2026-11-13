@@ -55,6 +55,8 @@ class FakeOmnigent:
         self.posts = 0
         self.sessions: dict[str, list[dict]] = {}
         self.archived: list[str] = []
+        self.kids: list[str] = []  # sub-agents children() lists
+        self.tasks: list[dict] = []  # background tasks info() reports
         self.interrupted: list[str] = []
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
@@ -234,6 +236,8 @@ class FakeOmnigent:
         ]
         status = "running" if pending else self.final
         info = {"status": status, "pending_elicitations": self.prompts, "pending_inputs": pending}
+        if self.tasks:
+            info["background_tasks"] = self.tasks
         info["model_override"] = self.overrides.get(sid)
         info["reasoning_effort"] = self.efforts.get(sid)
         if sid in self.roots:
@@ -252,6 +256,9 @@ class FakeOmnigent:
 
     def interrupt(self, sid: str) -> None:
         self.interrupted.append(sid)
+
+    def children(self, sid: str) -> list[str]:
+        return list(self.kids)
 
     def archive(self, sid: str) -> None:
         if "archive" in self.fail:
@@ -6115,6 +6122,28 @@ def test_relay_rerun_after_the_copy_landed_unanswered_sends_nothing(
     assert relay(og, sid, tmp_path, monkeypatch) == 0
     assert capsys.readouterr().out.splitlines()[-1] == f"session {sid}: already delivered"
     assert og.posts == 1
+
+
+def test_relay_to_an_archived_session_names_its_state_and_where_its_work_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent()
+    sid = og.create("claude", "sched")
+    og.archive(sid)
+    og.kids = ["s9"]
+    og.tasks = [  # a monitor and an ended shell are no work left running
+        {"type": "monitor", "status": "running"},
+        {"type": "shell", "status": "done"},
+        {"type": "shell", "status": "running"},
+    ]
+    assert relay(og, sid, tmp_path, monkeypatch) == omnigent_agent.GONE
+    err = capsys.readouterr().err
+    assert f"session {sid} is archived (title '?', status idle; 1 background task(s)" in err
+    assert "its work continues in sub-agents s9: relay there" in err
+    og.kids = []
+    relay(og, sid, tmp_path, monkeypatch)
+    assert "no sub-agent or successor session is recorded" in capsys.readouterr().err
+    assert og.posts == 0
 
 
 def test_relay_of_the_same_words_after_the_session_worked_through_tools_is_a_new_message(
