@@ -71,7 +71,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call), prints nothing meanwhile, and ends at the first of: the log's ``exit <n>`` line (the detached
+call), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -447,6 +447,7 @@ EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 30.0  # a GitHub call, so fewer
+LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the landing lock's wait
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
@@ -3026,6 +3027,33 @@ def exit_of(log: Path, run: str | None = None) -> int | None:
     return int(ends[-1][1]) if ends else None
 
 
+def lock_wait(log: Path, run: str | None = None) -> str | None:
+    """The lock path of a run's last ``lock <path>`` line when no ``locked`` line follows it (the
+    run waits on the host's gate slot, so its budget has not started), else None."""
+    lines = run_lines(log, run) or []
+    for line in reversed(lines):
+        if line.strip() == "locked":
+            return None
+        if line.startswith("lock "):
+            return line[5:].strip()
+    return None
+
+
+def lock_holder(lock: str) -> str:
+    """The pid the lock file names while that process lives, else ``unknown``."""
+    try:
+        text = Path(lock).read_text().strip()
+    except OSError:
+        return "unknown"
+    return text if text.isdigit() and alive(int(text)) else "unknown"
+
+
+def lock_text(log: Path, run: str | None) -> str | None:
+    """``waiting on the gate lock (held by <pid>)`` while the log shows a lock wait, else None."""
+    lock = lock_wait(log, run)
+    return None if lock is None else f"waiting on the gate lock (held by {lock_holder(lock)})"
+
+
 def log_outcome(log: Path, code: int, run: str | None = None) -> str:
     """``exit <n>``, then on green the last line before it (the gate's summary), on red its last
     ``LOG_TAIL`` lines, all from ``run_lines(log, run)``."""
@@ -3084,9 +3112,29 @@ def wait_for(
             return None
         return code, log_outcome(log, code, run)
 
+    def gave_up() -> tuple[int, str] | None:
+        """A lock wait past ``LOCK_CEILING`` (the lock line is the log's last write): no verdict."""
+        if not log or lock_wait(log, run_of(pid) if pid else None) is None:
+            return None
+        try:
+            waited = time.time() - log.stat().st_mtime
+        except OSError:
+            return None
+        if waited > LOCK_CEILING:
+            return (
+                LIMIT,
+                f"gave up waiting on the gate lock after {waited:.0f}s: the check has not run",
+            )
+        return None
+
+    queued = False
     while True:
-        if outcome := ended():
+        if outcome := ended() or gave_up():
             return outcome
+        waiting = bool(log) and lock_wait(log, run_of(pid) if pid else None) is not None
+        if queued and not waiting:  # the lock came during this wait: the budget starts here
+            deadline = time.monotonic() + budget
+        queued = waiting
         if pr is not None:
             if (left := deadline - time.monotonic()) <= 0:
                 return None
@@ -5685,7 +5733,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise usage
             ended = wait_for(args.log, args.pid, args.pr, args.until, args.budget)
             if ended is None:
-                print("still running")
+                waiting = args.log and lock_text(args.log, run_of(args.pid) if args.pid else None)
+                print(waiting or "still running")
                 return LIMIT
             code, outcome = ended
             print(outcome)
