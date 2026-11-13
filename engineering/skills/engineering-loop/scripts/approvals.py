@@ -2573,7 +2573,7 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
     """Whose go (go) is on `head`, `owner` or `delegate`; '' when a status there is no go; None with no status there:
     the newest `owner` status there by the account running this or a writer (a status is the repo's to write) is green,
     so a later one withdrawing it wins, and the PR holds the record by the same approver naming that head. The
-    delegate's (its description says so) counts into the default branch only while loop.md's `delegate` is `all`, so
+    delegate's (its description says so) counts into the default branch only while the default branch's `delegate` is `all`, so
     removing the setting withdraws it. A status once turned from the label (LABELLED) is no go. GitHub unreachable: no
     go."""
     try:
@@ -2595,7 +2595,7 @@ def go_on(pull: dict[str, Any], head: str, loop: str | None) -> str | None:
             or description.endswith(LABELLED)
             or by == DELEGATE
             and default(pull)
-            and delegation(loop) != "all"
+            and delegation(base_policy(pull["baseRefName"], loop)) != "all"
         ):
             return ""
         return by if current(pull, "merge", "head", head, by) else ""

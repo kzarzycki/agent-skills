@@ -142,3 +142,23 @@ def test_mains_gatekeeper_md_policy_is_read_as_the_checkouts_would_be(
     git_in(origin, "commit", "-q", "-am", "feature")
     code, out = delegate(capsys)
     assert code == 1 and "main's gatekeeper.md" in out
+
+
+def test_a_delegates_go_counts_only_while_mains_policy_still_permits_it(
+    checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status = {
+        "context": "owner",
+        "state": "success",
+        "description": f"go on {HEAD[:12]}{approvals.DELEGATED}",
+        "creator": {"login": "bot"},
+    }
+    monkeypatch.setattr(approvals, "statuses", lambda _head: [status])
+    monkeypatch.setattr(approvals, "viewer", lambda: "bot")
+    monkeypatch.setattr(approvals, "current", lambda *_a: True)
+    pr = pull(files=(".github/ci.yml",))
+    checkout["main"](ALL)
+    assert approvals.go_on(pr, HEAD, approvals.project()[1]) == "delegate"
+    checkout["main"](RULE)  # main drops `delegate: all`
+    committed(checkout["work"], ALL)  # the branch keeps it
+    assert approvals.go_on(pr, HEAD, approvals.project()[1]) == ""
