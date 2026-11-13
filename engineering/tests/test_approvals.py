@@ -4287,7 +4287,9 @@ def test_a_land_that_lost_one_race_and_took_the_lock_on_its_retry_releases_that_
     monkeypatch.setattr(approvals, "git", git)
     assert lands["land"]("7")[0] == 0
     assert (lands["lock"](), lands["merged"]()) == ("", ["7"])
-    assert len(lands["tips"]()) == 6  # theirs taken and released, then ours
+    assert (
+        len(lands["tips"]()) == 7
+    )  # theirs taken and released, then ours, moved to name its PR before merging
 
 
 def test_the_batch_starts_from_the_base_as_origin_has_it_when_the_lock_is_taken(
@@ -4318,19 +4320,22 @@ def test_a_release_moves_the_lock_to_a_free_child_of_ours_and_its_history_only_g
     second = git_in(lands["origin"], "rev-parse", REF).strip()
     git_in(lands["origin"], "merge-base", "--is-ancestor", first, second)
     empty = git_in(lands["origin"], "hash-object", "-t", "tree", os.devnull).strip()
-    assert git_in(lands["origin"], "log", "--format=%T", REF).split() == [empty] * 4
+    assert git_in(lands["origin"], "log", "--format=%T", REF).split() == [empty] * 6
     tips = [line.split("\0") for line in lands["tips"]()]
+    # each land takes the lock, moves it to name the last PR it merges (#901), then frees it
     assert [subject for _, subject in tips] == [
         f"{approvals.FREE} [skip ci]",
         f"{approvals.HELD} [skip ci]",
+        f"{approvals.HELD} [skip ci]",
         f"{approvals.FREE} [skip ci]",
+        f"{approvals.HELD} [skip ci]",
         f"{approvals.HELD} [skip ci]",
     ]
     # each commit's parent is the one below it, and the first lock commit has none
     commits = [ids.split() for ids, _ in tips]
     assert [rest for _, *rest in commits] == [[c[0]] for c in commits[1:]] + [[]]
     body = git_in(lands["origin"], "log", "-1", "--format=%b", f"{REF}~1").strip()
-    assert re.fullmatch(rf"pid {os.getpid()}, nonce [0-9a-f]{{16}}", body)
+    assert re.fullmatch(rf"pid {os.getpid()}, PR #8, nonce [0-9a-f]{{16}}", body)
     assert lands["lock"]() == ""
 
 
@@ -4480,14 +4485,14 @@ def test_the_batch_starts_from_the_base_origin_has_once_the_lock_is_taken(
     real = approvals.locked
     moved: list[str] = []
 
-    def move_then_lock(base: str, held: list[str]) -> bool:
+    def move_then_lock(base: str, held: list[str], pr: int | None = None) -> bool:
         (work / "elsewhere.txt").write_text("elsewhere\n")
         git_in(work, "add", "elsewhere.txt")
         git_in(work, "commit", "-qm", "origin moves before the lock is taken")
         git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
         moved.append(git_in(work, "rev-parse", "HEAD").strip())
         git_in(work, "update-ref", "refs/remotes/origin/main", fetched)
-        return real(base, held)
+        return real(base, held, pr)
 
     monkeypatch.setattr(approvals, "locked", move_then_lock)
     assert lands["land"]("7")[0] == 0
@@ -5364,7 +5369,9 @@ def test_a_cloud_land_reads_the_default_branch_over_rest(
     monkeypatch.setattr(approvals, "_rest_only", True)
     monkeypatch.setattr(approvals, "rest", lambda path: {"default_branch": "main"})
     named: list[str] = []
-    monkeypatch.setattr(approvals, "locked", lambda base, _held: named.append(base) or False)
+    monkeypatch.setattr(
+        approvals, "locked", lambda base, _held, _pr=None: named.append(base) or False
+    )
     assert approvals.landing(None) == (approvals.WAITING, True)
     assert named == ["main"]
 

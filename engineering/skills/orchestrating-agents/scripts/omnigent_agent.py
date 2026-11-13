@@ -309,6 +309,29 @@ LEAD_WAKE = (
     "Supervisor: the time your STILL WORKING named, {time}, has passed. Check what you wait on and"
     " carry on, then end your turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
 )
+# A failure whose text matches one of these is a transient provider error, which clears when the
+# provider recovers: the supervisor revives it again after each backoff (minutes, the last
+# repeated) until the next revive would fall past the cap, and only then reports it. A false
+# match costs revives, never a report: the cap still reports it.
+TRANSIENT_ERRORS = (
+    r"authentication_failed",  # an auth outage on the provider's side, not a bad key
+    r"Attention Required",  # a Cloudflare challenge page (a 403)
+    r"\b5\d\d\b",  # any 5xx, a cloud create's 503 included
+    r"overloaded",
+    r"\brunner (lost|is offline|disconnected|went away)",  # the host went away: a lost runner
+    r"\bhost (went away|restarted|rebooted|is (offline|unreachable|gone))",  # or a host restart
+    r"made no progress for \d+s",  # a cloud worker cut with its host reads as silence
+)
+TRANSIENT_FAILURE = re.compile("|".join(TRANSIENT_ERRORS), re.IGNORECASE)
+BACKOFF_MINUTES = (2, 5, 10, 20)
+RETRY_CAP_SECONDS = 2 * 3600.0
+
+
+def backoff(count: int) -> float:
+    """The seconds before the revive after ``count`` earlier ones in a transient chain."""
+    return BACKOFF_MINUTES[min(count, len(BACKOFF_MINUTES) - 1)] * 60.0
+
+
 LEAD_REVIVE = (
     "Supervisor: your session failed and was resumed. Carry on from your last step, and end your"
     " turn with DONE, STILL WORKING naming what you wait on, or USER NEEDED."
@@ -4133,7 +4156,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     ``blocked``, ``failed``, ``ended``, ``deadline``; ``terminal`` and ``notice`` for a session
     owing a report), ``last``, the lead's last message, and whether it is a ``repeat`` of the
     lead's last event, blocked only on a ``question``, ``nudged`` on this progress chain,
-    ``revived`` once, ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
+    ``revived`` once, a failure that is a ``transient`` provider error and whether its next
+    backoff revive is past the cap (``capped``), ``parked`` (a park message came before its end), ``offline`` (no live runner), ``due`` (a timed wait's time passed with no
     progress since), and whether any standing ``decisions`` exist;
     ``head`` is the ``report_head`` of the report a last message names, once read. ``ask`` is the small model, asked only for a quiet
     end or a ``USER NEEDED`` a standing decision may cover: it answers ``none``, ``act`` or
@@ -4142,7 +4166,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     quiet end nudges; ``unsure`` acts.
 
     Actions: ``absorb`` (drop the lead), ``record`` (no post), ``nudge``, ``wake`` (a timed
-    wait's time passed), ``revive``, ``done``
+    wait's time passed), ``revive``, ``retry`` (a revive after a backoff), ``done``
     (act, and tell each lead waiting on it), ``act`` (to the chief of staff), ``owner`` (queued
     for the owner) and ``read-report`` (read ``head``, then route again). Nothing approves: a
     prompt is the owner's."""
@@ -4163,6 +4187,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
             )
         return "rule", "owner", "an approval prompt: only the owner approves"
     if kind == "failed":
+        if event.get("transient"):
+            if event.get("capped"):
+                return (
+                    "rule",
+                    "act",
+                    "a transient provider error, still failing after 2h of revives",
+                )
+            return "rule", "retry", "a transient provider error: revive it after a backoff"
         if event.get("revived"):
             return "rule", "act", "failed again after its revive"
         return "rule", "revive", "failed the first time: revive once"
@@ -4572,6 +4604,7 @@ def supervise_registry(
         key = re.sub(r"quiet \d+s", "quiet", line)  # the same quiet spell is a repeat
         pending = info.get("pending_elicitations") or []
         found = standing(decisions) if decisions else ""
+        retrying, now = lead.get("retrying") or {}, time.time()
         event = {
             "kind": kind,
             "line": line,
@@ -4582,6 +4615,9 @@ def supervise_registry(
             "nudged": lead.get("nudged_at") is not None
             and lead.get("nudged_at") == lead.get("progress_at"),
             "revived": bool(lead.get("revives")),
+            "transient": bool(TRANSIENT_FAILURE.search(lead.get("error") or line)),
+            "capped": now + backoff(retrying.get("count", 0)) - retrying.get("since", now)
+            > RETRY_CAP_SECONDS,
             "decisions": bool(found),
             "direct": bool(lead.get("direct")),
             "parked": parked_before(og, sid, items, said[-1] if said else None),
@@ -4628,6 +4664,14 @@ def supervise_registry(
             if kind == "failed":  # its one revive after a failure; a lost runner is no failure
                 lead["revives"] = lead.get("revives", 0) + 1
             act_on(eid, [(sid, "revive", LEAD_REVIVE)])
+        elif action == "retry":  # ``due`` sends the revive at ``at``; the chain starts at ``since``
+            count = retrying.get("count", 0)
+            lead["retrying"] = {
+                "count": count + 1,
+                "since": retrying.get("since", now),
+                "at": now + backoff(count),
+                "event": eid,
+            }
         elif action in ("act", "owner", "done"):
             queue(eid, sid, "owner" if action == "owner" else "act", line.splitlines()[0], why)
         if action == "done":
@@ -4842,6 +4886,8 @@ def supervise_registry(
         )
         if console:
             from_report(sid, lead, items)
+        if lead["state"] == "idle":  # a turn ended without failing: the provider is back
+            lead.pop("retrying", None)
         if lead["state"] in ("blocked", "failed") and lead["state"] != was:
             # a new failure or prompt, also with the same error: its own event, kept on restart
             lead["occurrences"] = lead.get("occurrences", 0) + 1
@@ -5108,6 +5154,22 @@ def supervise_registry(
                 line = f"{head}: {why} ({lead['wait']})\nlast message: {lead['last_line']}"
                 say(line, sid, f"deadline:{sid}:{lead['progress_at']:.0f}{nudged}", "deadline")
 
+    def due(sid: str, lead: dict) -> None:
+        """Send a transient failure's revive once its backoff (``retrying.at``) has passed, through
+        the same intent as the first revive; none when the lead no longer reads failed."""
+        retrying = lead.get("retrying") or {}
+        if "at" not in retrying or time.time() < retrying["at"]:
+            return
+
+        def send() -> None:
+            del retrying["at"]
+            if lead.get("state") == "failed":
+                why = f"a transient provider error, after its backoff ({retrying['count']})"
+                print(stamp(f"{retrying['event']}: rule: revive ({why})"), flush=True)
+                act_on(retrying["event"], [(sid, "revive", LEAD_REVIVE)])
+
+        undoing(send)
+
     while True:
         flush()
         waits = [w for w, n in (("lines to post", outbox), ("events to settle", retry)) if n]
@@ -5167,6 +5229,7 @@ def supervise_registry(
                             say(event, sid, eid, kind)
                         if console:
                             overdue(sid, lead)
+                            due(sid, lead)
                         continue
                 else:
 
