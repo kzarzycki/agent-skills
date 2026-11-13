@@ -9995,7 +9995,7 @@ def test_in_a_cloud_session_each_command_completes_with_no_graphql_call_past_the
         "time": WRITTEN,
         "published": True,
     }
-    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(): record)
+    monkeypatch.setattr(approvals, "reusable", lambda head, passed=(), why=None: record)
     report = tmp_path / "report.md"
     report.write_text(REPORT.replace("app.py:12", "app.py:11").replace("app.py:40", "app.py:12"))
     for argv in (
